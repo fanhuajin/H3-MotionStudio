@@ -165,8 +165,8 @@ export function App() {
 
   const milestones = job?.milestones?.length ? job.milestones : EMPTY_MILESTONES;
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
-  const resultUrl = job?.finalReady ? `/api/jobs/${job.id}/media/final` : null;
-  const originalUrl = job?.originalReady ? `/api/jobs/${job.id}/media/original` : null;
+  const resultUrl = !demoMode && job?.finalReady ? `/api/jobs/${job.id}/media/final` : null;
+  const originalUrl = !demoMode && job?.originalReady ? `/api/jobs/${job.id}/media/original` : null;
 
   const resourceStatus = useMemo(() => {
     if (job?.status === "running" && ["voice", "handoff"].includes(job.stage)) return { label: "RVC 单链路运行中", mode: "rvc" };
