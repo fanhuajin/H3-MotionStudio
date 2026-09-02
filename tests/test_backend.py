@@ -2,6 +2,7 @@ from pathlib import Path
 import unittest
 
 from backend.settings import SINGING_WORKFLOW, UPSCALE_WORKFLOW, required_paths
+from backend.store import format_elapsed
 from backend.workflows import (
     node_by_id,
     prepare_singing_workflow,
@@ -10,6 +11,9 @@ from backend.workflows import (
 
 
 class WorkflowPreparationTests(unittest.TestCase):
+    def test_elapsed_format_matches_ui(self) -> None:
+        self.assertEqual(format_elapsed("2026-09-03T00:00:00+00:00", "2026-09-03T01:02:03+00:00"), "01:02:03")
+
     def test_required_local_resources_exist(self) -> None:
         missing = {name: str(path) for name, path in required_paths().items() if not path.is_file()}
         self.assertEqual(missing, {})

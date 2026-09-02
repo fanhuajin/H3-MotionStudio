@@ -89,12 +89,12 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
 .job-id { margin-left: auto; padding: 5px 9px; border: 1px solid #2d3744; border-radius: 5px; }
 .pipeline { border: 1px solid #2c3643; border-radius: 8px; padding: 8px 8px 8px 0; background: linear-gradient(180deg, #0c131c, #0a1018); }
 .pipeline-row { display: grid; grid-template-columns: 96px 1fr; min-height: 53px; position: relative; }
-.rail { position: relative; display: flex; align-items: center; justify-content: center; }
-.rail::before { content: ""; position: absolute; width: 1px; background: #33404e; top: 0; bottom: 0; left: 50%; }
-.pipeline-row:first-child .rail::before { top: 50%; }
-.pipeline-row:last-child .rail::before { bottom: 50%; }
-.rail::after { content: "COMFYUI"; position: absolute; left: 3px; color: #2d9cff; font-size: 10px; font-weight: 700; letter-spacing: -.04em; }
-.rvc-row .rail::after { content: "RVC"; color: #f1b52f; left: 16px; font-size: 12px; }
+.rail { position: relative; display: flex; align-items: center; justify-content: flex-end; padding-right: 14px; }
+.rail::before { content: ""; position: absolute; width: 1px; background: #33404e; top: 0; bottom: 0; left: 68px; }
+.pipeline-step:first-child .rail::before { top: 50%; }
+.pipeline-step:last-child .rail::before { bottom: 50%; }
+.rail::after { content: "COMFYUI"; position: absolute; left: 4px; color: #2d9cff; font-size: 9px; font-weight: 700; letter-spacing: -.08em; }
+.rvc-row .rail::after { content: "RVC"; color: #f1b52f; left: 21px; font-size: 11px; }
 .rail-icon { z-index: 1; width: 27px; height: 27px; display: grid; place-items: center; border: 2px solid #46515e; border-radius: 50%; color: #8d97a4; background: #101720; box-shadow: 0 0 0 5px #0c131c; }
 .rail-icon svg { width: 14px; height: 14px; }
 .state-completed .rail-icon { color: #06130a; border-color: #399d59; background: #62e779; box-shadow: 0 0 9px rgba(69,221,105,.28), 0 0 0 5px #0c131c; }
@@ -118,6 +118,9 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
 .state-error .status-chip { color: #ff7c88; border-color: #7f2e38; background: #32131a; }
 .pipeline-compact .pipeline-row { min-height: 47px; }
 .pipeline-compact .pipeline-card { min-height: 39px; margin: 3px 0; padding-block: 5px; }
+.handoff-banner { min-height: 30px; margin: 2px 0 2px 96px; border: 1px solid #3b3d30; border-radius: 5px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #8f9187; background: linear-gradient(90deg, #17191a, #15181b); font-size: 11px; font-weight: 600; }
+.handoff-banner.ready { color: #efbd39; border-color: #554414; background: linear-gradient(90deg, #1c190f, #171813); }
+.handoff-banner svg { width: 16px; height: 16px; }
 
 .result-panel { margin-top: 14px; padding: 14px 15px 15px; border: 1px solid #34404e; border-radius: 8px; background: linear-gradient(135deg, #0d151f, #0a1017); }
 .result-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
@@ -170,9 +173,12 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
   .source-card { height: 210px; }
   .pipeline-row { grid-template-columns: 45px 1fr; }
   .rail::after { display: none; }
+  .rail { justify-content: center; padding-right: 0; }
+  .rail::before { left: 50%; }
   .pipeline-card { grid-template-columns: 37px minmax(0, 1fr) 54px; gap: 7px; }
   .elapsed { display: none; }
   .result-grid { grid-template-columns: 1fr; }
+  .handoff-banner { margin-left: 45px; }
 }
 
 @media (max-width: 480px) {

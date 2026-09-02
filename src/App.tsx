@@ -57,8 +57,8 @@ const DEMO_JOB: JobState = {
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
   sourceName: "演唱视频.mp4",
-  sourceSize: 120_400_000,
-  sourceDuration: 204,
+  sourceSize: 21_400_000,
+  sourceDuration: 32.4,
   referenceName: "人物参考图.png",
   referenceSize: 4_800_000,
   actionPrompt: "主角自然深情地演唱，眼神专注，偶尔闭眼沉浸；副歌时情绪增强，微微抬头，右手轻抬并随节奏摆动；整体动作自然流畅。",
@@ -72,7 +72,7 @@ const DEMO_JOB: JobState = {
   originalReady: true,
   enhancedReady: true,
   finalReady: true,
-  output: { width: 1440, height: 1080, duration: 204, size: 286_700_000, completedAt: new Date().toISOString() },
+  output: { width: 1440, height: 1080, duration: 32.4, size: 48_700_000, completedAt: new Date().toISOString() },
 };
 
 function formatBytes(value?: number | null) {
@@ -379,7 +379,7 @@ export function App() {
                 <>
                   <img className="demo-source" src={config.fixedReferenceUrl} alt="演唱视频画面预览" />
                   <div className="media-meta demo-meta">
-                    <div><strong>演唱视频.mp4</strong><span>00:03:24 · 120.4 MB</span></div>
+                    <div><strong>演唱视频.mp4</strong><span>00:00:32 · 21.4 MB</span></div>
                   </div>
                 </>
               ) : (
@@ -430,7 +430,17 @@ export function App() {
           </div>
 
           <div className={`pipeline ${job?.finalReady ? "pipeline-compact" : ""}`}>
-            {milestones.map((step, index) => <PipelineRow key={step.id} step={step} index={index} />)}
+            {milestones.map((step, index) => (
+              <div className="pipeline-step" key={step.id}>
+                <PipelineRow step={step} index={index} />
+                {step.id === "handoff" && (
+                  <div className={`handoff-banner ${step.status === "completed" ? "ready" : ""}`}>
+                    <ArrowsClockwise weight="bold" />
+                    <span>{step.status === "completed" ? "资源已切换到 RVC 流程" : "ComfyUI 关闭后才会启动 RVC"}</span>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
 
           {(job?.originalReady || job?.finalReady) && (

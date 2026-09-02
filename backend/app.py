@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .pipeline import PipelineError, comfy_health, media_metadata, retry_voice, run_pipeline
@@ -84,7 +84,7 @@ async def get_config() -> dict[str, Any]:
 @app.get("/api/jobs/latest")
 async def latest_job():
     state = store.latest()
-    return state if state else JSONResponse(status_code=204, content=None)
+    return state if state else Response(status_code=204)
 
 
 @app.get("/api/jobs/{job_id}")

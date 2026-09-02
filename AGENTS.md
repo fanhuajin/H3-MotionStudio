@@ -12,7 +12,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 - The selected visual source is `design/reference-ui.png`.
 - This is a local desktop-style workspace, not a marketing site.
-- The only editable generation inputs are one singing video, character action instructions, and camera instructions.
+- The only editable generation inputs are one character reference image, one singing video, character action instructions, and camera instructions.
 - Progress must reflect real ComfyUI nodes and RVC subprocess stages, including exact errors.
 - The pipeline is strictly single-chain: ComfyUI generation and RealESRGAN finish first, ComfyUI then closes completely, RVC converts the voice, and the converted audio is muxed into the final MP4.
 - The completed state must display the final video and preserve access to the original video.

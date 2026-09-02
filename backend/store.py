@@ -15,6 +15,15 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def format_elapsed(started_at: str, finished_at: str) -> str:
+    started = datetime.fromisoformat(started_at)
+    finished = datetime.fromisoformat(finished_at)
+    total = max(0, int((finished - started).total_seconds()))
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def initial_milestones() -> list[dict[str, Any]]:
     return [
         {"id": "input", "label": "读取视频与音频", "subtitle": "加载输入视频，分离音频轨道", "status": "pending"},
@@ -116,6 +125,15 @@ class JobStore:
         def apply(state: dict[str, Any]) -> None:
             for item in state["milestones"]:
                 if item["id"] == milestone_id:
+                    next_status = changes.get("status")
+                    timestamp = now_iso()
+                    if next_status == "running" and item.get("status") != "running":
+                        item["startedAt"] = timestamp
+                        item.pop("finishedAt", None)
+                        item.pop("elapsed", None)
+                    elif next_status in {"completed", "error", "skipped"} and item.get("startedAt"):
+                        item["finishedAt"] = timestamp
+                        changes.setdefault("elapsed", format_elapsed(item["startedAt"], timestamp))
                     item.update(changes)
                     return
 
@@ -145,4 +163,3 @@ class JobStore:
 
 
 store = JobStore()
-

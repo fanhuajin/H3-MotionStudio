@@ -473,7 +473,8 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
     return_code = await process.wait()
     if return_code != 0:
         detail = "\n".join(lines[-120:])
-        active = "voice" if (store.get(job_id) or {}).get("stage") == "voice" else "stems"
+        state = store.get(job_id) or {}
+        active = next((item["id"] for item in state.get("milestones", []) if item.get("status") == "running"), "voice")
         store.set_milestone(job_id, active, status="error")
         raise PipelineError("音色转换失败", detail)
 
@@ -539,6 +540,10 @@ async def run_pipeline(job_id: str) -> None:
             else:
                 summary, detail = "任务执行失败", repr(error)
             store.add_log(job_id, f"错误：{summary}")
+            failed_state = store.get(job_id) or {}
+            running = next((item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"), None)
+            if running:
+                store.set_milestone(job_id, running, status="error")
             store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)
             try:
                 if await comfy_health():
