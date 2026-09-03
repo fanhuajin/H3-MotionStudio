@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from backend.app import douyin_job_payload
+from backend.douyin_preview import _convert_download_sync
 from backend.douyin_service import (
     DouyinServiceManager,
     _cookie_ready,
@@ -97,6 +98,21 @@ class DouyinServiceTests(unittest.TestCase):
             self.assertEqual(result["awemeId"], "7613347091070692019")
             self.assertEqual(result["filename"], video.name)
 
+    def test_result_for_ignores_incomplete_conversion_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir)
+            original = output / "作品_7613347091070692019.mp4"
+            staging = output / "作品_7613347091070692019.h3-converted.part.mp4"
+            original.write_bytes(b"original")
+            staging.write_bytes(b"partial")
+            staging.touch()
+            with patch("backend.douyin_service.DOUYIN_OUTPUT", output):
+                result = DouyinServiceManager().result_for(
+                    {"url": "https://www.douyin.com/video/7613347091070692019"}
+                )
+            self.assertIsNotNone(result)
+            self.assertEqual(result["path"], str(original.resolve()))
+
     def test_job_payload_normalizes_success_and_attaches_media_urls(self) -> None:
         result = {
             "awemeId": "123",
@@ -109,6 +125,22 @@ class DouyinServiceTests(unittest.TestCase):
             payload = douyin_job_payload({"job_id": "job-1", "status": "success"})
         self.assertEqual(payload["status"], "completed")
         self.assertEqual(payload["result"]["mediaUrl"], "/api/douyin/jobs/job-1/media")
+
+    def test_download_conversion_replaces_original_in_place(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = Path(temp_dir) / "douyin.mp4"
+            source.write_bytes(b"hevc-source")
+
+            def write_h264(_ffmpeg, _source, target):
+                target.write_bytes(b"h264-output")
+
+            with patch("backend.douyin_preview._tool", return_value="ffmpeg"), patch(
+                "backend.douyin_preview._encode_sync", side_effect=write_h264
+            ):
+                _convert_download_sync(source, source)
+
+            self.assertEqual(source.read_bytes(), b"h264-output")
+            self.assertFalse((Path(temp_dir) / "douyin.h3-converted.mp4").exists())
 
 
 class DouyinMirrorTests(unittest.TestCase):

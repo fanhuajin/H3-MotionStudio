@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -21,7 +21,12 @@ from . import input_preview
 from .douyin_mirror import all_jobs as mirror_jobs
 from .douyin_mirror import get_job as mirror_get_job
 from .douyin_mirror import upsert_jobs as mirror_upsert
-from .douyin_preview import ensure_web_playable, schedule_web_preview
+from .douyin_preview import (
+    ensure_download_playable,
+    ensure_web_playable_at,
+    playable_download_path,
+    schedule_download_playable,
+)
 from .douyin_service import (
     DouyinServiceError,
     DouyinServiceOffline,
@@ -32,6 +37,7 @@ from .douyin_service import (
 from .pipeline import PipelineError, comfy_health, media_metadata, retry_voice, run_pipeline
 from .settings import (
     COMFY_INPUT,
+    DATA_DIR,
     FIXED_REFERENCE,
     MAX_DURATION_SECONDS,
     PROJECT_ROOT,
@@ -60,7 +66,7 @@ IDLE_STOP_SECONDS = 60.0
 
 
 async def _douyin_housekeeping() -> None:
-    """Mirror jobs, pre-warm H.264 previews, stop the service when idle.
+    """Mirror jobs, normalize completed videos, stop the service when idle.
 
     Runs only while the download service is already connected, so it never
     starts that service on its own. After download activity has been idle for
@@ -89,7 +95,7 @@ async def _douyin_housekeeping() -> None:
                     continue
                 result = douyin_service.result_for(job)
                 if result:
-                    schedule_web_preview(
+                    schedule_download_playable(
                         Path(result["path"]),
                         str(result.get("awemeId") or ""),
                     )
@@ -165,7 +171,9 @@ async def get_config() -> dict[str, Any]:
 @app.get("/api/jobs/latest")
 async def latest_job():
     state = store.latest()
-    return state if state else Response(status_code=204)
+    if not state:
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+    return JSONResponse(state, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/jobs/{job_id}")
@@ -315,6 +323,46 @@ async def job_media(job_id: str, kind: str, download: bool = Query(False)):
     return FileResponse(path, media_type=media_type, filename=filename)
 
 
+def _job_input_path(state: dict[str, Any], kind: str) -> Path:
+    field = {"video": "sourcePath", "reference": "referencePath"}.get(kind)
+    if not field:
+        raise HTTPException(404, "输入文件不存在")
+    raw_path = state.get(field)
+    if not raw_path:
+        raise HTTPException(404, "输入文件不存在")
+    try:
+        path = Path(raw_path).resolve()
+        path.relative_to(COMFY_INPUT.resolve())
+    except (OSError, ValueError):
+        raise HTTPException(404, "输入文件不存在") from None
+    if not path.is_file():
+        raise HTTPException(404, "输入文件不存在")
+    return path
+
+
+@app.get("/api/jobs/{job_id}/input/video/preview")
+async def job_input_video_preview(job_id: str):
+    state = store.get(job_id)
+    if not state:
+        raise HTTPException(404, "任务不存在")
+    source = _job_input_path(state, "video")
+    target = DATA_DIR / "job-input-previews" / f"{job_id}.mp4"
+    path = await ensure_web_playable_at(source, target)
+    media_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
+    return FileResponse(path, media_type=media_type)
+
+
+@app.get("/api/jobs/{job_id}/input/{kind}")
+async def job_input(job_id: str, kind: str):
+    """Serve persisted source files so a reopened workspace can recover its draft."""
+    state = store.get(job_id)
+    if not state:
+        raise HTTPException(404, "任务不存在")
+    path = _job_input_path(state, kind)
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
 async def _resolve_job(job_id: str) -> dict[str, Any] | None:
     """Live job from the downloader service, falling back to the mirror.
 
@@ -408,14 +456,19 @@ def douyin_job_payload(job: dict[str, Any]) -> dict[str, Any]:
     result = douyin_service.result_for(job)
     job_id = str(job.get("job_id") or "")
     status = "completed" if job.get("status") == "success" else job.get("status")
+    playable_ready = False
     if result:
-        schedule_web_preview(Path(result["path"]), str(result.get("awemeId") or ""))
+        source = Path(result["path"])
+        playable_ready = playable_download_path(source) is not None
+        if not playable_ready:
+            schedule_download_playable(source, str(result.get("awemeId") or ""))
     return {
         **job,
         "status": status,
         "result": (
             {
                 **result,
+                "playableReady": playable_ready,
                 "mediaUrl": f"/api/douyin/jobs/{job_id}/media",
                 "downloadUrl": f"/api/douyin/jobs/{job_id}/media?download=1",
             }
@@ -480,18 +533,11 @@ async def douyin_job_media(job_id: str, download: bool = Query(False)):
     if not result:
         raise HTTPException(404, "下载文件尚未生成")
     source = Path(result["path"])
-    if download:
-        # The download link always keeps the original downloaded file.
-        return FileResponse(
-            source,
-            media_type=result["mediaType"],
-            filename=source.name,
-        )
-    # Inline preview: HEVC/H.265 sources are served as an H.264 copy because
-    # browsers without the HEVC extension show a black picture otherwise.
-    path = await ensure_web_playable(source, str(result["awemeId"]))
+    path = await ensure_download_playable(source, str(result["awemeId"]))
+    if playable_download_path(path) is None:
+        raise HTTPException(500, "视频兼容格式转换失败，请检查 ffmpeg")
     media_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
-    return FileResponse(path, media_type=media_type)
+    return FileResponse(path, media_type=media_type, filename=path.name if download else None)
 
 
 VIDEO_UPLOAD_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}

@@ -287,7 +287,12 @@ class DouyinServiceManager:
         candidates = [
             path
             for path in DOUYIN_OUTPUT.rglob(f"*{aweme_id}*")
-            if path.is_file() and path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}
+            if (
+                path.is_file()
+                and path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}
+                and ".h3-converted" not in path.name
+                and ".part." not in path.name
+            )
         ]
         if not candidates:
             return None

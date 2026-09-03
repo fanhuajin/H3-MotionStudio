@@ -32,7 +32,7 @@ try {
         }
     }
     if (-not $ready) {
-        throw 'H3 MotionStudio 本地服务启动失败。'
+        throw 'H3 MotionStudio local service failed to start.'
     }
     Start-Process 'http://127.0.0.1:8111'
     Wait-Process -Id $backend.Id

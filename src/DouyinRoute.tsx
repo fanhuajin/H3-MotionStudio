@@ -26,6 +26,7 @@ type DouyinResult = {
   path: string;
   size: number;
   mediaType: string;
+  playableReady: boolean;
   mediaUrl: string;
   downloadUrl: string;
 };
@@ -78,6 +79,7 @@ function relativeTime(value?: string | null) {
 function statusText(job: DouyinJob) {
   if (job.status === "pending") return "排队中";
   if (job.status === "running") return "下载中";
+  if (job.status === "completed" && job.result && !job.result.playableReady) return "转换中";
   if (job.status === "completed") return job.skipped ? "已存在" : "已完成";
   if (job.status === "cancelled") return "已取消";
   return "失败";
@@ -172,14 +174,15 @@ export function DouyinRoute() {
   }, [loadLoginStatus, login?.state]);
 
   useEffect(() => {
-    if (!activeJob || !["pending", "running"].includes(activeJob.status)) return;
+    const converting = activeJob?.status === "completed" && activeJob.result && !activeJob.result.playableReady;
+    if (!activeJob || (!["pending", "running"].includes(activeJob.status) && !converting)) return;
     const timer = window.setInterval(() => {
       void loadJob(activeJob.job_id).catch((nextError) => {
         setError(nextError instanceof Error ? nextError.message : "任务状态更新失败");
       });
     }, 1800);
     return () => window.clearInterval(timer);
-  }, [activeJob?.job_id, activeJob?.status, loadJob]);
+  }, [activeJob?.job_id, activeJob?.status, activeJob?.result?.playableReady, loadJob]);
 
   const recognized = useMemo(
     () => isDouyinUrl(url.trim()),
@@ -229,7 +232,8 @@ export function DouyinRoute() {
     }
   };
 
-  const isBusy = submitting || activeJob?.status === "pending" || activeJob?.status === "running";
+  const mediaConverting = activeJob?.status === "completed" && Boolean(activeJob.result && !activeJob.result.playableReady);
+  const isBusy = submitting || activeJob?.status === "pending" || activeJob?.status === "running" || mediaConverting;
   const loginActive = login?.state === "opening" || login?.state === "waiting";
   const taskError = activeJob?.status === "failed" ? activeJob.error : null;
   const visibleError = error || taskError || (login?.state === "error" ? login.error || login.message : null);
@@ -298,7 +302,15 @@ export function DouyinRoute() {
       {activeJob?.result && (
         <section className="download-result-card">
           <div className="download-result-video">
-            <video src={activeJob.result.mediaUrl} controls preload="metadata" />
+            {activeJob.result.playableReady ? (
+              <video src={activeJob.result.mediaUrl} controls preload="metadata" />
+            ) : (
+              <div className="download-converting">
+                <SpinnerGap className="spin" weight="bold" />
+                <strong>正在转换为可播放格式…</strong>
+                <span>完成后会直接替换本地下载文件</span>
+              </div>
+            )}
           </div>
           <div className="download-result-copy">
             <p className="route-eyebrow"><span /> DOWNLOAD COMPLETE</p>
@@ -309,9 +321,13 @@ export function DouyinRoute() {
               <div><dt>文件大小</dt><dd>{formatBytes(activeJob.result.size)}</dd></div>
               <div><dt>保存位置</dt><dd title={activeJob.result.path}>{service?.outputDirectory || "Downloaded"}</dd></div>
             </dl>
-            <a className="result-download-link" href={activeJob.result.downloadUrl}>
-              <DownloadSimple weight="bold" /> 下载到本机
-            </a>
+            {activeJob.result.playableReady ? (
+              <a className="result-download-link" href={activeJob.result.downloadUrl}>
+                <DownloadSimple weight="bold" /> 下载可播放 MP4
+              </a>
+            ) : (
+              <span className="result-download-link disabled"><SpinnerGap className="spin" /> 正在转换</span>
+            )}
           </div>
         </section>
       )}

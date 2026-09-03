@@ -44,6 +44,104 @@ const FALLBACK_CONFIG: AppConfig = {
   missingRequirements: [],
 };
 
+const DRAFT_STORAGE_KEY = "h3-motionstudio:draft:v1";
+const DRAFT_DB_NAME = "h3-motionstudio-draft";
+const DRAFT_DB_VERSION = 1;
+const DRAFT_FILE_STORE = "files";
+
+interface DraftState {
+  actionPrompt?: string;
+  cameraPrompt?: string;
+  videoName?: string | null;
+  videoSize?: number | null;
+  imageName?: string | null;
+  imageSize?: number | null;
+  savedAt?: string;
+}
+
+function readDraft(): DraftState | null {
+  try {
+    const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DraftState;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDraft(changes: Partial<DraftState>) {
+  try {
+    const current = readDraft() || {};
+    window.localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify({ ...current, ...changes, savedAt: new Date().toISOString() }),
+    );
+  } catch {
+    // Draft persistence is best effort; it must never block generation.
+  }
+}
+
+function releaseObjectUrl(value: string | null) {
+  if (value?.startsWith("blob:")) URL.revokeObjectURL(value);
+}
+
+function openDraftDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(DRAFT_DB_NAME, DRAFT_DB_VERSION);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(DRAFT_FILE_STORE)) {
+        request.result.createObjectStore(DRAFT_FILE_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("草稿存储不可用"));
+  });
+}
+
+async function saveDraftFile(kind: "video" | "image", file: File) {
+  try {
+    const db = await openDraftDb();
+    await new Promise<void>((resolve, reject) => {
+      const request = db.transaction(DRAFT_FILE_STORE, "readwrite").objectStore(DRAFT_FILE_STORE).put(file, kind);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error || new Error("草稿文件保存失败"));
+    });
+    db.close();
+  } catch {
+    // The text draft and backend job state remain useful if IndexedDB is unavailable.
+  }
+}
+
+async function loadDraftFile(kind: "video" | "image"): Promise<File | null> {
+  try {
+    const db = await openDraftDb();
+    const file = await new Promise<File | null>((resolve, reject) => {
+      const request = db.transaction(DRAFT_FILE_STORE, "readonly").objectStore(DRAFT_FILE_STORE).get(kind);
+      request.onsuccess = () => resolve(request.result instanceof File ? request.result : null);
+      request.onerror = () => reject(request.error || new Error("草稿文件读取失败"));
+    });
+    db.close();
+    return file;
+  } catch {
+    return null;
+  }
+}
+
+async function clearDraftFile(kind: "video" | "image") {
+  try {
+    const db = await openDraftDb();
+    await new Promise<void>((resolve, reject) => {
+      const request = db.transaction(DRAFT_FILE_STORE, "readwrite").objectStore(DRAFT_FILE_STORE).delete(kind);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error || new Error("草稿文件删除失败"));
+    });
+    db.close();
+  } catch {
+    // Best effort cleanup only.
+  }
+}
+
 const DEMO_MILESTONES: Milestone[] = EMPTY_MILESTONES.map((step, index) => ({
   ...step,
   status: "completed",
@@ -169,8 +267,8 @@ function MotionStudioRoute() {
     return () => window.removeEventListener("keydown", onKey);
   }, [lightboxImage]);
   const [duration, setDuration] = useState<number | null>(null);
-  const [actionPrompt, setActionPrompt] = useState("");
-  const [cameraPrompt, setCameraPrompt] = useState("");
+  const [actionPrompt, setActionPrompt] = useState(() => readDraft()?.actionPrompt || "");
+  const [cameraPrompt, setCameraPrompt] = useState(() => readDraft()?.cameraPrompt || "");
   const [job, setJob] = useState<JobState | null>(demoMode ? DEMO_JOB : null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -203,46 +301,17 @@ function MotionStudioRoute() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      fetch("/api/config").then((response) => response.ok ? response.json() : Promise.reject()),
-      demoMode
-        ? Promise.resolve(null)
-        : fetch("/api/jobs/latest").then((response) => response.status === 204 ? null : response.json()),
-    ]).then(([nextConfig, latest]) => {
-      if (cancelled) return;
-      setConfig(nextConfig);
-      setActionPrompt(nextConfig.defaultAction || "");
-      setCameraPrompt(nextConfig.defaultCamera || "");
-      if (demoMode) {
-        setJob(DEMO_JOB);
-        setActionPrompt(DEMO_JOB.actionPrompt);
-        setCameraPrompt(DEMO_JOB.cameraPrompt);
-      } else if (latest?.id) {
-        setJob(latest);
-        if (["queued", "running"].includes(latest.status)) connectJob(latest.id);
-      }
-    }).catch(() => {
-      if (!cancelled) setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。");
-    });
-    return () => {
-      cancelled = true;
-      socketRef.current?.close();
-    };
-  }, [connectJob, demoMode]);
-
-  useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status)) return;
     const timer = window.setInterval(async () => {
-      const response = await fetch(`/api/jobs/${job.id}`);
+      const response = await fetch(`/api/jobs/${job.id}`, { cache: "no-store" });
       if (response.ok) setJob(await response.json());
     }, 4000);
     return () => window.clearInterval(timer);
   }, [job?.id, job?.status]);
 
   useEffect(() => () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+    releaseObjectUrl(previewUrl);
+    releaseObjectUrl(imagePreviewUrl);
   }, [previewUrl, imagePreviewUrl]);
 
   const chooseImage = useCallback((nextFile: File | null) => {
@@ -253,11 +322,15 @@ function MotionStudioRoute() {
       setLocalError("请选择 PNG、JPG、JPEG 或 WebP 人物图片。");
       return;
     }
-    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
     setImageFile(nextFile);
-    setImagePreviewUrl(URL.createObjectURL(nextFile));
+    setImagePreviewUrl((current) => {
+      releaseObjectUrl(current);
+      return URL.createObjectURL(nextFile);
+    });
+    void saveDraftFile("image", nextFile);
+    writeDraft({ imageName: nextFile.name, imageSize: nextFile.size });
     setLocalError(null);
-  }, [imagePreviewUrl]);
+  }, []);
 
   const chooseFile = useCallback(async (nextFile: File | null) => {
     if (!nextFile) return;
@@ -271,13 +344,17 @@ function MotionStudioRoute() {
     // so the backend stores the file and serves an H.264 preview copy; the
     // original file is still what gets submitted to the pipeline.
     const token = ++previewTokenRef.current;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(nextFile);
-    setPreviewUrl(null);
+    setPreviewUrl((current) => {
+      releaseObjectUrl(current);
+      return null;
+    });
     setDuration(null);
     setPreviewConverting(false);
     setPreviewPreparing(true);
     setLocalError(null);
+    void saveDraftFile("video", nextFile);
+    writeDraft({ videoName: nextFile.name, videoSize: nextFile.size });
     try {
       const form = new FormData();
       form.append("video", nextFile);
@@ -318,16 +395,92 @@ function MotionStudioRoute() {
         setPreviewPreparing(false);
       }
     }
-  }, [previewUrl]);
+  }, []);
+
+  const restoreInputs = useCallback(async (latest: JobState | null) => {
+    const restoreRemote = async (kind: "video" | "reference", name: string, fallbackType: string) => {
+      if (!latest?.id) return null;
+      try {
+        const response = await fetch(`/api/jobs/${latest.id}/input/${kind}`, { cache: "no-store" });
+        if (!response.ok) return null;
+        const blob = await response.blob();
+        return new File([blob], name, { type: blob.type || fallbackType, lastModified: Date.now() });
+      } catch {
+        return null;
+      }
+    };
+
+    const draft = readDraft();
+    const restoredImage = await restoreRemote("reference", latest?.referenceName || "reference.png", "image/png")
+      || await loadDraftFile("image");
+    if (restoredImage) chooseImage(restoredImage);
+
+    const restoredRemoteVideo = await restoreRemote("video", latest?.sourceName || "singing-video.mp4", "video/mp4");
+    if (restoredRemoteVideo && latest?.id) {
+      setFile(restoredRemoteVideo);
+      setDuration(latest.sourceDuration ?? null);
+      setPreviewPreparing(false);
+      setPreviewConverting(false);
+      setPreviewUrl(`/api/jobs/${latest.id}/input/video/preview`);
+      void saveDraftFile("video", restoredRemoteVideo);
+      writeDraft({ videoName: restoredRemoteVideo.name, videoSize: restoredRemoteVideo.size });
+    } else {
+      const restoredDraftVideo = await loadDraftFile("video");
+      if (restoredDraftVideo) await chooseFile(restoredDraftVideo);
+    }
+
+    if (!latest && draft) {
+      setActionPrompt(draft.actionPrompt || "");
+      setCameraPrompt(draft.cameraPrompt || "");
+    }
+  }, [chooseFile, chooseImage]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const draft = readDraft();
+    Promise.all([
+      fetch("/api/config", { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject()),
+      demoMode
+        ? Promise.resolve(null)
+        : fetch("/api/jobs/latest", { cache: "no-store" }).then((response) => response.status === 204 ? null : response.json()),
+    ]).then(([nextConfig, latest]) => {
+      if (cancelled) return;
+      setConfig(nextConfig);
+      setActionPrompt(latest?.actionPrompt || draft?.actionPrompt || nextConfig.defaultAction || "");
+      setCameraPrompt(latest?.cameraPrompt || draft?.cameraPrompt || nextConfig.defaultCamera || "");
+      if (demoMode) {
+        setJob(DEMO_JOB);
+        setActionPrompt(DEMO_JOB.actionPrompt);
+        setCameraPrompt(DEMO_JOB.cameraPrompt);
+      } else if (latest?.id) {
+        setJob(latest);
+        if (["queued", "running"].includes(latest.status)) connectJob(latest.id);
+      }
+      void restoreInputs(latest);
+    }).catch(() => {
+      if (!cancelled) setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。");
+    });
+    return () => {
+      cancelled = true;
+      socketRef.current?.close();
+    };
+  }, [connectJob, demoMode, restoreInputs]);
+
+  useEffect(() => {
+    if (demoMode) return;
+    writeDraft({ actionPrompt, cameraPrompt });
+  }, [actionPrompt, cameraPrompt, demoMode]);
 
   const clearFile = () => {
     previewTokenRef.current += 1;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    releaseObjectUrl(previewUrl);
     setFile(null);
     setPreviewUrl(null);
     setDuration(null);
     setPreviewPreparing(false);
     setPreviewConverting(false);
+    void clearDraftFile("video");
+    writeDraft({ videoName: null, videoSize: null });
     if (inputRef.current) inputRef.current.value = "";
   };
 

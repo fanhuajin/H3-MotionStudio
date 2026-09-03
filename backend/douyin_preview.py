@@ -1,10 +1,8 @@
-"""Browser-playable preview for downloaded Douyin videos.
+"""Make local video inputs and Douyin downloads browser-playable.
 
-Douyin high-quality sources are often HEVC/H.265, which desktop Chromium
-browsers without the HEVC extension cannot decode (black frames).  The media
-endpoint therefore serves an H.264 MP4 copy for inline <video> playback,
-generated once with ffmpeg and cached under DATA_DIR/douyin-web.  The
-original downloaded file is never modified and stays the download target.
+Upload previews use a temporary H.264 cache while preserving the pipeline's
+original input. Completed Douyin downloads are different: they are converted
+to H.264/AAC MP4 and atomically replace the downloaded source file.
 """
 
 from __future__ import annotations
@@ -34,6 +32,7 @@ _PREVIEW_SUFFIX = ".mp4"
 
 _tool_cache: dict[str, str | None] = {}
 _inflight: dict[Path, asyncio.Task] = {}
+_download_inflight: dict[Path, asyncio.Task] = {}
 _schedule_lock = asyncio.Lock()
 # Targets whose conversion failed; retried only after a cooldown so a broken
 # source does not trigger an endless encode loop from the background sweep.
@@ -94,9 +93,45 @@ def _probe_video_codec(path: Path) -> str | None:
     return str(codec) if codec else None
 
 
+def _probe_audio_codec(path: Path) -> str | None:
+    """Return the first audio stream codec, or None for silent/unreadable media."""
+    ffprobe = _tool("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            creationflags=_creation_flags(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        streams = json.loads(result.stdout).get("streams") or []
+    except json.JSONDecodeError:
+        return None
+    codec = streams[0].get("codec_name") if streams else None
+    return str(codec) if codec else None
+
+
 def _cache_target(aweme_id: str) -> Path:
     safe_id = re.sub(r"[^\w-]", "_", str(aweme_id))
     return WEB_CACHE_DIR / f"{safe_id}{_PREVIEW_SUFFIX}"
+
+
+def download_conversion_target(source: Path) -> Path:
+    """Final browser-playable path; non-MP4 downloads become MP4."""
+    return source if source.suffix.lower() == ".mp4" else source.with_suffix(".mp4")
 
 
 def _recently_failed(target: Path) -> bool:
@@ -191,12 +226,13 @@ def _encode_sync(ffmpeg: str, source: Path, target: Path) -> None:
 
 def _needs_conversion(source: Path) -> bool:
     """Decide (without side effects) whether a preview copy is required."""
-    if not _tools_available() or not source.is_file():
+    if not source.is_file():
         return False
     codec = _probe_video_codec(source)
     if codec is None:
         return False  # unreadable; serve as-is rather than blocking playback
-    return codec not in _BROWSER_SAFE_CODECS
+    container_safe = source.suffix.lower() in {".mp4", ".webm"}
+    return not container_safe or codec not in _BROWSER_SAFE_CODECS
 
 
 def schedule_web_preview(source: Path, aweme_id: str) -> None:
@@ -222,6 +258,59 @@ def schedule_web_preview(source: Path, aweme_id: str) -> None:
     task = loop.create_task(_convert_and_cache(ffmpeg, source, target))
     _inflight[target] = task
     task.add_done_callback(lambda done: _consume(task, target))
+
+
+def playable_download_path(source: Path) -> Path | None:
+    """Return the playable source, or None while an in-place conversion is needed."""
+    if not source.is_file():
+        return None
+    video_codec = _probe_video_codec(source)
+    audio_codec = _probe_audio_codec(source)
+    if source.suffix.lower() == ".mp4" and video_codec in {"h264", "avc1"} and audio_codec in {None, "aac"}:
+        return source
+    return None
+
+
+def _remove_legacy_cache(aweme_id: str) -> None:
+    if not aweme_id:
+        return
+    cached = _cache_target(aweme_id)
+    cached.unlink(missing_ok=True)
+    _sidecar(cached).unlink(missing_ok=True)
+
+
+def _promote_cached_preview_sync(source: Path, target: Path, cached: Path) -> None:
+    """Move an already verified cached H.264 preview over the download."""
+    cached.replace(target)
+    if source != target:
+        source.unlink(missing_ok=True)
+    _sidecar(cached).unlink(missing_ok=True)
+
+
+def schedule_download_playable(source: Path, aweme_id: str) -> None:
+    """Start replacing a completed download with a browser-playable H.264 MP4."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if playable_download_path(source) is not None:
+        return
+    target = download_conversion_target(source)
+    if target in _download_inflight:
+        return
+    task = loop.create_task(ensure_download_playable(source, aweme_id))
+    _download_inflight[target] = task
+    task.add_done_callback(lambda done: _consume_download(done, target))
+
+
+def _consume_download(task: asyncio.Task, target: Path) -> None:
+    _download_inflight.pop(target, None)
+    try:
+        error = task.exception()
+    except asyncio.CancelledError:
+        return
+    if error is not None:
+        logger.warning("抖音下载视频兼容转换失败: %s", error)
 
 
 def _consume(task: asyncio.Task, target: Path) -> None:
@@ -266,6 +355,40 @@ async def ensure_web_playable_at(source: Path, target: Path) -> Path:
 async def ensure_web_playable(source: Path, aweme_id: str) -> Path:
     """Douyin variant: cached under data/douyin-web keyed by aweme id."""
     return await ensure_web_playable_at(source, _cache_target(aweme_id))
+
+
+async def ensure_download_playable(source: Path, aweme_id: str) -> Path:
+    """Atomically replace a completed download with H.264/AAC MP4."""
+    ready = playable_download_path(source)
+    if ready is not None:
+        _remove_legacy_cache(aweme_id)
+        return ready
+    target = download_conversion_target(source)
+    pending = _download_inflight.get(target)
+    if pending is not None and pending is not asyncio.current_task():
+        return await pending
+    cached = _cache_target(aweme_id)
+    if aweme_id and _cache_matches(cached, source) and playable_download_path(cached) is not None:
+        await asyncio.to_thread(_promote_cached_preview_sync, source, target, cached)
+        return target
+    await asyncio.to_thread(_convert_download_sync, source, target)
+    _remove_legacy_cache(aweme_id)
+    return target
+
+
+def _convert_download_sync(source: Path, target: Path) -> None:
+    ffmpeg = _tool("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("未找到 ffmpeg，无法转换下载视频")
+    staging = target.with_name(f"{target.stem}.h3-converted.mp4")
+    try:
+        _encode_sync(ffmpeg, source, staging)
+        staging.replace(target)
+        if source != target:
+            source.unlink(missing_ok=True)
+    finally:
+        staging.unlink(missing_ok=True)
+        _sidecar(staging).unlink(missing_ok=True)
 
 
 async def _convert_and_cache(ffmpeg: str, source: Path, target: Path) -> Path:
