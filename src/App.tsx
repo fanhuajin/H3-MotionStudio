@@ -158,6 +158,16 @@ function MotionStudioRoute() {
   const [previewPreparing, setPreviewPreparing] = useState(false);
   const [previewConverting, setPreviewConverting] = useState(false);
   const previewTokenRef = useRef(0);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!lightboxImage) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLightboxImage(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxImage]);
   const [duration, setDuration] = useState<number | null>(null);
   const [actionPrompt, setActionPrompt] = useState("");
   const [cameraPrompt, setCameraPrompt] = useState("");
@@ -396,10 +406,15 @@ function MotionStudioRoute() {
                 <div className="source-label">人物参考图</div>
                 <input ref={imageInputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,.jpg,.jpeg" onChange={(event) => chooseImage(event.target.files?.[0] || null)} />
                 {(imagePreviewUrl || demoMode) ? (
-                  <button className="image-preview-button" onClick={() => imageInputRef.current?.click()} aria-label="更换人物参考图片">
-                    <img src={imagePreviewUrl || config.fixedReferenceUrl} alt="人物参考图预览" />
-                    <span>点击更换图片</span>
-                  </button>
+                  <div className="image-preview-wrap">
+                    <button className="image-preview-button" onClick={() => setLightboxImage(imagePreviewUrl || config.fixedReferenceUrl)} aria-label="放大预览人物参考图">
+                      <img src={imagePreviewUrl || config.fixedReferenceUrl} alt="人物参考图预览" />
+                      <span><Graph weight="fill" /> 点击放大</span>
+                    </button>
+                    <button className="image-swap" onClick={() => imageInputRef.current?.click()} aria-label="更换人物参考图片">
+                      <ArrowsClockwise weight="bold" /> 更换
+                    </button>
+                  </div>
                 ) : (
                   <button className="image-empty" onClick={() => imageInputRef.current?.click()}>
                     <UploadSimple /><strong>上传图片</strong><span>PNG / JPG / WebP</span>
@@ -532,6 +547,14 @@ function MotionStudioRoute() {
           </section>
         </section>
       </main>
+
+      {lightboxImage && (
+        <div className="lightbox" role="dialog" aria-modal="true" aria-label="参考图大图预览" onClick={() => setLightboxImage(null)}>
+          <button className="lightbox-close" onClick={() => setLightboxImage(null)} aria-label="关闭预览"><X weight="bold" /></button>
+          <img src={lightboxImage} alt="人物参考图大图" onClick={(event) => event.stopPropagation()} />
+          <p className="lightbox-hint" onClick={(event) => event.stopPropagation()}>人物参考图 · 点击空白处或按 Esc 关闭</p>
+        </div>
+      )}
     </div>
   );
 }
