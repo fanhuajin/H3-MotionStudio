@@ -28,6 +28,12 @@ class WorkflowPreparationTests(unittest.TestCase):
         missing = {name: str(path) for name, path in required_paths().items() if not path.is_file()}
         self.assertEqual(missing, {})
 
+    def test_upscale_uses_the_required_realesrgan_workflow(self) -> None:
+        self.assertEqual(
+            UPSCALE_WORKFLOW.name,
+            "视频-成片输入-独立二采-RealESRGAN4x转1080P-8GB高清加强版.json",
+        )
+
     def test_singing_inputs_are_replaced_without_touching_source_file(self) -> None:
         prepared = prepare_singing_workflow(
             "unit-source.mp4",

@@ -17,6 +17,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - The only editable generation inputs are one character reference image, one singing video, character action instructions, and camera instructions.
 - Progress must reflect real ComfyUI nodes and RVC subprocess stages, including exact errors.
 - The pipeline is strictly single-chain: ComfyUI generation and RealESRGAN finish first, ComfyUI then closes completely, RVC converts the voice, and the converted audio is muxed into the final MP4.
+- The 1080P second pass must use the ComfyUI workflow `视频-成片输入-独立二采-RealESRGAN4x转1080P-8GB高清加强版.json` and must wait for every VHS meta-batch requeue to finish before ComfyUI is closed.
 - The completed state must display the final video and preserve access to the original video.
 - Douyin downloads save to `D:\EV` by default (env `H3_DOUYIN_OUTPUT` overrides). The H3 backend starts the downloader service with `DOUYIN_PATH` set to the same directory so both sides agree.
 - The Douyin downloader service (separate Python process) must be memory-lean for ComfyUI: start it only on explicit user actions (submitting a download / login window), never from page reads; stop it automatically after 60 s of download inactivity (`IDLE_STOP_SECONDS`). An on-disk job mirror (`data/douyin-jobs.json`) keeps finished jobs listed and playable while the service is offline.

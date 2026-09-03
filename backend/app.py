@@ -34,7 +34,7 @@ from .douyin_service import (
     douyin_service,
     is_douyin_url,
 )
-from .pipeline import PipelineError, comfy_health, media_metadata, retry_voice, run_pipeline
+from .pipeline import PipelineError, comfy_health, media_metadata, retry_enhance, retry_voice, run_pipeline
 from .settings import (
     COMFY_INPUT,
     DATA_DIR,
@@ -283,6 +283,19 @@ async def retry_job_voice(job_id: str):
         raise HTTPException(400, "没有可用于音色转换的高清成片")
     spawn(retry_voice(job_id))
     return store.update(job_id, status="queued", stage="handoff")
+
+
+@app.post("/api/jobs/{job_id}/retry-enhance")
+async def retry_job_enhance(job_id: str):
+    state = store.get(job_id)
+    if not state:
+        raise HTTPException(404, "任务不存在")
+    if store.active() and store.active()["id"] != job_id:
+        raise HTTPException(409, "另一个任务正在运行")
+    if not state.get("originalReady"):
+        raise HTTPException(400, "没有可用于高清转换的原版成片")
+    spawn(retry_enhance(job_id))
+    return store.update(job_id, status="queued", stage="starting")
 
 
 @app.websocket("/api/jobs/{job_id}/ws")

@@ -274,6 +274,26 @@ def resolve_history_media(record: dict[str, Any], preferred_node: str) -> Path:
     raise PipelineError("没有找到工作流输出视频", f"历史记录中的候选输出：{json.dumps(candidates, ensure_ascii=False)}")
 
 
+async def _completed_history_media(prompt_id: str, preferred_node: str) -> Path | None:
+    """Return a finished prompt's media, or None for an unfinished VHS meta-batch."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(f"{COMFY_URL}/history/{prompt_id}")
+        response.raise_for_status()
+        history = response.json()
+    record = history.get(prompt_id)
+    if not record:
+        return None
+    status = record.get("status") or {}
+    if status.get("status_str") == "error":
+        raise PipelineError("ComfyUI 工作流执行失败", json.dumps(status, ensure_ascii=False, indent=2))
+    try:
+        return resolve_history_media(record, preferred_node)
+    except PipelineError as error:
+        if error.summary == "没有找到工作流输出视频":
+            return None
+        raise
+
+
 async def run_comfy_workflow(
     job_id: str,
     kind: str,
@@ -286,6 +306,9 @@ async def run_comfy_workflow(
     types = workflow_types(workflow)
     client_id = f"motionstudio-{job_id}-{kind}-{uuid.uuid4().hex[:8]}"
     websocket_url = f"{COMFY_WS}/ws?clientId={client_id}"
+    resolved_output: Path | None = None
+    seen_prompt_ids: list[str] = []
+    active_prompt_id = ""
 
     async with websockets.connect(websocket_url, max_size=64 * 1024 * 1024) as websocket:
         async with httpx.AsyncClient(timeout=120) as client:
@@ -298,6 +321,8 @@ async def run_comfy_workflow(
                     detail = response.text
                 raise PipelineError("ComfyUI 拒绝了工作流", detail)
             prompt_id = response.json()["prompt_id"]
+            seen_prompt_ids.append(prompt_id)
+            active_prompt_id = prompt_id
 
         store.add_log(job_id, f"工作流已进入 ComfyUI 队列：{prompt_id}")
         store.update(job_id, promptIds={**((store.get(job_id) or {}).get("promptIds") or {}), kind: prompt_id})
@@ -307,6 +332,14 @@ async def run_comfy_workflow(
             try:
                 raw = await asyncio.wait_for(websocket.recv(), timeout=30)
             except asyncio.TimeoutError:
+                if kind == "upscale":
+                    for candidate_prompt_id in reversed(seen_prompt_ids):
+                        resolved_output = await _completed_history_media(candidate_prompt_id, preferred_output_node)
+                        if resolved_output is not None:
+                            break
+                    if resolved_output is not None:
+                        break
+                    continue
                 async with httpx.AsyncClient(timeout=15) as client:
                     history_response = await client.get(f"{COMFY_URL}/history/{prompt_id}")
                     history = history_response.json()
@@ -322,16 +355,32 @@ async def run_comfy_workflow(
             message = json.loads(raw)
             event = message.get("type")
             data = message.get("data") or {}
-            if data.get("prompt_id") not in (None, prompt_id):
+            message_prompt_id = str(data.get("prompt_id") or "")
+            if kind != "upscale" and message_prompt_id not in ("", prompt_id):
                 continue
+            if kind == "upscale" and message_prompt_id:
+                active_prompt_id = message_prompt_id
+                if message_prompt_id not in seen_prompt_ids:
+                    seen_prompt_ids.append(message_prompt_id)
 
             if event == "executing":
                 node_id = data.get("node")
                 if node_id is None:
+                    if kind == "upscale":
+                        resolved_output = await _completed_history_media(
+                            active_prompt_id or prompt_id,
+                            preferred_output_node,
+                        )
+                        if resolved_output is not None:
+                            break
+                        continue
                     break
                 node_id = str(node_id)
                 title = titles.get(node_id, node_id)
-                milestone_id = singing_milestone(types.get(node_id, ""), title) if kind == "singing" else upscale_milestone(node_id)
+                # A VHS meta-batch cycles through every upscale node many times.
+                # Keep the whole second pass running until the final combined
+                # video exists; node 8 finishing one chunk is not the final HD file.
+                milestone_id = singing_milestone(types.get(node_id, ""), title) if kind == "singing" else "upscale"
                 active_milestone = milestone_id
                 _set_running_milestone(job_id, milestone_id, node_id, title)
             elif event == "progress":
@@ -361,22 +410,28 @@ async def run_comfy_workflow(
                 store.set_milestone(job_id, milestone_id, status="error", currentNode=title)
                 raise PipelineError(f"{title}：{summary}", detail)
             elif event in {"execution_success", "execution_complete"}:
+                if kind == "upscale":
+                    resolved_output = await _completed_history_media(
+                        active_prompt_id or prompt_id,
+                        preferred_output_node,
+                    )
+                    if resolved_output is not None:
+                        break
+                    continue
                 break
 
-    if kind == "singing":
-        for milestone_id in ("input", "h3", "stitch"):
-            store.set_milestone(job_id, milestone_id, status="completed", progress=100, currentNode=None)
-    else:
-        for milestone_id in ("upscale", "hd"):
-            store.set_milestone(job_id, milestone_id, status="completed", progress=100, currentNode=None)
+    if resolved_output is None:
+        resolved_output = await _completed_history_media(prompt_id, preferred_output_node)
+    if resolved_output is None:
+        raise PipelineError(
+            "没有找到工作流输出视频",
+            f"已检查的 Prompt ID：{', '.join(seen_prompt_ids)}",
+        )
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(f"{COMFY_URL}/history/{prompt_id}")
-        response.raise_for_status()
-        history = response.json()
-    if prompt_id not in history:
-        raise PipelineError("ComfyUI 没有返回历史记录", f"Prompt ID: {prompt_id}")
-    return resolve_history_media(history[prompt_id], preferred_output_node)
+    completed_milestones = ("input", "h3", "stitch") if kind == "singing" else ("upscale", "hd")
+    for milestone_id in completed_milestones:
+        store.set_milestone(job_id, milestone_id, status="completed", progress=100, currentNode=None)
+    return resolved_output
 
 
 def link_into_input(source: Path, job_id: str) -> Path:
@@ -487,6 +542,33 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
     return expected.resolve()
 
 
+async def _run_enhance_and_voice(job_id: str, original: Path) -> None:
+    linked = await asyncio.to_thread(link_into_input, original, job_id)
+    upscale = prepare_upscale_workflow(
+        linked.name,
+        f"video/H3_MotionStudio/{job_id}_1080P",
+        UPSCALE_WORKFLOW,
+    )
+    store.update(job_id, stage="enhancing")
+    enhanced = await run_comfy_workflow(job_id, "upscale", upscale, "8")
+    store.update(job_id, enhancedOutput=str(enhanced), enhancedReady=True)
+    store.add_log(job_id, f"高清加强成片已保存：{enhanced.name}")
+
+    await resources.stop_comfy(job_id)
+    final = await run_rvc(job_id, enhanced)
+    store.update(
+        job_id,
+        status="completed",
+        stage="completed",
+        finalOutput=str(final),
+        finalReady=True,
+        currentNodeId=None,
+        currentNodeTitle=None,
+        progress=100,
+        output=await media_metadata(final),
+    )
+
+
 async def run_pipeline(job_id: str) -> None:
     async with pipeline_lock:
         state = store.get(job_id)
@@ -509,31 +591,7 @@ async def run_pipeline(job_id: str) -> None:
             store.update(job_id, originalOutput=str(original), originalReady=True)
             store.add_log(job_id, f"原版成片已保存：{original.name}")
 
-            linked = await asyncio.to_thread(link_into_input, original, job_id)
-            upscale = prepare_upscale_workflow(
-                linked.name,
-                f"video/H3_MotionStudio/{job_id}_1080P",
-                UPSCALE_WORKFLOW,
-            )
-            store.update(job_id, stage="enhancing")
-            enhanced = await run_comfy_workflow(job_id, "upscale", upscale, "8")
-            store.update(job_id, enhancedOutput=str(enhanced), enhancedReady=True)
-            store.add_log(job_id, f"高清加强成片已保存：{enhanced.name}")
-
-            await resources.stop_comfy(job_id)
-            final = await run_rvc(job_id, enhanced)
-            metadata = await media_metadata(final)
-            store.update(
-                job_id,
-                status="completed",
-                stage="completed",
-                finalOutput=str(final),
-                finalReady=True,
-                currentNodeId=None,
-                currentNodeTitle=None,
-                progress=100,
-                output=metadata,
-            )
+            await _run_enhance_and_voice(job_id, original)
         except Exception as error:
             if isinstance(error, PipelineError):
                 summary, detail = error.summary, error.detail
@@ -542,6 +600,56 @@ async def run_pipeline(job_id: str) -> None:
             store.add_log(job_id, f"错误：{summary}")
             failed_state = store.get(job_id) or {}
             running = next((item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"), None)
+            if running:
+                store.set_milestone(job_id, running, status="error")
+            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)
+            try:
+                if await comfy_health():
+                    await resources.stop_comfy(job_id)
+            except Exception as stop_error:
+                store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
+
+
+async def retry_enhance(job_id: str) -> None:
+    """Resume a failed job from its preserved original video."""
+    async with pipeline_lock:
+        state = store.get(job_id)
+        if not state or not state.get("originalOutput"):
+            raise PipelineError("没有可用于高清转换的原版成片")
+        original = Path(state["originalOutput"])
+        if not original.is_file():
+            raise PipelineError("原版成片文件不存在", str(original))
+
+        store.update(
+            job_id,
+            status="running",
+            stage="starting",
+            errorSummary=None,
+            errorDetail=None,
+            enhancedReady=False,
+            finalReady=False,
+            enhancedOutput=None,
+            finalOutput=None,
+            output=None,
+        )
+        for milestone in ("upscale", "hd", "handoff", "stems", "voice", "mux"):
+            store.set_milestone(job_id, milestone, status="pending", progress=None, currentNode=None)
+        store.add_log(job_id, "从已保留的原版成片重新开始 1080P 高清转换。")
+
+        try:
+            await resources.ensure_comfy(job_id)
+            await _run_enhance_and_voice(job_id, original)
+        except Exception as error:
+            if isinstance(error, PipelineError):
+                summary, detail = error.summary, error.detail
+            else:
+                summary, detail = "高清转换重试失败", repr(error)
+            store.add_log(job_id, f"错误：{summary}")
+            failed_state = store.get(job_id) or {}
+            running = next(
+                (item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"),
+                None,
+            )
             if running:
                 store.set_milestone(job_id, running, status="error")
             store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)

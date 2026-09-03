@@ -533,6 +533,19 @@ function MotionStudioRoute() {
     connectJob(job.id);
   };
 
+  const retryEnhance = async () => {
+    if (!job) return;
+    setLocalError(null);
+    const response = await fetch(`/api/jobs/${job.id}/retry-enhance`, { method: "POST" });
+    const payload = await response.json();
+    if (!response.ok) {
+      setLocalError(payload.detail || "无法重新进行 1080P 高清转换");
+      return;
+    }
+    setJob(payload);
+    connectJob(job.id);
+  };
+
   const completionTime = useMemo(() => {
     const value = job?.output?.completedAt;
     if (!value) return "--";
@@ -679,6 +692,7 @@ function MotionStudioRoute() {
                   </dl>
                   {job.finalReady && <a className="result-button primary" href={`/api/jobs/${job.id}/media/final?download=1`}><DownloadSimple /> 下载最终成片</a>}
                   {job.originalReady && <a className="result-button" href={`/api/jobs/${job.id}/media/original`} target="_blank" rel="noreferrer"><Eye /> 查看原版</a>}
+                  {job.status === "failed" && job.originalReady && !job.enhancedReady && <button className="result-button" onClick={retryEnhance} disabled={isBusy}><ArrowsClockwise /> 重新转换 1080P</button>}
                   {job.enhancedReady && <button className="result-button" onClick={retryVoice} disabled={isBusy}><ArrowsClockwise /> 重新音色转换</button>}
                 </div>
               </div>
