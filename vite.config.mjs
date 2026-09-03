@@ -13,7 +13,7 @@ export default defineConfig({
     allowedHosts: ["terminal.local", "localhost", "127.0.0.1"],
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8011",
+        target: "http://127.0.0.1:8111",
         ws: true,
       },
     },

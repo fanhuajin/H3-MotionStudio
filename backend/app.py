@@ -11,7 +11,9 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
+from .douyin_service import DouyinServiceError, douyin_service, is_douyin_url
 from .pipeline import PipelineError, comfy_health, media_metadata, retry_voice, run_pipeline
 from .settings import (
     COMFY_INPUT,
@@ -54,10 +56,17 @@ async def lifespan(_: FastAPI):
             errorSummary="本地服务曾在任务运行时重启",
             errorDetail="任务状态已保留。请根据已生成的中间成片重新提交或重试音色转换。",
         )
-    yield
+    try:
+        yield
+    finally:
+        await douyin_service.stop()
 
 
 app = FastAPI(title="H3 MotionStudio", version="0.1.0", lifespan=lifespan)
+
+
+class DouyinDownloadRequest(BaseModel):
+    url: str
 
 
 @app.get("/api/config")
@@ -234,6 +243,74 @@ async def job_media(job_id: str, kind: str, download: bool = Query(False)):
     return FileResponse(path, media_type=media_type, filename=filename)
 
 
+@app.get("/api/douyin/status")
+async def douyin_status():
+    return await douyin_service.status()
+
+
+@app.post("/api/douyin/download")
+async def douyin_download(request: DouyinDownloadRequest):
+    url = request.url.strip()
+    if not url:
+        raise HTTPException(400, "请输入抖音作品链接")
+    if not is_douyin_url(url):
+        raise HTTPException(400, "当前只支持抖音链接")
+    try:
+        return await douyin_service.submit(url)
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/douyin/jobs")
+async def douyin_jobs():
+    try:
+        return await douyin_service.jobs()
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/api/douyin/jobs/{job_id}")
+async def douyin_job(job_id: str):
+    try:
+        job = await douyin_service.job(job_id)
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    result = douyin_service.result_for(job)
+    return {
+        **job,
+        "result": (
+            {
+                **result,
+                "mediaUrl": f"/api/douyin/jobs/{job_id}/media",
+                "downloadUrl": f"/api/douyin/jobs/{job_id}/media?download=1",
+            }
+            if result
+            else None
+        ),
+    }
+
+
+@app.get("/api/douyin/jobs/{job_id}/media")
+async def douyin_job_media(job_id: str, download: bool = Query(False)):
+    try:
+        job = await douyin_service.job(job_id)
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    result = douyin_service.result_for(job)
+    if not result:
+        raise HTTPException(404, "下载文件尚未生成")
+    path = Path(result["path"])
+    return FileResponse(
+        path,
+        media_type=result["mediaType"],
+        filename=path.name if download else None,
+    )
+
+
 dist_dir = PROJECT_ROOT / "dist" / "client"
 if dist_dir.is_dir():
+    @app.get("/douyin", include_in_schema=False)
+    async def douyin_frontend():
+        return FileResponse(dist_dir / "index.html")
+
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")

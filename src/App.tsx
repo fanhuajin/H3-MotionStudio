@@ -19,6 +19,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { DouyinRoute } from "./DouyinRoute";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
 
 const EMPTY_MILESTONES: Milestone[] = [
@@ -144,7 +145,7 @@ function PipelineRow({ step, index }: { step: Milestone; index: number }) {
   );
 }
 
-export function App() {
+function MotionStudioRoute() {
   const demoMode = new URLSearchParams(window.location.search).get("demo") === "complete";
   const inputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -324,19 +325,14 @@ export function App() {
   }, [job?.output?.completedAt]);
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">H3</span>
-          <strong>H3 影动高清工作台</strong>
-          <span className="brand-divider" />
-          <span>本地 ComfyUI 视频创作工具</span>
+    <div className="motion-route">
+      <header className="route-hero motion-hero">
+        <div>
+          <p className="route-eyebrow"><span /> H3 · MOTION STUDIO</p>
+          <h1>让演唱视频，<em>动起来。</em></h1>
+          <p className="route-description">人物参考、演唱视频、动作和运镜，一条链路完成高清成片与音色转换。</p>
         </div>
-        <div className="topbar-actions">
-          <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
-          <button className="icon-button" aria-label="设置"><GearSix /></button>
-          <button className="icon-button" aria-label="帮助"><Question /></button>
-        </div>
+        <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
       </header>
 
       <main className="workspace">
@@ -478,6 +474,72 @@ export function App() {
           </section>
         </section>
       </main>
+    </div>
+  );
+}
+
+export function App() {
+  const isDouyinRoute = window.location.pathname.replace(/\/+$/, "") === "/douyin";
+
+  return (
+    <div className="desktop-app-shell">
+      <aside className="app-sidebar">
+        <div className="sidebar-top">
+          <p className="sidebar-kicker">DESKTOP</p>
+          <a className="sidebar-brand" href="/" aria-label="H3 MotionStudio 首页">
+            <span className="brand-mark">H3</span>
+            <strong>MotionStudio</strong>
+          </a>
+        </div>
+
+        <nav className="sidebar-navigation" aria-label="工作台导航">
+          <p className="sidebar-section-label">工作台</p>
+          <div className="route-switcher">
+            <a className={!isDouyinRoute ? "active" : ""} href="/">
+              <FilmSlate weight={isDouyinRoute ? "regular" : "fill"} />
+              <span>影动生成</span>
+            </a>
+            <a className={isDouyinRoute ? "active" : ""} href="/douyin">
+              <DownloadSimple weight={isDouyinRoute ? "fill" : "regular"} />
+              <span>抖音下载</span>
+            </a>
+          </div>
+          <p className="route-caption">生成 · 下载 · 本地管理</p>
+
+          <p className="sidebar-section-label">创作与管理</p>
+          <a className={!isDouyinRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
+            <Play weight="fill" />
+            <span>高清工作台</span>
+            {!isDouyinRoute && <i />}
+          </a>
+          <a className={isDouyinRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/douyin">
+            <DownloadSimple />
+            <span>链接下载</span>
+            {isDouyinRoute && <i />}
+          </a>
+          <div className="sidebar-nav-item muted" aria-disabled="true">
+            <Graph />
+            <span>任务中心</span>
+          </div>
+        </nav>
+
+        <div className="sidebar-system">
+          <p className="sidebar-section-label">系统</p>
+          <div className="sidebar-system-actions">
+            <button><GearSix /> 设置</button>
+            <button><Question /> 帮助</button>
+          </div>
+          <div className="sidebar-runtime">
+            <span className="runtime-icon"><Circle weight="fill" /></span>
+            <div><strong>本地服务</strong><small>按需运行</small></div>
+          </div>
+          <footer>H3 MOTIONSTUDIO <span>V0.2.0</span></footer>
+        </div>
+      </aside>
+
+      <div className="route-stage">
+        {isDouyinRoute ? <DouyinRoute /> : <MotionStudioRoute />}
+      </div>
     </div>
   );
 }

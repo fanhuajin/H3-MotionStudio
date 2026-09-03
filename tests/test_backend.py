@@ -1,6 +1,14 @@
 from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
+from backend.douyin_service import (
+    DouyinServiceManager,
+    _cookie_ready,
+    _extract_aweme_id,
+    is_douyin_url,
+)
 from backend.settings import SINGING_WORKFLOW, UPSCALE_WORKFLOW, required_paths
 from backend.store import format_elapsed
 from backend.workflows import (
@@ -44,6 +52,49 @@ class WorkflowPreparationTests(unittest.TestCase):
             node_by_id(prepared, 8)["widgets_values"]["filename_prefix"],
             "video/H3_MotionStudio/unit-1080P",
         )
+
+
+class DouyinServiceTests(unittest.TestCase):
+    def test_aweme_id_supports_video_and_profile_modal_urls(self) -> None:
+        self.assertEqual(
+            _extract_aweme_id("https://www.douyin.com/video/7613347091070692019"),
+            "7613347091070692019",
+        )
+
+    def test_douyin_url_validation_accepts_share_text_but_not_embedded_domains(self) -> None:
+        self.assertTrue(is_douyin_url("复制打开 https://v.douyin.com/unit-test/ 看视频"))
+        self.assertTrue(is_douyin_url("https://www.iesdouyin.com/share/video/123"))
+        self.assertFalse(is_douyin_url("https://example.com/?next=douyin.com"))
+        self.assertEqual(
+            _extract_aweme_id("https://www.douyin.com/user/self?modal_id=7613347091070692019"),
+            "7613347091070692019",
+        )
+
+    def test_cookie_ready_requires_non_empty_json_cookie_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch("backend.douyin_service.DOUYIN_ROOT", root):
+                self.assertFalse(_cookie_ready())
+                (root / ".cookies.json").write_text("{}", encoding="utf-8")
+                self.assertFalse(_cookie_ready())
+                (root / ".cookies.json").write_text(
+                    '{"sessionid": "unit-session"}', encoding="utf-8"
+                )
+                self.assertTrue(_cookie_ready())
+
+    def test_result_for_returns_matching_downloaded_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir)
+            video = output / "creator" / "作品_7613347091070692019.mp4"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"video")
+            with patch("backend.douyin_service.DOUYIN_OUTPUT", output):
+                result = DouyinServiceManager().result_for(
+                    {"url": "https://www.douyin.com/video/7613347091070692019"}
+                )
+            self.assertIsNotNone(result)
+            self.assertEqual(result["awemeId"], "7613347091070692019")
+            self.assertEqual(result["filename"], video.name)
 
 
 if __name__ == "__main__":

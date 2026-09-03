@@ -11,6 +11,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 ## Product decisions
 
 - The selected visual source is `design/reference-ui.png`.
+- The global shell and all route styling must follow `design/douzy-shell-reference.png`: fixed left navigation, deep indigo canvas, cyan active accents, low-contrast violet borders, restrained density, and generous empty space.
+- The H3 generation workspace remains the `/` route; Douyin download is a separate `/douyin` route inside the same shell.
 - This is a local desktop-style workspace, not a marketing site.
 - The only editable generation inputs are one character reference image, one singing video, character action instructions, and camera instructions.
 - Progress must reflect real ComfyUI nodes and RVC subprocess stages, including exact errors.

@@ -15,7 +15,7 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 npm run build
 
 $backend = Start-Process -FilePath $venvPython `
-    -ArgumentList @('-m', 'uvicorn', 'backend.app:app', '--host', '127.0.0.1', '--port', '8011') `
+    -ArgumentList @('-m', 'uvicorn', 'backend.app:app', '--host', '127.0.0.1', '--port', '8111') `
     -WorkingDirectory $projectRoot `
     -WindowStyle Hidden `
     -PassThru
@@ -24,7 +24,7 @@ try {
     $ready = $false
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         try {
-            $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:8011/api/config'
+            $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:8111/api/config'
             $ready = $true
             break
         } catch {
@@ -34,11 +34,10 @@ try {
     if (-not $ready) {
         throw 'H3 MotionStudio 本地服务启动失败。'
     }
-    Start-Process 'http://127.0.0.1:8011'
+    Start-Process 'http://127.0.0.1:8111'
     Wait-Process -Id $backend.Id
 } finally {
     if (-not $backend.HasExited) {
         Stop-Process -Id $backend.Id -Force
     }
 }
-

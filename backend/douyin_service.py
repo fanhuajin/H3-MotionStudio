@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import mimetypes
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+
+from .settings import DATA_DIR
+
+
+DOUYIN_ROOT = Path(
+    os.getenv("H3_DOUYIN_DOWNLOADER_ROOT", r"D:\project\douyin-downloader")
+).resolve()
+DOUYIN_URL = os.getenv("H3_DOUYIN_DOWNLOADER_URL", "http://127.0.0.1:9000").rstrip("/")
+DOUYIN_OUTPUT = Path(
+    os.getenv("H3_DOUYIN_OUTPUT", str(DOUYIN_ROOT / "Downloaded"))
+).resolve()
+DOUYIN_PYTHON = DOUYIN_ROOT / ".venv" / "Scripts" / "python.exe"
+DOUYIN_RUN = DOUYIN_ROOT / "run.py"
+DOUYIN_LOG = DATA_DIR / "douyin-downloader.log"
+
+
+class DouyinServiceError(RuntimeError):
+    pass
+
+
+def _creation_flags() -> int:
+    return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+
+def _cookie_ready() -> bool:
+    for path in (
+        DOUYIN_ROOT / ".cookies.json",
+        DOUYIN_ROOT / "config" / "cookies.json",
+    ):
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and any(str(value).strip() for value in payload.values()):
+            return True
+        if isinstance(payload, list) and payload:
+            return True
+    return False
+
+
+def _extract_aweme_id(url: str) -> str | None:
+    match = re.search(r"/(?:video|note|gallery|slides)/(\d+)", url)
+    if match:
+        return match.group(1)
+    match = re.search(r"[?&]modal_id=(\d+)", url)
+    return match.group(1) if match else None
+
+
+def is_douyin_url(value: str) -> bool:
+    return bool(
+        re.search(
+            r"https?://(?:[\w-]+\.)*(?:douyin\.com|iesdouyin\.com)(?=[/:?#]|$)",
+            value,
+            re.IGNORECASE,
+        )
+    )
+
+
+class DouyinServiceManager:
+    def __init__(self) -> None:
+        self.process: subprocess.Popen | None = None
+        self.log_handle = None
+        self.lock = asyncio.Lock()
+
+    async def healthy(self) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=2.5) as client:
+                response = await client.get(f"{DOUYIN_URL}/api/v1/health")
+                return response.status_code == 200 and response.json().get("status") == "ok"
+        except (httpx.HTTPError, ValueError):
+            return False
+
+    async def ensure_running(self) -> None:
+        if await self.healthy():
+            return
+        async with self.lock:
+            if await self.healthy():
+                return
+            if not DOUYIN_PYTHON.is_file() or not DOUYIN_RUN.is_file():
+                raise DouyinServiceError(
+                    f"未找到抖音下载服务，请确认项目位于 {DOUYIN_ROOT}"
+                )
+            DOUYIN_LOG.parent.mkdir(parents=True, exist_ok=True)
+            self.log_handle = DOUYIN_LOG.open("a", encoding="utf-8")
+            parsed_url = urlparse(DOUYIN_URL)
+            service_host = parsed_url.hostname or "127.0.0.1"
+            service_port = str(parsed_url.port or 9000)
+            self.process = subprocess.Popen(
+                [
+                    str(DOUYIN_PYTHON),
+                    str(DOUYIN_RUN),
+                    "--serve",
+                    "--serve-host",
+                    service_host,
+                    "--serve-port",
+                    service_port,
+                ],
+                cwd=str(DOUYIN_ROOT),
+                stdout=self.log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=_creation_flags(),
+            )
+            for _ in range(40):
+                if self.process.poll() is not None:
+                    raise DouyinServiceError(
+                        f"抖音下载服务启动失败，退出码 {self.process.returncode}"
+                    )
+                if await self.healthy():
+                    return
+                await asyncio.sleep(0.5)
+            raise DouyinServiceError("抖音下载服务启动超时")
+
+    async def stop(self) -> None:
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                await asyncio.wait_for(asyncio.to_thread(self.process.wait), timeout=8)
+            except asyncio.TimeoutError:
+                self.process.kill()
+                await asyncio.to_thread(self.process.wait)
+        if self.log_handle:
+            self.log_handle.close()
+        self.process = None
+        self.log_handle = None
+
+    async def status(self) -> dict[str, Any]:
+        available = DOUYIN_PYTHON.is_file() and DOUYIN_RUN.is_file()
+        connected = await self.healthy()
+        return {
+            "available": available,
+            "connected": connected,
+            "cookieReady": _cookie_ready(),
+            "serviceUrl": DOUYIN_URL,
+            "outputDirectory": str(DOUYIN_OUTPUT),
+            "message": (
+                "下载服务已连接"
+                if connected
+                else "下载服务将在首次任务时自动启动"
+                if available
+                else "未找到抖音下载服务"
+            ),
+        }
+
+    async def _request(
+        self, method: str, path: str, *, json: dict[str, Any] | None = None
+    ) -> Any:
+        await self.ensure_running()
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.request(method, f"{DOUYIN_URL}{path}", json=json)
+        except httpx.HTTPError as exc:
+            raise DouyinServiceError(f"无法连接抖音下载服务：{exc}") from exc
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail")
+            except ValueError:
+                detail = response.text
+            raise DouyinServiceError(detail or f"下载服务返回 HTTP {response.status_code}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise DouyinServiceError("下载服务返回了无法识别的数据") from exc
+
+    async def submit(self, url: str) -> dict[str, Any]:
+        return await self._request("POST", "/api/v1/download", json={"url": url})
+
+    async def job(self, job_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/v1/jobs/{job_id}")
+
+    async def jobs(self) -> dict[str, Any]:
+        return await self._request("GET", "/api/v1/jobs")
+
+    def result_for(self, job: dict[str, Any]) -> dict[str, Any] | None:
+        aweme_id = _extract_aweme_id(str(job.get("url") or ""))
+        if not aweme_id or not DOUYIN_OUTPUT.is_dir():
+            return None
+        candidates = [
+            path
+            for path in DOUYIN_OUTPUT.rglob(f"*{aweme_id}*")
+            if path.is_file() and path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}
+        ]
+        if not candidates:
+            return None
+        path = max(candidates, key=lambda item: item.stat().st_mtime).resolve()
+        try:
+            path.relative_to(DOUYIN_OUTPUT)
+        except ValueError:
+            return None
+        return {
+            "awemeId": aweme_id,
+            "filename": path.name,
+            "path": str(path),
+            "size": path.stat().st_size,
+            "mediaType": mimetypes.guess_type(path.name)[0] or "video/mp4",
+        }
+
+
+douyin_service = DouyinServiceManager()
