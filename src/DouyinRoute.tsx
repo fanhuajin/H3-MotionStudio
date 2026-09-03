@@ -30,6 +30,15 @@ type DouyinResult = {
   downloadUrl: string;
 };
 
+type DouyinLoginStatus = {
+  state: "idle" | "opening" | "waiting" | "completed" | "error";
+  message: string;
+  error?: string | null;
+  cookieReady: boolean;
+  cookieCount: number;
+  missing: string[];
+};
+
 type DouyinJob = {
   job_id: string;
   url: string;
@@ -90,6 +99,8 @@ export function DouyinRoute() {
   const [service, setService] = useState<DouyinServiceStatus | null>(null);
   const [jobs, setJobs] = useState<DouyinJob[]>([]);
   const [activeJob, setActiveJob] = useState<DouyinJob | null>(null);
+  const [login, setLogin] = useState<DouyinLoginStatus | null>(null);
+  const [loginBusy, setLoginBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,6 +133,19 @@ export function DouyinRoute() {
     }
   }, [activeJob]);
 
+  const loadLoginStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/douyin/login/status");
+      if (!response.ok) return null;
+      const nextLogin = await response.json() as DouyinLoginStatus;
+      setLogin(nextLogin);
+      if (nextLogin.cookieReady) await loadStatus();
+      return nextLogin;
+    } catch {
+      return null;
+    }
+  }, [loadStatus]);
+
   const loadJob = useCallback(async (jobId: string) => {
     const response = await fetch(`/api/douyin/jobs/${jobId}`);
     const payload = await response.json();
@@ -138,7 +162,14 @@ export function DouyinRoute() {
   useEffect(() => {
     void loadStatus();
     void loadJobs();
-  }, [loadJobs, loadStatus]);
+    void loadLoginStatus();
+  }, [loadJobs, loadLoginStatus, loadStatus]);
+
+  useEffect(() => {
+    if (!login || !["opening", "waiting"].includes(login.state)) return;
+    const timer = window.setInterval(() => { void loadLoginStatus(); }, 1500);
+    return () => window.clearInterval(timer);
+  }, [loadLoginStatus, login?.state]);
 
   useEffect(() => {
     if (!activeJob || !["pending", "running"].includes(activeJob.status)) return;
@@ -181,7 +212,27 @@ export function DouyinRoute() {
     }
   };
 
+  const loginRequest = async (path: "start" | "finish" | "cancel") => {
+    setLoginBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/douyin/login/${path}`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "登录操作失败");
+      const nextLogin = payload as DouyinLoginStatus;
+      setLogin(nextLogin);
+      if (nextLogin.cookieReady) await loadStatus();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "登录操作失败");
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
   const isBusy = submitting || activeJob?.status === "pending" || activeJob?.status === "running";
+  const loginActive = login?.state === "opening" || login?.state === "waiting";
+  const taskError = activeJob?.status === "failed" ? activeJob.error : null;
+  const visibleError = error || taskError || (login?.state === "error" ? login.error || login.message : null);
 
   return (
     <main className="douyin-route">
@@ -219,13 +270,28 @@ export function DouyinRoute() {
         </div>
       </section>
 
-      {(error || (service && !service.connected) || (service && !service.cookieReady)) && (
-        <section className={`service-notice ${error ? "error" : ""}`} role={error ? "alert" : undefined}>
-          {error ? <WarningCircle weight="fill" /> : <ShieldNotice />}
-          <div>
-            <strong>{error ? "任务需要处理" : service?.connected ? "登录状态尚未接入" : service?.message}</strong>
-            <span>{error || (service?.connected ? "下载服务已连接；遇到抖音风控时，需要在本机配置登录 Cookie。" : "首次提交任务时会尝试自动启动下载服务。")}</span>
+      {(visibleError || (service && !service.connected) || (service && !service.cookieReady)) && (
+        <section className={`service-notice ${visibleError ? "error" : ""}`} role={visibleError ? "alert" : undefined}>
+          {visibleError ? <WarningCircle weight="fill" /> : <ShieldNotice />}
+          <div className="service-notice-copy">
+            <strong>{visibleError ? "任务需要处理" : loginActive ? "等待抖音登录" : service?.connected ? "需要登录抖音" : service?.message}</strong>
+            <span>{visibleError || (loginActive ? login?.message : service?.connected ? "打开独立登录窗口，完成登录后 Cookie 会自动保存到本机。" : "首次提交任务时会尝试自动启动下载服务。")}</span>
+            {login?.state === "waiting" && login.missing.length > 0 && (
+              <small>正在等待：{login.missing.join("、")}</small>
+            )}
           </div>
+          {service?.connected && !service.cookieReady && (
+            <div className="login-actions">
+              {loginActive ? (
+                <>
+                  <button className="login-primary" disabled={loginBusy} onClick={() => void loginRequest("finish")}>我已完成登录</button>
+                  <button disabled={loginBusy} onClick={() => void loginRequest("cancel")}>取消</button>
+                </>
+              ) : (
+                <button className="login-primary" disabled={loginBusy} onClick={() => void loginRequest("start")}>{loginBusy ? "正在打开" : "打开登录窗口"}</button>
+              )}
+            </div>
+          )}
         </section>
       )}
 
@@ -264,7 +330,7 @@ export function DouyinRoute() {
                   <strong>抖音作品 {job.url.match(/(?:modal_id=|\/video\/)(\d+)/)?.[1] || job.job_id}</strong>
                   <small>{job.url}</small>
                 </span>
-                <span className="job-counts">{job.success ? `成功 ${job.success}` : job.failed ? `失败 ${job.failed}` : "等待结果"}</span>
+                <span className="job-counts">{job.success ? `成功 ${job.success}` : job.failed ? `失败 ${job.failed}` : job.skipped ? `本机已有 ${job.skipped}` : "等待结果"}</span>
                 <span className="job-state">{statusText(job)}</span>
                 <time>{relativeTime(job.finished_at || job.created_at)}</time>
                 <ArrowSquareOut />

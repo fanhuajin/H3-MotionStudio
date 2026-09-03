@@ -501,10 +501,25 @@ body {
 }
 .service-notice.error { color: #ffc1cc; border-color: #733247; background: #1b0d20; }
 .service-notice > svg { width: 19px; height: 19px; flex: 0 0 auto; }
-.service-notice div { display: flex; flex-direction: column; gap: 3px; }
+.service-notice-copy { min-width: 0; display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; }
 .service-notice strong { font-size: 12px; }
 .service-notice span { color: #7f758f; font-size: 10px; }
 .service-notice.error span { color: #c68795; }
+.service-notice small { color: #746b86; font-size: 9px; }
+.login-actions { margin-left: auto; display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
+.login-actions button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid #403554;
+  border-radius: 7px;
+  color: #aaa0b8;
+  background: #0b0820;
+  font-size: 10px;
+  cursor: pointer;
+}
+.login-actions button:hover:not(:disabled) { color: #f0ebf5; border-color: #5b476f; }
+.login-actions button.login-primary { color: #071116; border-color: var(--shell-accent); background: var(--shell-accent); font-weight: 700; }
+.login-actions button:disabled { opacity: .55; cursor: wait; }
 
 .download-result-card {
   margin-top: 18px;
@@ -621,6 +636,8 @@ body {
   .hero-icon { display: none; }
   .download-form { grid-template-columns: 1fr; }
   .download-action { width: 100%; }
+  .service-notice { flex-wrap: wrap; }
+  .login-actions { width: 100%; margin-left: 29px; }
   .download-result-card { grid-template-columns: 1fr; }
   .job-row { grid-template-columns: 32px minmax(0, 1fr) 62px 18px; }
   .job-counts, .job-row time { display: none; }

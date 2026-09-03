@@ -49,9 +49,11 @@ Date: 2026-09-03
 - Invalid URL validation and accessible error alert: passed.
 - Valid Douyin URL recognition state: passed.
 - Downloader status and job-list loading: passed.
+- Browser login launch, waiting, automatic Cookie save, and ready states: passed.
+- Real download using the supplied `modal_id` link: passed; MP4 preview and local-download action rendered.
 - Browser console errors: none.
 - TypeScript typecheck: passed.
-- Backend tests: 8 passed.
+- Backend tests: 9 passed.
 - Production build and Sites packaging tests: passed.
 
 ## Implementation checklist

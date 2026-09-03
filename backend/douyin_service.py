@@ -142,10 +142,19 @@ class DouyinServiceManager:
     async def status(self) -> dict[str, Any]:
         available = DOUYIN_PYTHON.is_file() and DOUYIN_RUN.is_file()
         connected = await self.healthy()
+        cookie_ready = _cookie_ready()
+        if connected:
+            try:
+                async with httpx.AsyncClient(timeout=3) as client:
+                    response = await client.get(f"{DOUYIN_URL}/api/v1/auth/status")
+                if response.status_code == 200:
+                    cookie_ready = bool(response.json().get("cookieReady"))
+            except (httpx.HTTPError, ValueError):
+                pass
         return {
             "available": available,
             "connected": connected,
-            "cookieReady": _cookie_ready(),
+            "cookieReady": cookie_ready,
             "serviceUrl": DOUYIN_URL,
             "outputDirectory": str(DOUYIN_OUTPUT),
             "message": (
@@ -158,11 +167,16 @@ class DouyinServiceManager:
         }
 
     async def _request(
-        self, method: str, path: str, *, json: dict[str, Any] | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        json: dict[str, Any] | None = None,
+        timeout: float = 20,
     ) -> Any:
         await self.ensure_running()
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.request(method, f"{DOUYIN_URL}{path}", json=json)
         except httpx.HTTPError as exc:
             raise DouyinServiceError(f"无法连接抖音下载服务：{exc}") from exc
@@ -185,6 +199,18 @@ class DouyinServiceManager:
 
     async def jobs(self) -> dict[str, Any]:
         return await self._request("GET", "/api/v1/jobs")
+
+    async def auth_status(self) -> dict[str, Any]:
+        return await self._request("GET", "/api/v1/auth/status", timeout=5)
+
+    async def start_login(self) -> dict[str, Any]:
+        return await self._request("POST", "/api/v1/auth/login/start", timeout=45)
+
+    async def finish_login(self) -> dict[str, Any]:
+        return await self._request("POST", "/api/v1/auth/login/finish", timeout=10)
+
+    async def cancel_login(self) -> dict[str, Any]:
+        return await self._request("POST", "/api/v1/auth/login/cancel", timeout=10)
 
     def result_for(self, job: dict[str, Any]) -> dict[str, Any] | None:
         aweme_id = _extract_aweme_id(str(job.get("url") or ""))

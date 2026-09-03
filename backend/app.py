@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .douyin_preview import ensure_web_playable, schedule_web_preview
 from .douyin_service import DouyinServiceError, douyin_service, is_douyin_url
 from .pipeline import PipelineError, comfy_health, media_metadata, retry_voice, run_pipeline
 from .settings import (
@@ -36,6 +37,32 @@ def spawn(coroutine) -> None:
     task.add_done_callback(running_tasks.discard)
 
 
+async def _douyin_preview_sweep() -> None:
+    """Convert finished Douyin downloads into browser-playable H.264 copies.
+
+    Runs only while the download service is already connected, so it never
+    starts that service on its own.  Conversion is one-time and cached; the
+    background loop simply guarantees it begins right after a download
+    completes, even when the /douyin page is not open.
+    """
+    while True:
+        try:
+            if await douyin_service.healthy():
+                payload = await douyin_service.jobs()
+                for job in payload.get("jobs", []):
+                    if job.get("status") != "success":
+                        continue
+                    result = douyin_service.result_for(job)
+                    if result:
+                        schedule_web_preview(
+                            Path(result["path"]),
+                            str(result.get("awemeId") or ""),
+                        )
+        except DouyinServiceError:
+            pass  # download service is still starting or went away
+        await asyncio.sleep(4)
+
+
 def workflow_defaults() -> tuple[str, str]:
     try:
         workflow = load_workflow(SINGING_WORKFLOW)
@@ -56,9 +83,15 @@ async def lifespan(_: FastAPI):
             errorSummary="本地服务曾在任务运行时重启",
             errorDetail="任务状态已保留。请根据已生成的中间成片重新提交或重试音色转换。",
         )
+    sweep_task = asyncio.create_task(_douyin_preview_sweep())
     try:
         yield
     finally:
+        sweep_task.cancel()
+        try:
+            await sweep_task
+        except asyncio.CancelledError:
+            pass
         await douyin_service.stop()
 
 
@@ -256,28 +289,55 @@ async def douyin_download(request: DouyinDownloadRequest):
     if not is_douyin_url(url):
         raise HTTPException(400, "当前只支持抖音链接")
     try:
-        return await douyin_service.submit(url)
+        job = await douyin_service.submit(url)
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
+    # Normalized payload: completed jobs (e.g. already downloaded) come back
+    # with result and mediaUrl, and preview conversion starts immediately.
+    return douyin_job_payload(job)
 
 
-@app.get("/api/douyin/jobs")
-async def douyin_jobs():
+@app.get("/api/douyin/login/status")
+async def douyin_login_status():
     try:
-        return await douyin_service.jobs()
+        return await douyin_service.auth_status()
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
 
 
-@app.get("/api/douyin/jobs/{job_id}")
-async def douyin_job(job_id: str):
+@app.post("/api/douyin/login/start")
+async def douyin_login_start():
     try:
-        job = await douyin_service.job(job_id)
+        return await douyin_service.start_login()
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/douyin/login/finish")
+async def douyin_login_finish():
+    try:
+        return await douyin_service.finish_login()
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/douyin/login/cancel")
+async def douyin_login_cancel():
+    try:
+        return await douyin_service.cancel_login()
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+def douyin_job_payload(job: dict[str, Any]) -> dict[str, Any]:
     result = douyin_service.result_for(job)
+    job_id = str(job.get("job_id") or "")
+    status = "completed" if job.get("status") == "success" else job.get("status")
+    if result:
+        schedule_web_preview(Path(result["path"]), str(result.get("awemeId") or ""))
     return {
         **job,
+        "status": status,
         "result": (
             {
                 **result,
@@ -290,6 +350,24 @@ async def douyin_job(job_id: str):
     }
 
 
+@app.get("/api/douyin/jobs")
+async def douyin_jobs():
+    try:
+        payload = await douyin_service.jobs()
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"jobs": [douyin_job_payload(job) for job in payload.get("jobs", [])]}
+
+
+@app.get("/api/douyin/jobs/{job_id}")
+async def douyin_job(job_id: str):
+    try:
+        job = await douyin_service.job(job_id)
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return douyin_job_payload(job)
+
+
 @app.get("/api/douyin/jobs/{job_id}/media")
 async def douyin_job_media(job_id: str, download: bool = Query(False)):
     try:
@@ -299,12 +377,19 @@ async def douyin_job_media(job_id: str, download: bool = Query(False)):
     result = douyin_service.result_for(job)
     if not result:
         raise HTTPException(404, "下载文件尚未生成")
-    path = Path(result["path"])
-    return FileResponse(
-        path,
-        media_type=result["mediaType"],
-        filename=path.name if download else None,
-    )
+    source = Path(result["path"])
+    if download:
+        # The download link always keeps the original downloaded file.
+        return FileResponse(
+            source,
+            media_type=result["mediaType"],
+            filename=source.name,
+        )
+    # Inline preview: HEVC/H.265 sources are served as an H.264 copy because
+    # browsers without the HEVC extension show a black picture otherwise.
+    path = await ensure_web_playable(source, str(result["awemeId"]))
+    media_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
+    return FileResponse(path, media_type=media_type)
 
 
 dist_dir = PROJECT_ROOT / "dist" / "client"

@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from backend.app import douyin_job_payload
 from backend.douyin_service import (
     DouyinServiceManager,
     _cookie_ready,
@@ -95,6 +96,19 @@ class DouyinServiceTests(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(result["awemeId"], "7613347091070692019")
             self.assertEqual(result["filename"], video.name)
+
+    def test_job_payload_normalizes_success_and_attaches_media_urls(self) -> None:
+        result = {
+            "awemeId": "123",
+            "filename": "unit.mp4",
+            "path": r"D:\unit.mp4",
+            "size": 10,
+            "mediaType": "video/mp4",
+        }
+        with patch("backend.app.douyin_service.result_for", return_value=result):
+            payload = douyin_job_payload({"job_id": "job-1", "status": "success"})
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["result"]["mediaUrl"], "/api/douyin/jobs/job-1/media")
 
 
 if __name__ == "__main__":
