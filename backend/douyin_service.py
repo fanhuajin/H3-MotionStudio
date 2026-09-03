@@ -20,9 +20,9 @@ DOUYIN_ROOT = Path(
     os.getenv("H3_DOUYIN_DOWNLOADER_ROOT", r"D:\project\douyin-downloader")
 ).resolve()
 DOUYIN_URL = os.getenv("H3_DOUYIN_DOWNLOADER_URL", "http://127.0.0.1:9000").rstrip("/")
-DOUYIN_OUTPUT = Path(
-    os.getenv("H3_DOUYIN_OUTPUT", str(DOUYIN_ROOT / "Downloaded"))
-).resolve()
+# 默认保存到 D:\EV；可用 H3_DOUYIN_OUTPUT 覆盖。下载服务子进程通过
+# DOUYIN_PATH 环境变量使用同一目录，保证服务落盘与这里查找结果一致。
+DOUYIN_OUTPUT = Path(os.getenv("H3_DOUYIN_OUTPUT", r"D:\EV")).resolve()
 DOUYIN_PYTHON = DOUYIN_ROOT / ".venv" / "Scripts" / "python.exe"
 DOUYIN_RUN = DOUYIN_ROOT / "run.py"
 DOUYIN_LOG = DATA_DIR / "douyin-downloader.log"
@@ -97,10 +97,13 @@ class DouyinServiceManager:
                     f"未找到抖音下载服务，请确认项目位于 {DOUYIN_ROOT}"
                 )
             DOUYIN_LOG.parent.mkdir(parents=True, exist_ok=True)
+            DOUYIN_OUTPUT.mkdir(parents=True, exist_ok=True)
             self.log_handle = DOUYIN_LOG.open("a", encoding="utf-8")
             parsed_url = urlparse(DOUYIN_URL)
             service_host = parsed_url.hostname or "127.0.0.1"
             service_port = str(parsed_url.port or 9000)
+            child_env = os.environ.copy()
+            child_env["DOUYIN_PATH"] = str(DOUYIN_OUTPUT)
             self.process = subprocess.Popen(
                 [
                     str(DOUYIN_PYTHON),
@@ -112,6 +115,7 @@ class DouyinServiceManager:
                     service_port,
                 ],
                 cwd=str(DOUYIN_ROOT),
+                env=child_env,
                 stdout=self.log_handle,
                 stderr=subprocess.STDOUT,
                 creationflags=_creation_flags(),

@@ -18,4 +18,5 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Progress must reflect real ComfyUI nodes and RVC subprocess stages, including exact errors.
 - The pipeline is strictly single-chain: ComfyUI generation and RealESRGAN finish first, ComfyUI then closes completely, RVC converts the voice, and the converted audio is muxed into the final MP4.
 - The completed state must display the final video and preserve access to the original video.
+- Douyin downloads save to `D:\EV` by default (env `H3_DOUYIN_OUTPUT` overrides). The H3 backend starts the downloader service with `DOUYIN_PATH` set to the same directory so both sides agree.
 - After each completed implementation batch, commit and push the changes to `origin/main`.
