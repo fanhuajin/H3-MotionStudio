@@ -65,6 +65,10 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
 .empty-upload > span:last-child { color: #8993a1; font-size: 12px; }
 .upload-icon { width: 47px; height: 47px; border: 1px solid #36475d; border-radius: 50%; display: grid; place-items: center; color: #43a4ff; background: #101a27; }
 .upload-icon svg { width: 25px; height: 25px; }
+.upload-busy { width: 100%; height: 100%; border: 0; background: linear-gradient(135deg, #0b1119, #111a27); color: #dce1e8; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 0 26px; }
+.upload-busy svg { width: 26px; height: 26px; color: #43a4ff; }
+.upload-busy strong { font-size: 13px; font-weight: 600; }
+.upload-busy span { color: #8993a1; font-size: 12px; line-height: 1.6; }
 .field-note { margin: 10px 1px 0; color: #8d96a4; font-size: 12px; line-height: 1.6; }
 .text-field textarea { width: 100%; min-height: 105px; resize: vertical; border: 1px solid #303b48; border-radius: 7px; padding: 13px 14px; background: #0c131c; color: #eef1f5; font-size: 13px; line-height: 1.8; transition: border-color .2s, box-shadow .2s; }
 .text-field textarea:hover { border-color: #475667; }

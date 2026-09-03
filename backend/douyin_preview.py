@@ -228,10 +228,18 @@ def _consume(task: asyncio.Task, target: Path) -> None:
     _inflight.pop(target, None)
 
 
-async def ensure_web_playable(source: Path, aweme_id: str) -> Path:
-    """Return a path the browser can play: the source when already safe,
-    otherwise a cached H.264 copy (transcoding on first request)."""
-    target = _cache_target(aweme_id)
+def requires_conversion(source: Path) -> bool:
+    """True when ``source`` needs an H.264 copy for browser playback."""
+    return _needs_conversion(source)
+
+
+async def ensure_web_playable_at(source: Path, target: Path) -> Path:
+    """Return a browser-playable path, writing the H.264 copy to ``target``.
+
+    Generalised version used by the upload-preview flow: when the source
+    already plays in browsers it is returned unchanged; otherwise a one-time
+    cached conversion is guaranteed (deduplicated against the Douyin cache).
+    """
     if _recently_failed(target):
         return source
     if not _needs_conversion(source):
@@ -253,6 +261,11 @@ async def ensure_web_playable(source: Path, aweme_id: str) -> Path:
         _inflight[target] = task
         task.add_done_callback(lambda done: _consume(task, target))
     return await task
+
+
+async def ensure_web_playable(source: Path, aweme_id: str) -> Path:
+    """Douyin variant: cached under data/douyin-web keyed by aweme id."""
+    return await ensure_web_playable_at(source, _cache_target(aweme_id))
 
 
 async def _convert_and_cache(ffmpeg: str, source: Path, target: Path) -> Path:

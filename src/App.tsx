@@ -155,6 +155,9 @@ function MotionStudioRoute() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  const [previewPreparing, setPreviewPreparing] = useState(false);
+  const [previewConverting, setPreviewConverting] = useState(false);
+  const previewTokenRef = useRef(0);
   const [duration, setDuration] = useState<number | null>(null);
   const [actionPrompt, setActionPrompt] = useState("");
   const [cameraPrompt, setCameraPrompt] = useState("");
@@ -246,7 +249,7 @@ function MotionStudioRoute() {
     setLocalError(null);
   }, [imagePreviewUrl]);
 
-  const chooseFile = useCallback((nextFile: File | null) => {
+  const chooseFile = useCallback(async (nextFile: File | null) => {
     if (!nextFile) return;
     const allowed = [".mp4", ".mov", ".mkv", ".webm"];
     const suffix = nextFile.name.slice(nextFile.name.lastIndexOf(".")).toLowerCase();
@@ -254,18 +257,67 @@ function MotionStudioRoute() {
       setLocalError("请选择 MP4、MOV、MKV 或 WebM 视频文件。");
       return;
     }
+    // The browser cannot decode HEVC/H.265 (typical for Douyin downloads),
+    // so the backend stores the file and serves an H.264 preview copy; the
+    // original file is still what gets submitted to the pipeline.
+    const token = ++previewTokenRef.current;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(nextFile);
-    setPreviewUrl(URL.createObjectURL(nextFile));
+    setPreviewUrl(null);
     setDuration(null);
+    setPreviewConverting(false);
+    setPreviewPreparing(true);
     setLocalError(null);
+    try {
+      const form = new FormData();
+      form.append("video", nextFile);
+      const response = await fetch("/api/uploads/preview", { method: "POST", body: form });
+      const payload = await response.json().catch(() => null);
+      if (token !== previewTokenRef.current) return;
+      if (!response.ok || !payload?.url) throw new Error(payload?.detail || "预览准备失败");
+      if (payload.converting) {
+        setPreviewConverting(true);
+        let previewReady = false;
+        const deadline = Date.now() + 180_000;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          if (token !== previewTokenRef.current) return;
+          const statusResponse = await fetch(`/api/uploads/${payload.uploadId}/status`);
+          const status = await statusResponse.json().catch(() => null);
+          if (!statusResponse.ok || !status) throw new Error("预览状态读取失败");
+          if (!status.converting) {
+            if (status.ready) {
+              previewReady = true;
+              setPreviewUrl(status.url);
+            }
+            break;
+          }
+        }
+        if (!previewReady) setLocalError("预览转码超时；不影响提交，管线可直接处理该视频。");
+      } else {
+        setPreviewUrl(payload.url);
+      }
+    } catch {
+      if (token !== previewTokenRef.current) return;
+      // Backend unavailable: fall back to the local file preview. Some
+      // codecs may not play in the browser, but generation is unaffected.
+      setPreviewUrl(URL.createObjectURL(nextFile));
+    } finally {
+      if (token === previewTokenRef.current) {
+        setPreviewConverting(false);
+        setPreviewPreparing(false);
+      }
+    }
   }, [previewUrl]);
 
   const clearFile = () => {
+    previewTokenRef.current += 1;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(null);
     setPreviewUrl(null);
     setDuration(null);
+    setPreviewPreparing(false);
+    setPreviewConverting(false);
     if (inputRef.current) inputRef.current.value = "";
   };
 
@@ -371,6 +423,12 @@ function MotionStudioRoute() {
                     <button onClick={clearFile} aria-label="移除视频"><X /></button>
                   </div>
                 </>
+              ) : previewPreparing ? (
+                <div className="upload-busy">
+                  <SpinnerGap className="spin" weight="bold" />
+                  <strong>{previewConverting ? "正在转为可播放预览…" : "正在准备预览…"}</strong>
+                  <span>H.265 / HEVC 视频将自动转码为 H.264<br />耗时约几秒，不影响后续生成</span>
+                </div>
               ) : demoMode ? (
                 <>
                   <img className="demo-source" src={config.fixedReferenceUrl} alt="演唱视频画面预览" />

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import secrets
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("uvicorn.error")
 
+from . import input_preview
 from .douyin_mirror import all_jobs as mirror_jobs
 from .douyin_mirror import get_job as mirror_get_job
 from .douyin_mirror import upsert_jobs as mirror_upsert
@@ -488,6 +490,51 @@ async def douyin_job_media(job_id: str, download: bool = Query(False)):
     # Inline preview: HEVC/H.265 sources are served as an H.264 copy because
     # browsers without the HEVC extension show a black picture otherwise.
     path = await ensure_web_playable(source, str(result["awemeId"]))
+    media_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
+    return FileResponse(path, media_type=media_type)
+
+
+VIDEO_UPLOAD_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
+
+
+@app.post("/api/uploads/preview")
+async def create_upload_preview(video: UploadFile = File(...)):
+    """Store the picked singing video and prepare a browser-playable copy.
+
+    HEVC/H.265 files (typical Douyin downloads) are transcoded to H.264 so
+    the upload-card preview can play; the actual pipeline still receives the
+    original file untouched at submit time.
+    """
+    suffix = Path(video.filename or "").suffix.lower()
+    if suffix not in VIDEO_UPLOAD_SUFFIXES:
+        raise HTTPException(400, "请选择 MP4、MOV、MKV 或 WebM 视频文件。")
+    upload_id = secrets.token_hex(6)
+    try:
+        video.file.seek(0)
+        await asyncio.to_thread(input_preview.save_upload, upload_id, suffix, video.file)
+    except OSError as exc:
+        raise HTTPException(500, f"预览文件保存失败：{exc}") from exc
+    await asyncio.to_thread(input_preview.prune_old_uploads)
+    return await input_preview.start_preview(upload_id)
+
+
+@app.get("/api/uploads/{upload_id}/status")
+async def get_upload_preview_status(upload_id: str):
+    if not input_preview.valid_upload_id(upload_id):
+        raise HTTPException(404, "预览不存在")
+    payload = await input_preview.preview_status(upload_id)
+    if not payload:
+        raise HTTPException(404, "预览不存在")
+    return payload
+
+
+@app.get("/api/uploads/{upload_id}/preview")
+async def get_upload_preview_media(upload_id: str):
+    if not input_preview.valid_upload_id(upload_id):
+        raise HTTPException(404, "预览不存在")
+    path = await input_preview.resolve_preview(upload_id)
+    if not path:
+        raise HTTPException(404, "预览不存在")
     media_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
     return FileResponse(path, media_type=media_type)
 

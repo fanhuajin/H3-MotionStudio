@@ -20,4 +20,5 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - The completed state must display the final video and preserve access to the original video.
 - Douyin downloads save to `D:\EV` by default (env `H3_DOUYIN_OUTPUT` overrides). The H3 backend starts the downloader service with `DOUYIN_PATH` set to the same directory so both sides agree.
 - The Douyin downloader service (separate Python process) must be memory-lean for ComfyUI: start it only on explicit user actions (submitting a download / login window), never from page reads; stop it automatically after 60 s of download inactivity (`IDLE_STOP_SECONDS`). An on-disk job mirror (`data/douyin-jobs.json`) keeps finished jobs listed and playable while the service is offline.
+- The upload-card singing-video preview must survive HEVC: picking a file stores it via `/api/uploads/preview` and serves an H.264 copy when the codec isn't browser-safe (`data/uploads/`, 24 h cleanup); the pipeline still receives the original file unchanged at submit.
 - After each completed implementation batch, commit and push the changes to `origin/main`.
