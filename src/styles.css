@@ -40,8 +40,8 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
 .field-heading h2 span { margin-right: 3px; }
 .field-heading h2 em { color: #9199a5; font-size: 13px; font-style: normal; font-weight: 400; }
 .field-heading > span { color: #8c95a2; font-size: 12px; }
-.source-grid { display: grid; grid-template-columns: minmax(145px, .43fr) minmax(230px, 1fr); gap: 11px; }
-.source-card { min-width: 0; height: 226px; border: 1px solid #34404e; border-radius: 7px; overflow: hidden; position: relative; background: #080c12; }
+.source-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.source-card { min-width: 0; aspect-ratio: 4 / 3; border: 1px solid #34404e; border-radius: 7px; overflow: hidden; position: relative; background: #080c12; }
 .source-label { position: absolute; z-index: 3; top: 9px; left: 10px; padding: 4px 8px; border-radius: 4px; background: rgba(5,9,14,.76); color: #dce2ea; font-size: 11px; backdrop-filter: blur(7px); pointer-events: none; }
 .image-preview-button, .image-empty { width: 100%; height: 100%; padding: 0; border: 0; color: white; background: #0d141d; cursor: pointer; position: relative; }
 .image-preview-button img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -173,8 +173,6 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
   .topbar-actions .icon-button { display: none; }
   .input-panel, .execution-panel { padding: 18px 14px; }
   .field-heading h2 em { display: none; }
-  .source-grid { grid-template-columns: 130px 1fr; }
-  .source-card { height: 210px; }
   .pipeline-row { grid-template-columns: 45px 1fr; }
   .rail::after { display: none; }
   .rail { justify-content: center; padding-right: 0; }
@@ -187,7 +185,6 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
 
 @media (max-width: 480px) {
   .source-grid { grid-template-columns: 1fr; }
-  .source-card { height: 220px; }
 }
 
 /* Shared desktop shell — grounded in design/douzy-shell-reference.png. */
