@@ -682,7 +682,7 @@ function MotionStudioRoute() {
             <section className="result-panel">
               <div className="result-heading"><h3>生成结果</h3><span><Check weight="bold" /> {job.finalReady ? "最终成片已完成" : "原版成片已保留"}</span></div>
               <div className="result-grid">
-                <div className="result-video"><video src={resultUrl || originalUrl || undefined} controls preload="metadata" poster={config.fixedReferenceUrl} /></div>
+                <div className="result-video"><video src={!demoMode && (resultUrl || originalUrl) ? `${resultUrl || originalUrl}#t=0.001` : undefined} controls preload="auto" poster={demoMode ? config.fixedReferenceUrl : undefined} /></div>
                 <div className="result-details">
                   <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? "最终成片 · 我的音色" : "原版成片"}</strong><span>{job.finalReady ? "1440 × 1080" : "640 × 480"}</span></div></div>
                   <dl>
