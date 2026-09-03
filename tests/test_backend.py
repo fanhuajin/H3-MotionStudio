@@ -111,5 +111,36 @@ class DouyinServiceTests(unittest.TestCase):
         self.assertEqual(payload["result"]["mediaUrl"], "/api/douyin/jobs/job-1/media")
 
 
+class DouyinMirrorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch(
+            "backend.douyin_mirror.MIRROR_PATH",
+            Path(tempfile.mkdtemp()) / "douyin-jobs.json",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_mirror_round_trip_and_upsert(self) -> None:
+        import backend.douyin_mirror as mirror
+        mirror.upsert_jobs(
+            [
+                {"job_id": "a", "status": "success", "created_at": "2026-09-03T00:00:01Z"},
+                {"job_id": "b", "status": "running", "created_at": "2026-09-03T00:00:02Z"},
+            ]
+        )
+        mirror.upsert_jobs([{"job_id": "b", "status": "success", "created_at": "2026-09-03T00:00:02Z"}])
+        self.assertEqual(mirror.get_job("b")["status"], "success")
+        self.assertEqual([job["job_id"] for job in mirror.all_jobs()], ["b", "a"])
+
+    def test_settle_stale_marks_ghost_active_jobs_failed(self) -> None:
+        from backend.app import _settle_stale
+        stale = {"job_id": "a", "status": "running", "url": "https://www.douyin.com/video/1"}
+        settled = _settle_stale(stale, live_ids={"b"})
+        self.assertEqual(settled["status"], "failed")
+        self.assertIn("重新提交", settled["error"])
+        self.assertEqual(_settle_stale(stale, live_ids={"a"})["status"], "running")
+        self.assertEqual(_settle_stale({"job_id": "c", "status": "success"}, None)["status"], "success")
+
+
 if __name__ == "__main__":
     unittest.main()

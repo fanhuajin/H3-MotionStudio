@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import mimetypes
 import shutil
 import uuid
@@ -13,8 +14,19 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+logger = logging.getLogger("uvicorn.error")
+
+from .douyin_mirror import all_jobs as mirror_jobs
+from .douyin_mirror import get_job as mirror_get_job
+from .douyin_mirror import upsert_jobs as mirror_upsert
 from .douyin_preview import ensure_web_playable, schedule_web_preview
-from .douyin_service import DouyinServiceError, douyin_service, is_douyin_url
+from .douyin_service import (
+    DouyinServiceError,
+    DouyinServiceOffline,
+    _cookie_stats,
+    douyin_service,
+    is_douyin_url,
+)
 from .pipeline import PipelineError, comfy_health, media_metadata, retry_voice, run_pipeline
 from .settings import (
     COMFY_INPUT,
@@ -37,27 +49,52 @@ def spawn(coroutine) -> None:
     task.add_done_callback(running_tasks.discard)
 
 
-async def _douyin_preview_sweep() -> None:
-    """Convert finished Douyin downloads into browser-playable H.264 copies.
+# The Douyin downloader runs as a separate Python process (hundreds of MB of
+# RAM). It is started ONLY by explicit user actions (submitting a download or
+# using the login window) and is stopped again after this many seconds of
+# inactivity so memory is freed for ComfyUI. Read endpoints serve the on-disk
+# job mirror while it is offline.
+IDLE_STOP_SECONDS = 60.0
+
+
+async def _douyin_housekeeping() -> None:
+    """Mirror jobs, pre-warm H.264 previews, stop the service when idle.
 
     Runs only while the download service is already connected, so it never
-    starts that service on its own.  Conversion is one-time and cached; the
-    background loop simply guarantees it begins right after a download
-    completes, even when the /douyin page is not open.
+    starts that service on its own. After download activity has been idle for
+    ``IDLE_STOP_SECONDS`` it terminates the service to release its memory;
+    jobs already mirrored stay visible and playable from disk.
     """
     while True:
         try:
-            if await douyin_service.healthy():
+            if not await douyin_service.healthy():
+                await asyncio.sleep(4)
+                continue
+            try:
                 payload = await douyin_service.jobs()
-                for job in payload.get("jobs", []):
-                    if job.get("status") != "success":
-                        continue
-                    result = douyin_service.result_for(job)
-                    if result:
-                        schedule_web_preview(
-                            Path(result["path"]),
-                            str(result.get("awemeId") or ""),
-                        )
+            except DouyinServiceError:
+                payload = {"jobs": []}
+            live = payload.get("jobs", []) if isinstance(payload, dict) else []
+            mirror_upsert(live)
+            active = any(
+                isinstance(job, dict) and job.get("status") in ("pending", "running")
+                for job in live
+            )
+            if active:
+                douyin_service.mark_activity()
+            for job in live:
+                if not isinstance(job, dict) or job.get("status") != "success":
+                    continue
+                result = douyin_service.result_for(job)
+                if result:
+                    schedule_web_preview(
+                        Path(result["path"]),
+                        str(result.get("awemeId") or ""),
+                    )
+            spawned = douyin_service.process is not None
+            if spawned and not active and douyin_service.idle_seconds() > IDLE_STOP_SECONDS:
+                logger.info("下载任务已结束且暂无操作，停止抖音下载服务以释放内存")
+                await douyin_service.stop()
         except DouyinServiceError:
             pass  # download service is still starting or went away
         await asyncio.sleep(4)
@@ -83,7 +120,7 @@ async def lifespan(_: FastAPI):
             errorSummary="本地服务曾在任务运行时重启",
             errorDetail="任务状态已保留。请根据已生成的中间成片重新提交或重试音色转换。",
         )
-    sweep_task = asyncio.create_task(_douyin_preview_sweep())
+    sweep_task = asyncio.create_task(_douyin_housekeeping())
     try:
         yield
     finally:
@@ -276,6 +313,22 @@ async def job_media(job_id: str, kind: str, download: bool = Query(False)):
     return FileResponse(path, media_type=media_type, filename=filename)
 
 
+async def _resolve_job(job_id: str) -> dict[str, Any] | None:
+    """Live job from the downloader service, falling back to the mirror.
+
+    Read paths never start the (memory-heavy) service: when it is offline or
+    does not know the job anymore, the persisted mirror answers instead.
+    """
+    try:
+        job = await douyin_service.job(job_id)
+    except (DouyinServiceOffline, DouyinServiceError):
+        job = None
+    if job:
+        mirror_upsert([job])
+        return job
+    return mirror_get_job(job_id)
+
+
 @app.get("/api/douyin/status")
 async def douyin_status():
     return await douyin_service.status()
@@ -292,6 +345,7 @@ async def douyin_download(request: DouyinDownloadRequest):
         job = await douyin_service.submit(url)
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
+    douyin_service.mark_activity()
     # Normalized payload: completed jobs (e.g. already downloaded) come back
     # with result and mediaUrl, and preview conversion starts immediately.
     return douyin_job_payload(job)
@@ -300,33 +354,52 @@ async def douyin_download(request: DouyinDownloadRequest):
 @app.get("/api/douyin/login/status")
 async def douyin_login_status():
     try:
-        return await douyin_service.auth_status()
+        payload = await douyin_service.auth_status()
+    except DouyinServiceOffline:
+        ready, count = _cookie_stats()
+        return {
+            "state": "idle",
+            "message": "下载服务未运行：提交下载任务或打开登录窗口时才会启动",
+            "error": None,
+            "cookieReady": ready,
+            "cookieCount": count,
+            "missing": [],
+        }
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
+    if isinstance(payload, dict) and payload.get("state") in ("opening", "waiting"):
+        douyin_service.mark_activity()
+    return payload
 
 
 @app.post("/api/douyin/login/start")
 async def douyin_login_start():
     try:
-        return await douyin_service.start_login()
+        payload = await douyin_service.start_login()
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
+    douyin_service.mark_activity()
+    return payload
 
 
 @app.post("/api/douyin/login/finish")
 async def douyin_login_finish():
     try:
-        return await douyin_service.finish_login()
+        payload = await douyin_service.finish_login()
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
+    douyin_service.mark_activity()
+    return payload
 
 
 @app.post("/api/douyin/login/cancel")
 async def douyin_login_cancel():
     try:
-        return await douyin_service.cancel_login()
+        payload = await douyin_service.cancel_login()
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
+    douyin_service.mark_activity()
+    return payload
 
 
 def douyin_job_payload(job: dict[str, Any]) -> dict[str, Any]:
@@ -350,30 +423,57 @@ def douyin_job_payload(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _settle_stale(job: dict[str, Any], live_ids: set[str] | None) -> dict[str, Any]:
+    """Mark mirror-only pending/running jobs as failed.
+
+    The downloader service only ever stops when idle, so a job that is still
+    "active" in the mirror but no longer known to the service died with a
+    restart (e.g. the H3 backend itself restarted and took the child process
+    down). Turn it into a visible failure instead of letting the UI poll a
+    ghost job forever.
+    """
+    if job.get("status") not in ("pending", "running"):
+        return job
+    if live_ids is not None and job.get("job_id") in live_ids:
+        return job
+    settled = dict(job)
+    settled["status"] = "failed"
+    settled["error"] = "下载进程已停止（本地服务重启以释放内存），请重新提交该链接"
+    return settled
+
+
 @app.get("/api/douyin/jobs")
 async def douyin_jobs():
+    live_ids: set[str] | None = None
     try:
         payload = await douyin_service.jobs()
+    except DouyinServiceOffline:
+        pass
     except DouyinServiceError as exc:
         raise HTTPException(502, str(exc)) from exc
-    return {"jobs": [douyin_job_payload(job) for job in payload.get("jobs", [])]}
+    else:
+        jobs_raw = payload.get("jobs", []) if isinstance(payload, dict) else []
+        mirror_upsert(jobs_raw)
+        live_ids = {str(job.get("job_id")) for job in jobs_raw if isinstance(job, dict)}
+    # Union with the mirror: after the service restarts (start/stop per use)
+    # its memory is empty, but previously completed jobs must stay listed.
+    settled = [_settle_stale(job, live_ids) for job in mirror_jobs()]
+    return {"jobs": [douyin_job_payload(job) for job in settled]}
 
 
 @app.get("/api/douyin/jobs/{job_id}")
 async def douyin_job(job_id: str):
-    try:
-        job = await douyin_service.job(job_id)
-    except DouyinServiceError as exc:
-        raise HTTPException(502, str(exc)) from exc
-    return douyin_job_payload(job)
+    job = await _resolve_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
+    return douyin_job_payload(_settle_stale(job, None))
 
 
 @app.get("/api/douyin/jobs/{job_id}/media")
 async def douyin_job_media(job_id: str, download: bool = Query(False)):
-    try:
-        job = await douyin_service.job(job_id)
-    except DouyinServiceError as exc:
-        raise HTTPException(502, str(exc)) from exc
+    job = await _resolve_job(job_id)
+    if not job:
+        raise HTTPException(404, "任务不存在")
     result = douyin_service.result_for(job)
     if not result:
         raise HTTPException(404, "下载文件尚未生成")

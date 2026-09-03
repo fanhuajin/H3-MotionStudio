@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +16,8 @@ from urllib.parse import urlparse
 import httpx
 
 from .settings import DATA_DIR
+
+logger = logging.getLogger("uvicorn.error")
 
 
 DOUYIN_ROOT = Path(
@@ -32,11 +36,34 @@ class DouyinServiceError(RuntimeError):
     pass
 
 
+class DouyinServiceOffline(DouyinServiceError):
+    """The downloader service is intentionally not running.
+
+    It is started on demand (download submission / login actions only) and
+    stopped again once idle to free memory for ComfyUI; read endpoints fall
+    back to the on-disk job mirror instead of starting it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("下载服务未运行，提交任务或打开登录窗口时自动启动")
+
+
 def _creation_flags() -> int:
     return subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 def _cookie_ready() -> bool:
+    ready, _ = _cookie_stats()
+    return ready
+
+
+def _cookie_stats() -> tuple[bool, int]:
+    """Local cookie-file inspection: (ready, non-empty value count).
+
+    Used while the downloader service is offline so login status still
+    reflects cookies persisted on disk without starting the service.
+    """
+    count = 0
     for path in (
         DOUYIN_ROOT / ".cookies.json",
         DOUYIN_ROOT / "config" / "cookies.json",
@@ -47,11 +74,14 @@ def _cookie_ready() -> bool:
             payload = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
-        if isinstance(payload, dict) and any(str(value).strip() for value in payload.values()):
-            return True
-        if isinstance(payload, list) and payload:
-            return True
-    return False
+        if isinstance(payload, dict):
+            values = [value for value in payload.values() if str(value).strip()]
+            count += len(values)
+        elif isinstance(payload, list) and payload:
+            count += len(payload)
+        if count:
+            return True, count
+    return False, count
 
 
 def _extract_aweme_id(url: str) -> str | None:
@@ -77,6 +107,16 @@ class DouyinServiceManager:
         self.process: subprocess.Popen | None = None
         self.log_handle = None
         self.lock = asyncio.Lock()
+        # Monotonic timestamp of the last real download/login activity.
+        # The housekeeping loop stops the service after this goes idle so
+        # its memory is freed for ComfyUI.
+        self.last_activity: float = 0.0
+
+    def mark_activity(self) -> None:
+        self.last_activity = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self.last_activity if self.last_activity else float("inf")
 
     async def healthy(self) -> bool:
         try:
@@ -87,6 +127,7 @@ class DouyinServiceManager:
             return False
 
     async def ensure_running(self) -> None:
+        self.mark_activity()
         if await self.healthy():
             return
         async with self.lock:
@@ -131,17 +172,21 @@ class DouyinServiceManager:
             raise DouyinServiceError("抖音下载服务启动超时")
 
     async def stop(self) -> None:
-        if self.process and self.process.poll() is None:
-            self.process.terminate()
-            try:
-                await asyncio.wait_for(asyncio.to_thread(self.process.wait), timeout=8)
-            except asyncio.TimeoutError:
-                self.process.kill()
-                await asyncio.to_thread(self.process.wait)
-        if self.log_handle:
-            self.log_handle.close()
-        self.process = None
-        self.log_handle = None
+        """Terminate the downloader service to free its memory."""
+        async with self.lock:
+            if self.process and self.process.poll() is None:
+                logger.info("停止抖音下载服务以释放内存")
+                self.process.terminate()
+                try:
+                    await asyncio.wait_for(asyncio.to_thread(self.process.wait), timeout=8)
+                except asyncio.TimeoutError:
+                    self.process.kill()
+                    await asyncio.to_thread(self.process.wait)
+            if self.log_handle:
+                self.log_handle.close()
+            self.process = None
+            self.log_handle = None
+            self.last_activity = 0.0
 
     async def status(self) -> dict[str, Any]:
         available = DOUYIN_PYTHON.is_file() and DOUYIN_RUN.is_file()
@@ -177,8 +222,19 @@ class DouyinServiceManager:
         *,
         json: dict[str, Any] | None = None,
         timeout: float = 20,
+        start_if_needed: bool = False,
     ) -> Any:
-        await self.ensure_running()
+        """Call the downloader service.
+
+        Only user-initiated actions (download submission, login) pass
+        ``start_if_needed=True``; everything else reports the service as
+        offline rather than starting it, so plain page loads never consume
+        RAM that ComfyUI may need.
+        """
+        if not await self.healthy():
+            if not start_if_needed:
+                raise DouyinServiceOffline()
+            await self.ensure_running()
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.request(method, f"{DOUYIN_URL}{path}", json=json)
@@ -196,7 +252,9 @@ class DouyinServiceManager:
             raise DouyinServiceError("下载服务返回了无法识别的数据") from exc
 
     async def submit(self, url: str) -> dict[str, Any]:
-        return await self._request("POST", "/api/v1/download", json={"url": url})
+        return await self._request(
+            "POST", "/api/v1/download", json={"url": url}, start_if_needed=True
+        )
 
     async def job(self, job_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/api/v1/jobs/{job_id}")
@@ -208,13 +266,19 @@ class DouyinServiceManager:
         return await self._request("GET", "/api/v1/auth/status", timeout=5)
 
     async def start_login(self) -> dict[str, Any]:
-        return await self._request("POST", "/api/v1/auth/login/start", timeout=45)
+        return await self._request(
+            "POST", "/api/v1/auth/login/start", timeout=45, start_if_needed=True
+        )
 
     async def finish_login(self) -> dict[str, Any]:
-        return await self._request("POST", "/api/v1/auth/login/finish", timeout=10)
+        return await self._request(
+            "POST", "/api/v1/auth/login/finish", timeout=10, start_if_needed=True
+        )
 
     async def cancel_login(self) -> dict[str, Any]:
-        return await self._request("POST", "/api/v1/auth/login/cancel", timeout=10)
+        return await self._request(
+            "POST", "/api/v1/auth/login/cancel", timeout=10, start_if_needed=True
+        )
 
     def result_for(self, job: dict[str, Any]) -> dict[str, Any] | None:
         aweme_id = _extract_aweme_id(str(job.get("url") or ""))
