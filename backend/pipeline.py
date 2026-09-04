@@ -434,6 +434,7 @@ async def run_comfy_workflow(
         store.add_log(job_id, f"工作流已进入 ComfyUI 队列：{prompt_id}")
         store.update(job_id, promptIds={**((store.get(job_id) or {}).get("promptIds") or {}), kind: prompt_id})
         active_milestone: str | None = None
+        segment_count = 0  # migrate：已开始的采样段数（每段 WanSCAILToVideo 执行一次）
         plan = _PLAN_BY_KIND.get(kind)
         plan_index = -1
 
