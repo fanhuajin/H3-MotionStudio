@@ -20,6 +20,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
+import { QueuePanel } from "./QueuePanel";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
 
 const FALLBACK_CONFIG: AppConfig = {
@@ -336,6 +337,7 @@ export function MigrateRoute() {
   const tickNow = useNowTick(jobActive);
   // 计时起点：开始执行时间（旧任务没有则退回创建时间）；运行中实时、结束后定格
   const totalElapsedMs = elapsedMs(job?.startedAt || job?.createdAt, job?.finishedAt, tickNow);
+  const [queueOpen, setQueueOpen] = useState(false);
 
   const resourceStatus = useMemo(() => {
     if (job?.status === "running") return { label: "ComfyUI 单链路运行中", mode: "connected" };
@@ -772,7 +774,14 @@ export function MigrateRoute() {
           <div className="panel-heading">
             <Graph />
             <div><h2>执行流程</h2><span>严格单链路 · 节点级运行状态</span></div>
-            {job && <span className="job-id">任务 {job.id.slice(0, 8)}</span>}
+            {job && (
+              <span className="queue-anchor">
+                <button className={`job-id job-id-button ${queueOpen ? "job-id-open" : ""}`} onClick={() => setQueueOpen((value) => !value)} title="任务队列：查看当前任务并取消">
+                  任务 {job.id.slice(0, 8)}
+                </button>
+                <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
+              </span>
+            )}
             {jobActive && totalElapsedMs != null && (
               <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
             )}

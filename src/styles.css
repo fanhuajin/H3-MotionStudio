@@ -553,6 +553,26 @@ body {
 .queue-cancel svg { width: 11px; height: 11px; }
 .queue-cancel:disabled { opacity: .55; cursor: wait; }
 
+/* 任务队列弹层锚定在执行流程标题栏的"任务 xxx"徽章上 */
+.queue-anchor { position: relative; margin-left: auto; display: inline-flex; }
+.queue-anchor .job-id {
+  margin-left: 0;
+  border: 1px solid #2d3744;
+  background: #0d0a22;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: #8e97a3;
+  transition: color .18s, border-color .18s;
+}
+.queue-anchor .job-id:hover, .queue-anchor .job-id.job-id-open { color: #a9e4ee; border-color: #2d6c78; }
+.queue-anchor .queue-popover {
+  left: auto;
+  right: 0;
+  bottom: auto;
+  top: calc(100% + 10px);
+}
+
 /* 侧栏系统资源监控 */
 .monitor-card {
   margin-top: 7px;

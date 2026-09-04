@@ -12,7 +12,6 @@ import {
   GearSix,
   Graph,
   Info,
-  ListChecks,
   PersonSimpleRun,
   Play,
   Question,
@@ -295,6 +294,7 @@ function MotionStudioRoute() {
   const tickNow = useNowTick(jobActive);
   // 计时起点：开始执行时间（旧任务没有则退回创建时间）；运行中实时、结束后定格
   const totalElapsedMs = elapsedMs(job?.startedAt || job?.createdAt, job?.finishedAt, tickNow);
+  const [queueOpen, setQueueOpen] = useState(false);
   const resultUrl = !demoMode && job?.finalReady ? `/api/jobs/${job.id}/media/final` : null;
   const originalUrl = !demoMode && job?.originalReady ? `/api/jobs/${job.id}/media/original` : null;
 
@@ -679,7 +679,14 @@ function MotionStudioRoute() {
           <div className="panel-heading">
             <Graph />
             <div><h2>执行流程</h2><span>严格单链路 · 节点级运行状态</span></div>
-            {job && <span className="job-id">任务 {job.id.slice(0, 8)}</span>}
+            {job && (
+              <span className="queue-anchor">
+                <button className={`job-id job-id-button ${queueOpen ? "job-id-open" : ""}`} onClick={() => setQueueOpen((value) => !value)} title="任务队列：查看当前任务并取消">
+                  任务 {job.id.slice(0, 8)}
+                </button>
+                <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
+              </span>
+            )}
             {jobActive && totalElapsedMs != null && (
               <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
             )}
@@ -754,8 +761,6 @@ export function App() {
   const path = window.location.pathname.replace(/\/+$/, "");
   const isDouyinRoute = path === "/douyin";
   const isMigrateRoute = path === "/migrate";
-  const [queueOpen, setQueueOpen] = useState(false);
-  const toggleQueue = () => setQueueOpen((value) => !value);
 
   return (
     <div className="desktop-app-shell">
@@ -803,11 +808,6 @@ export function App() {
             <span>链接下载</span>
             {isDouyinRoute && <i />}
           </a>
-          <button className={`sidebar-nav-item queue-nav-item ${queueOpen ? "active" : ""}`} onClick={toggleQueue} aria-expanded={queueOpen}>
-            <ListChecks />
-            <span>任务队列</span>
-            {queueOpen && <i />}
-          </button>
         </nav>
 
         <div className="sidebar-system">
@@ -816,7 +816,6 @@ export function App() {
             <button><GearSix /> 设置</button>
             <button><Question /> 帮助</button>
           </div>
-          <QueuePanel open={queueOpen} onToggle={toggleQueue} />
           <SystemMonitor />
           <div className="sidebar-runtime">
             <span className="runtime-icon"><Circle weight="fill" /></span>

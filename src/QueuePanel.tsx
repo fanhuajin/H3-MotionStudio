@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowsClockwise, ListChecks, SpinnerGap, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, SpinnerGap, X } from "@phosphor-icons/react";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 
 type QueueEntry = {
@@ -40,7 +40,7 @@ function kindLabel(job: AppJobSummary) {
   return "影动生成";
 }
 
-export function QueuePanel({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+export function QueuePanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [payload, setPayload] = useState<QueuePayload | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -119,23 +119,15 @@ export function QueuePanel({ open, onToggle }: { open: boolean; onToggle: () => 
 
   const app = payload?.app ?? null;
   const appElapsedMs = app ? elapsedMs(app.startedAt, null, tickNow) : null;
-  const hasQueueBadge = appActive || (payload?.connected && (payload.running.length > 0 || payload.pending.length > 0));
 
+  if (!open) return null;
   return (
-    <div className="queue-panel">
-      <button className={`queue-entry ${open ? "open" : ""}`} onClick={onToggle} aria-expanded={open}>
-        <ListChecks weight={open || hasQueueBadge ? "fill" : "regular"} />
-        <span>任务队列</span>
-        {hasQueueBadge && <i className="queue-dot" />}
-      </button>
-
-      {open && (
-        <div className="queue-popover">
-          <div className="queue-popover-head">
-            <strong>任务队列</strong>
-            <span className={payload?.connected ? "ok" : ""}>{payload?.connected ? "ComfyUI 已连接" : "ComfyUI 未运行"}</span>
-            <button onClick={onToggle} aria-label="关闭"><X weight="bold" /></button>
-          </div>
+    <div className="queue-popover">
+      <div className="queue-popover-head">
+        <strong>任务队列</strong>
+        <span className={payload?.connected ? "ok" : ""}>{payload?.connected ? "ComfyUI 已连接" : "ComfyUI 未运行"}</span>
+        <button onClick={onClose} aria-label="关闭"><X weight="bold" /></button>
+      </div>
 
           <div className="queue-section">
             <p className="queue-section-title">当前应用任务</p>
@@ -195,8 +187,6 @@ export function QueuePanel({ open, onToggle }: { open: boolean; onToggle: () => 
               </>
             )}
           </div>
-        </div>
-      )}
     </div>
   );
 }
