@@ -7,4 +7,7 @@ __pycache__/
 data/
 *.log
 .DS_Store
+# 本地分析与运行时缓存目录（不入库）
+.tmp_h3_action_analysis/
+output/
 
