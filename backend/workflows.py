@@ -201,6 +201,18 @@ def graph_to_api_prompt(workflow: dict[str, Any], object_info: dict[str, Any]) -
 
         definition = object_info[class_type].get("input") or {}
         accepted = set((definition.get("required") or {}).keys()) | set((definition.get("optional") or {}).keys())
+        # ComfyUI v3 Autogrow 输入（如 ComfyMathExpression 的 "values" + 模板名 a..z）：
+        # 工作流 JSON 里每个展开输入以 "容器.模板名" 命名（如 "values.a"），而 object_info
+        # 只列出容器名 "values"。把展开名也纳入合法集合，否则链接/值会被丢弃，
+        # 服务端会报 required_input_missing: values.a。
+        for section in ("required", "optional"):
+            for container, spec in (definition.get(section) or {}).items():
+                if not (isinstance(spec, list) and spec and spec[0] == "COMFY_AUTOGROW_V3"):
+                    continue
+                template = ((spec[1] or {}).get("template")) or {}
+                for item_name in template.get("names") or []:
+                    accepted.add(f"{container}.{item_name}")
+
         inputs: dict[str, Any] = {}
         widgets = node.get("widgets_values")
         widget_index = 0

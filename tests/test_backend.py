@@ -21,6 +21,7 @@ from backend.settings import (
 )
 from backend.store import format_elapsed, migrate_milestones
 from backend.workflows import (
+    graph_to_api_prompt,
     node_by_id,
     prepare_clean_workflow,
     prepare_migrate_workflow,
@@ -155,6 +156,56 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(ids[-2:], ["upscale", "hd"])
         replacement = next(m for m in migrate_milestones(False, "replacement", False) if m["id"] == "migrate")
         self.assertIn("替换", replacement["label"])
+
+    def test_graph_to_api_prompt_keeps_autogrow_expanded_inputs(self) -> None:
+        """ComfyUI v3 Autogrow（ComfyMathExpression values.a/b…）的链接不能被丢弃。"""
+        workflow = {
+            "nodes": [
+                {
+                    "id": 1,
+                    "type": "PrimitiveInt",
+                    "mode": 0,
+                    "inputs": [{"name": "value", "widget": {"name": "value"}}],
+                    "widgets_values": [32, "fixed"],
+                    "outputs": [{"name": "INT", "type": "INT", "links": [0]}],
+                },
+                {
+                    "id": 2,
+                    "type": "ComfyMathExpression",
+                    "mode": 0,
+                    "inputs": [
+                        {"name": "values.a", "link": 0},
+                        {"name": "values.b", "link": None},
+                        {"name": "expression", "widget": {"name": "expression"}},
+                    ],
+                    "widgets_values": ["a // 32"],
+                    "outputs": [],
+                },
+            ],
+            "links": [[0, 1, 0, 2, 0, "INT"]],
+        }
+        autogrow_spec = [
+            "COMFY_AUTOGROW_V3",
+            {
+                "template": {
+                    "input": {"required": {"value": ["FLOAT,INT,BOOLEAN", {}]}},
+                    "names": ["a", "b", "c"],
+                    "min": 1,
+                }
+            },
+        ]
+        object_info = {
+            "PrimitiveInt": {"input": {"required": {"value": ["INT", {}]}}, "output": {}},
+            "ComfyMathExpression": {
+                "input": {"required": {"expression": ["STRING", {}], "values": autogrow_spec}},
+                "output": {},
+            },
+        }
+        prompt = graph_to_api_prompt(workflow, object_info)
+        self.assertEqual(prompt["2"]["inputs"]["values.a"], ["1", 0])
+        self.assertEqual(prompt["2"]["inputs"]["expression"], "a // 32")
+        # 常规节点（PrimitiveInt 无 autogrow 时）行为不受影响
+        self.assertEqual(prompt["1"]["inputs"]["value"], 32)
 
 
 class DouyinServiceTests(unittest.TestCase):
