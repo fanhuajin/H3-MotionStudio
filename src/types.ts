@@ -19,6 +19,7 @@ export interface JobLog {
 
 export interface JobState {
   id: string;
+  kind?: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
   stage: string;
   createdAt: string;
@@ -28,6 +29,16 @@ export interface JobState {
   sourceDuration?: number | null;
   referenceName?: string;
   referenceSize?: number;
+  referenceInputName?: string;
+  referenceUploaded?: boolean;
+  // 动作迁移任务参数（kind === "migrate"）
+  canvas?: string;
+  migrateMode?: string;
+  removeSubtitles?: boolean;
+  hd1080?: boolean;
+  contentPrompt?: string;
+  videoPrompt?: string;
+  imagePrompt?: string;
   actionPrompt: string;
   cameraPrompt: string;
   currentNodeId?: string | null;
@@ -40,6 +51,8 @@ export interface JobState {
   errorSummary?: string | null;
   errorDetail?: string | null;
   originalReady: boolean;
+  cleanReady?: boolean;
+  draftReady?: boolean;
   enhancedReady: boolean;
   finalReady: boolean;
   output?: {

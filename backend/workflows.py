@@ -44,14 +44,19 @@ def prepare_singing_workflow(
     return workflow
 
 
-def prepare_upscale_workflow(source_name: str, output_prefix: str, source_path) -> dict[str, Any]:
+def prepare_upscale_workflow(
+    source_name: str,
+    output_prefix: str,
+    source_path,
+    scale: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    """1080P 高清加强：替换输入视频与输出前缀；可选替换缩回尺寸节点 #5。
+
+    9:16 竖版时把 ImageScale 的目标尺寸从 1440×1080 换成 1080×1920，
+    其余（8 帧分批、RealESRGAN4x、锐化、保留原音频）保持作者默认。
+    """
     workflow = copy.deepcopy(source_path if isinstance(source_path, dict) else load_workflow(source_path))
-    load_node = node_by_id(workflow, 2)
-    values = load_node.get("widgets_values") or {}
-    if not isinstance(values, dict):
-        raise ValueError("VHS_LoadVideo widgets_values is not an object")
-    values["video"] = source_name
-    values.pop("videopreview", None)
+    _set_vhs_widget(workflow, 2, "video", source_name)
 
     save_node = node_by_id(workflow, 8)
     save_values = save_node.get("widgets_values") or {}
@@ -59,6 +64,128 @@ def prepare_upscale_workflow(source_name: str, output_prefix: str, source_path) 
         raise ValueError("VHS_VideoCombine widgets_values is not an object")
     save_values["filename_prefix"] = output_prefix
     save_values.pop("videopreview", None)
+
+    if scale is not None:
+        scale_node = node_by_id(workflow, 5)
+        widgets = scale_node.get("widgets_values") or []
+        if not isinstance(widgets, list) or len(widgets) < 3:
+            raise ValueError("ImageScale widgets_values is not a list of width/height")
+        widgets[1], widgets[2] = int(scale[0]), int(scale[1])
+    return workflow
+
+
+def _set_vhs_widget(workflow: dict[str, Any], node_id: int, key: str, value: Any) -> None:
+    """Set a named VHS-style widget (dict widgets_values) on a node."""
+    node = node_by_id(workflow, node_id)
+    values = node.get("widgets_values") or {}
+    if not isinstance(values, dict):
+        raise ValueError(f"Node {node_id} widgets_values is not an object")
+    values[key] = value
+    values.pop("videopreview", None)
+
+
+def prepare_clean_workflow(
+    source_name: str,
+    output_prefix: str,
+    source_path,
+    canvas: dict | None = None,
+) -> dict[str, Any]:
+    """视频-去字幕-ProPainter-固定底部：替换原视频、输出前缀与可选竖版画布。
+
+    #1 VHS_LoadVideo(带字幕原视频) -> #2 CreateShapeMask(固定底部字幕遮罩) ->
+    #3 ProPainterInpaint -> #5 VHS_VideoCombine(带原音频、原帧率)。
+    默认(4:3)参数保持作者原状；9:16 时按 canvas 组替换读取尺寸、遮罩坐标与
+    ProPainter 画布。
+    """
+    workflow = copy.deepcopy(source_path if isinstance(source_path, dict) else load_workflow(source_path))
+    canvas = canvas or {}
+    if canvas:
+        _set_vhs_widget(workflow, 1, "custom_width", int(canvas["clean_width"]))
+        _set_vhs_widget(workflow, 1, "custom_height", int(canvas["clean_height"]))
+
+        mask = node_by_id(workflow, 2)
+        widgets = mask.get("widgets_values") or []
+        if not isinstance(widgets, list) or len(widgets) < 9:
+            raise ValueError("CreateShapeMask widgets_values is not a 9-item list")
+        # 布局: [shape, frames, location_x, location_y, grow, frame_width,
+        #        frame_height, shape_width, shape_height]
+        widgets[2] = int(canvas["mask_center_x"])
+        widgets[3] = int(canvas["mask_center_y"])
+        widgets[5] = int(canvas["clean_width"])
+        widgets[6] = int(canvas["clean_height"])
+        widgets[7] = int(canvas["mask_width"])
+        widgets[8] = int(canvas["mask_height"])
+
+        paint = node_by_id(workflow, 3)
+        paint_widgets = paint.get("widgets_values") or []
+        if not isinstance(paint_widgets, list) or len(paint_widgets) < 2:
+            raise ValueError("ProPainterInpaint widgets_values is not a list")
+        paint_widgets[0] = int(canvas["clean_width"])
+        paint_widgets[1] = int(canvas["clean_height"])
+
+    _set_vhs_widget(workflow, 1, "video", source_name)
+    _set_vhs_widget(workflow, 5, "filename_prefix", output_prefix)
+    return workflow
+
+
+def prepare_migrate_workflow(
+    drive_name: str,
+    reference_name: str,
+    mode: str,
+    output_prefix: str,
+    source_path,
+    canvas: dict | None = None,
+    content_prompt: str | None = None,
+    video_prompt: str | None = None,
+    image_prompt: str | None = None,
+) -> dict[str, Any]:
+    """视频-长视频替换-4x3加速版-ProPainter输入：准备一次动作迁移/人物替换运行。
+
+    #563 SelectVideoPath 提供驱动视频（#469/#543 兜底一并替换）；
+    #30 LoadImage 人物参考图；#353 Boolean (Replace Mode)：false=动作迁移, true=人物替换；
+    #545/#509/#510 三处提示词（None/空串保留工作流默认）；
+    #342/#343 画布宽高（9:16 时联动 VHS 读取/参考图裁剪/SCAIL 生成）；
+    #456 VHS_VideoCombine 输出前缀。段长/重叠/步数/CFG/seed 等保持作者默认。
+    """
+    workflow = copy.deepcopy(source_path if isinstance(source_path, dict) else load_workflow(source_path))
+    canvas = canvas or {}
+    if canvas:
+        for node_id in (342, 343):
+            int_node = node_by_id(workflow, node_id)
+            widgets = int_node.get("widgets_values") or []
+            if not isinstance(widgets, list) or not widgets:
+                raise ValueError(f"PrimitiveInt node {node_id} widgets_values is empty")
+            widgets[0] = (
+                int(canvas["migrate_width"]) if node_id == 342 else int(canvas["migrate_height"])
+            )
+
+    selector = node_by_id(workflow, 563)
+    selector_widgets = selector.get("widgets_values") or []
+    if isinstance(selector_widgets, list) and selector_widgets:
+        selector_widgets[0] = drive_name
+    else:
+        raise ValueError("SelectVideoPath widgets_values is not a non-empty list")
+    # 未接线的兜底也替换，避免 ComfyUI 里手动运行时仍是旧文件
+    _set_vhs_widget(workflow, 469, "video", drive_name)
+    _set_vhs_widget(workflow, 543, "video", drive_name)
+
+    image_node = node_by_id(workflow, 30)
+    image_node["widgets_values"][0] = reference_name
+
+    mode_node = node_by_id(workflow, 353)
+    mode_node["widgets_values"][0] = mode != "animation"  # 动作迁移=false, 人物替换=true
+
+    if content_prompt and content_prompt.strip():
+        content_node = node_by_id(workflow, 545)
+        content_node["widgets_values"][0] = content_prompt.strip()
+    if video_prompt and video_prompt.strip():
+        video_node = node_by_id(workflow, 509)
+        video_node["widgets_values"][0] = video_prompt.strip()
+    if image_prompt and image_prompt.strip():
+        image_node_prompt = node_by_id(workflow, 510)
+        image_node_prompt["widgets_values"][0] = image_prompt.strip()
+
+    _set_vhs_widget(workflow, 456, "filename_prefix", output_prefix)
     return workflow
 
 

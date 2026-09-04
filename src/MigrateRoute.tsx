@@ -9,32 +9,16 @@ import {
   Eye,
   FileText,
   FilmSlate,
-  GearSix,
   Graph,
   Info,
   PersonSimpleRun,
   Play,
-  Question,
   SpinnerGap,
   UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import { DouyinRoute } from "./DouyinRoute";
-import { MigrateRoute } from "./MigrateRoute";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
-
-const EMPTY_MILESTONES: Milestone[] = [
-  { id: "input", label: "读取视频与音频", subtitle: "加载输入视频，分离音频轨道", status: "pending" },
-  { id: "h3", label: "H3 分段生成", subtitle: "按时长生成连续唱歌片段", status: "pending" },
-  { id: "stitch", label: "防闪拼接", subtitle: "平滑衔接并裁切到输入时长", status: "pending" },
-  { id: "upscale", label: "RealESRGAN 4× 放大", subtitle: "逐帧超采样并缩放到 1080P", status: "pending" },
-  { id: "hd", label: "输出 1440 × 1080", subtitle: "保存高清加强成片", status: "pending" },
-  { id: "handoff", label: "关闭 ComfyUI", subtitle: "释放内存和显存，切换到 RVC", status: "pending" },
-  { id: "stems", label: "分离人声与伴奏", subtitle: "Demucs 提取演唱人声", status: "pending" },
-  { id: "voice", label: "转换为 ranran 音色", subtitle: "RVC 模型执行音色转换", status: "pending" },
-  { id: "mux", label: "替换最终成片音频", subtitle: "重新混音并封装最终 MP4", status: "pending" },
-];
 
 const FALLBACK_CONFIG: AppConfig = {
   comfyuiConnected: false,
@@ -46,14 +30,22 @@ const FALLBACK_CONFIG: AppConfig = {
   missingRequirements: [],
 };
 
-const DRAFT_STORAGE_KEY = "h3-motionstudio:draft:v1";
-const DRAFT_DB_NAME = "h3-motionstudio-draft";
+type CanvasRatio = "4:3" | "9:16";
+type MigrateMode = "animation" | "replacement";
+
+const DRAFT_STORAGE_KEY = "h3-motionstudio:migrate-draft:v1";
+const DRAFT_DB_NAME = "h3-motionstudio-migrate-draft";
 const DRAFT_DB_VERSION = 1;
 const DRAFT_FILE_STORE = "files";
 
-interface DraftState {
-  actionPrompt?: string;
-  cameraPrompt?: string;
+interface MigrateDraft {
+  ratio?: CanvasRatio;
+  mode?: MigrateMode;
+  removeSubtitles?: boolean;
+  hd1080?: boolean;
+  contentPrompt?: string;
+  videoPrompt?: string;
+  imagePrompt?: string;
   videoName?: string | null;
   videoSize?: number | null;
   imageName?: string | null;
@@ -61,18 +53,18 @@ interface DraftState {
   savedAt?: string;
 }
 
-function readDraft(): DraftState | null {
+function readDraft(): MigrateDraft | null {
   try {
     const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as DraftState;
+    const parsed = JSON.parse(raw) as MigrateDraft;
     return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
     return null;
   }
 }
 
-function writeDraft(changes: Partial<DraftState>) {
+function writeDraft(changes: Partial<MigrateDraft>) {
   try {
     const current = readDraft() || {};
     window.localStorage.setItem(
@@ -80,7 +72,7 @@ function writeDraft(changes: Partial<DraftState>) {
       JSON.stringify({ ...current, ...changes, savedAt: new Date().toISOString() }),
     );
   } catch {
-    // Draft persistence is best effort; it must never block generation.
+    // Best effort persistence only.
   }
 }
 
@@ -101,7 +93,7 @@ function openDraftDb(): Promise<IDBDatabase> {
   });
 }
 
-async function saveDraftFile(kind: "video" | "image", file: File) {
+async function saveDraftFile(kind: "video" | "reference", file: File) {
   try {
     const db = await openDraftDb();
     await new Promise<void>((resolve, reject) => {
@@ -111,11 +103,11 @@ async function saveDraftFile(kind: "video" | "image", file: File) {
     });
     db.close();
   } catch {
-    // The text draft and backend job state remain useful if IndexedDB is unavailable.
+    // Best effort; server-side inputs also survive restarts.
   }
 }
 
-async function loadDraftFile(kind: "video" | "image"): Promise<File | null> {
+async function loadDraftFile(kind: "video" | "reference"): Promise<File | null> {
   try {
     const db = await openDraftDb();
     const file = await new Promise<File | null>((resolve, reject) => {
@@ -130,7 +122,7 @@ async function loadDraftFile(kind: "video" | "image"): Promise<File | null> {
   }
 }
 
-async function clearDraftFile(kind: "video" | "image") {
+async function clearDraftFile(kind: "video" | "reference") {
   try {
     const db = await openDraftDb();
     await new Promise<void>((resolve, reject) => {
@@ -143,38 +135,6 @@ async function clearDraftFile(kind: "video" | "image") {
     // Best effort cleanup only.
   }
 }
-
-const DEMO_MILESTONES: Milestone[] = EMPTY_MILESTONES.map((step, index) => ({
-  ...step,
-  status: "completed",
-  progress: 100,
-  elapsed: ["00:05", "01:20", "00:15", "01:45", "00:08", "00:04", "00:38", "01:12", "00:06"][index],
-}));
-
-const DEMO_JOB: JobState = {
-  id: "demo-complete-2026",
-  status: "completed",
-  stage: "completed",
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-  sourceName: "演唱视频.mp4",
-  sourceSize: 21_400_000,
-  sourceDuration: 32.4,
-  referenceName: "人物参考图.png",
-  referenceSize: 4_800_000,
-  actionPrompt: "主角自然深情地演唱，眼神专注，偶尔闭眼沉浸；副歌时情绪增强，微微抬头，右手轻抬并随节奏摆动；整体动作自然流畅。",
-  cameraPrompt: "以稳定的推轨为主，开场中景缓慢推进至近景；副歌时轻微环绕 15°，保持主体居中；间奏切至侧面 3/4 角度，收尾回到正面特写。",
-  milestones: DEMO_MILESTONES,
-  logs: [
-    { time: new Date().toISOString(), message: "ComfyUI 工作流已完成，显存已释放。" },
-    { time: new Date().toISOString(), message: "RVC：ranran 音色转换完成。" },
-    { time: new Date().toISOString(), message: "最终 MP4 已完成音频替换。" },
-  ],
-  originalReady: true,
-  enhancedReady: true,
-  finalReady: true,
-  output: { width: 1440, height: 1080, duration: 32.4, size: 48_700_000, completedAt: new Date().toISOString() },
-};
 
 function formatBytes(value?: number | null) {
   if (!value) return "--";
@@ -219,10 +179,8 @@ function PipelineRow({ step, index }: { step: Milestone; index: number }) {
   const progressText = step.progressMax
     ? `采样 ${step.progressValue ?? 0} / ${step.progressMax} · ${Math.round(step.progress ?? 0)}%`
     : step.currentNode || null;
-  const isRvc = ["stems", "voice", "mux"].includes(step.id);
-
   return (
-    <div className={`pipeline-row state-${step.status} ${isRvc ? "rvc-row" : "comfy-row"}`}>
+    <div className={`pipeline-row state-${step.status} comfy-row`}>
       <div className="rail"><span className="rail-icon"><MilestoneIcon status={step.status} /></span></div>
       <div className="pipeline-card">
         <span className="step-number">{String(index + 1).padStart(2, "0")}</span>
@@ -245,11 +203,86 @@ function PipelineRow({ step, index }: { step: Milestone; index: number }) {
   );
 }
 
-function MotionStudioRoute() {
-  const demoMode = new URLSearchParams(window.location.search).get("demo") === "complete";
-  const inputRef = useRef<HTMLInputElement>(null);
+function ratioLabel(ratio: CanvasRatio) {
+  return ratio === "9:16" ? "9:16 · 竖版（抖音）" : "4:3 · 横版";
+}
+
+function ratioNote(ratio: CanvasRatio, mode: MigrateMode, hd1080: boolean) {
+  const canvas = ratio === "9:16" ? "512×896" : "512×384";
+  const hd = ratio === "9:16" ? "1080×1920" : "1440×1080";
+  return `${canvas} 加速草稿${hd1080 ? ` → ${hd} 高清成片` : ""} · ${mode === "animation" ? "动作迁移" : "人物替换"}`;
+}
+
+function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, hd1080: boolean): Milestone[] {
+  const transfer = mode === "replacement" ? "人物替换" : "动作迁移";
+  const list: Milestone[] = [];
+  if (removeSubtitles) {
+    list.push(
+      { id: "read", label: "读取视频与音频", subtitle: "加载带字幕视频", status: "pending" },
+      { id: "mask", label: "定位底部字幕区域", subtitle: "固定底部字幕遮罩", status: "pending" },
+      { id: "paint", label: "ProPainter 时序去字幕", subtitle: "按前后帧修复字幕区域", status: "pending" },
+      { id: "clean_save", label: "输出无字幕视频", subtitle: "保留原音频与帧率", status: "pending" },
+    );
+  }
+  list.push(
+    { id: "prep", label: "加载 SCAIL 模型与人物参考", subtitle: "读取驱动视频并准备参考人物", status: "pending" },
+    { id: "sam", label: "SAM3 人物追踪与遮罩", subtitle: "定位视频与参考图中的人物", status: "pending" },
+    {
+      id: "migrate",
+      label: `长视频分段${transfer}`,
+      subtitle:
+        mode === "replacement"
+          ? "把视频中的人物替换成参考人物，保留场景与音频"
+          : "让参考人物按视频动作表演，保留人物形象与音频",
+      status: "pending",
+    },
+    { id: "save", label: "拼接输出成片", subtitle: "逐段衔接并封装输出视频", status: "pending" },
+  );
+  if (hd1080) {
+    list.push(
+      { id: "upscale", label: "RealESRGAN 4× 放大", subtitle: "逐帧超采样到所选比例高清", status: "pending" },
+      { id: "hd", label: "输出高清成片", subtitle: "保存高清加强成片", status: "pending" },
+    );
+  }
+  return list;
+}
+
+function ToggleRow({
+  checked,
+  onChange,
+  title,
+  description,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="toggle-row">
+      <div className="toggle-copy">
+        <strong>{title}</strong>
+        <span>{description}</span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        className={`toggle-switch ${checked ? "on" : ""}`}
+        onClick={() => onChange(!checked)}
+      >
+        <span />
+      </button>
+    </div>
+  );
+}
+
+export function MigrateRoute() {
+  const videoInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const previewTokenRef = useRef(0);
+
   const [config, setConfig] = useState<AppConfig>(FALLBACK_CONFIG);
   const [file, setFile] = useState<File | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -257,7 +290,21 @@ function MotionStudioRoute() {
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const [previewPreparing, setPreviewPreparing] = useState(false);
   const [previewConverting, setPreviewConverting] = useState(false);
-  const previewTokenRef = useRef(0);
+  const [duration, setDuration] = useState<number | null>(null);
+
+  const draft = useMemo(() => readDraft(), []);
+  const [ratio, setRatio] = useState<CanvasRatio>(draft?.ratio || "9:16");
+  const [mode, setMode] = useState<MigrateMode>(draft?.mode || "animation");
+  const [removeSubtitles, setRemoveSubtitles] = useState<boolean>(draft?.removeSubtitles ?? false);
+  const [hd1080, setHd1080] = useState<boolean>(draft?.hd1080 ?? false);
+  const [contentPrompt, setContentPrompt] = useState(draft?.contentPrompt ?? "a person singing");
+  const [videoPrompt, setVideoPrompt] = useState(draft?.videoPrompt ?? "person");
+  const [imagePrompt, setImagePrompt] = useState(draft?.imagePrompt ?? "person");
+
+  const [job, setJob] = useState<JobState | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -268,26 +315,33 @@ function MotionStudioRoute() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [lightboxImage]);
-  const [duration, setDuration] = useState<number | null>(null);
-  const [actionPrompt, setActionPrompt] = useState(() => readDraft()?.actionPrompt || "");
-  const [cameraPrompt, setCameraPrompt] = useState(() => readDraft()?.cameraPrompt || "");
-  const [job, setJob] = useState<JobState | null>(demoMode ? DEMO_JOB : null);
-  const [logsOpen, setLogsOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
-  const [dragActive, setDragActive] = useState(false);
 
-  const milestones = job?.milestones?.length ? job.milestones : EMPTY_MILESTONES;
+  const milestones = job?.milestones?.length
+    ? job.milestones
+    : migrateMilestoneSkeleton(removeSubtitles, mode, hd1080);
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
-  const resultUrl = !demoMode && job?.finalReady ? `/api/jobs/${job.id}/media/final` : null;
-  const originalUrl = !demoMode && job?.originalReady ? `/api/jobs/${job.id}/media/original` : null;
 
   const resourceStatus = useMemo(() => {
-    if (job?.status === "running" && ["voice", "handoff"].includes(job.stage)) return { label: "RVC 单链路运行中", mode: "rvc" };
-    if (job?.status === "running") return { label: "ComfyUI 运行中", mode: "connected" };
+    if (job?.status === "running") return { label: "ComfyUI 单链路运行中", mode: "connected" };
     if (config.comfyuiConnected) return { label: "ComfyUI 已连接", mode: "connected" };
     return { label: "资源空闲，按需启动", mode: "idle" };
-  }, [config.comfyuiConnected, job?.stage, job?.status]);
+  }, [config.comfyuiConnected, job?.status]);
+
+  useEffect(() => {
+    writeDraft({
+      ratio,
+      mode,
+      removeSubtitles,
+      hd1080,
+      contentPrompt,
+      videoPrompt,
+      imagePrompt,
+      videoName: file?.name ?? null,
+      videoSize: file?.size ?? null,
+      imageName: imageFile?.name ?? null,
+      imageSize: imageFile?.size ?? null,
+    });
+  }, [ratio, mode, removeSubtitles, hd1080, contentPrompt, videoPrompt, imagePrompt, file, imageFile]);
 
   const connectJob = useCallback((jobId: string) => {
     socketRef.current?.close();
@@ -314,6 +368,7 @@ function MotionStudioRoute() {
   useEffect(() => () => {
     releaseObjectUrl(previewUrl);
     releaseObjectUrl(imagePreviewUrl);
+    socketRef.current?.close();
   }, [previewUrl, imagePreviewUrl]);
 
   const chooseImage = useCallback((nextFile: File | null) => {
@@ -329,12 +384,12 @@ function MotionStudioRoute() {
       releaseObjectUrl(current);
       return URL.createObjectURL(nextFile);
     });
-    void saveDraftFile("image", nextFile);
+    void saveDraftFile("reference", nextFile);
     writeDraft({ imageName: nextFile.name, imageSize: nextFile.size });
     setLocalError(null);
   }, []);
 
-  const chooseFile = useCallback(async (nextFile: File | null) => {
+  const chooseVideo = useCallback(async (nextFile: File | null) => {
     if (!nextFile) return;
     const allowed = [".mp4", ".mov", ".mkv", ".webm"];
     const suffix = nextFile.name.slice(nextFile.name.lastIndexOf(".")).toLowerCase();
@@ -342,9 +397,6 @@ function MotionStudioRoute() {
       setLocalError("请选择 MP4、MOV、MKV 或 WebM 视频文件。");
       return;
     }
-    // The browser cannot decode HEVC/H.265 (typical for Douyin downloads),
-    // so the backend stores the file and serves an H.264 preview copy; the
-    // original file is still what gets submitted to the pipeline.
     const token = ++previewTokenRef.current;
     setFile(nextFile);
     setPreviewUrl((current) => {
@@ -388,8 +440,6 @@ function MotionStudioRoute() {
       }
     } catch {
       if (token !== previewTokenRef.current) return;
-      // Backend unavailable: fall back to the local file preview. Some
-      // codecs may not play in the browser, but generation is unaffected.
       setPreviewUrl(URL.createObjectURL(nextFile));
     } finally {
       if (token === previewTokenRef.current) {
@@ -412,49 +462,59 @@ function MotionStudioRoute() {
       }
     };
 
-    const draft = readDraft();
-    const restoredImage = await restoreRemote("reference", latest?.referenceName || "reference.png", "image/png")
-      || await loadDraftFile("image");
-    if (restoredImage) chooseImage(restoredImage);
-
-    const restoredRemoteVideo = await restoreRemote("video", latest?.sourceName || "singing-video.mp4", "video/mp4");
-    if (restoredRemoteVideo && latest?.id) {
-      setFile(restoredRemoteVideo);
+    if (latest?.referenceUploaded) {
+      const restoredImage =
+        (await restoreRemote("reference", latest?.referenceName || "reference.png", "image/png"))
+        || await loadDraftFile("reference");
+      if (restoredImage) chooseImage(restoredImage);
+    }
+    const restoredVideo =
+      (await restoreRemote("video", latest?.sourceName || "migrate-video.mp4", "video/mp4"))
+      || await loadDraftFile("video");
+    if (restoredVideo && latest?.id) {
+      setFile(restoredVideo);
       setDuration(latest.sourceDuration ?? null);
       setPreviewPreparing(false);
       setPreviewConverting(false);
       setPreviewUrl(`/api/jobs/${latest.id}/input/video/preview`);
-      void saveDraftFile("video", restoredRemoteVideo);
-      writeDraft({ videoName: restoredRemoteVideo.name, videoSize: restoredRemoteVideo.size });
-    } else {
-      const restoredDraftVideo = await loadDraftFile("video");
-      if (restoredDraftVideo) await chooseFile(restoredDraftVideo);
+      void saveDraftFile("video", restoredVideo);
+      writeDraft({ videoName: restoredVideo.name, videoSize: restoredVideo.size });
+    } else if (restoredVideo) {
+      await chooseVideo(restoredVideo);
     }
-
-    if (!latest && draft) {
-      setActionPrompt(draft.actionPrompt || "");
-      setCameraPrompt(draft.cameraPrompt || "");
-    }
-  }, [chooseFile, chooseImage]);
+  }, [chooseImage, chooseVideo]);
 
   useEffect(() => {
     let cancelled = false;
-    const draft = readDraft();
     Promise.all([
       fetch("/api/config", { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject()),
-      demoMode
-        ? Promise.resolve(null)
-        : fetch("/api/jobs/latest?kind=singing", { cache: "no-store" }).then((response) => response.status === 204 ? null : response.json()),
+      fetch("/api/jobs/latest?kind=migrate", { cache: "no-store" })
+        .then((response) => response.status === 204 ? null : response.json()),
     ]).then(([nextConfig, latest]) => {
       if (cancelled) return;
       setConfig(nextConfig);
-      setActionPrompt(latest?.actionPrompt || draft?.actionPrompt || nextConfig.defaultAction || "");
-      setCameraPrompt(latest?.cameraPrompt || draft?.cameraPrompt || nextConfig.defaultCamera || "");
-      if (demoMode) {
-        setJob(DEMO_JOB);
-        setActionPrompt(DEMO_JOB.actionPrompt);
-        setCameraPrompt(DEMO_JOB.cameraPrompt);
-      } else if (latest?.id) {
+      const source = latest ?? readDraft();
+      if (source) {
+        if (latest) {
+          setRatio((latest.canvas as CanvasRatio) || "9:16");
+          setMode((latest.migrateMode as MigrateMode) || "animation");
+          setRemoveSubtitles(Boolean(latest.removeSubtitles));
+          setHd1080(Boolean(latest.hd1080));
+          setContentPrompt(latest.contentPrompt ?? "a person singing");
+          setVideoPrompt(latest.videoPrompt ?? "person");
+          setImagePrompt(latest.imagePrompt ?? "person");
+        } else if ("ratio" in source) {
+          const draftSource = source as MigrateDraft;
+          setRatio(draftSource.ratio || "9:16");
+          setMode(draftSource.mode || "animation");
+          setRemoveSubtitles(draftSource.removeSubtitles ?? false);
+          setHd1080(draftSource.hd1080 ?? false);
+          setContentPrompt(draftSource.contentPrompt ?? "a person singing");
+          setVideoPrompt(draftSource.videoPrompt ?? "person");
+          setImagePrompt(draftSource.imagePrompt ?? "person");
+        }
+      }
+      if (latest?.id) {
         setJob(latest);
         if (["queued", "running"].includes(latest.status)) connectJob(latest.id);
       }
@@ -466,14 +526,9 @@ function MotionStudioRoute() {
       cancelled = true;
       socketRef.current?.close();
     };
-  }, [connectJob, demoMode, restoreInputs]);
+  }, [connectJob, restoreInputs]);
 
-  useEffect(() => {
-    if (demoMode) return;
-    writeDraft({ actionPrompt, cameraPrompt });
-  }, [actionPrompt, cameraPrompt, demoMode]);
-
-  const clearFile = () => {
+  const clearVideo = () => {
     previewTokenRef.current += 1;
     releaseObjectUrl(previewUrl);
     setFile(null);
@@ -483,22 +538,26 @@ function MotionStudioRoute() {
     setPreviewConverting(false);
     void clearDraftFile("video");
     writeDraft({ videoName: null, videoSize: null });
-    if (inputRef.current) inputRef.current.value = "";
+    if (videoInputRef.current) videoInputRef.current.value = "";
+  };
+
+  const clearImage = () => {
+    releaseObjectUrl(imagePreviewUrl);
+    setImageFile(null);
+    setImagePreviewUrl(null);
+    void clearDraftFile("reference");
+    writeDraft({ imageName: null, imageSize: null });
+    if (imageInputRef.current) imageInputRef.current.value = "";
   };
 
   const submit = async () => {
-    if (!imageFile && !demoMode) {
-      setLocalError("请先上传一张人物参考图片。");
-      imageInputRef.current?.click();
-      return;
-    }
     if (!file) {
-      setLocalError("请先上传一个带歌声的视频。");
-      inputRef.current?.click();
+      setLocalError("请先上传一个包含动作的视频。");
+      videoInputRef.current?.click();
       return;
     }
-    if (duration && duration > config.maxDurationSeconds + 0.25) {
-      setLocalError(`视频时长不能超过 ${config.maxDurationSeconds} 秒，当前为 ${formatDuration(duration)}。`);
+    if (!config.environmentReady) {
+      setLocalError("本地环境缺少文件：" + (config.missingRequirements.join("、") || "未知"));
       return;
     }
     setSubmitting(true);
@@ -506,11 +565,15 @@ function MotionStudioRoute() {
     const form = new FormData();
     form.append("video", file);
     if (imageFile) form.append("reference_image", imageFile);
-    form.append("action_prompt", actionPrompt);
-    form.append("camera_prompt", cameraPrompt);
-    if (duration != null) form.append("duration", String(duration));
+    form.append("ratio", ratio);
+    form.append("remove_subtitles", removeSubtitles ? "1" : "0");
+    form.append("mode", mode);
+    form.append("hd1080", hd1080 ? "1" : "0");
+    form.append("content_prompt", contentPrompt);
+    form.append("video_prompt", videoPrompt);
+    form.append("image_prompt", imagePrompt);
     try {
-      const response = await fetch("/api/jobs", { method: "POST", body: form });
+      const response = await fetch("/api/jobs/migrate", { method: "POST", body: form });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || "任务创建失败");
       setJob(payload);
@@ -522,124 +585,153 @@ function MotionStudioRoute() {
     }
   };
 
-  const retryVoice = async () => {
-    if (!job) return;
-    setLocalError(null);
-    const response = await fetch(`/api/jobs/${job.id}/retry-voice`, { method: "POST" });
-    const payload = await response.json();
-    if (!response.ok) {
-      setLocalError(payload.detail || "无法重新进行音色转换");
-      return;
-    }
-    setJob(payload);
-    connectJob(job.id);
-  };
-
-  const retryEnhance = async () => {
-    if (!job) return;
-    setLocalError(null);
-    const response = await fetch(`/api/jobs/${job.id}/retry-enhance`, { method: "POST" });
-    const payload = await response.json();
-    if (!response.ok) {
-      setLocalError(payload.detail || "无法重新进行 1080P 高清转换");
-      return;
-    }
-    setJob(payload);
-    connectJob(job.id);
-  };
-
   const completionTime = useMemo(() => {
     const value = job?.output?.completedAt;
     if (!value) return "--";
     return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
   }, [job?.output?.completedAt]);
 
+  const finalUrl = job?.finalReady ? `/api/jobs/${job.id}/media/final` : null;
+  const draftUrl = job?.draftReady ? `/api/jobs/${job.id}/media/draft` : null;
+  const cleanUrl = job?.cleanReady ? `/api/jobs/${job.id}/media/clean` : null;
+  const originalUrl = job?.id ? `/api/jobs/${job.id}/input/video/preview` : null;
+  const showResult = job && (job.finalReady || job.draftReady || job.cleanReady);
+  const showDraftSeparately = Boolean(job?.draftReady && job?.finalReady && job?.enhancedReady);
+  const resultCaption = job?.finalReady
+    ? job.enhancedReady ? "高清成片已完成" : "迁移成片已完成"
+    : job?.draftReady ? "迁移草稿已生成" : "中间产物已保留";
+
   return (
-    <div className="motion-route">
-      <header className="route-hero motion-hero">
+    <div className="migrate-route">
+      <header className="route-hero">
         <div>
-          <p className="route-eyebrow"><span /> H3 · MOTION STUDIO</p>
-          <h1>让演唱视频，<em>动起来。</em></h1>
-          <p className="route-description">人物参考、演唱视频、动作和运镜，一条链路完成高清成片与音色转换。</p>
+          <p className="route-eyebrow"><span /> H3 · ACTION MIGRATION</p>
+          <h1>让参考人物，<em>动起来。</em></h1>
+          <p className="route-description">上传一段动作视频与人物参考图，按所选画布把动作迁移/替换到参考人物身上，可选去字幕与 1080P 高清输出。</p>
         </div>
         <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
       </header>
 
       <main className="workspace">
-        <section className="input-panel" aria-label="生成设置">
+        <section className="input-panel" aria-label="动作迁移设置">
           <div className="field-block">
-            <div className="field-heading"><h2><span>1.</span> 上传人物图片与演唱视频</h2></div>
+            <div className="field-heading"><h2><span>1.</span> 画布比例 <em>（先选择，全链路按此输出）</em></h2></div>
+            <div className="ratio-cards" role="radiogroup" aria-label="画布比例">
+              <button type="button" role="radio" aria-checked={ratio === "9:16"} className={ratio === "9:16" ? "selected" : ""} onClick={() => setRatio("9:16")}>
+                <strong>9:16 · 竖版</strong><span>抖音发布常用 · 画布 512×896</span>
+              </button>
+              <button type="button" role="radio" aria-checked={ratio === "4:3"} className={ratio === "4:3" ? "selected" : ""} onClick={() => setRatio("4:3")}>
+                <strong>4:3 · 横版</strong><span>现有成片比例 · 画布 512×384</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="field-block">
+            <div className="field-heading"><h2><span>2.</span> 上传动作视频与人物参考图</h2></div>
             <div className="source-grid">
               <div className="source-card image-source">
-                <div className="source-label">人物参考图</div>
+                <div className="source-label">人物参考图 · 可选</div>
                 <input ref={imageInputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,.jpg,.jpeg" onChange={(event) => chooseImage(event.target.files?.[0] || null)} />
-                {(imagePreviewUrl || demoMode) ? (
+                {imagePreviewUrl ? (
                   <div className="image-preview-wrap">
-                    <button className="image-preview-button" onClick={() => setLightboxImage(imagePreviewUrl || config.fixedReferenceUrl)} aria-label="放大预览人物参考图">
-                      <img src={imagePreviewUrl || config.fixedReferenceUrl} alt="人物参考图预览" />
+                    <button className="image-preview-button" onClick={() => setLightboxImage(imagePreviewUrl)} aria-label="放大预览人物参考图">
+                      <img src={imagePreviewUrl} alt="人物参考图预览" />
                       <span><Graph weight="fill" /> 点击放大</span>
                     </button>
                     <button className="image-swap" onClick={() => imageInputRef.current?.click()} aria-label="更换人物参考图片">
                       <ArrowsClockwise weight="bold" /> 更换
                     </button>
+                    <button className="image-remove" onClick={clearImage} aria-label="移除人物参考图"><X weight="bold" /></button>
                   </div>
                 ) : (
                   <button className="image-empty" onClick={() => imageInputRef.current?.click()}>
-                    <UploadSimple /><strong>上传图片</strong><span>PNG / JPG / WebP</span>
+                    <UploadSimple /><strong>上传图片</strong><span>PNG / JPG / WebP · 建议 9:16 竖版</span>
                   </button>
                 )}
+                {!imagePreviewUrl && <p className="fallback-note"><Info /> 未上传时使用内置默认人物图</p>}
               </div>
               <div className="source-card video-source">
-                <div className="source-label">演唱视频 · 含音频</div>
-            <input ref={inputRef} className="visually-hidden" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mkv" onChange={(event) => chooseFile(event.target.files?.[0] || null)} />
-            <div
-              className={`media-input ${dragActive ? "drag-active" : ""}`}
-              onDragOver={(event) => { event.preventDefault(); setDragActive(true); }}
-              onDragLeave={() => setDragActive(false)}
-              onDrop={(event) => { event.preventDefault(); setDragActive(false); chooseFile(event.dataTransfer.files?.[0] || null); }}
-            >
-              {previewUrl ? (
-                <>
-                  <video src={previewUrl} controls preload="metadata" onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)} />
-                  <div className="media-meta">
-                    <div><strong>{file?.name}</strong><span>{formatDuration(duration)} · {formatBytes(file?.size)}</span></div>
-                    <button onClick={clearFile} aria-label="移除视频"><X /></button>
-                  </div>
-                </>
-              ) : previewPreparing ? (
-                <div className="upload-busy">
-                  <SpinnerGap className="spin" weight="bold" />
-                  <strong>{previewConverting ? "正在转为可播放预览…" : "正在准备预览…"}</strong>
-                  <span>H.265 / HEVC 视频将自动转码为 H.264<br />耗时约几秒，不影响后续生成</span>
+                <div className="source-label">动作视频 · 含音频</div>
+                <input ref={videoInputRef} className="visually-hidden" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mkv" onChange={(event) => chooseVideo(event.target.files?.[0] || null)} />
+                <div className="media-input">
+                  {previewUrl ? (
+                    <>
+                      <video src={previewUrl} controls preload="metadata" onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)} />
+                      <div className="media-meta">
+                        <div><strong>{file?.name}</strong><span>{formatDuration(duration)} · {formatBytes(file?.size)}</span></div>
+                        <button onClick={clearVideo} aria-label="移除视频"><X /></button>
+                      </div>
+                    </>
+                  ) : previewPreparing ? (
+                    <div className="upload-busy">
+                      <SpinnerGap className="spin" weight="bold" />
+                      <strong>{previewConverting ? "正在转为可播放预览…" : "正在准备预览…"}</strong>
+                      <span>H.265 / HEVC 视频将自动转码为 H.264<br />耗时约几秒，不影响后续生成</span>
+                    </div>
+                  ) : (
+                    <button className="empty-upload" onClick={() => videoInputRef.current?.click()}>
+                      <span className="upload-icon"><UploadSimple /></span>
+                      <strong>点击选择动作视频</strong>
+                      <span>支持 MP4 / MOV / MKV，长短视频均可</span>
+                    </button>
+                  )}
                 </div>
-              ) : demoMode ? (
-                <>
-                  <img className="demo-source" src={config.fixedReferenceUrl} alt="演唱视频画面预览" />
-                  <div className="media-meta demo-meta">
-                    <div><strong>演唱视频.mp4</strong><span>00:00:32 · 21.4 MB</span></div>
-                  </div>
-                </>
-              ) : (
-                <button className="empty-upload" onClick={() => inputRef.current?.click()}>
-                  <span className="upload-icon"><UploadSimple /></span>
-                  <strong>点击选择或拖入演唱视频</strong>
-                  <span>支持 MP4 / MOV / MKV，最长 {config.maxDurationSeconds} 秒</span>
-                </button>
-              )}
-            </div>
               </div>
             </div>
-            <p className="field-note">图片作为人物与首帧参考；视频提供歌声与时长。音色转换会在 ComfyUI 完全关闭后自动进行。</p>
+            <p className="field-note">视频只提供动作与场景、音频会保留；人物由参考图决定。素材会按所选比例统一缩放/居中裁切到画布。</p>
+          </div>
+
+          <div className="field-block">
+            <div className="field-heading"><h2><span>3.</span> 迁移模式</h2></div>
+            <div className="mode-cards" role="radiogroup" aria-label="迁移模式">
+              <button type="button" role="radio" aria-checked={mode === "animation"} className={mode === "animation" ? "selected" : ""} onClick={() => setMode("animation")}>
+                <span className="mode-icon"><PersonSimpleRun weight="fill" /></span>
+                <strong>动作迁移</strong>
+                <span>让参考人物按视频里的动作表演，保留人物自身形象、服装与风格</span>
+              </button>
+              <button type="button" role="radio" aria-checked={mode === "replacement"} className={mode === "replacement" ? "selected" : ""} onClick={() => setMode("replacement")}>
+                <span className="mode-icon"><FilmSlate weight="fill" /></span>
+                <strong>人物替换</strong>
+                <span>把视频中的人物直接替换成参考人物，贴合原视频位置与构图</span>
+              </button>
+            </div>
           </div>
 
           <div className="field-block text-field">
-            <div className="field-heading"><h2><span>2.</span> 人物动作 <em>（表情、肢体与互动细节）</em></h2><span>{actionPrompt.length} / 2000</span></div>
-            <textarea value={actionPrompt} maxLength={2000} onChange={(event) => setActionPrompt(event.target.value)} placeholder="描述人物在不同时间段的动作；留空将使用工作流默认动作。" />
+            <div className="field-heading"><h2><span>4.</span> 提示词 <em>（留空则使用工作流默认）</em></h2></div>
+            <div className="prompt-grid">
+              <label className="prompt-field">
+                <span>内容 / 画面描述</span>
+                <textarea value={contentPrompt} maxLength={2000} onChange={(event) => setContentPrompt(event.target.value)} placeholder="例：一位女孩在唱歌…（默认 a person singing）" />
+              </label>
+              <label className="prompt-field">
+                <span>视频里的人物</span>
+                <textarea value={videoPrompt} maxLength={200} onChange={(event) => setVideoPrompt(event.target.value)} placeholder="SAM3 用于追踪视频中的人（默认 person）" />
+              </label>
+              <label className="prompt-field">
+                <span>图片里的人物</span>
+                <textarea value={imagePrompt} maxLength={200} onChange={(event) => setImagePrompt(event.target.value)} placeholder="SAM3 用于追踪参考图的人（默认 person）" />
+              </label>
+            </div>
           </div>
 
-          <div className="field-block text-field">
-            <div className="field-heading"><h2><span>3.</span> 运镜要求 <em>（镜头运动与构图节奏）</em></h2><span>{cameraPrompt.length} / 2000</span></div>
-            <textarea value={cameraPrompt} maxLength={2000} onChange={(event) => setCameraPrompt(event.target.value)} placeholder="描述推、拉、摇、移以及人物构图；留空将使用工作流默认运镜。" />
+          <div className="field-block">
+            <div className="field-heading"><h2><span>5.</span> 处理选项</h2></div>
+            <div className="option-stack">
+              <ToggleRow
+                checked={removeSubtitles}
+                onChange={setRemoveSubtitles}
+                title="去除底部字幕"
+                description="视频底部有字幕/水印条时开启：先用 ProPainter 固定底部修复，再把干净视频用于迁移"
+              />
+              <ToggleRow
+                checked={hd1080}
+                onChange={setHd1080}
+                title="1080P 高清加强"
+                description={`迁移完成后追加 RealESRGAN 4×：${ratio === "9:16" ? "1080×1920 竖版" : "1440×1080"}，耗时会明显增加`}
+              />
+            </div>
+            <p className="field-note">当前设置：{ratioNote(ratio, mode, hd1080)}{removeSubtitles ? " · 先去除字幕" : ""}。输出保留原视频音频与帧率。</p>
           </div>
 
           {!config.environmentReady && config.missingRequirements.length > 0 && (
@@ -655,7 +747,7 @@ function MotionStudioRoute() {
 
           <button className="primary-action" onClick={submit} disabled={isBusy || !config.environmentReady}>
             {isBusy ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
-            {isBusy ? "正在执行单链路任务" : "开始生成最终成片"}
+            {isBusy ? "正在执行单链路任务" : `开始${ratio === "9:16" ? "竖版" : "横版"}${removeSubtitles ? "去字幕+" : ""}${mode === "replacement" ? "人物替换" : "动作迁移"}`}
           </button>
         </section>
 
@@ -670,32 +762,36 @@ function MotionStudioRoute() {
             {milestones.map((step, index) => (
               <div className="pipeline-step" key={step.id}>
                 <PipelineRow step={step} index={index} />
-                {step.id === "handoff" && (
-                  <div className={`handoff-banner ${step.status === "completed" ? "ready" : ""}`}>
-                    <ArrowsClockwise weight="bold" />
-                    <span>{step.status === "completed" ? "资源已切换到 RVC 流程" : "ComfyUI 关闭后才会启动 RVC"}</span>
-                  </div>
-                )}
               </div>
             ))}
           </div>
 
-          {(job?.originalReady || job?.finalReady) && (
+          {showResult && (
             <section className="result-panel">
-              <div className="result-heading"><h3>生成结果</h3><span><Check weight="bold" /> {job.finalReady ? "最终成片已完成" : "原版成片已保留"}</span></div>
+              <div className="result-heading"><h3>生成结果</h3><span><Check weight="bold" /> {resultCaption}</span></div>
               <div className="result-grid">
-                <div className="result-video"><video src={!demoMode && (resultUrl || originalUrl) ? `${resultUrl || originalUrl}#t=0.001` : undefined} controls preload="auto" poster={demoMode ? config.fixedReferenceUrl : undefined} /></div>
+                <div className="result-video">
+                  {finalUrl || draftUrl || cleanUrl ? (
+                    <video src={`${finalUrl || draftUrl || cleanUrl}#t=0.001`} controls preload="auto" />
+                  ) : <div className="result-empty"><Info /> 成片文件暂不可用</div>}
+                </div>
                 <div className="result-details">
-                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? "最终成片 · ranran 音色" : "原版成片"}</strong><span>{job.finalReady ? "1440 × 1080" : "640 × 480"}</span></div></div>
+                  <div className="result-title">
+                    <FilmSlate />
+                    <div>
+                      <strong>{job.finalReady ? (job.enhancedReady ? "高清成片" : "迁移成片") : job.draftReady ? "迁移草稿" : "中间产物"}</strong>
+                      <span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ratioLabel(ratio)}</span>
+                    </div>
+                  </div>
                   <dl>
                     <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>
                     <div><dt>完成时间</dt><dd>{completionTime}</dd></div>
                   </dl>
-                  {job.finalReady && <a className="result-button primary" href={`/api/jobs/${job.id}/media/final?download=1`}><DownloadSimple /> 下载最终成片</a>}
-                  {job.originalReady && <a className="result-button" href={`/api/jobs/${job.id}/media/original`} target="_blank" rel="noreferrer"><Eye /> 查看原版</a>}
-                  {job.status === "failed" && job.originalReady && !job.enhancedReady && <button className="result-button" onClick={retryEnhance} disabled={isBusy}><ArrowsClockwise /> 重新转换 1080P</button>}
-                  {job.enhancedReady && <button className="result-button" onClick={retryVoice} disabled={isBusy}><ArrowsClockwise /> 重新音色转换</button>}
+                  {finalUrl && <a className="result-button primary" href={`${finalUrl}?download=1`}><DownloadSimple /> 下载成片</a>}
+                  {showDraftSeparately && draftUrl && <a className="result-button" href={draftUrl} target="_blank" rel="noreferrer"><Eye /> 查看迁移草稿</a>}
+                  {cleanUrl && <a className="result-button" href={cleanUrl} target="_blank" rel="noreferrer"><Eye /> 查看去字幕视频</a>}
+                  {originalUrl && <a className="result-button" href={originalUrl} target="_blank" rel="noreferrer"><Eye /> 查看原始视频</a>}
                 </div>
               </div>
             </section>
@@ -709,7 +805,7 @@ function MotionStudioRoute() {
               <div className="log-content">
                 {job?.logs?.length ? job.logs.map((entry, index) => (
                   <div className="log-line" key={`${entry.time}-${index}`}><time>{formatClock(entry.time)}</time><span>{entry.message}</span></div>
-                )) : <div className="empty-log"><Info /> 运行时会显示当前 ComfyUI 节点、RVC 阶段和错误详情。</div>}
+                )) : <div className="empty-log"><Info /> 运行时会显示当前 ComfyUI 节点与错误详情。</div>}
                 {job?.errorDetail && <pre>{job.errorDetail}</pre>}
               </div>
             )}
@@ -724,83 +820,6 @@ function MotionStudioRoute() {
           <p className="lightbox-hint" onClick={(event) => event.stopPropagation()}>人物参考图 · 点击空白处或按 Esc 关闭</p>
         </div>
       )}
-    </div>
-  );
-}
-
-export function App() {
-  const path = window.location.pathname.replace(/\/+$/, "");
-  const isDouyinRoute = path === "/douyin";
-  const isMigrateRoute = path === "/migrate";
-
-  return (
-    <div className="desktop-app-shell">
-      <aside className="app-sidebar">
-        <div className="sidebar-top">
-          <p className="sidebar-kicker">DESKTOP</p>
-          <a className="sidebar-brand" href="/" aria-label="H3 MotionStudio 首页">
-            <span className="brand-mark">H3</span>
-            <strong>MotionStudio</strong>
-          </a>
-        </div>
-
-        <nav className="sidebar-navigation" aria-label="工作台导航">
-          <p className="sidebar-section-label">工作台</p>
-          <div className="route-switcher">
-            <a className={!isDouyinRoute && !isMigrateRoute ? "active" : ""} href="/">
-              <FilmSlate weight={isDouyinRoute || isMigrateRoute ? "regular" : "fill"} />
-              <span>影动生成</span>
-            </a>
-            <a className={isDouyinRoute ? "active" : ""} href="/douyin">
-              <DownloadSimple weight={isDouyinRoute ? "fill" : "regular"} />
-              <span>抖音下载</span>
-            </a>
-            <a className={isMigrateRoute ? "active" : ""} href="/migrate">
-              <PersonSimpleRun weight={isMigrateRoute ? "fill" : "regular"} />
-              <span>动作迁移</span>
-            </a>
-          </div>
-          <p className="route-caption">生成 · 下载 · 迁移</p>
-
-          <p className="sidebar-section-label">创作与管理</p>
-          <a className={!isDouyinRoute && !isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
-            <Play weight="fill" />
-            <span>高清工作台</span>
-            {!isDouyinRoute && !isMigrateRoute && <i />}
-          </a>
-          <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
-            <PersonSimpleRun />
-            <span>动作迁移</span>
-            {isMigrateRoute && <i />}
-          </a>
-          <a className={isDouyinRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/douyin">
-            <DownloadSimple />
-            <span>链接下载</span>
-            {isDouyinRoute && <i />}
-          </a>
-          <div className="sidebar-nav-item muted" aria-disabled="true">
-            <Graph />
-            <span>任务中心</span>
-          </div>
-        </nav>
-
-        <div className="sidebar-system">
-          <p className="sidebar-section-label">系统</p>
-          <div className="sidebar-system-actions">
-            <button><GearSix /> 设置</button>
-            <button><Question /> 帮助</button>
-          </div>
-          <div className="sidebar-runtime">
-            <span className="runtime-icon"><Circle weight="fill" /></span>
-            <div><strong>本地服务</strong><small>按需运行</small></div>
-          </div>
-          <footer>H3 MOTIONSTUDIO <span>V0.2.0</span></footer>
-        </div>
-      </aside>
-
-      <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : <MotionStudioRoute />}
-      </div>
     </div>
   );
 }

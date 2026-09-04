@@ -8,7 +8,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from .settings import DB_PATH
+from .settings import DB_PATH, RVC_MODEL
 
 
 def now_iso() -> str:
@@ -33,9 +33,47 @@ def initial_milestones() -> list[dict[str, Any]]:
         {"id": "hd", "label": "输出 1440 × 1080", "subtitle": "保存高清加强成片", "status": "pending"},
         {"id": "handoff", "label": "关闭 ComfyUI", "subtitle": "释放内存和显存，切换到 RVC", "status": "pending"},
         {"id": "stems", "label": "分离人声与伴奏", "subtitle": "Demucs 提取演唱人声", "status": "pending"},
-        {"id": "voice", "label": "转换为我的音色", "subtitle": "RVC 模型执行音色转换", "status": "pending"},
+        {"id": "voice", "label": f"转换为 {RVC_MODEL.stem} 音色", "subtitle": "RVC 模型执行音色转换", "status": "pending"},
         {"id": "mux", "label": "替换最终成片音频", "subtitle": "重新混音并封装最终 MP4", "status": "pending"},
     ]
+
+
+def migrate_milestones(remove_subtitles: bool, mode: str, hd1080: bool) -> list[dict[str, Any]]:
+    """动作迁移路由的里程碑模板（不含 RVC：输出保留原音频）。
+
+    链路：可选「去字幕-ProPainter」→ SCAIL-2 长视频分段 动作迁移/人物替换
+    → 可选 RealESRGAN 1080P 高清加强。id 与 pipeline 内按节点解析的阶段一一对应。
+    """
+    transfer = "人物替换" if mode == "replacement" else "动作迁移"
+    milestones: list[dict[str, Any]] = []
+    if remove_subtitles:
+        milestones += [
+            {"id": "read", "label": "读取视频与音频", "subtitle": "加载带字幕视频", "status": "pending"},
+            {"id": "mask", "label": "定位底部字幕区域", "subtitle": "固定底部字幕遮罩", "status": "pending"},
+            {"id": "paint", "label": "ProPainter 时序去字幕", "subtitle": "按前后帧修复字幕区域", "status": "pending"},
+            {"id": "clean_save", "label": "输出无字幕视频", "subtitle": "保留原音频与帧率", "status": "pending"},
+        ]
+    milestones += [
+        {"id": "prep", "label": "加载 SCAIL 模型与人物参考", "subtitle": "读取驱动视频并准备参考人物", "status": "pending"},
+        {"id": "sam", "label": "SAM3 人物追踪与遮罩", "subtitle": "定位视频与参考图中的人物", "status": "pending"},
+        {
+            "id": "migrate",
+            "label": f"长视频分段{transfer}",
+            "subtitle": (
+                "让参考人物按视频动作表演，保留人物形象与音频"
+                if mode != "replacement"
+                else "把视频中的人物替换成参考人物，保留场景与音频"
+            ),
+            "status": "pending",
+        },
+        {"id": "save", "label": "拼接输出成片", "subtitle": "逐段衔接并封装输出视频", "status": "pending"},
+    ]
+    if hd1080:
+        milestones += [
+            {"id": "upscale", "label": "RealESRGAN 4× 放大", "subtitle": "逐帧超采样到 1440×1080", "status": "pending"},
+            {"id": "hd", "label": "输出 1080P 高清成片", "subtitle": "保存高清加强成片", "status": "pending"},
+        ]
+    return milestones
 
 
 class JobStore:
@@ -76,9 +114,35 @@ class JobStore:
             row = connection.execute("SELECT state_json FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return json.loads(row["state_json"]) if row else None
 
-    def latest(self) -> dict[str, Any] | None:
+    def latest(self, kind: str | None = None) -> dict[str, Any] | None:
+        """Latest job, optionally restricted to one task kind ('singing'/'migrate').
+
+        Jobs created before kinds existed carry no kind and count as 'singing'.
+        """
         with self._lock, self._connect() as connection:
-            row = connection.execute("SELECT state_json FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
+            if kind is None:
+                row = connection.execute(
+                    "SELECT state_json FROM jobs ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+            elif kind == "singing":
+                row = connection.execute(
+                    """
+                    SELECT state_json FROM jobs
+                    WHERE json_extract(state_json, '$.kind') IS NULL
+                       OR json_extract(state_json, '$.kind') = ?
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (kind,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """
+                    SELECT state_json FROM jobs
+                    WHERE json_extract(state_json, '$.kind') = ?
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (kind,),
+                ).fetchone()
         return json.loads(row["state_json"]) if row else None
 
     def active(self) -> dict[str, Any] | None:

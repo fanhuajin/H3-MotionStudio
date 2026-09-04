@@ -20,29 +20,82 @@ COMFY_WS = COMFY_URL.replace("http://", "ws://").replace("https://", "wss://")
 WORKFLOW_DIR = COMFY_ROOT / "user" / "default" / "workflows" / "video"
 SINGING_WORKFLOW = WORKFLOW_DIR / "视频-单图唱歌-自动拼接40秒内-4x3-运镜版.json"
 UPSCALE_WORKFLOW = WORKFLOW_DIR / "视频-成片输入-独立二采-RealESRGAN4x转1080P-8GB高清加强版.json"
+# 动作迁移链路：先去字幕（ProPainter 固定底部），再长视频替换/动作迁移
+CLEAN_WORKFLOW = WORKFLOW_DIR / "视频-去字幕-ProPainter-固定底部.json"
+MIGRATE_WORKFLOW = WORKFLOW_DIR / "视频-长视频替换-4x3加速版-ProPainter输入.json"
 FIXED_REFERENCE = COMFY_INPUT / "25181125-唱歌优化-指定背景-1440x1080-v3.png"
+# 动作迁移的默认人物参考图（未上传人物图时使用；迁移工作流内置参考图）
+MIGRATE_REFERENCE = COMFY_INPUT / "singing_portrait_4x3_1440x1080.png"
 
 RVC_ROOT = COMFY_HOME / "RVC"
 RVC_PYTHON = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 RVC_SCRIPT = RVC_ROOT / "convert_video_to_my_voice.py"
-RVC_MODEL = RVC_ROOT / "assets" / "weights" / "我的音色_测试_v1.pth"
-RVC_INDEX = RVC_ROOT / "assets" / "indices" / "my_voice_test_v1_added_IVF96_Flat_nprobe_1_my_voice_test_v1_v2.index"
+RVC_MODEL = RVC_ROOT / "assets" / "weights" / "ranran.pth"
+# ranran 无专属 index：该路径为可选候选（存在才启用索引，缺失则以无索引模式运行）
+RVC_INDEX = RVC_ROOT / "assets" / "indices" / "ranran.index"
 
 DB_PATH = DATA_DIR / "motionstudio.db"
 COMFY_LOG = DATA_DIR / "comfyui.log"
 MAX_DURATION_SECONDS = 40.0
 
+# 动作迁移路由：画布比例参数组。两份工作流 JSON 固定为 4:3 布局，9:16 时
+# 程序把"读取/修复画布、底部字幕遮罩、SCAIL 生成宽高、1080P 输出尺寸"
+# 替换为竖版数值 —— 与 SCAIL2-Easy 官方 512p 规则一致（短边对齐后长边对齐 32，
+# 9:16 → 512×896；高清按抖音竖屏标准 1080×1920）。遮罩按作者 4:3 版贴底比例
+# (中心 y=0.896H、高=0.151H、宽=0.84W) 等比换算，实测后如需微调改这里即可。
+CANVAS_PARAMS: dict[str, dict] = {
+    "4:3": {
+        "clean_width": 512,
+        "clean_height": 384,
+        "mask_center_x": 256,
+        "mask_center_y": 344,
+        "mask_width": 430,
+        "mask_height": 58,
+        "migrate_width": 512,
+        "migrate_height": 384,
+        "hd_width": 1440,
+        "hd_height": 1080,
+    },
+    "9:16": {
+        "clean_width": 512,
+        "clean_height": 896,
+        "mask_center_x": 256,
+        "mask_center_y": 803,
+        "mask_width": 430,
+        "mask_height": 135,
+        "migrate_width": 512,
+        "migrate_height": 896,
+        "hd_width": 1080,
+        "hd_height": 1920,
+    },
+}
+DEFAULT_CANVAS = "9:16"
+
+
+def canvas_params(ratio: str) -> dict:
+    params = CANVAS_PARAMS.get(ratio or "")
+    if not params:
+        raise ValueError(f"不支持的画布比例：{ratio!r}（可选 4:3 / 9:16）")
+    return params
+
 
 def required_paths() -> dict[str, Path]:
-    return {
+    paths = {
         "ComfyUI Python": COMFY_PYTHON,
         "ComfyUI main.py": COMFY_MAIN,
         "唱歌工作流": SINGING_WORKFLOW,
         "高清工作流": UPSCALE_WORKFLOW,
+        "去字幕工作流": CLEAN_WORKFLOW,
+        "动作迁移工作流": MIGRATE_WORKFLOW,
         "固定人物图片": FIXED_REFERENCE,
         "RVC Python": RVC_PYTHON,
         "RVC 转换脚本": RVC_SCRIPT,
-        "我的音色模型": RVC_MODEL,
-        "我的音色索引": RVC_INDEX,
+        "音色模型": RVC_MODEL,
     }
+    if RVC_INDEX.is_file():
+        paths["音色索引"] = RVC_INDEX
+    # 动作迁移的默认人物图只在存在时校验：缺失时用户上传人物图即可
+    if MIGRATE_REFERENCE.is_file():
+        paths["动作迁移人物图"] = MIGRATE_REFERENCE
+    return paths
 

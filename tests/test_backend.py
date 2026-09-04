@@ -11,10 +11,19 @@ from backend.douyin_service import (
     _extract_aweme_id,
     is_douyin_url,
 )
-from backend.settings import SINGING_WORKFLOW, UPSCALE_WORKFLOW, required_paths
-from backend.store import format_elapsed
+from backend.settings import (
+    CLEAN_WORKFLOW,
+    MIGRATE_WORKFLOW,
+    SINGING_WORKFLOW,
+    UPSCALE_WORKFLOW,
+    canvas_params,
+    required_paths,
+)
+from backend.store import format_elapsed, migrate_milestones
 from backend.workflows import (
     node_by_id,
+    prepare_clean_workflow,
+    prepare_migrate_workflow,
     prepare_singing_workflow,
     prepare_upscale_workflow,
 )
@@ -60,6 +69,92 @@ class WorkflowPreparationTests(unittest.TestCase):
             node_by_id(prepared, 8)["widgets_values"]["filename_prefix"],
             "video/H3_MotionStudio/unit-1080P",
         )
+
+    def test_upscale_scale_switches_to_vertical_1080x1920(self) -> None:
+        prepared = prepare_upscale_workflow(
+            "draft.mp4",
+            "video/H3_MotionStudio/unit-1080P",
+            UPSCALE_WORKFLOW,
+            scale=(1080, 1920),
+        )
+        widgets = node_by_id(prepared, 5)["widgets_values"]
+        self.assertEqual((widgets[1], widgets[2]), (1080, 1920))
+
+    def test_clean_workflow_replaces_source_prefix_and_9x16_canvas(self) -> None:
+        canvas = canvas_params("9:16")
+        prepared = prepare_clean_workflow(
+            "subtitles.mp4",
+            "video/H3_MotionStudio/unit-clean",
+            CLEAN_WORKFLOW,
+            canvas=canvas,
+        )
+        self.assertEqual(node_by_id(prepared, 1)["widgets_values"]["video"], "subtitles.mp4")
+        self.assertEqual(node_by_id(prepared, 1)["widgets_values"]["custom_width"], 512)
+        self.assertEqual(node_by_id(prepared, 1)["widgets_values"]["custom_height"], 896)
+        # [shape, frames, location_x, location_y, grow, frame_width, frame_height, shape_width, shape_height]
+        mask = node_by_id(prepared, 2)["widgets_values"]
+        self.assertEqual(mask[2:4], [256, 803])
+        self.assertEqual(mask[5:9], [512, 896, 430, 135])
+        self.assertEqual(node_by_id(prepared, 3)["widgets_values"][:2], [512, 896])
+        self.assertEqual(
+            node_by_id(prepared, 5)["widgets_values"]["filename_prefix"],
+            "video/H3_MotionStudio/unit-clean",
+        )
+
+    def test_clean_workflow_keeps_author_4x3_defaults_when_canvas_omitted(self) -> None:
+        prepared = prepare_clean_workflow("subtitles.mp4", "video/H3_MotionStudio/unit-clean", CLEAN_WORKFLOW)
+        mask = node_by_id(prepared, 2)["widgets_values"]
+        self.assertEqual(mask[3], 344)
+        self.assertEqual(mask[7], 430)
+
+    def test_migrate_workflow_replaces_drive_reference_mode_prompts_and_canvas(self) -> None:
+        canvas = canvas_params("9:16")
+        prepared = prepare_migrate_workflow(
+            "clean.mp4",
+            "portrait.png",
+            "animation",
+            "video/H3_MotionStudio/unit-migrate",
+            MIGRATE_WORKFLOW,
+            canvas=canvas,
+            content_prompt="一位女孩在唱歌",
+            video_prompt="singer",
+            image_prompt="girl",
+        )
+        self.assertEqual(node_by_id(prepared, 563)["widgets_values"][0], "clean.mp4")
+        self.assertEqual(node_by_id(prepared, 469)["widgets_values"]["video"], "clean.mp4")
+        self.assertEqual(node_by_id(prepared, 543)["widgets_values"]["video"], "clean.mp4")
+        self.assertEqual(node_by_id(prepared, 30)["widgets_values"][0], "portrait.png")
+        self.assertEqual(node_by_id(prepared, 342)["widgets_values"][0], 512)
+        self.assertEqual(node_by_id(prepared, 343)["widgets_values"][0], 896)
+        self.assertFalse(node_by_id(prepared, 353)["widgets_values"][0])  # 动作迁移 = false
+        self.assertEqual(node_by_id(prepared, 545)["widgets_values"][0], "一位女孩在唱歌")
+        self.assertEqual(node_by_id(prepared, 509)["widgets_values"][0], "singer")
+        self.assertEqual(node_by_id(prepared, 510)["widgets_values"][0], "girl")
+        self.assertEqual(
+            node_by_id(prepared, 456)["widgets_values"]["filename_prefix"],
+            "video/H3_MotionStudio/unit-migrate",
+        )
+
+    def test_migrate_workflow_replacement_mode_maps_to_true(self) -> None:
+        prepared = prepare_migrate_workflow(
+            "clean.mp4",
+            "portrait.png",
+            "replacement",
+            "video/H3_MotionStudio/unit-migrate",
+            MIGRATE_WORKFLOW,
+        )
+        self.assertTrue(node_by_id(prepared, 353)["widgets_values"][0])
+
+    def test_migrate_milestones_follow_options(self) -> None:
+        self.assertEqual(
+            [m["id"] for m in migrate_milestones(False, "animation", False)],
+            ["prep", "sam", "migrate", "save"],
+        )
+        ids = [m["id"] for m in migrate_milestones(True, "replacement", True)]
+        self.assertEqual(ids[:4], ["read", "mask", "paint", "clean_save"])
+        self.assertEqual(ids[-2:], ["upscale", "hd"])
+        replacement = next(m for m in migrate_milestones(False, "replacement", False) if m["id"] == "migrate")
+        self.assertIn("替换", replacement["label"])
 
 
 class DouyinServiceTests(unittest.TestCase):

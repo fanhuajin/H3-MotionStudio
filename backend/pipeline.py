@@ -15,6 +15,7 @@ import httpx
 import websockets
 
 from .settings import (
+    CLEAN_WORKFLOW,
     COMFY_HOME,
     COMFY_INPUT,
     COMFY_LOG,
@@ -23,6 +24,9 @@ from .settings import (
     COMFY_PYTHON,
     COMFY_URL,
     COMFY_WS,
+    DEFAULT_CANVAS,
+    MIGRATE_WORKFLOW,
+    MIGRATE_REFERENCE,
     RVC_INDEX,
     RVC_MODEL,
     RVC_PYTHON,
@@ -30,10 +34,13 @@ from .settings import (
     RVC_SCRIPT,
     SINGING_WORKFLOW,
     UPSCALE_WORKFLOW,
+    canvas_params,
 )
 from .store import now_iso, store
 from .workflows import (
     graph_to_api_prompt,
+    prepare_clean_workflow,
+    prepare_migrate_workflow,
     prepare_singing_workflow,
     prepare_upscale_workflow,
     workflow_titles,
@@ -214,6 +221,65 @@ def upscale_milestone(node_id: str) -> str:
     return "hd" if node_id == "8" else "upscale"
 
 
+# 动作迁移链路两个工作流的里程碑顺序（与 store.migrate_milestones 的 id 对应）。
+CLEAN_PLAN = ("read", "mask", "paint", "clean_save")
+MIGRATE_PLAN = ("prep", "sam", "migrate", "save")
+_PLAN_BY_KIND = {"clean": CLEAN_PLAN, "migrate": MIGRATE_PLAN}
+
+_CLEAN_STAGE_OF = {"1": "read", "2": "mask", "3": "paint", "5": "clean_save"}
+
+# 迁移工作流按节点 id 划分显示阶段（只在阶段推进时切换里程碑，回退/重复都忽略）：
+# - prep：模型/参考加载与常量、循环准备（一次）；
+# - sam：SAM3 人物追踪与遮罩（每次进循环的读取与追踪都算此阶段）；
+# - migrate：每段采样/解码/收集等主体生成；
+# - save：最终 VHS_VideoCombine 合成；
+# - 未列入的轻量节点（分段边界计算、缓存门等）保持当前阶段不变。
+_MIGRATE_PREP_NODES = frozenset({
+    30, 322, 323, 327, 328, 329, 330, 331, 332, 335, 342, 343, 344, 345,
+    348, 349, 353, 358, 359, 360, 362, 363, 457, 464, 469, 470, 474, 476,
+    477, 479, 493, 495, 509, 510, 514, 515, 521, 533, 540, 541, 545, 561, 563,
+})
+_MIGRATE_SAM_NODES = frozenset({350, 351, 352, 446, 512, 513, 543})
+_MIGRATE_GEN_NODES = frozenset({333, 356, 361, 450, 452, 453, 462, 465, 466})
+_MIGRATE_SAVE_NODES = frozenset({456})
+
+
+def clean_stage_of(node_id: str) -> str | None:
+    return _CLEAN_STAGE_OF.get(node_id)
+
+
+def migrate_stage_of(node_id: str) -> str | None:
+    try:
+        key = int(node_id)
+    except (TypeError, ValueError):
+        return None
+    if key in _MIGRATE_PREP_NODES:
+        return "prep"
+    if key in _MIGRATE_SAM_NODES:
+        return "sam"
+    if key in _MIGRATE_GEN_NODES:
+        return "migrate"
+    if key in _MIGRATE_SAVE_NODES:
+        return "save"
+    return None
+
+
+def stage_of(kind: str, node_id: str) -> str | None:
+    if kind == "clean":
+        return clean_stage_of(node_id)
+    if kind == "migrate":
+        return migrate_stage_of(node_id)
+    return None
+
+
+def completed_milestones_for(kind: str) -> tuple[str, ...]:
+    if kind == "clean":
+        return CLEAN_PLAN
+    if kind == "migrate":
+        return MIGRATE_PLAN
+    return ("input", "h3", "stitch") if kind == "singing" else ("upscale", "hd")
+
+
 def _set_running_milestone(job_id: str, milestone_id: str, node_id: str, title: str) -> None:
     state = store.get(job_id) or {}
     for milestone in state.get("milestones", []):
@@ -327,6 +393,8 @@ async def run_comfy_workflow(
         store.add_log(job_id, f"工作流已进入 ComfyUI 队列：{prompt_id}")
         store.update(job_id, promptIds={**((store.get(job_id) or {}).get("promptIds") or {}), kind: prompt_id})
         active_milestone: str | None = None
+        plan = _PLAN_BY_KIND.get(kind)
+        plan_index = -1
 
         while True:
             try:
@@ -377,19 +445,45 @@ async def run_comfy_workflow(
                     break
                 node_id = str(node_id)
                 title = titles.get(node_id, node_id)
-                # A VHS meta-batch cycles through every upscale node many times.
-                # Keep the whole second pass running until the final combined
-                # video exists; node 8 finishing one chunk is not the final HD file.
-                milestone_id = singing_milestone(types.get(node_id, ""), title) if kind == "singing" else "upscale"
-                active_milestone = milestone_id
-                _set_running_milestone(job_id, milestone_id, node_id, title)
+                if plan is not None:
+                    # 里程碑只前进不倒退：长视频 Mie 循环会重复执行读取/SAM/采样节点，
+                    # 重复与未列入节点只刷新当前标题，避免进度面板来回跳阶段。
+                    target = stage_of(kind, node_id)
+                    if target:
+                        index = plan.index(target)
+                        if index > plan_index:
+                            plan_index = index
+                            active_milestone = target
+                            _set_running_milestone(job_id, target, node_id, title)
+                        elif index == plan_index and active_milestone:
+                            store.set_milestone(
+                                job_id,
+                                active_milestone,
+                                currentNode=title,
+                                currentNodeId=node_id,
+                            )
+                            store.update(job_id, currentNodeId=node_id, currentNodeTitle=title)
+                else:
+                    # A VHS meta-batch cycles through every upscale node many times.
+                    # Keep the whole second pass running until the final combined
+                    # video exists; node 8 finishing one chunk is not the final HD file.
+                    milestone_id = singing_milestone(types.get(node_id, ""), title) if kind == "singing" else "upscale"
+                    active_milestone = milestone_id
+                    _set_running_milestone(job_id, milestone_id, node_id, title)
             elif event == "progress":
                 value = int(data.get("value") or 0)
                 maximum = max(1, int(data.get("max") or 1))
                 percent = min(100.0, value / maximum * 100.0)
                 node_id = str(data.get("node") or (store.get(job_id) or {}).get("currentNodeId") or "")
                 title = titles.get(node_id, (store.get(job_id) or {}).get("currentNodeTitle") or "正在处理")
-                milestone_id = active_milestone or (singing_milestone(types.get(node_id, ""), title) if kind == "singing" else upscale_milestone(node_id))
+                if active_milestone:
+                    milestone_id = active_milestone
+                elif kind == "singing":
+                    milestone_id = singing_milestone(types.get(node_id, ""), title)
+                elif kind == "upscale":
+                    milestone_id = upscale_milestone(node_id)
+                else:
+                    milestone_id = stage_of(kind, node_id) or (plan[0] if plan else "save")
                 store.set_milestone(
                     job_id,
                     milestone_id,
@@ -406,7 +500,9 @@ async def run_comfy_workflow(
                 summary = str(data.get("exception_message") or "ComfyUI 节点执行失败")
                 trace = data.get("traceback") or []
                 detail = f"节点：{title}（{node_id}）\n{summary}\n" + "\n".join(trace)
-                milestone_id = active_milestone or ("h3" if kind == "singing" else "upscale")
+                milestone_id = active_milestone or stage_of(kind, node_id)
+                if not milestone_id:
+                    milestone_id = "h3" if kind == "singing" else ("upscale" if kind == "upscale" else "migrate")
                 store.set_milestone(job_id, milestone_id, status="error", currentNode=title)
                 raise PipelineError(f"{title}：{summary}", detail)
             elif event in {"execution_success", "execution_complete"}:
@@ -428,14 +524,13 @@ async def run_comfy_workflow(
             f"已检查的 Prompt ID：{', '.join(seen_prompt_ids)}",
         )
 
-    completed_milestones = ("input", "h3", "stitch") if kind == "singing" else ("upscale", "hd")
-    for milestone_id in completed_milestones:
+    for milestone_id in completed_milestones_for(kind):
         store.set_milestone(job_id, milestone_id, status="completed", progress=100, currentNode=None)
     return resolved_output
 
 
-def link_into_input(source: Path, job_id: str) -> Path:
-    destination = COMFY_INPUT / f"motionstudio_{job_id}_original{source.suffix.lower()}"
+def link_into_input_as(source: Path, job_id: str, tag: str) -> Path:
+    destination = COMFY_INPUT / f"motionstudio_{job_id}_{tag}{source.suffix.lower()}"
     if destination.exists():
         destination.unlink()
     try:
@@ -443,6 +538,10 @@ def link_into_input(source: Path, job_id: str) -> Path:
     except OSError:
         shutil.copy2(source, destination)
     return destination
+
+
+def link_into_input(source: Path, job_id: str) -> Path:
+    return link_into_input_as(source, job_id, "original")
 
 
 async def media_metadata(path: Path) -> dict[str, Any]:
@@ -475,7 +574,7 @@ async def media_metadata(path: Path) -> dict[str, Any]:
 async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
     if await comfy_health():
         raise PipelineError("为了保护显存，RVC 没有启动", "检测到 ComfyUI 仍在运行。必须先完全关闭 ComfyUI。")
-    for path in (RVC_PYTHON, RVC_SCRIPT, RVC_MODEL, RVC_INDEX):
+    for path in (RVC_PYTHON, RVC_SCRIPT, RVC_MODEL):
         if not path.is_file():
             raise PipelineError("音色转换环境不完整", f"缺少：{path}")
 
@@ -483,14 +582,19 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
     store.set_milestone(job_id, "stems", status="running", currentNode="提取成片音频", progress=0)
     store.add_log(job_id, "ComfyUI 已关闭，正在启动便携音色转换器。")
 
-    process = await asyncio.create_subprocess_exec(
+    command = [
         str(RVC_PYTHON),
         str(RVC_SCRIPT),
         str(enhanced_path),
         "--model",
         RVC_MODEL.name,
-        "--index",
-        str(RVC_INDEX),
+    ]
+    # index 为可选：存在则显式传入，缺失时由转换脚本自动探测/以无索引模式运行
+    if RVC_INDEX.is_file():
+        command += ["--index", str(RVC_INDEX)]
+
+    process = await asyncio.create_subprocess_exec(
+        *command,
         cwd=str(RVC_ROOT),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
@@ -516,8 +620,8 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
             store.set_milestone(job_id, "stems", status="completed", currentNode=None, progress=100)
         elif line.startswith("[3/5]"):
             store.set_milestone(job_id, "stems", status="completed", currentNode=None, progress=100)
-            store.set_milestone(job_id, "voice", status="running", currentNode="加载我的音色模型", progress=15)
-            store.update(job_id, currentNodeTitle="加载我的音色模型", progress=15)
+            store.set_milestone(job_id, "voice", status="running", currentNode=f"加载 {RVC_MODEL.stem} 音色模型", progress=15)
+            store.update(job_id, currentNodeTitle=f"加载 {RVC_MODEL.stem} 音色模型", progress=15)
         elif line.startswith("[4/5]"):
             store.set_milestone(job_id, "voice", status="running", currentNode="保存转换后的人声", progress=90)
         elif line.startswith("[5/5]"):
@@ -600,6 +704,114 @@ async def run_pipeline(job_id: str) -> None:
             store.add_log(job_id, f"错误：{summary}")
             failed_state = store.get(job_id) or {}
             running = next((item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"), None)
+            if running:
+                store.set_milestone(job_id, running, status="error")
+            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)
+            try:
+                if await comfy_health():
+                    await resources.stop_comfy(job_id)
+            except Exception as stop_error:
+                store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
+
+
+async def run_migrate_pipeline(job_id: str) -> None:
+    """动作迁移任务：可选去字幕 → SCAIL 长视频动作迁移/人物替换 → 可选 1080P 高清。
+
+    不涉及 RVC：输出保留原视频音频与帧率。与其它任务共用 pipeline_lock（单任务互斥）。
+    """
+    async with pipeline_lock:
+        state = store.get(job_id)
+        if not state:
+            return
+        store.update(job_id, status="running", stage="starting", errorSummary=None, errorDetail=None)
+        try:
+            await resources.ensure_comfy(job_id)
+            state = store.get(job_id) or state
+            params = canvas_params(state.get("canvas") or DEFAULT_CANVAS)
+            mode = state.get("migrateMode") or "animation"
+            hd1080 = bool(state.get("hd1080"))
+            drive_name = state["sourceInputName"]
+
+            if state.get("removeSubtitles"):
+                store.update(job_id, stage="cleaning")
+                store.add_log(job_id, "去字幕开关已开启：先运行 ProPainter 去字幕工作流。")
+                clean = prepare_clean_workflow(
+                    drive_name,
+                    f"video/H3_MotionStudio/{job_id}_clean",
+                    CLEAN_WORKFLOW,
+                    canvas=params,
+                )
+                cleaned = await run_comfy_workflow(job_id, "clean", clean, "5")
+                store.update(job_id, cleanOutput=str(cleaned), cleanReady=True)
+                store.add_log(job_id, f"无字幕视频已保存：{cleaned.name}")
+                drive_input = await asyncio.to_thread(link_into_input_as, cleaned, job_id, "clean")
+                drive_name = drive_input.name
+            else:
+                store.add_log(job_id, "去字幕开关未开启：直接使用上传的原视频作为驱动视频。")
+
+            reference_name = state.get("referenceInputName") or MIGRATE_REFERENCE.name
+            if not (COMFY_INPUT / reference_name).is_file():
+                raise PipelineError(
+                    "人物参考图不存在",
+                    f"预期文件：{COMFY_INPUT / reference_name}（未上传人物图时请检查默认人物图，或重新上传后提交）",
+                )
+
+            store.update(job_id, stage="migrating")
+            migrate = prepare_migrate_workflow(
+                drive_name,
+                reference_name,
+                mode,
+                f"video/H3_MotionStudio/{job_id}_migrate",
+                MIGRATE_WORKFLOW,
+                canvas=params,
+                content_prompt=state.get("contentPrompt"),
+                video_prompt=state.get("videoPrompt"),
+                image_prompt=state.get("imagePrompt"),
+            )
+            draft = await run_comfy_workflow(job_id, "migrate", migrate, "456")
+            store.update(job_id, draftOutput=str(draft), draftReady=True)
+            store.add_log(job_id, f"迁移成片已保存：{draft.name}")
+
+            if hd1080:
+                store.update(job_id, stage="enhancing")
+                draft_input = await asyncio.to_thread(link_into_input_as, draft, job_id, "draft")
+                upscale = prepare_upscale_workflow(
+                    draft_input.name,
+                    f"video/H3_MotionStudio/{job_id}_1080P",
+                    UPSCALE_WORKFLOW,
+                    scale=(params["hd_width"], params["hd_height"]),
+                )
+                final = await run_comfy_workflow(job_id, "upscale", upscale, "8")
+                store.update(job_id, enhancedOutput=str(final), enhancedReady=True)
+                store.add_log(job_id, f"1080P 高清成片已保存：{final.name}")
+            else:
+                final = draft
+
+            store.update(
+                job_id,
+                status="completed",
+                stage="completed",
+                finalOutput=str(final),
+                finalReady=True,
+                currentNodeId=None,
+                currentNodeTitle=None,
+                progress=100,
+                progressValue=None,
+                progressMax=None,
+                output=await media_metadata(final),
+            )
+            store.add_log(job_id, "动作迁移任务已完成。")
+        except Exception as error:
+            if isinstance(error, PipelineError):
+                summary, detail = error.summary, error.detail
+            else:
+                summary, detail = "动作迁移执行失败", repr(error)
+            store.add_log(job_id, f"错误：{summary}")
+            failed_state = store.get(job_id) or {}
+            running = next(
+                (item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"),
+                None,
+            )
             if running:
                 store.set_milestone(job_id, running, status="error")
             store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)

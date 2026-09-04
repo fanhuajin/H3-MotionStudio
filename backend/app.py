@@ -34,17 +34,27 @@ from .douyin_service import (
     douyin_service,
     is_douyin_url,
 )
-from .pipeline import PipelineError, comfy_health, media_metadata, retry_enhance, retry_voice, run_pipeline
+from .pipeline import (
+    PipelineError,
+    comfy_health,
+    media_metadata,
+    retry_enhance,
+    retry_voice,
+    run_migrate_pipeline,
+    run_pipeline,
+)
 from .settings import (
     COMFY_INPUT,
     DATA_DIR,
     FIXED_REFERENCE,
     MAX_DURATION_SECONDS,
+    MIGRATE_REFERENCE,
     PROJECT_ROOT,
     SINGING_WORKFLOW,
+    canvas_params,
     required_paths,
 )
-from .store import initial_milestones, now_iso, store
+from .store import initial_milestones, migrate_milestones, now_iso, store
 from .workflows import load_workflow, node_by_id
 
 
@@ -169,8 +179,8 @@ async def get_config() -> dict[str, Any]:
 
 
 @app.get("/api/jobs/latest")
-async def latest_job():
-    state = store.latest()
+async def latest_job(kind: str | None = Query(None)):
+    state = store.latest(kind)
     if not state:
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
     return JSONResponse(state, headers={"Cache-Control": "no-store"})
@@ -234,6 +244,7 @@ async def create_job(
     created_at = now_iso()
     state = {
         "id": job_id,
+        "kind": "singing",
         "status": "queued",
         "stage": "upload",
         "createdAt": created_at,
@@ -269,6 +280,126 @@ async def create_job(
     }
     store.create(state)
     spawn(run_pipeline(job_id))
+    return state
+
+
+@app.post("/api/jobs/migrate")
+async def create_migrate_job(
+    video: UploadFile = File(...),
+    reference_image: UploadFile | None = File(None),
+    ratio: str = Form("9:16"),
+    remove_subtitles: str = Form("0"),
+    mode: str = Form("animation"),
+    hd1080: str = Form("0"),
+    content_prompt: str = Form(""),
+    video_prompt: str = Form(""),
+    image_prompt: str = Form(""),
+):
+    active = store.active()
+    if active:
+        raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
+
+    try:
+        canvas_params(ratio)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    if mode not in {"animation", "replacement"}:
+        raise HTTPException(400, "迁移模式只能是 animation（动作迁移）或 replacement（人物替换）")
+    clean_on = remove_subtitles in {"1", "true", "on", "yes"}
+    hd_on = hd1080 in {"1", "true", "on", "yes"}
+
+    extension = Path(video.filename or "input.mp4").suffix.lower()
+    if extension not in VIDEO_UPLOAD_SUFFIXES:
+        raise HTTPException(400, "只支持 MP4、MOV、MKV 或 WebM 视频")
+
+    COMFY_INPUT.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex
+    input_name = f"motionstudio_{job_id}_source{extension}"
+    input_path = COMFY_INPUT / input_name
+
+    reference_name: str | None = None
+    reference_path: Path | None = None
+    if reference_image is not None and reference_image.filename:
+        image_extension = Path(reference_image.filename).suffix.lower()
+        if image_extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+            raise HTTPException(400, "人物图片只支持 PNG、JPG、JPEG 或 WebP")
+        reference_name = f"motionstudio_{job_id}_reference{image_extension}"
+        reference_path = COMFY_INPUT / reference_name
+    else:
+        if not MIGRATE_REFERENCE.is_file():
+            raise HTTPException(400, "未上传人物参考图，且内置默认人物图不存在，请上传人物图")
+        reference_name = MIGRATE_REFERENCE.name
+        reference_path = MIGRATE_REFERENCE
+
+    try:
+        with input_path.open("wb") as destination:
+            while chunk := await video.read(1024 * 1024):
+                destination.write(chunk)
+        if reference_image is not None and reference_image.filename:
+            reference_image.file.seek(0)
+            with reference_path.open("wb") as destination:
+                while chunk := await reference_image.read(1024 * 1024):
+                    destination.write(chunk)
+    finally:
+        await video.close()
+        if reference_image is not None:
+            await reference_image.close()
+
+    metadata = await media_metadata(input_path)
+    created_at = now_iso()
+    state = {
+        "id": job_id,
+        "kind": "migrate",
+        "canvas": ratio,
+        "migrateMode": mode,
+        "removeSubtitles": clean_on,
+        "hd1080": hd_on,
+        "contentPrompt": content_prompt,
+        "videoPrompt": video_prompt,
+        "imagePrompt": image_prompt,
+        "status": "queued",
+        "stage": "upload",
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "sourceName": video.filename or input_name,
+        "sourceSize": input_path.stat().st_size,
+        "sourceDuration": metadata.get("duration"),
+        "sourceInputName": input_name,
+        "sourcePath": str(input_path.resolve()),
+        "referenceName": reference_image.filename if reference_image and reference_image.filename else reference_name,
+        "referenceSize": reference_path.stat().st_size if reference_path.is_file() else None,
+        "referenceInputName": reference_name,
+        "referencePath": str(reference_path.resolve()),
+        "currentNodeId": None,
+        "currentNodeTitle": "等待启动 ComfyUI",
+        "progress": 0,
+        "progressValue": None,
+        "progressMax": None,
+        "milestones": migrate_milestones(clean_on, mode, hd_on),
+        "logs": [{
+            "time": created_at,
+            "message": (
+                f"已接收动作视频{('与人物参考图' if reference_image and reference_image.filename else '（将使用内置默认人物图）')}："
+                f"{video.filename or input_name} · 画布 {ratio}"
+            ),
+        }],
+        "errorSummary": None,
+        "errorDetail": None,
+        "originalReady": False,
+        "cleanReady": False,
+        "draftReady": False,
+        "enhancedReady": False,
+        "finalReady": False,
+        "originalOutput": None,
+        "cleanOutput": None,
+        "draftOutput": None,
+        "enhancedOutput": None,
+        "finalOutput": None,
+        "output": None,
+        "promptIds": {},
+    }
+    store.create(state)
+    spawn(run_migrate_pipeline(job_id))
     return state
 
 
@@ -324,7 +455,13 @@ async def job_media(job_id: str, kind: str, download: bool = Query(False)):
     state = store.get(job_id)
     if not state:
         raise HTTPException(404, "任务不存在")
-    key_map = {"original": "originalOutput", "enhanced": "enhancedOutput", "final": "finalOutput"}
+    key_map = {
+        "original": "originalOutput",
+        "clean": "cleanOutput",
+        "draft": "draftOutput",
+        "enhanced": "enhancedOutput",
+        "final": "finalOutput",
+    }
     key = key_map.get(kind)
     if not key or not state.get(key):
         raise HTTPException(404, "对应成片尚未生成")
