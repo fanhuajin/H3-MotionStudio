@@ -219,8 +219,9 @@ function ratioNote(ratio: CanvasRatio, mode: MigrateMode, hd1080: boolean) {
   return `${canvas} 加速草稿${hd1080 ? ` → ${hd} 高清成片` : ""} · ${mode === "animation" ? "动作迁移" : "人物替换"}`;
 }
 
-function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, hd1080: boolean): Milestone[] {
+function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, hd1080: boolean, ratio: CanvasRatio): Milestone[] {
   const transfer = mode === "replacement" ? "人物替换" : "动作迁移";
+  const multiplier = ratio === "9:16" ? "2" : "4";
   const list: Milestone[] = [];
   if (removeSubtitles) {
     list.push(
@@ -246,7 +247,12 @@ function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, h
   );
   if (hd1080) {
     list.push(
-      { id: "upscale", label: "RealESRGAN 4× 放大", subtitle: "逐帧超采样到所选比例高清", status: "pending" },
+      {
+        id: "upscale",
+        label: `RealESRGAN ${multiplier}× 放大`,
+        subtitle: ratio === "9:16" ? "2× 快速档（竖版目标放大仅 2.1×）" : "逐帧超采样到所选比例高清",
+        status: "pending",
+      },
       { id: "hd", label: "输出高清成片", subtitle: "保存高清加强成片", status: "pending" },
     );
   }
@@ -324,7 +330,7 @@ export function MigrateRoute() {
 
   const milestones = job?.milestones?.length
     ? job.milestones
-    : migrateMilestoneSkeleton(removeSubtitles, mode, hd1080);
+    : migrateMilestoneSkeleton(removeSubtitles, mode, hd1080, ratio);
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
   const jobActive = Boolean(job && ["queued", "running"].includes(job.status));
   const tickNow = useNowTick(jobActive);
@@ -739,7 +745,7 @@ export function MigrateRoute() {
                 checked={hd1080}
                 onChange={setHd1080}
                 title="1080P 高清加强"
-                description={`迁移完成后追加 RealESRGAN 4×：${ratio === "9:16" ? "1080×1920 竖版" : "1440×1080"}，耗时会明显增加`}
+                description={`迁移完成后追加 RealESRGAN ${ratio === "9:16" ? "2×（快速档，目标仅2.1×放大）" : "4×"}：${ratio === "9:16" ? "1080×1920 竖版" : "1440×1080"}，耗时会增加`}
               />
             </div>
             <p className="field-note">当前设置：{ratioNote(ratio, mode, hd1080)}{removeSubtitles ? " · 先去除字幕" : ""}。输出保留原视频音频与帧率。</p>

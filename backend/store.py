@@ -38,7 +38,7 @@ def initial_milestones() -> list[dict[str, Any]]:
     ]
 
 
-def migrate_milestones(remove_subtitles: bool, mode: str, hd1080: bool) -> list[dict[str, Any]]:
+def migrate_milestones(remove_subtitles: bool, mode: str, hd1080: bool, ratio: str = "4:3") -> list[dict[str, Any]]:
     """动作迁移路由的里程碑模板（不含 RVC：输出保留原音频）。
 
     链路：可选「去字幕-ProPainter」→ SCAIL-2 长视频分段 动作迁移/人物替换
@@ -69,8 +69,19 @@ def migrate_milestones(remove_subtitles: bool, mode: str, hd1080: bool) -> list[
         {"id": "save", "label": "拼接输出成片", "subtitle": "逐段衔接并封装输出视频", "status": "pending"},
     ]
     if hd1080:
+        # 9:16（512×896 → 1080×1920 仅 ~2.1×）用 x2plus 快速档；4:3（~2.8×）用 x4plus
+        multiplier = "2" if ratio == "9:16" else "4"
         milestones += [
-            {"id": "upscale", "label": "RealESRGAN 4× 放大", "subtitle": "逐帧超采样到 1440×1080", "status": "pending"},
+            {
+                "id": "upscale",
+                "label": f"RealESRGAN {multiplier}× 放大",
+                "subtitle": (
+                    "2× 快速档（竖版目标放大仅 2.1×）"
+                    if ratio == "9:16"
+                    else "逐帧超采样到 1440×1080"
+                ),
+                "status": "pending",
+            },
             {"id": "hd", "label": "输出 1080P 高清成片", "subtitle": "保存高清加强成片", "status": "pending"},
         ]
     return milestones

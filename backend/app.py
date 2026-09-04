@@ -388,7 +388,7 @@ async def create_migrate_job(
         "progress": 0,
         "progressValue": None,
         "progressMax": None,
-        "milestones": migrate_milestones(clean_on, mode, hd_on),
+        "milestones": migrate_milestones(clean_on, mode, hd_on, ratio),
         "logs": [{
             "time": created_at,
             "message": (

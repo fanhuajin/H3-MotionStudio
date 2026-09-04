@@ -169,6 +169,12 @@ class WorkflowPreparationTests(unittest.TestCase):
         replacement = next(m for m in migrate_milestones(False, "replacement", False) if m["id"] == "migrate")
         self.assertIn("替换", replacement["label"])
 
+    def test_migrate_hd_milestone_label_follows_canvas_ratio(self) -> None:
+        hd_916 = next(m for m in migrate_milestones(False, "animation", True, ratio="9:16") if m["id"] == "upscale")
+        self.assertIn("2×", hd_916["label"])
+        hd_43 = next(m for m in migrate_milestones(False, "animation", True, ratio="4:3") if m["id"] == "upscale")
+        self.assertIn("4×", hd_43["label"])
+
     def test_graph_to_api_prompt_keeps_autogrow_expanded_inputs(self) -> None:
         """ComfyUI v3 Autogrow（ComfyMathExpression values.a/b…）的链接不能被丢弃。"""
         workflow = {
