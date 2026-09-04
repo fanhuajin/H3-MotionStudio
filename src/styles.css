@@ -389,6 +389,53 @@ body {
   letter-spacing: .14em;
 }
 
+/* 侧栏系统资源监控 */
+.monitor-card {
+  margin-top: 7px;
+  padding: 8px 10px 9px;
+  border: 1px solid #2d2547;
+  border-radius: 9px;
+  background: #0b0820;
+}
+.monitor-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  color: #7a718d;
+  font-size: 9px;
+  letter-spacing: .1em;
+}
+.monitor-title span { width: 5px; height: 5px; border-radius: 50%; background: var(--shell-accent); box-shadow: 0 0 7px rgba(67, 213, 236, .55); }
+.monitor-title em { margin-left: auto; color: #a3556b; font-style: normal; }
+.monitor-card.offline { opacity: .75; }
+.monitor-card.offline .monitor-title span { background: #8a5c6d; box-shadow: none; }
+.monitor-empty { color: #5f5771; font-size: 9px; padding: 4px 0 6px; }
+.monitor-grid { display: flex; flex-direction: column; gap: 4px; }
+.monitor-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  color: #8f86a1;
+  font-size: 10px;
+}
+.monitor-label { color: #6f6784; white-space: nowrap; }
+.monitor-value { color: #cfc8dd; font-variant-numeric: tabular-nums; font-weight: 500; }
+.monitor-bar { height: 5px; overflow: hidden; border-radius: 99px; background: #161129; }
+.monitor-bar i, .monitor-bar-static i { display: block; height: 100%; border-radius: 99px; background: #3d94ac; transition: width .5s ease; }
+.monitor-bar i.warn, .monitor-bar-static i.warn { background: #c9a23d; }
+.monitor-bar i.critical, .monitor-bar-static i.critical { background: #c95d6f; }
+.monitor-bar i.normal, .monitor-bar-static i.normal { background: #3d94ac; }
+.monitor-row.monitor-sub { margin-top: 1px; }
+.monitor-row.monitor-sub .monitor-bar-static { height: 4px; overflow: hidden; border-radius: 99px; background: #161129; }
+.monitor-row.monitor-sub .monitor-value { color: #8f86a1; font-size: 9px; }
+.monitor-row .net-value { display: inline-flex; align-items: center; gap: 4px; color: #a9b3c2; }
+.monitor-row .net-value i { width: 0; height: 0; border: 3px solid transparent; }
+.monitor-row .net-value i.net-dn { border-top: 0; border-bottom: 5px solid var(--shell-accent); }
+.monitor-row .net-value i.net-up { border-bottom: 0; border-top: 5px solid #9d7adf; }
+
 .route-stage { min-width: 0; min-height: 100vh; background: var(--shell-bg); }
 .motion-route { max-width: 1400px; margin: 0 auto; padding: 42px 30px 34px; }
 .douyin-route { max-width: 1024px; margin: 0 auto; padding: 43px 0 70px; }

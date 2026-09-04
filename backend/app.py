@@ -179,6 +179,14 @@ async def get_config() -> dict[str, Any]:
     }
 
 
+@app.get("/api/system/stats")
+async def system_stats() -> dict[str, Any]:
+    """CPU / 内存 / 磁盘 / 以太网吞吐 / GPU（含显存与温度）采样。"""
+    from .system_stats import collect_system_stats
+
+    return await asyncio.to_thread(collect_system_stats)
+
+
 @app.get("/api/jobs/latest")
 async def latest_job(kind: str | None = Query(None)):
     state = store.latest(kind)
