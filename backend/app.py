@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import secrets
 import shutil
+import subprocess
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -69,6 +70,35 @@ def spawn(coroutine) -> None:
     task = asyncio.create_task(coroutine)
     running_tasks.add(task)
     task.add_done_callback(running_tasks.discard)
+
+
+def transcode_source_to_30fps(source: Path, target: Path) -> None:
+    """把高帧率（60fps 等）源转成 30fps 驱动视频（抽帧，时长不变，保留音频）。
+
+    动作迁移逐帧生成：帧数减半 → 段数与总时长约减半，30fps 出片对抖音足够。
+    """
+    source = Path(source)
+    target = Path(target)
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y", "-v", "error",
+            "-i", str(source),
+            "-vf", "fps=30",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=600,
+        creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+    )
+    if result.returncode != 0 or not target.is_file() or target.stat().st_size == 0:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        raise RuntimeError("ffmpeg 30fps 转码失败: " + (detail[-1] if detail else f"exit {result.returncode}"))
 
 
 # The Douyin downloader runs as a separate Python process (hundreds of MB of
@@ -360,6 +390,24 @@ async def create_migrate_job(
 
     metadata = await media_metadata(input_path)
     created_at = now_iso()
+    driver_input_name = input_name
+    driver_path = input_path
+    source_size = input_path.stat().st_size
+    transcode_note = None
+    if (metadata.get("fps") or 0) > 31:
+        # 高帧率源（60fps 等）：抽帧到 30fps 作为驱动视频，段数/时长约减半；
+        # 原始上传文件保留在 input 目录，出片与预览使用降帧驱动。
+        driver_path = COMFY_INPUT / f"motionstudio_{job_id}_source30.mp4"
+        try:
+            await asyncio.to_thread(transcode_source_to_30fps, input_path, driver_path)
+            metadata = await media_metadata(driver_path)
+            driver_input_name = driver_path.name
+            transcode_note = f"源视频 {metadata.get('fps')}fps（{metadata.get('frames')} 帧）→ 已自动转 30fps 驱动（{metadata.get('frames')} 帧），分段时长约减半"
+        except Exception as error:  # 转码失败不阻塞：退回原始 60fps 文件
+            transcode_note = f"30fps 自动转码失败（{error}），将使用原始视频"
+            driver_path = input_path
+            driver_input_name = input_name
+    source_duration = metadata.get("duration")
     state = {
         "id": job_id,
         "kind": "migrate",
@@ -375,14 +423,14 @@ async def create_migrate_job(
         "createdAt": created_at,
         "updatedAt": created_at,
         "sourceName": video.filename or input_name,
-        "sourceSize": input_path.stat().st_size,
-        "sourceDuration": metadata.get("duration"),
+        "sourceSize": source_size,
+        "sourceDuration": source_duration,
         "sourceFps": metadata.get("fps"),
         # 长视频分段预估：每段 81 帧、重叠 5 帧 → 运行时可显示"第 X / N 段"
         "estimatedSegments": estimate_migrate_segments(metadata.get("frames")),
         "currentSegment": None,
-        "sourceInputName": input_name,
-        "sourcePath": str(input_path.resolve()),
+        "sourceInputName": driver_input_name,
+        "sourcePath": str(driver_path.resolve()),
         "referenceName": reference_image.filename if reference_image and reference_image.filename else reference_name,
         "referenceUploaded": bool(reference_image is not None and reference_image.filename),
         "referenceSize": reference_path.stat().st_size if reference_path.is_file() else None,
@@ -400,7 +448,10 @@ async def create_migrate_job(
                 f"已接收动作视频{('与人物参考图' if reference_image and reference_image.filename else '（将使用内置默认人物图）')}："
                 f"{video.filename or input_name} · 画布 {ratio}"
             ),
-        }],
+        }] + ([{
+            "time": now_iso(),
+            "message": transcode_note,
+        }] if transcode_note else []),
         "errorSummary": None,
         "errorDetail": None,
         "originalReady": False,
