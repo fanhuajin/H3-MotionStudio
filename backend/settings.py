@@ -33,6 +33,13 @@ MIGRATE_REFERENCE = COMFY_INPUT / "singing_portrait_4x3_1440x1080.png"
 UPSCALE_MODEL_X4 = "RealESRGAN_x4plus.pth"
 UPSCALE_MODEL_X2 = "RealESRGAN_x2plus.pth"
 
+# 动作迁移模型组合（博主 wan21_scail-2_loop 配置复刻）：
+# - int8_convrot 主模型（RTX30 走 INT8 张量核，比 fp8 更省/更快）文件存在则自动启用
+# - lightx2v 蒸馏 LoRA 用 rank64（博主两个版本都用 rank64，本机已存在）
+SCAIL_UNET_INT8 = "wan2.1_14B_SCAIL_2_int8_convrot.safetensors"
+LIGHTX2V_LORA_RANK64 = r"Wan2.1\lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"
+DIFFUSION_MODELS_DIR = COMFY_ROOT / "models" / "diffusion_models"
+
 RVC_ROOT = COMFY_HOME / "RVC"
 RVC_PYTHON = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 RVC_SCRIPT = RVC_ROOT / "convert_video_to_my_voice.py"

@@ -147,6 +147,8 @@ def prepare_migrate_workflow(
     content_prompt: str | None = None,
     video_prompt: str | None = None,
     image_prompt: str | None = None,
+    unet_model: str | None = None,
+    lightx2v_lora: str | None = None,
 ) -> dict[str, Any]:
     """视频-长视频替换-4x3加速版-ProPainter输入：准备一次动作迁移/人物替换运行。
 
@@ -155,6 +157,8 @@ def prepare_migrate_workflow(
     #545/#509/#510 三处提示词（None/空串保留工作流默认）；
     #342/#343 画布宽高（9:16 时联动 VHS 读取/参考图裁剪/SCAIL 生成）；
     #456 VHS_VideoCombine 输出前缀。段长/重叠/步数/CFG/seed 等保持作者默认。
+    unet_model/lightx2v_lora：博主 wan21_scail-2_loop 复刻组合（int8_convrot + rank64），
+    传 None 保持工作流默认（fp8_scaled + rank128）。
     """
     workflow = copy.deepcopy(source_path if isinstance(source_path, dict) else load_workflow(source_path))
     canvas = canvas or {}
@@ -167,6 +171,19 @@ def prepare_migrate_workflow(
             widgets[0] = (
                 int(canvas["migrate_width"]) if node_id == 342 else int(canvas["migrate_height"])
             )
+
+    if unet_model:
+        unet_node = node_by_id(workflow, 329)
+        unet_widgets = unet_node.get("widgets_values") or []
+        if not isinstance(unet_widgets, list) or not unet_widgets:
+            raise ValueError("UNETLoader widgets_values is empty")
+        unet_widgets[0] = unet_model
+    if lightx2v_lora:
+        lora_node = node_by_id(workflow, 322)
+        lora_widgets = lora_node.get("widgets_values") or []
+        if not isinstance(lora_widgets, list) or not lora_widgets:
+            raise ValueError("LoraLoaderModelOnly widgets_values is empty")
+        lora_widgets[0] = lightx2v_lora
 
     selector = node_by_id(workflow, 563)
     selector_widgets = selector.get("widgets_values") or []

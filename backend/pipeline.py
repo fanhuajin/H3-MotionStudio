@@ -22,9 +22,12 @@ from .settings import (
     COMFY_MAIN,
     COMFY_OUTPUT,
     COMFY_PYTHON,
+    COMFY_ROOT,
     COMFY_URL,
     COMFY_WS,
     DEFAULT_CANVAS,
+    DIFFUSION_MODELS_DIR,
+    LIGHTX2V_LORA_RANK64,
     MIGRATE_WORKFLOW,
     MIGRATE_REFERENCE,
     RVC_INDEX,
@@ -32,6 +35,7 @@ from .settings import (
     RVC_PYTHON,
     RVC_ROOT,
     RVC_SCRIPT,
+    SCAIL_UNET_INT8,
     SINGING_WORKFLOW,
     UPSCALE_MODEL_X2,
     UPSCALE_WORKFLOW,
@@ -883,6 +887,19 @@ async def run_migrate_pipeline(job_id: str) -> None:
                 )
 
             store.update(job_id, stage="migrating")
+            # 博主 wan21_scail-2_loop 组合（复刻）：模型文件在盘则自动启用
+            unet_choice = None
+            lora_choice = None
+            if (DIFFUSION_MODELS_DIR / SCAIL_UNET_INT8).is_file():
+                unet_choice = SCAIL_UNET_INT8
+            lora_rank64 = COMFY_ROOT / "models" / "loras" / "Wan2.1" / LIGHTX2V_LORA_RANK64.split("\\")[-1]
+            if lora_rank64.is_file():
+                lora_choice = LIGHTX2V_LORA_RANK64
+            if unet_choice or lora_choice:
+                store.add_log(
+                    job_id,
+                    f"模型组合：{unet_choice or 'fp8_scaled（默认）'} + {lora_choice or 'rank128（默认）'}",
+                )
             migrate = prepare_migrate_workflow(
                 drive_name,
                 reference_name,
@@ -893,6 +910,8 @@ async def run_migrate_pipeline(job_id: str) -> None:
                 content_prompt=state.get("contentPrompt"),
                 video_prompt=state.get("videoPrompt"),
                 image_prompt=state.get("imagePrompt"),
+                unet_model=unet_choice,
+                lightx2v_lora=lora_choice,
             )
             draft = await run_comfy_workflow(
                 job_id,

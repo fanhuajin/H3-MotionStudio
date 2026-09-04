@@ -158,6 +158,25 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertTrue(node_by_id(prepared, 353)["widgets_values"][0])
 
+    def test_migrate_workflow_model_overrides_match_blogger_loop(self) -> None:
+        prepared = prepare_migrate_workflow(
+            "clean.mp4",
+            "portrait.png",
+            "animation",
+            "video/H3_MotionStudio/unit-migrate",
+            MIGRATE_WORKFLOW,
+            unet_model="wan2.1_14B_SCAIL_2_int8_convrot.safetensors",
+            lightx2v_lora=r"Wan2.1\lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+        )
+        self.assertEqual(node_by_id(prepared, 329)["widgets_values"][0], "wan2.1_14B_SCAIL_2_int8_convrot.safetensors")
+        self.assertEqual(
+            node_by_id(prepared, 322)["widgets_values"][0],
+            r"Wan2.1\lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+        )
+        # 不指定时保持工作流默认
+        default = prepare_migrate_workflow("clean.mp4", "portrait.png", "animation", "video/H3_MotionStudio/unit", MIGRATE_WORKFLOW)
+        self.assertEqual(node_by_id(default, 329)["widgets_values"][0], "wan2.1_14B_SCAIL_2_fp8_scaled.safetensors")
+
     def test_migrate_milestones_follow_options(self) -> None:
         self.assertEqual(
             [m["id"] for m in migrate_milestones(False, "animation", False)],
