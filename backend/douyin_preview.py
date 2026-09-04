@@ -78,6 +78,7 @@ def _probe_video_codec(path: Path) -> str | None:
             ],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
             creationflags=_creation_flags(),
         )
@@ -109,6 +110,7 @@ def _probe_audio_codec(path: Path) -> str | None:
             ],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=30,
             creationflags=_creation_flags(),
         )
@@ -199,6 +201,7 @@ def _encode_sync(ffmpeg: str, source: Path, target: Path) -> None:
             command,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=600,
             creationflags=_creation_flags(),
         )

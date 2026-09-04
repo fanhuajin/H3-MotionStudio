@@ -39,6 +39,7 @@ from .settings import (
 from .store import now_iso, store
 from .workflows import (
     graph_to_api_prompt,
+    patch_wan_chunk_feedforward,
     prepare_clean_workflow,
     prepare_migrate_workflow,
     prepare_singing_workflow,
@@ -124,6 +125,7 @@ class ResourceManager:
             ["powershell.exe", "-NoProfile", "-Command", command],
             capture_output=True,
             text=True,
+            errors="replace",
             creationflags=_creation_flags(),
             timeout=10,
         )
@@ -173,6 +175,7 @@ class ResourceManager:
                 ["taskkill", "/PID", str(process["ProcessId"]), "/T", "/F"],
                 capture_output=True,
                 text=True,
+                errors="replace",
                 creationflags=_creation_flags(),
             )
             if result.returncode != 0:
@@ -365,9 +368,16 @@ async def run_comfy_workflow(
     kind: str,
     workflow: dict[str, Any],
     preferred_output_node: str,
+    wan_chunk: bool = False,
 ) -> Path:
     info = await object_info()
     prompt = graph_to_api_prompt(workflow, info)
+    if wan_chunk and kind == "migrate":
+        try:
+            if patch_wan_chunk_feedforward(prompt, info):
+                store.add_log(job_id, "已自动注入 WanChunkFeedForward 分块计算（降低 9:16 采样显存峰值）")
+        except Exception as error:  # 注入失败不应阻断任务
+            store.add_log(job_id, f"WanChunkFeedForward 注入跳过：{error}")
     titles = workflow_titles(workflow)
     types = workflow_types(workflow)
     client_id = f"motionstudio-{job_id}-{kind}-{uuid.uuid4().hex[:8]}"
@@ -554,6 +564,7 @@ async def media_metadata(path: Path) -> dict[str, Any]:
         command,
         capture_output=True,
         text=True,
+        errors="replace",
         creationflags=_creation_flags(),
         timeout=30,
     )
@@ -785,7 +796,13 @@ async def run_migrate_pipeline(job_id: str) -> None:
                 video_prompt=state.get("videoPrompt"),
                 image_prompt=state.get("imagePrompt"),
             )
-            draft = await run_comfy_workflow(job_id, "migrate", migrate, "456")
+            draft = await run_comfy_workflow(
+                job_id,
+                "migrate",
+                migrate,
+                "456",
+                wan_chunk=(state.get("canvas") or DEFAULT_CANVAS) == "9:16",
+            )
             store.update(job_id, draftOutput=str(draft), draftReady=True)
             store.add_log(job_id, f"迁移成片已保存：{draft.name}")
 

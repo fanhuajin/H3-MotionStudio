@@ -23,6 +23,7 @@ from backend.store import format_elapsed, migrate_milestones
 from backend.workflows import (
     graph_to_api_prompt,
     node_by_id,
+    patch_wan_chunk_feedforward,
     prepare_clean_workflow,
     prepare_migrate_workflow,
     prepare_singing_workflow,
@@ -206,6 +207,36 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(prompt["2"]["inputs"]["expression"], "a // 32")
         # 常规节点（PrimitiveInt 无 autogrow 时）行为不受影响
         self.assertEqual(prompt["1"]["inputs"]["value"], 32)
+
+    def test_wan_chunk_feedforward_injection_rewires_model_chain(self) -> None:
+        prompt = {
+            "561": {"class_type": "WanVideoMemoryEfficientSageAttentionPatch", "inputs": {"model": ["322", 0]}},
+            "330": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["561", 0]}},
+            "332": {"class_type": "BasicScheduler", "inputs": {"model": ["561", 0]}},
+        }
+        object_info = {
+            "WanChunkFeedForward": {
+                "input": {
+                    "required": {
+                        "model": ["MODEL", {}],
+                        "chunks": ["INT", {}],
+                        "dim_threshold": ["INT", {}],
+                    }
+                },
+                "output": {},
+            }
+        }
+        self.assertTrue(patch_wan_chunk_feedforward(prompt, object_info))
+        self.assertIn("561_chunk_ffn", prompt)
+        self.assertEqual(prompt["561_chunk_ffn"]["class_type"], "WanChunkFeedForward")
+        self.assertEqual(prompt["561_chunk_ffn"]["inputs"]["model"], ["561", 0])
+        self.assertEqual(prompt["561_chunk_ffn"]["inputs"]["chunks"], 2)
+        self.assertEqual(prompt["330"]["inputs"]["model"], ["561_chunk_ffn", 0])
+        self.assertEqual(prompt["332"]["inputs"]["model"], ["561_chunk_ffn", 0])
+        # 未安装该节点时静默跳过、不修改原 prompt
+        original = {"561": {"inputs": {"model": ["322", 0]}}}
+        self.assertFalse(patch_wan_chunk_feedforward(original, {"WanChunkFeedForward": None}))
+        self.assertNotIn("561_chunk_ffn", original)
 
 
 class DouyinServiceTests(unittest.TestCase):

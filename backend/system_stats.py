@@ -79,6 +79,7 @@ def _gpu_stats() -> list[dict[str, Any]]:
             ],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=5,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )

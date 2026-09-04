@@ -256,6 +256,44 @@ def graph_to_api_prompt(workflow: dict[str, Any], object_info: dict[str, Any]) -
     return prompt
 
 
+def patch_wan_chunk_feedforward(
+    prompt: dict[str, Any],
+    object_info: dict[str, Any],
+    *,
+    after_node: str = "561",
+    target_nodes: tuple[str, ...] = ("330", "332"),
+    chunks: int = 2,
+) -> bool:
+    """运行时注入 WanChunkFeedForward（KJNodes）到 Wan 模型链。
+
+    只对 9:16（512×896）迁移运行启用：把注意力之后的 FFN 激活分块计算，
+    降低采样期峰值显存，避免 8GB 显卡在长段结尾 OOM。不改作者工作流文件。
+    节点不在 object_info（未安装/改名）时静默跳过。返回是否注入成功。
+    """
+    definition = object_info.get("WanChunkFeedForward") if object_info else None
+    if not definition:
+        return False
+    accepted = set(((definition.get("input") or {}).get("required") or {}).keys())
+    accepted |= set(((definition.get("input") or {}).get("optional") or {}).keys())
+    if after_node not in prompt or "model" not in accepted or "chunks" not in accepted:
+        return False
+    chunk_id = f"{after_node}_chunk_ffn"
+    if chunk_id in prompt:
+        return False
+    inputs: dict[str, Any] = {"model": [after_node, 0], "chunks": int(chunks)}
+    if "dim_threshold" in accepted:
+        inputs["dim_threshold"] = 4096
+    prompt[chunk_id] = {
+        "class_type": "WanChunkFeedForward",
+        "inputs": inputs,
+        "_meta": {"title": "Wan Chunk FeedForward（自动注入·低显存）"},
+    }
+    for target in target_nodes:
+        if target in prompt:
+            prompt[target]["inputs"]["model"] = [chunk_id, 0]
+    return True
+
+
 def workflow_titles(workflow: dict[str, Any]) -> dict[str, str]:
     return {
         str(node["id"]): str(node.get("title") or node.get("type") or node["id"])
