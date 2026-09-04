@@ -472,12 +472,13 @@ export function MigrateRoute() {
       }
     };
 
-    if (latest?.referenceUploaded) {
-      const restoredImage =
-        (await restoreRemote("reference", latest?.referenceName || "reference.png", "image/png"))
-        || await loadDraftFile("reference");
-      if (restoredImage) chooseImage(restoredImage);
-    }
+    // 参考图恢复：最近任务上传过图就从后端恢复；否则（无任务/上一单未传图/
+    // 用户新选未提交）回退本地草稿，避免切换页面或刷新后图片丢失。
+    const restoredImage = latest?.referenceUploaded
+      ? (await restoreRemote("reference", latest?.referenceName || "reference.png", "image/png"))
+        || await loadDraftFile("reference")
+      : await loadDraftFile("reference");
+    if (restoredImage) chooseImage(restoredImage);
     const restoredVideo =
       (await restoreRemote("video", latest?.sourceName || "migrate-video.mp4", "video/mp4"))
       || await loadDraftFile("video");

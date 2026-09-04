@@ -376,6 +376,7 @@ async def create_migrate_job(
         "sourceInputName": input_name,
         "sourcePath": str(input_path.resolve()),
         "referenceName": reference_image.filename if reference_image and reference_image.filename else reference_name,
+        "referenceUploaded": bool(reference_image is not None and reference_image.filename),
         "referenceSize": reference_path.stat().st_size if reference_path.is_file() else None,
         "referenceInputName": reference_name,
         "referencePath": str(reference_path.resolve()),
