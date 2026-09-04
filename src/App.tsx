@@ -775,37 +775,41 @@ export function App() {
         <nav className="sidebar-navigation" aria-label="工作台导航">
           <p className="sidebar-section-label">工作台</p>
           <div className="route-switcher">
-            <a className={!isDouyinRoute && !isMigrateRoute ? "active" : ""} href="/">
-              <FilmSlate weight={isDouyinRoute || isMigrateRoute ? "regular" : "fill"} />
-              <span>影动生成</span>
-            </a>
             <a className={isDouyinRoute ? "active" : ""} href="/douyin">
               <DownloadSimple weight={isDouyinRoute ? "fill" : "regular"} />
               <span>抖音下载</span>
             </a>
-            <a className={isMigrateRoute ? "active" : ""} href="/migrate">
-              <PersonSimpleRun weight={isMigrateRoute ? "fill" : "regular"} />
-              <span>动作迁移</span>
+            <a className={!isDouyinRoute ? "active" : ""} href="/">
+              <FilmSlate weight={!isDouyinRoute ? "fill" : "regular"} />
+              <span>影动生成</span>
             </a>
           </div>
-          <p className="route-caption">生成 · 下载 · 迁移</p>
+          <p className="route-caption">下载 · 生成 · 迁移</p>
 
-          <p className="sidebar-section-label">创作与管理</p>
-          <a className={!isDouyinRoute && !isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
-            <Play weight="fill" />
-            <span>高清工作台</span>
-            {!isDouyinRoute && !isMigrateRoute && <i />}
-          </a>
-          <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
-            <PersonSimpleRun />
-            <span>动作迁移</span>
-            {isMigrateRoute && <i />}
-          </a>
-          <a className={isDouyinRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/douyin">
-            <DownloadSimple />
-            <span>链接下载</span>
-            {isDouyinRoute && <i />}
-          </a>
+          {isDouyinRoute ? (
+            <>
+              <p className="sidebar-section-label">创作与管理</p>
+              <a className="sidebar-nav-item active" href="/douyin">
+                <DownloadSimple />
+                <span>链接下载</span>
+                <i />
+              </a>
+            </>
+          ) : (
+            <>
+              <p className="sidebar-section-label">创作与管理</p>
+              <a className={!isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
+                <Play weight="fill" />
+                <span>歌曲生成</span>
+                {!isMigrateRoute && <i />}
+              </a>
+              <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
+                <PersonSimpleRun />
+                <span>动作迁移</span>
+                {isMigrateRoute && <i />}
+              </a>
+            </>
+          )}
         </nav>
 
         <div className="sidebar-system">

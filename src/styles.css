@@ -307,7 +307,7 @@ body {
 .route-switcher {
   padding: 4px;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr 1fr;
   gap: 4px;
   border: 1px solid #302647;
   border-radius: 13px;
