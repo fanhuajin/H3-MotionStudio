@@ -11,6 +11,7 @@ import {
   FilmSlate,
   Graph,
   Info,
+  MusicNotes,
   PersonSimpleRun,
   Play,
   SpinnerGap,
@@ -799,7 +800,7 @@ export function App() {
             <>
               <p className="sidebar-section-label">创作与管理</p>
               <a className={!isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
-                <Play weight="fill" />
+                <MusicNotes weight="fill" />
                 <span>歌曲生成</span>
                 {!isMigrateRoute && <i />}
               </a>
