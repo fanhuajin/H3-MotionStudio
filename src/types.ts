@@ -32,6 +32,10 @@ export interface JobState {
   sourceName: string;
   sourceSize: number;
   sourceDuration?: number | null;
+  sourceFps?: number | null;
+  /** 长视频分段：预估总段数与当前段（每段81帧、重叠5帧衔接） */
+  estimatedSegments?: number | null;
+  currentSegment?: number | null;
   referenceName?: string;
   referenceSize?: number;
   referenceInputName?: string;

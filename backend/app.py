@@ -39,6 +39,7 @@ from .douyin_service import (
 from .pipeline import (
     PipelineError,
     comfy_health,
+    estimate_migrate_segments,
     media_metadata,
     retry_enhance,
     retry_voice,
@@ -376,6 +377,10 @@ async def create_migrate_job(
         "sourceName": video.filename or input_name,
         "sourceSize": input_path.stat().st_size,
         "sourceDuration": metadata.get("duration"),
+        "sourceFps": metadata.get("fps"),
+        # 长视频分段预估：每段 81 帧、重叠 5 帧 → 运行时可显示"第 X / N 段"
+        "estimatedSegments": estimate_migrate_segments(metadata.get("frames")),
+        "currentSegment": None,
         "sourceInputName": input_name,
         "sourcePath": str(input_path.resolve()),
         "referenceName": reference_image.filename if reference_image and reference_image.filename else reference_name,

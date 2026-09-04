@@ -488,6 +488,15 @@ async def run_comfy_workflow(
                     break
                 node_id = str(node_id)
                 title = titles.get(node_id, node_id)
+                if kind == "migrate" and node_id == "361":
+                    # 每段采样（WanSCAILToVideo）执行一次 → 当前进行到第几段
+                    segment_count += 1
+                    job_state = store.get(job_id) or {}
+                    store.update(
+                        job_id,
+                        currentSegment=segment_count,
+                        estimatedSegments=job_state.get("estimatedSegments"),
+                    )
                 if plan is not None:
                     # 里程碑只前进不倒退：长视频 Mie 循环会重复执行读取/SAM/采样节点，
                     # 重复与未列入节点只刷新当前标题，避免进度面板来回跳阶段。
@@ -587,9 +596,46 @@ def link_into_input(source: Path, job_id: str) -> Path:
     return link_into_input_as(source, job_id, "original")
 
 
+def _parse_frame_rate(value: Any) -> float | None:
+    """把 '30/1' / '30000/1001' 解析为帧率；失败返回 None。"""
+    try:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if "/" in text:
+            numerator, denominator = text.split("/", 1)
+            numerator, denominator = float(numerator), float(denominator)
+            if not denominator:
+                return None
+            return numerator / denominator
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def estimate_migrate_segments(
+    frames: int | None,
+    first_segment_frames: int = 81,
+    advance_per_segment: int = 76,
+) -> int | None:
+    """长视频分段轮数预估（与工作流内部公式一致）。
+
+    每段读取 first_segment_frames 帧、段间重叠 5 帧（推进 advance_per_segment），
+    总段数 = ⌈(frames - first) / advance⌉ + 1。帧数未知时返回 None。
+    """
+    if not frames or frames <= 0:
+        return None
+    import math
+
+    if frames <= first_segment_frames:
+        return 1
+    return math.ceil((frames - first_segment_frames) / advance_per_segment) + 1
+
+
 async def media_metadata(path: Path) -> dict[str, Any]:
     command = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration,size", "-show_entries", "stream=width,height",
+        "ffprobe", "-v", "error", "-show_entries", "format=duration,size",
+        "-show_entries", "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames",
         "-select_streams", "v:0", "-of", "json", str(path),
     ]
     result = await asyncio.to_thread(
@@ -602,15 +648,27 @@ async def media_metadata(path: Path) -> dict[str, Any]:
         timeout=30,
     )
     if result.returncode != 0:
-        return {"width": 1440, "height": 1080, "duration": None, "size": path.stat().st_size, "completedAt": now_iso()}
+        return {"width": 1440, "height": 1080, "duration": None, "size": path.stat().st_size, "frames": None, "fps": None, "completedAt": now_iso()}
     payload = json.loads(result.stdout)
     stream = (payload.get("streams") or [{}])[0]
     format_data = payload.get("format") or {}
+    duration = float(format_data["duration"]) if format_data.get("duration") else None
+    fps = _parse_frame_rate(stream.get("r_frame_rate")) or _parse_frame_rate(stream.get("avg_frame_rate"))
+    frames: int | None = None
+    try:
+        if stream.get("nb_frames"):
+            frames = int(stream["nb_frames"])
+    except (TypeError, ValueError):
+        frames = None
+    if frames is None and duration is not None and fps:
+        frames = max(1, round(duration * fps))
     return {
         "width": int(stream.get("width") or 1440),
         "height": int(stream.get("height") or 1080),
-        "duration": float(format_data["duration"]) if format_data.get("duration") else None,
+        "duration": duration,
         "size": int(format_data.get("size") or path.stat().st_size),
+        "frames": frames,
+        "fps": fps,
         "completedAt": now_iso(),
     }
 

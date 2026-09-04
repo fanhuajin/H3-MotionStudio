@@ -788,6 +788,16 @@ export function MigrateRoute() {
                 <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
               </span>
             )}
+            {liveJob?.estimatedSegments != null && liveJob?.stage === "migrating" && (
+              <span
+                className={`job-segments ${liveJob.currentSegment ? "live" : ""}`}
+                title={`长视频分段进度：共 ${liveJob.estimatedSegments} 段（每段 81 帧、段间重叠 5 帧衔接）${liveJob.sourceFps ? ` · 源视频 ${liveJob.sourceFps}fps` : ""}`}
+              >
+                {liveJob.currentSegment
+                  ? <>分段 {liveJob.currentSegment}/{liveJob.estimatedSegments}<i><b style={{ width: `${Math.min(100, (liveJob.currentSegment / liveJob.estimatedSegments) * 100)}%` }} /></i></>
+                  : <>预计 {liveJob.estimatedSegments} 段</>}
+              </span>
+            )}
             {jobActive && totalElapsedMs != null && (
               <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
             )}

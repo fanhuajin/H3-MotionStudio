@@ -169,6 +169,14 @@ class WorkflowPreparationTests(unittest.TestCase):
         replacement = next(m for m in migrate_milestones(False, "replacement", False) if m["id"] == "migrate")
         self.assertIn("替换", replacement["label"])
 
+    def test_estimate_migrate_segments_matches_workflow_formula(self) -> None:
+        from backend.pipeline import estimate_migrate_segments
+        self.assertEqual(estimate_migrate_segments(1034), 14)  # 17s @60fps
+        self.assertEqual(estimate_migrate_segments(519), 7)    # 17s @30fps
+        self.assertEqual(estimate_migrate_segments(81), 1)
+        self.assertEqual(estimate_migrate_segments(40), 1)
+        self.assertIsNone(estimate_migrate_segments(None))
+
     def test_migrate_hd_milestone_label_follows_canvas_ratio(self) -> None:
         hd_916 = next(m for m in migrate_milestones(False, "animation", True, ratio="9:16") if m["id"] == "upscale")
         self.assertIn("2×", hd_916["label"])
