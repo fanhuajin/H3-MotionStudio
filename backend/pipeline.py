@@ -670,6 +670,7 @@ async def _run_enhance_and_voice(job_id: str, original: Path) -> None:
         currentNodeTitle=None,
         progress=100,
         output=await media_metadata(final),
+        finishedAt=now_iso(),
     )
 
 
@@ -678,7 +679,15 @@ async def run_pipeline(job_id: str) -> None:
         state = store.get(job_id)
         if not state:
             return
-        store.update(job_id, status="running", stage="starting", errorSummary=None, errorDetail=None)
+        store.update(
+            job_id,
+            status="running",
+            stage="starting",
+            errorSummary=None,
+            errorDetail=None,
+            startedAt=now_iso(),
+            finishedAt=None,
+        )
         try:
             await resources.ensure_comfy(job_id)
             state = store.get(job_id) or state
@@ -706,7 +715,7 @@ async def run_pipeline(job_id: str) -> None:
             running = next((item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"), None)
             if running:
                 store.set_milestone(job_id, running, status="error")
-            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)
+            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())
             try:
                 if await comfy_health():
                     await resources.stop_comfy(job_id)
@@ -723,7 +732,15 @@ async def run_migrate_pipeline(job_id: str) -> None:
         state = store.get(job_id)
         if not state:
             return
-        store.update(job_id, status="running", stage="starting", errorSummary=None, errorDetail=None)
+        store.update(
+            job_id,
+            status="running",
+            stage="starting",
+            errorSummary=None,
+            errorDetail=None,
+            startedAt=now_iso(),
+            finishedAt=None,
+        )
         try:
             await resources.ensure_comfy(job_id)
             state = store.get(job_id) or state
@@ -799,6 +816,7 @@ async def run_migrate_pipeline(job_id: str) -> None:
                 progressValue=None,
                 progressMax=None,
                 output=await media_metadata(final),
+                finishedAt=now_iso(),
             )
             store.add_log(job_id, "动作迁移任务已完成。")
         except Exception as error:
@@ -814,7 +832,7 @@ async def run_migrate_pipeline(job_id: str) -> None:
             )
             if running:
                 store.set_milestone(job_id, running, status="error")
-            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)
+            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())
             try:
                 if await comfy_health():
                     await resources.stop_comfy(job_id)
@@ -843,6 +861,8 @@ async def retry_enhance(job_id: str) -> None:
             enhancedOutput=None,
             finalOutput=None,
             output=None,
+            startedAt=now_iso(),
+            finishedAt=None,
         )
         for milestone in ("upscale", "hd", "handoff", "stems", "voice", "mux"):
             store.set_milestone(job_id, milestone, status="pending", progress=None, currentNode=None)
@@ -864,7 +884,7 @@ async def retry_enhance(job_id: str) -> None:
             )
             if running:
                 store.set_milestone(job_id, running, status="error")
-            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)
+            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())
             try:
                 if await comfy_health():
                     await resources.stop_comfy(job_id)
@@ -880,7 +900,7 @@ async def retry_voice(job_id: str) -> None:
         enhanced = Path(state["enhancedOutput"])
         if not enhanced.is_file():
             raise PipelineError("高清成片文件不存在", str(enhanced))
-        store.update(job_id, status="running", stage="handoff", errorSummary=None, errorDetail=None, finalReady=False)
+        store.update(job_id, status="running", stage="handoff", errorSummary=None, errorDetail=None, finalReady=False, startedAt=now_iso(), finishedAt=None)
         for milestone in ("handoff", "stems", "voice", "mux"):
             store.set_milestone(job_id, milestone, status="pending", progress=None, currentNode=None)
         if await comfy_health():
@@ -897,8 +917,9 @@ async def retry_voice(job_id: str) -> None:
                 finalReady=True,
                 output=await media_metadata(final),
                 progress=100,
+                finishedAt=now_iso(),
             )
         except Exception as error:
             summary = error.summary if isinstance(error, PipelineError) else "音色转换失败"
             detail = error.detail if isinstance(error, PipelineError) else repr(error)
-            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail)
+            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())

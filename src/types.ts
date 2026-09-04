@@ -5,6 +5,7 @@ export interface Milestone {
   label: string;
   subtitle: string;
   status: MilestoneStatus;
+  startedAt?: string | null;
   elapsed?: string | null;
   progress?: number | null;
   progressValue?: number | null;
@@ -24,6 +25,10 @@ export interface JobState {
   stage: string;
   createdAt: string;
   updatedAt: string;
+  /** 首次进入执行（running）的时间；缺失时前端回退用 createdAt */
+  startedAt?: string | null;
+  /** 完成/失败/中断时间 */
+  finishedAt?: string | null;
   sourceName: string;
   sourceSize: number;
   sourceDuration?: number | null;

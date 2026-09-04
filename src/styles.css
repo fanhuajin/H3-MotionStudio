@@ -102,6 +102,28 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
 .panel-heading h2 { margin: 0; font-size: 17px; }
 .panel-heading span { color: #8e97a3; font-size: 12px; }
 .job-id { margin-left: auto; padding: 5px 9px; border: 1px solid #2d3744; border-radius: 5px; }
+.job-timer {
+  margin-left: 7px;
+  padding: 5px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #2d6c78;
+  border-radius: 5px;
+  color: #9fe3ee;
+  background: rgba(41, 184, 211, .08);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.job-timer svg { width: 12px; height: 12px; color: var(--shell-accent); animation: timer-pulse 1.2s ease-in-out infinite; }
+@keyframes timer-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+.job-live-time { color: var(--shell-accent) !important; font-variant-numeric: tabular-nums; }
+.result-details dl .total-elapsed dt, .result-details dl .total-elapsed dd { color: var(--shell-accent); font-weight: 600; }
 .pipeline { border: 1px solid #2c3643; border-radius: 8px; padding: 8px 8px 8px 0; background: linear-gradient(180deg, #0c131c, #0a1018); }
 .pipeline-row { display: grid; grid-template-columns: 96px 1fr; min-height: 53px; position: relative; }
 .rail { position: relative; display: flex; align-items: center; justify-content: flex-end; padding-right: 14px; }

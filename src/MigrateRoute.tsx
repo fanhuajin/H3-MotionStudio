@@ -14,10 +14,12 @@ import {
   PersonSimpleRun,
   Play,
   SpinnerGap,
+  Timer,
   UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
 
 const FALLBACK_CONFIG: AppConfig = {
@@ -175,10 +177,14 @@ function MilestoneIcon({ status }: { status: MilestoneStatus }) {
   return <Circle weight="regular" />;
 }
 
-function PipelineRow({ step, index }: { step: Milestone; index: number }) {
+function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number; liveNow?: number | null }) {
   const progressText = step.progressMax
     ? `采样 ${step.progressValue ?? 0} / ${step.progressMax} · ${Math.round(step.progress ?? 0)}%`
     : step.currentNode || null;
+  const elapsedText =
+    step.status === "running" && step.startedAt && liveNow
+      ? formatElapsedMs(liveNow - Date.parse(step.startedAt))
+      : step.elapsed || "--:--";
   return (
     <div className={`pipeline-row state-${step.status} comfy-row`}>
       <div className="rail"><span className="rail-icon"><MilestoneIcon status={step.status} /></span></div>
@@ -196,7 +202,7 @@ function PipelineRow({ step, index }: { step: Milestone; index: number }) {
             </div>
           )}
         </div>
-        <span className="elapsed">{step.elapsed || "--:--"}</span>
+        <span className="elapsed">{elapsedText}</span>
         <span className="status-chip">{statusLabel(step.status)}</span>
       </div>
     </div>
@@ -320,6 +326,10 @@ export function MigrateRoute() {
     ? job.milestones
     : migrateMilestoneSkeleton(removeSubtitles, mode, hd1080);
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
+  const jobActive = Boolean(job && ["queued", "running"].includes(job.status));
+  const tickNow = useNowTick(jobActive);
+  // 计时起点：开始执行时间（旧任务没有则退回创建时间）；运行中实时、结束后定格
+  const totalElapsedMs = elapsedMs(job?.startedAt || job?.createdAt, job?.finishedAt, tickNow);
 
   const resourceStatus = useMemo(() => {
     if (job?.status === "running") return { label: "ComfyUI 单链路运行中", mode: "connected" };
@@ -756,12 +766,15 @@ export function MigrateRoute() {
             <Graph />
             <div><h2>执行流程</h2><span>严格单链路 · 节点级运行状态</span></div>
             {job && <span className="job-id">任务 {job.id.slice(0, 8)}</span>}
+            {jobActive && totalElapsedMs != null && (
+              <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
+            )}
           </div>
 
           <div className={`pipeline ${job?.finalReady ? "pipeline-compact" : ""}`}>
             {milestones.map((step, index) => (
               <div className="pipeline-step" key={step.id}>
-                <PipelineRow step={step} index={index} />
+                <PipelineRow step={step} index={index} liveNow={jobActive ? tickNow : null} />
               </div>
             ))}
           </div>
@@ -787,6 +800,9 @@ export function MigrateRoute() {
                     <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>
                     <div><dt>完成时间</dt><dd>{completionTime}</dd></div>
+                    {totalElapsedMs != null && (
+                      <div className="total-elapsed"><dt>任务总耗时</dt><dd>{formatElapsedMs(totalElapsedMs)}</dd></div>
+                    )}
                   </dl>
                   {finalUrl && <a className="result-button primary" href={`${finalUrl}?download=1`}><DownloadSimple /> 下载成片</a>}
                   {showDraftSeparately && draftUrl && <a className="result-button" href={draftUrl} target="_blank" rel="noreferrer"><Eye /> 查看迁移草稿</a>}

@@ -16,12 +16,14 @@ import {
   Play,
   Question,
   SpinnerGap,
+  Timer,
   UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import { DouyinRoute } from "./DouyinRoute";
 import { MigrateRoute } from "./MigrateRoute";
+import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
 
 const EMPTY_MILESTONES: Milestone[] = [
@@ -157,6 +159,8 @@ const DEMO_JOB: JobState = {
   stage: "completed",
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
+  startedAt: new Date(Date.now() - 9 * 60 * 1000).toISOString(),
+  finishedAt: new Date().toISOString(),
   sourceName: "演唱视频.mp4",
   sourceSize: 21_400_000,
   sourceDuration: 32.4,
@@ -215,11 +219,15 @@ function MilestoneIcon({ status }: { status: MilestoneStatus }) {
   return <Circle weight="regular" />;
 }
 
-function PipelineRow({ step, index }: { step: Milestone; index: number }) {
+function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number; liveNow?: number | null }) {
   const progressText = step.progressMax
     ? `采样 ${step.progressValue ?? 0} / ${step.progressMax} · ${Math.round(step.progress ?? 0)}%`
     : step.currentNode || null;
   const isRvc = ["stems", "voice", "mux"].includes(step.id);
+  const elapsedText =
+    step.status === "running" && step.startedAt && liveNow
+      ? formatElapsedMs(liveNow - Date.parse(step.startedAt))
+      : step.elapsed || "--:--";
 
   return (
     <div className={`pipeline-row state-${step.status} ${isRvc ? "rvc-row" : "comfy-row"}`}>
@@ -238,7 +246,7 @@ function PipelineRow({ step, index }: { step: Milestone; index: number }) {
             </div>
           )}
         </div>
-        <span className="elapsed">{step.elapsed || "--:--"}</span>
+        <span className="elapsed">{elapsedText}</span>
         <span className="status-chip">{statusLabel(step.status)}</span>
       </div>
     </div>
@@ -279,6 +287,10 @@ function MotionStudioRoute() {
 
   const milestones = job?.milestones?.length ? job.milestones : EMPTY_MILESTONES;
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
+  const jobActive = Boolean(job && ["queued", "running"].includes(job.status));
+  const tickNow = useNowTick(jobActive);
+  // 计时起点：开始执行时间（旧任务没有则退回创建时间）；运行中实时、结束后定格
+  const totalElapsedMs = elapsedMs(job?.startedAt || job?.createdAt, job?.finishedAt, tickNow);
   const resultUrl = !demoMode && job?.finalReady ? `/api/jobs/${job.id}/media/final` : null;
   const originalUrl = !demoMode && job?.originalReady ? `/api/jobs/${job.id}/media/original` : null;
 
@@ -664,12 +676,15 @@ function MotionStudioRoute() {
             <Graph />
             <div><h2>执行流程</h2><span>严格单链路 · 节点级运行状态</span></div>
             {job && <span className="job-id">任务 {job.id.slice(0, 8)}</span>}
+            {jobActive && totalElapsedMs != null && (
+              <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
+            )}
           </div>
 
           <div className={`pipeline ${job?.finalReady ? "pipeline-compact" : ""}`}>
             {milestones.map((step, index) => (
               <div className="pipeline-step" key={step.id}>
-                <PipelineRow step={step} index={index} />
+                <PipelineRow step={step} index={index} liveNow={jobActive ? tickNow : null} />
                 {step.id === "handoff" && (
                   <div className={`handoff-banner ${step.status === "completed" ? "ready" : ""}`}>
                     <ArrowsClockwise weight="bold" />
@@ -691,6 +706,9 @@ function MotionStudioRoute() {
                     <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>
                     <div><dt>完成时间</dt><dd>{completionTime}</dd></div>
+                    {totalElapsedMs != null && (
+                      <div className="total-elapsed"><dt>任务总耗时</dt><dd>{formatElapsedMs(totalElapsedMs)}</dd></div>
+                    )}
                   </dl>
                   {job.finalReady && <a className="result-button primary" href={`/api/jobs/${job.id}/media/final?download=1`}><DownloadSimple /> 下载最终成片</a>}
                   {job.originalReady && <a className="result-button" href={`/api/jobs/${job.id}/media/original`} target="_blank" rel="noreferrer"><Eye /> 查看原版</a>}

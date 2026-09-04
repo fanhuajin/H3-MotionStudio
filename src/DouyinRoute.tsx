@@ -11,6 +11,7 @@ import {
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
+import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 
 type DouyinServiceStatus = {
   available: boolean;
@@ -85,6 +86,26 @@ function statusText(job: DouyinJob) {
   return "失败";
 }
 
+/** 下载中/排队/转码中的任务视为活跃，需要实时计时 */
+function isDouyinJobActive(job: DouyinJob) {
+  if (job.status === "pending" || job.status === "running") return true;
+  return job.status === "completed" && Boolean(job.result) && !job.result!.playableReady;
+}
+
+/** 任务计时文案：活跃任务实时秒数；已结束显示"用时"；无时间信息返回 null */
+function douyinElapsedText(job: DouyinJob, now: number): string | null {
+  const start = job.started_at || job.created_at;
+  if (isDouyinJobActive(job)) {
+    const ms = elapsedMs(start, null, now);
+    return ms != null ? formatElapsedMs(ms) : null;
+  }
+  if (job.finished_at) {
+    const ms = elapsedMs(start, job.finished_at);
+    return ms != null ? `用时 ${formatElapsedMs(ms)}` : null;
+  }
+  return null;
+}
+
 function isDouyinUrl(value: string) {
   return /https?:\/\/(?:[\w-]+\.)*(?:douyin\.com|iesdouyin\.com)(?=[/:?#]|$)/i.test(value);
 }
@@ -105,6 +126,8 @@ export function DouyinRoute() {
   const [loginBusy, setLoginBusy] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const anyJobActive = useMemo(() => jobs.some(isDouyinJobActive), [jobs]);
+  const tickNow = useNowTick(anyJobActive);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -348,7 +371,9 @@ export function DouyinRoute() {
                 </span>
                 <span className="job-counts">{job.success ? `成功 ${job.success}` : job.failed ? `失败 ${job.failed}` : job.skipped ? `本机已有 ${job.skipped}` : "等待结果"}</span>
                 <span className="job-state">{statusText(job)}</span>
-                <time>{relativeTime(job.finished_at || job.created_at)}</time>
+                <time className={isDouyinJobActive(job) ? "job-live-time" : ""}>
+                  {douyinElapsedText(job, tickNow) || relativeTime(job.finished_at || job.created_at)}
+                </time>
                 <ArrowSquareOut />
               </button>
             ))}

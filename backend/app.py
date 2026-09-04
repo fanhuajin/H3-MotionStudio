@@ -137,6 +137,7 @@ async def lifespan(_: FastAPI):
             stage="failed",
             errorSummary="本地服务曾在任务运行时重启",
             errorDetail="任务状态已保留。请根据已生成的中间成片重新提交或重试音色转换。",
+            finishedAt=now_iso(),
         )
     sweep_task = asyncio.create_task(_douyin_housekeeping())
     try:
