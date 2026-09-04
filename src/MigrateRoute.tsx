@@ -329,11 +329,14 @@ export function MigrateRoute() {
     return () => window.removeEventListener("keydown", onKey);
   }, [lightboxImage]);
 
-  const milestones = job?.milestones?.length
-    ? job.milestones
+  // 运行/排队中的任务显示其真实里程碑；否则按当前表单设置实时预览
+  // （切换 4:3/9:16、模式、去字幕、高清档位时流程文案立即同步）
+  const liveJob = job && (job.status === "queued" || job.status === "running") ? job : null;
+  const milestones = liveJob?.milestones?.length
+    ? liveJob.milestones
     : migrateMilestoneSkeleton(removeSubtitles, mode, hd1080, ratio);
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
-  const jobActive = Boolean(job && ["queued", "running"].includes(job.status));
+  const jobActive = Boolean(liveJob);
   const tickNow = useNowTick(jobActive);
   // 计时起点：开始执行时间（旧任务没有则退回创建时间）；运行中实时、结束后定格
   const totalElapsedMs = elapsedMs(job?.startedAt || job?.createdAt, job?.finishedAt, tickNow);
@@ -773,7 +776,10 @@ export function MigrateRoute() {
         <section className="execution-panel" aria-label="执行进度与结果">
           <div className="panel-heading">
             <Graph />
-            <div><h2>执行流程</h2><span>严格单链路 · 节点级运行状态</span></div>
+            <div>
+              <h2>执行流程</h2>
+              <span>{liveJob ? "严格单链路 · 节点级运行状态" : "按当前设置预览 · 提交后展示实际进度"}</span>
+            </div>
             {job && (
               <span className="queue-anchor">
                 <button className={`job-id job-id-button ${queueOpen ? "job-id-open" : ""}`} onClick={() => setQueueOpen((value) => !value)} title="任务队列：查看当前任务并取消">
