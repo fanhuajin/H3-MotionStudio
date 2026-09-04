@@ -49,11 +49,13 @@ def prepare_upscale_workflow(
     output_prefix: str,
     source_path,
     scale: tuple[int, int] | None = None,
+    upscale_model: str | None = None,
 ) -> dict[str, Any]:
-    """1080P 高清加强：替换输入视频与输出前缀；可选替换缩回尺寸节点 #5。
+    """1080P 高清加强：替换输入视频与输出前缀；可选替换缩回尺寸与超分模型。
 
-    9:16 竖版时把 ImageScale 的目标尺寸从 1440×1080 换成 1080×1920，
-    其余（8 帧分批、RealESRGAN4x、锐化、保留原音频）保持作者默认。
+    9:16 竖版时把 ImageScale 的目标尺寸从 1440×1080 换成 1080×1920；
+    9:16 迁移链路可用 x2plus 代替 x4plus（目标放大仅 ~2.1×，耗时约 1/4）。
+    其余（8 帧分批、逐帧处理、锐化、保留原音频）保持作者默认。
     """
     workflow = copy.deepcopy(source_path if isinstance(source_path, dict) else load_workflow(source_path))
     _set_vhs_widget(workflow, 2, "video", source_name)
@@ -71,6 +73,13 @@ def prepare_upscale_workflow(
         if not isinstance(widgets, list) or len(widgets) < 3:
             raise ValueError("ImageScale widgets_values is not a list of width/height")
         widgets[1], widgets[2] = int(scale[0]), int(scale[1])
+
+    if upscale_model:
+        loader_node = node_by_id(workflow, 3)
+        loader_widgets = loader_node.get("widgets_values") or []
+        if not isinstance(loader_widgets, list) or not loader_widgets:
+            raise ValueError("UpscaleModelLoader widgets_values is not a non-empty list")
+        loader_widgets[0] = upscale_model
     return workflow
 
 

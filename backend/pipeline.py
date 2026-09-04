@@ -33,6 +33,7 @@ from .settings import (
     RVC_ROOT,
     RVC_SCRIPT,
     SINGING_WORKFLOW,
+    UPSCALE_MODEL_X2,
     UPSCALE_WORKFLOW,
     canvas_params,
 )
@@ -847,12 +848,18 @@ async def run_migrate_pipeline(job_id: str) -> None:
             if hd1080:
                 store.update(job_id, stage="enhancing")
                 draft_input = await asyncio.to_thread(link_into_input_as, draft, job_id, "draft")
+                # 9:16 只需 ~2.1×：x2plus 即可（时间约 1/4）；4:3（~2.8×）保持 x4plus
+                ratio = state.get("canvas") or DEFAULT_CANVAS
+                hd_model = UPSCALE_MODEL_X2 if ratio == "9:16" else None
                 upscale = prepare_upscale_workflow(
                     draft_input.name,
                     f"video/H3_MotionStudio/{job_id}_1080P",
                     UPSCALE_WORKFLOW,
                     scale=(params["hd_width"], params["hd_height"]),
+                    upscale_model=hd_model,
                 )
+                if hd_model:
+                    store.add_log(job_id, f"高清档使用 {hd_model}（2× 超分，9:16 目标放大仅 2.1×）")
                 final = await run_comfy_workflow(job_id, "upscale", upscale, "8")
                 store.update(job_id, enhancedOutput=str(final), enhancedReady=True)
                 store.add_log(job_id, f"1080P 高清成片已保存：{final.name}")

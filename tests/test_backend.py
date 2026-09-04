@@ -81,6 +81,17 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         widgets = node_by_id(prepared, 5)["widgets_values"]
         self.assertEqual((widgets[1], widgets[2]), (1080, 1920))
+        # 未指定模型时保持工作流默认（x4plus）
+        self.assertEqual(node_by_id(prepared, 3)["widgets_values"][0], "RealESRGAN_x4plus.pth")
+
+    def test_upscale_model_can_switch_to_x2plus(self) -> None:
+        prepared = prepare_upscale_workflow(
+            "draft.mp4",
+            "video/H3_MotionStudio/unit-1080P",
+            UPSCALE_WORKFLOW,
+            upscale_model="RealESRGAN_x2plus.pth",
+        )
+        self.assertEqual(node_by_id(prepared, 3)["widgets_values"][0], "RealESRGAN_x2plus.pth")
 
     def test_clean_workflow_replaces_source_prefix_and_9x16_canvas(self) -> None:
         canvas = canvas_params("9:16")
