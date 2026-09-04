@@ -24,6 +24,7 @@ import {
 import { DouyinRoute } from "./DouyinRoute";
 import { MigrateRoute } from "./MigrateRoute";
 import { SystemMonitor } from "./SystemMonitor";
+import { TaskTabStatus } from "./TaskTabStatus";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
 
@@ -754,6 +755,7 @@ export function App() {
 
   return (
     <div className="desktop-app-shell">
+      <TaskTabStatus />
       <aside className="app-sidebar">
         <div className="sidebar-top">
           <p className="sidebar-kicker">DESKTOP</p>
