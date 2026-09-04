@@ -9,12 +9,10 @@ import {
   Eye,
   FileText,
   FilmSlate,
-  GearSix,
   Graph,
   Info,
   PersonSimpleRun,
   Play,
-  Question,
   SpinnerGap,
   Timer,
   UploadSimple,
@@ -812,10 +810,6 @@ export function App() {
 
         <div className="sidebar-system">
           <p className="sidebar-section-label">系统</p>
-          <div className="sidebar-system-actions">
-            <button><GearSix /> 设置</button>
-            <button><Question /> 帮助</button>
-          </div>
           <SystemMonitor />
           <div className="sidebar-runtime">
             <span className="runtime-icon"><Circle weight="fill" /></span>
