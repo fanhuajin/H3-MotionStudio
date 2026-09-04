@@ -618,7 +618,7 @@ function MotionStudioRoute() {
                   <video src={previewUrl} controls preload="metadata" onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)} />
                   <div className="media-meta">
                     <div><strong>{file?.name}</strong><span>{formatDuration(duration)} · {formatBytes(file?.size)}</span></div>
-                    <button onClick={clearFile} aria-label="移除视频"><X /></button>
+                    <button onClick={clearFile} aria-label="移除视频" title="移除视频"><X /></button>
                   </div>
                 </>
               ) : previewPreparing ? (

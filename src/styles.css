@@ -69,7 +69,23 @@ button:focus-visible, a:focus-visible, textarea:focus-visible { outline: 2px sol
 .media-meta > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .media-meta strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .media-meta span { font-size: 12px; color: #b2b8c1; }
-.media-meta button { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; border: 1px solid #b9c0ca; background: #0c1119a8; color: white; cursor: pointer; }
+/* 视频移除按钮：与人物图卡一致的红系危险操作样式 */
+.media-meta button {
+  width: 29px; height: 29px;
+  padding: 0;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 120, 145, .45);
+  border-radius: 8px;
+  color: #ffdbe3;
+  background: rgba(60, 16, 30, .55);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  transition: border-color .18s, background .18s, color .18s;
+}
+.media-meta button:hover { color: #fff; border-color: #ff8b9f; background: rgba(120, 24, 46, .85); }
+.media-meta button svg { width: 13px; height: 13px; }
 .demo-meta { background: linear-gradient(#090c12ee, transparent); }
 .empty-upload { width: 100%; height: 100%; border: 0; background: linear-gradient(135deg, #0b1119, #111a27); color: #dce1e8; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; cursor: pointer; }
 .empty-upload:hover { background: linear-gradient(135deg, #101827, #152238); }
