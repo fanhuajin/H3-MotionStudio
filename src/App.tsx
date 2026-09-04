@@ -12,6 +12,7 @@ import {
   GearSix,
   Graph,
   Info,
+  ListChecks,
   PersonSimpleRun,
   Play,
   Question,
@@ -753,6 +754,8 @@ export function App() {
   const path = window.location.pathname.replace(/\/+$/, "");
   const isDouyinRoute = path === "/douyin";
   const isMigrateRoute = path === "/migrate";
+  const [queueOpen, setQueueOpen] = useState(false);
+  const toggleQueue = () => setQueueOpen((value) => !value);
 
   return (
     <div className="desktop-app-shell">
@@ -800,10 +803,11 @@ export function App() {
             <span>链接下载</span>
             {isDouyinRoute && <i />}
           </a>
-          <div className="sidebar-nav-item muted" aria-disabled="true">
-            <Graph />
-            <span>任务中心</span>
-          </div>
+          <button className={`sidebar-nav-item queue-nav-item ${queueOpen ? "active" : ""}`} onClick={toggleQueue} aria-expanded={queueOpen}>
+            <ListChecks />
+            <span>任务队列</span>
+            {queueOpen && <i />}
+          </button>
         </nav>
 
         <div className="sidebar-system">
@@ -812,7 +816,7 @@ export function App() {
             <button><GearSix /> 设置</button>
             <button><Question /> 帮助</button>
           </div>
-          <QueuePanel />
+          <QueuePanel open={queueOpen} onToggle={toggleQueue} />
           <SystemMonitor />
           <div className="sidebar-runtime">
             <span className="runtime-icon"><Circle weight="fill" /></span>

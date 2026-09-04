@@ -40,8 +40,7 @@ function kindLabel(job: AppJobSummary) {
   return "影动生成";
 }
 
-export function QueuePanel() {
-  const [open, setOpen] = useState(false);
+export function QueuePanel({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const [payload, setPayload] = useState<QueuePayload | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -124,7 +123,7 @@ export function QueuePanel() {
 
   return (
     <div className="queue-panel">
-      <button className={`queue-entry ${open ? "open" : ""}`} onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+      <button className={`queue-entry ${open ? "open" : ""}`} onClick={onToggle} aria-expanded={open}>
         <ListChecks weight={open || hasQueueBadge ? "fill" : "regular"} />
         <span>任务队列</span>
         {hasQueueBadge && <i className="queue-dot" />}
@@ -135,7 +134,7 @@ export function QueuePanel() {
           <div className="queue-popover-head">
             <strong>任务队列</strong>
             <span className={payload?.connected ? "ok" : ""}>{payload?.connected ? "ComfyUI 已连接" : "ComfyUI 未运行"}</span>
-            <button onClick={() => setOpen(false)} aria-label="关闭"><X weight="bold" /></button>
+            <button onClick={onToggle} aria-label="关闭"><X weight="bold" /></button>
           </div>
 
           <div className="queue-section">

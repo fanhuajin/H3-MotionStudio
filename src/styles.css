@@ -334,6 +334,15 @@ body {
 .sidebar-nav-item svg { width: 17px; height: 17px; }
 .sidebar-nav-item i { width: 6px; height: 6px; border-radius: 50%; background: var(--shell-accent); box-shadow: 0 0 10px rgba(67,213,236,.7); }
 .sidebar-nav-item.muted { opacity: .62; }
+.sidebar-nav-item.queue-nav-item {
+  width: 100%;
+  border: 0;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  background: transparent;
+}
+.sidebar-nav-item.queue-nav-item:hover:not(.active) { color: #d8d2e5; background: #100d28; }
 
 .sidebar-system {
   margin-top: auto;
