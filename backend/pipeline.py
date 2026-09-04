@@ -283,6 +283,35 @@ def completed_milestones_for(kind: str) -> tuple[str, ...]:
     return ("input", "h3", "stitch") if kind == "singing" else ("upscale", "hd")
 
 
+def is_job_cancelled(job_id: str) -> bool:
+    state = store.get(job_id) or {}
+    return state.get("status") in ("cancelled", "cancelling")
+
+
+def raise_if_cancelled(job_id: str) -> None:
+    if is_job_cancelled(job_id):
+        raise PipelineError("任务已取消")
+
+
+async def finish_cancelled(job_id: str) -> None:
+    """把运行中里程碑标为跳过并收尾 cancelled 状态（不关闭 ComfyUI）。"""
+    state = store.get(job_id) or {}
+    for milestone in state.get("milestones", []):
+        if milestone.get("status") == "running":
+            store.set_milestone(job_id, milestone["id"], status="skipped", currentNode=None, progress=None)
+    store.update(
+        job_id,
+        stage="cancelled",
+        currentNodeId=None,
+        currentNodeTitle=None,
+        progress=None,
+        progressValue=None,
+        progressMax=None,
+        finishedAt=now_iso(),
+    )
+    store.add_log(job_id, "任务已取消。")
+
+
 def _set_running_milestone(job_id: str, milestone_id: str, node_id: str, title: str) -> None:
     state = store.get(job_id) or {}
     for milestone in state.get("milestones", []):
@@ -387,6 +416,7 @@ async def run_comfy_workflow(
     active_prompt_id = ""
 
     async with websockets.connect(websocket_url, max_size=64 * 1024 * 1024) as websocket:
+        raise_if_cancelled(job_id)
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(f"{COMFY_URL}/prompt", json={"prompt": prompt, "client_id": client_id})
             if response.status_code >= 400:
@@ -410,6 +440,7 @@ async def run_comfy_workflow(
             try:
                 raw = await asyncio.wait_for(websocket.recv(), timeout=30)
             except asyncio.TimeoutError:
+                raise_if_cancelled(job_id)
                 if kind == "upscale":
                     for candidate_prompt_id in reversed(seen_prompt_ids):
                         resolved_output = await _completed_history_media(candidate_prompt_id, preferred_output_node)
@@ -433,6 +464,7 @@ async def run_comfy_workflow(
             message = json.loads(raw)
             event = message.get("type")
             data = message.get("data") or {}
+            raise_if_cancelled(job_id)
             message_prompt_id = str(data.get("prompt_id") or "")
             if kind != "upscale" and message_prompt_id not in ("", prompt_id):
                 continue
@@ -690,6 +722,9 @@ async def run_pipeline(job_id: str) -> None:
         state = store.get(job_id)
         if not state:
             return
+        if is_job_cancelled(job_id):
+            await finish_cancelled(job_id)
+            return
         store.update(
             job_id,
             status="running",
@@ -717,6 +752,9 @@ async def run_pipeline(job_id: str) -> None:
 
             await _run_enhance_and_voice(job_id, original)
         except Exception as error:
+            if is_job_cancelled(job_id):
+                await finish_cancelled(job_id)
+                return
             if isinstance(error, PipelineError):
                 summary, detail = error.summary, error.detail
             else:
@@ -837,6 +875,9 @@ async def run_migrate_pipeline(job_id: str) -> None:
             )
             store.add_log(job_id, "动作迁移任务已完成。")
         except Exception as error:
+            if is_job_cancelled(job_id):
+                await finish_cancelled(job_id)
+                return
             if isinstance(error, PipelineError):
                 summary, detail = error.summary, error.detail
             else:
@@ -863,6 +904,9 @@ async def retry_enhance(job_id: str) -> None:
         state = store.get(job_id)
         if not state or not state.get("originalOutput"):
             raise PipelineError("没有可用于高清转换的原版成片")
+        if is_job_cancelled(job_id):
+            await finish_cancelled(job_id)
+            return
         original = Path(state["originalOutput"])
         if not original.is_file():
             raise PipelineError("原版成片文件不存在", str(original))
@@ -889,6 +933,9 @@ async def retry_enhance(job_id: str) -> None:
             await resources.ensure_comfy(job_id)
             await _run_enhance_and_voice(job_id, original)
         except Exception as error:
+            if is_job_cancelled(job_id):
+                await finish_cancelled(job_id)
+                return
             if isinstance(error, PipelineError):
                 summary, detail = error.summary, error.detail
             else:
@@ -914,6 +961,9 @@ async def retry_voice(job_id: str) -> None:
         state = store.get(job_id)
         if not state or not state.get("enhancedOutput"):
             raise PipelineError("没有可用于音色转换的高清成片")
+        if is_job_cancelled(job_id):
+            await finish_cancelled(job_id)
+            return
         enhanced = Path(state["enhancedOutput"])
         if not enhanced.is_file():
             raise PipelineError("高清成片文件不存在", str(enhanced))
@@ -937,6 +987,9 @@ async def retry_voice(job_id: str) -> None:
                 finishedAt=now_iso(),
             )
         except Exception as error:
+            if is_job_cancelled(job_id):
+                await finish_cancelled(job_id)
+                return
             summary = error.summary if isinstance(error, PipelineError) else "音色转换失败"
             detail = error.detail if isinstance(error, PipelineError) else repr(error)
             store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())

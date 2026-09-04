@@ -23,6 +23,7 @@ import {
 } from "@phosphor-icons/react";
 import { DouyinRoute } from "./DouyinRoute";
 import { MigrateRoute } from "./MigrateRoute";
+import { QueuePanel } from "./QueuePanel";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
@@ -811,6 +812,7 @@ export function App() {
             <button><GearSix /> 设置</button>
             <button><Question /> 帮助</button>
           </div>
+          <QueuePanel />
           <SystemMonitor />
           <div className="sidebar-runtime">
             <span className="runtime-icon"><Circle weight="fill" /></span>

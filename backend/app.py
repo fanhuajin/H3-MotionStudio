@@ -15,6 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import httpx
+
 logger = logging.getLogger("uvicorn.error")
 
 from . import input_preview
@@ -45,6 +47,7 @@ from .pipeline import (
 )
 from .settings import (
     COMFY_INPUT,
+    COMFY_URL,
     DATA_DIR,
     FIXED_REFERENCE,
     MAX_DURATION_SECONDS,
@@ -437,6 +440,121 @@ async def retry_job_enhance(job_id: str):
         raise HTTPException(400, "没有可用于高清转换的原版成片")
     spawn(retry_enhance(job_id))
     return store.update(job_id, status="queued", stage="starting")
+
+
+@app.get("/api/comfy/queue")
+async def comfy_queue():
+    """当前 ComfyUI 队列 + 应用内活动任务摘要（用于任务队列面板）。"""
+    health = await comfy_health()
+    queue: dict[str, Any] = {"connected": bool(health), "running": [], "pending": []}
+    if health:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(f"{COMFY_URL}/queue")
+                payload = response.json()
+            for label in ("queue_running", "queue_pending"):
+                key = "running" if label == "queue_running" else "pending"
+                for item in payload.get(label) or []:
+                    entry = {"promptId": str(item[1])}
+                    try:
+                        first = next(iter((item[2] or {}).values()), None)
+                        entry["node"] = f"{first.get('class_type') or '?'}"
+                    except (AttributeError, StopIteration):
+                        entry["node"] = "?"
+                    queue[key].append(entry)
+        except (httpx.HTTPError, ValueError):
+            queue["connected"] = False
+    active = store.active()
+    app_job = None
+    if active:
+        milestones = active.get("milestones") or []
+        running_step = next((m for m in milestones if m.get("status") == "running"), None)
+        app_job = {
+            "id": active["id"],
+            "kind": active.get("kind") or "singing",
+            "status": active["status"],
+            "stage": active.get("stage"),
+            "canvas": active.get("canvas"),
+            "migrateMode": active.get("migrateMode"),
+            "sourceName": active.get("sourceName"),
+            "progress": active.get("progress"),
+            "currentNodeTitle": active.get("currentNodeTitle"),
+            "startedAt": active.get("startedAt") or active.get("createdAt"),
+            "runningMilestone": running_step.get("label") if running_step else None,
+            "promptIds": list((active.get("promptIds") or {}).values()),
+        }
+    return {"connected": queue["connected"], "running": queue["running"], "pending": queue["pending"], "app": app_job}
+
+
+class ComfyQueueAction(BaseModel):
+    action: str
+
+
+@app.post("/api/comfy/queue")
+async def comfy_queue_action(request: ComfyQueueAction):
+    if request.action != "clear-pending":
+        raise HTTPException(400, "不支持的操作")
+    if not await comfy_health():
+        raise HTTPException(409, "ComfyUI 未运行")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(f"{COMFY_URL}/queue", json={"clear": True})
+    except httpx.HTTPError as error:
+        raise HTTPException(502, f"清空队列失败：{error}") from error
+    return {"cleared": True}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """取消当前任务：清掉排队中的本任务 prompt，中断正在运行的 prompt。
+
+    中断后 pipeline 感知到 cancelled 状态即收尾（里程碑置为跳过），
+    不会把任务改写成失败，也不会关闭 ComfyUI。
+    """
+    state = store.get(job_id)
+    if not state:
+        raise HTTPException(404, "任务不存在")
+    if state.get("status") not in ("queued", "running", "cancelling"):
+        raise HTTPException(409, "任务已结束，无法取消")
+    active = store.active()
+    if active and active["id"] != job_id:
+        raise HTTPException(409, "另一个任务正在运行")
+
+    store.update(
+        job_id,
+        status="cancelling",
+        errorSummary=None,
+        errorDetail=None,
+        currentNodeTitle="正在取消任务…",
+    )
+    store.add_log(job_id, "收到取消请求，正在中断 ComfyUI……")
+
+    prompt_ids = {str(value) for value in (state.get("promptIds") or {}).values()}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            if await comfy_health():
+                queue_response = await client.get(f"{COMFY_URL}/queue")
+                payload = queue_response.json()
+                running_ids = [str(item[1]) for item in payload.get("queue_running") or []]
+                pending_ids = [str(item[1]) for item in payload.get("queue_pending") or []]
+                # 队列里属于本任务的排队 prompt 无法单独移除，全部清空等待队列
+                if pending_ids and set(pending_ids) <= prompt_ids and pending_ids:
+                    await client.post(f"{COMFY_URL}/queue", json={"clear": True})
+                    store.add_log(job_id, "已清空排队中的本任务片段。")
+                elif pending_ids:
+                    store.add_log(job_id, "等待队列包含其它任务，未自动清空（可手动处理）。")
+                if any(pid in prompt_ids for pid in running_ids):
+                    await client.post(f"{COMFY_URL}/interrupt", json={})
+                    store.add_log(job_id, "已向 ComfyUI 发送中断指令。")
+                elif running_ids:
+                    store.add_log(job_id, "ComfyUI 正在运行其它队列任务，未中断它。")
+    except httpx.HTTPError:
+        pass
+
+    # 状态置为 cancelled 后，pipeline 会在下一个检查点感知并收尾（里程碑跳过），
+    # 不会改写为失败、不会关闭 ComfyUI。
+    store.update(job_id, status="cancelled", finishedAt=now_iso())
+    return store.get(job_id)
 
 
 @app.websocket("/api/jobs/{job_id}/ws")

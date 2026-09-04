@@ -389,6 +389,161 @@ body {
   letter-spacing: .14em;
 }
 
+/* 侧栏任务队列 */
+.queue-panel { position: relative; margin-top: 7px; }
+.queue-entry {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #302647;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #8b829c;
+  background: #0d0a22;
+  font-size: 11px;
+  cursor: pointer;
+  position: relative;
+}
+.queue-entry:hover, .queue-entry.open { color: #e1dbea; border-color: #493964; }
+.queue-entry svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.queue-entry.open svg { color: var(--shell-accent); }
+.queue-dot {
+  width: 6px; height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--shell-accent);
+  box-shadow: 0 0 8px rgba(67, 213, 236, .7);
+}
+.queue-popover {
+  position: absolute;
+  left: calc(100% + 10px);
+  bottom: -4px;
+  width: 330px;
+  max-height: min(78vh, 620px);
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid #3a2f58;
+  border-radius: 12px;
+  background: #0d0a26;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .55), 0 0 0 1px rgba(110, 100, 170, .12);
+  z-index: 120;
+}
+.queue-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid #292142;
+}
+.queue-popover-head strong { color: #eee9f4; font-size: 13px; }
+.queue-popover-head span {
+  margin-left: auto;
+  color: #7d7594;
+  font-size: 9px;
+  padding: 2px 7px;
+  border: 1px solid #332a4c;
+  border-radius: 999px;
+}
+.queue-popover-head span.ok { color: var(--shell-accent); border-color: #2d6c78; }
+.queue-popover-head button {
+  border: 0;
+  padding: 3px;
+  display: grid;
+  place-items: center;
+  color: #8b829c;
+  background: transparent;
+  cursor: pointer;
+}
+.queue-popover-head button:hover { color: #fff; }
+.queue-popover-head button svg { width: 13px; height: 13px; }
+.queue-section { padding: 10px 0 2px; }
+.queue-section-title {
+  margin: 0 0 7px;
+  color: #6f6784;
+  font-size: 9px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.queue-job {
+  padding: 10px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid #302647;
+  border-radius: 9px;
+  background: #0b0820;
+}
+.queue-job-line { display: flex; align-items: center; gap: 9px; }
+.queue-job-line strong { color: #e6e1ee; font-size: 12px; }
+.queue-job-line time {
+  margin-left: auto;
+  color: #9fe3ee;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.queue-job-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8f86a1;
+  font-size: 10px;
+}
+.queue-job-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #17112e;
+}
+.queue-job-bar i { display: block; height: 100%; border-radius: 99px; background: var(--shell-accent); transition: width .6s ease; }
+.queue-empty { margin: 2px 0 8px; color: #5f5771; font-size: 10px; }
+.queue-row {
+  min-height: 28px;
+  display: grid;
+  grid-template-columns: 8px 42px 74px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  color: #8f86a1;
+  font-size: 10px;
+}
+.queue-row-state {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #6a6078;
+}
+.queue-row-state.running { background: var(--shell-accent); box-shadow: 0 0 8px rgba(67, 213, 236, .8); animation: timer-pulse 1.2s ease-in-out infinite; }
+.queue-row code { color: #b7aecb; font-size: 9px; }
+.queue-row span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #5f5771;
+}
+.queue-cancel {
+  margin-top: 8px;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid #713243;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #ff9db0;
+  background: rgba(255, 139, 159, .06);
+  font-size: 10px;
+  cursor: pointer;
+}
+.queue-cancel:hover:not(:disabled) { border-color: #c2576f; background: rgba(255, 139, 159, .13); }
+.queue-cancel.armed { color: #ffd7de; border-color: #ff8b9f; background: rgba(255, 139, 159, .24); font-weight: 700; }
+.queue-cancel.quiet { color: #9b91ab; border-color: #403554; background: transparent; justify-self: start; margin-left: 0; }
+.queue-cancel.quiet:hover:not(:disabled) { color: #e1dbea; border-color: #5b476f; }
+.queue-cancel.quiet svg { width: 12px; height: 12px; }
+.queue-cancel svg { width: 11px; height: 11px; }
+.queue-cancel:disabled { opacity: .55; cursor: wait; }
+
 /* 侧栏系统资源监控 */
 .monitor-card {
   margin-top: 7px;
