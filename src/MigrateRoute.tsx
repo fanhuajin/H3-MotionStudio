@@ -660,10 +660,14 @@ export function MigrateRoute() {
                       <img src={imagePreviewUrl} alt="人物参考图预览" />
                       <span><Graph weight="fill" /> 点击放大</span>
                     </button>
-                    <button className="image-swap" onClick={() => imageInputRef.current?.click()} aria-label="更换人物参考图片">
-                      <ArrowsClockwise weight="bold" /> 更换
-                    </button>
-                    <button className="image-remove" onClick={clearImage} aria-label="移除人物参考图"><X weight="bold" /></button>
+                    <div className="image-tools">
+                      <button className="image-swap" onClick={() => imageInputRef.current?.click()} aria-label="更换人物参考图片">
+                        <ArrowsClockwise weight="bold" /> 更换
+                      </button>
+                      <button className="image-remove" onClick={clearImage} aria-label="移除人物参考图" title="移除">
+                        <X weight="bold" />
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <button className="image-empty" onClick={() => imageInputRef.current?.click()}>

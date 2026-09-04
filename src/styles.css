@@ -1051,20 +1051,39 @@ body {
 .toggle-switch.on { border-color: #2baac2; background: rgba(43, 170, 194, .28); }
 .toggle-switch.on span { transform: translateX(18px); background: #8fe8f5; box-shadow: 0 0 8px rgba(67, 213, 236, .55); }
 
-.migrate-route .image-remove {
+/* 人物参考图预览：右上角工具组（更换 + 移除）放在卡片内，避免被 overflow 裁剪 */
+.migrate-route .image-tools {
   position: absolute;
-  right: -7px; top: -7px;
-  width: 24px; height: 24px;
-  display: grid; place-items: center;
-  border: 1px solid #4a3b68;
-  border-radius: 50%;
-  color: #cfc4df;
-  background: #17102f;
-  cursor: pointer;
-  z-index: 3;
+  top: 9px;
+  right: 9px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.migrate-route .image-remove:hover { color: #ffdbe3; border-color: #9c4a62; }
-.migrate-route .image-remove svg { width: 12px; height: 12px; }
+.migrate-route .image-tools .image-swap {
+  position: static;
+  border-color: rgba(255, 255, 255, .16);
+  background: rgba(10, 15, 23, .82);
+  backdrop-filter: blur(7px);
+}
+.migrate-route .image-remove {
+  position: static;
+  width: 29px;
+  height: 29px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 120, 145, .45);
+  border-radius: 7px;
+  color: #ffdbe3;
+  background: rgba(60, 16, 30, .82);
+  backdrop-filter: blur(7px);
+  cursor: pointer;
+  transition: border-color .18s, background .18s;
+}
+.migrate-route .image-remove:hover { color: #fff; border-color: #ff8b9f; background: rgba(120, 24, 46, .9); }
+.migrate-route .image-remove svg { width: 13px; height: 13px; }
 
 .fallback-note { margin: 7px 2px 0; display: flex; align-items: center; gap: 5px; color: #5f5771; font-size: 9px; }
 .fallback-note svg { width: 12px; height: 12px; flex: 0 0 auto; }
