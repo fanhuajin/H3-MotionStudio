@@ -741,4 +741,8 @@ if dist_dir.is_dir():
     async def douyin_frontend():
         return FileResponse(dist_dir / "index.html")
 
+    @app.get("/migrate", include_in_schema=False)
+    async def migrate_frontend():
+        return FileResponse(dist_dir / "index.html")
+
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")
