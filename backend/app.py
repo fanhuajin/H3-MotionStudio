@@ -41,6 +41,7 @@ from .pipeline import (
     PipelineError,
     comfy_health,
     estimate_migrate_segments,
+    estimate_singing_segments,
     media_metadata,
     retry_enhance,
     retry_voice,
@@ -361,6 +362,9 @@ async def create_job(
         "sourceName": video.filename or input_name,
         "sourceSize": input_path.stat().st_size,
         "sourceDuration": actual_duration,
+        # H3 唱歌分段预估：每段约 15 秒、段间 22 帧续接（工作流懒加载只跑所需前 N 段）
+        "estimatedSegments": estimate_singing_segments(actual_duration),
+        "currentSegment": None,
         "sourceInputName": input_name,
         "sourcePath": str(input_path.resolve()),
         "referenceName": reference_image.filename or reference_input_name,

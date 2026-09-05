@@ -51,6 +51,13 @@ DB_PATH = DATA_DIR / "motionstudio.db"
 COMFY_LOG = DATA_DIR / "comfyui.log"
 MAX_DURATION_SECONDS = 40.0
 
+# 歌曲生成 H3 分段（与工作流时长规划节点公式一致）：每段基础窗口 362 帧
+# （@24fps ≈15.08 秒），段间以 22 帧相位对齐续接，实际每新增一段只多
+# (362-22)=340 帧 ≈14.17 秒。分段预估与段位显示都基于这几组数字。
+H3_FPS = 24
+H3_CLIP_FRAMES = 362
+H3_CONTEXT_FRAMES = 22
+
 # 动作迁移路由：画布比例参数组。两份工作流 JSON 固定为 4:3 布局，9:16 时
 # 程序把"读取/修复画布、底部字幕遮罩、SCAIL 生成宽高、1080P 输出尺寸"
 # 替换为竖版数值 —— 与 SCAIL2-Easy 官方 512p 规则一致（短边对齐后长边对齐 32，

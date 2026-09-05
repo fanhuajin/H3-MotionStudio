@@ -709,6 +709,16 @@ function MotionStudioRoute() {
                 <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
               </span>
             )}
+            {job?.status === "running" && job?.stage === "singing" && job.estimatedSegments != null && (
+              <span
+                className={`job-segments ${job.currentSegment ? "live" : ""}`}
+                title={`H3 唱歌分段：共 ${job.estimatedSegments} 段（每段约 15 秒，段间 22 帧续接防闪）${job.sourceDuration ? ` · 源视频 ${job.sourceDuration.toFixed(1)}s` : ""}`}
+              >
+                {job.currentSegment
+                  ? <>H3 分段 {job.currentSegment}/{job.estimatedSegments}<i><b style={{ width: `${Math.min(100, (job.currentSegment / job.estimatedSegments) * 100)}%` }} /></i></>
+                  : <>预计 {job.estimatedSegments} 个 H3 分段</>}
+              </span>
+            )}
             {jobActive && totalElapsedMs != null && (
               <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
             )}

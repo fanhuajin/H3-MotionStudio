@@ -329,6 +329,22 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(estimate_migrate_segments(40), 1)
         self.assertIsNone(estimate_migrate_segments(None))
 
+    def test_estimate_singing_segments_matches_h3_duration_plan(self) -> None:
+        """H3 每段 362 帧(@24fps≈15.08s)、段间 22 帧续接 → 容量 362/702/1042/1382/1722。"""
+        from backend.pipeline import estimate_singing_segments
+        self.assertIsNone(estimate_singing_segments(None))
+        self.assertIsNone(estimate_singing_segments(0))
+        self.assertEqual(estimate_singing_segments(10), 1)       # 240 帧
+        self.assertEqual(estimate_singing_segments(15.0), 1)     # 360 帧
+        self.assertEqual(estimate_singing_segments(15.083), 1)   # ≈362 帧
+        self.assertEqual(estimate_singing_segments(15.125), 2)   # 363 帧
+        self.assertEqual(estimate_singing_segments(29.25), 2)    # 702 帧
+        self.assertEqual(estimate_singing_segments(29.3), 3)     # 704 帧
+        self.assertEqual(estimate_singing_segments(40), 3)       # 960 帧（应用上传上限 40s）
+        self.assertEqual(estimate_singing_segments(43.5), 4)     # 1044 帧
+        self.assertEqual(estimate_singing_segments(58), 5)       # 1392 帧
+        self.assertEqual(estimate_singing_segments(80), 5)       # 超出 5 段容量时封顶 5
+
     def test_graph_to_api_prompt_keeps_autogrow_expanded_inputs(self) -> None:
         """ComfyUI v3 Autogrow（ComfyMathExpression values.a/b…）的链接不能被丢弃。"""
         workflow = {

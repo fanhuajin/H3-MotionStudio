@@ -28,6 +28,9 @@ from .settings import (
     DEFAULT_CANVAS,
     DEFAULT_SINGING_CANVAS,
     DIFFUSION_MODELS_DIR,
+    H3_CLIP_FRAMES,
+    H3_CONTEXT_FRAMES,
+    H3_FPS,
     LIGHTX2V_LORA_RANK64,
     MIGRATE_WORKFLOW,
     MIGRATE_REFERENCE,
@@ -231,6 +234,29 @@ def singing_milestone(node_type: str, title: str) -> str:
 
 def upscale_milestone(node_id: str) -> str:
     return "hd" if node_id == "8" else "upscale"
+
+
+# 歌曲生成：H3 各分段锚点节点（分段起始与采样，均只执行一次）→ 段位 1..5。
+# 15/18=CLIP1 起始+采样，29/32=CLIP2，400/403=CLIP3，420/423=CLIP4，440/443=CLIP5。
+# 懒加载选择器按音频时长只跑需要的前 N 段，节点按段顺序执行，段位单调推进即可。
+_SINGING_SEGMENT_OF = {
+    "15": 1, "18": 1,
+    "29": 2, "32": 2,
+    "400": 3, "403": 3,
+    "420": 4, "423": 4,
+    "440": 5, "443": 5,
+}
+
+
+def note_singing_segment(job_id: str, segment_index: int) -> None:
+    state = store.get(job_id) or {}
+    if segment_index <= (state.get("currentSegment") or 0):
+        return
+    store.update(
+        job_id,
+        currentSegment=segment_index,
+        estimatedSegments=state.get("estimatedSegments"),
+    )
 
 
 # 动作迁移链路两个工作流的里程碑顺序（与 store.migrate_milestones 的 id 对应）。
@@ -554,6 +580,11 @@ async def run_comfy_workflow(
                     # A VHS meta-batch cycles through every upscale node many times.
                     # Keep the whole second pass running until the final combined
                     # video exists; node 8 finishing one chunk is not the final HD file.
+                    if kind == "singing":
+                        # 段位锚点：H3 分段节点只执行一次且按 1..N 顺序推进（懒加载只跑所需段）
+                        segment_index = _SINGING_SEGMENT_OF.get(node_id)
+                        if segment_index:
+                            note_singing_segment(job_id, segment_index)
                     milestone_id = singing_milestone(types.get(node_id, ""), title) if kind == "singing" else "upscale"
                     active_milestone = milestone_id
                     _set_running_milestone(job_id, milestone_id, node_id, title)
@@ -686,6 +717,25 @@ def estimate_migrate_segments(
     if frames <= first_segment_frames:
         return 1
     return math.ceil((frames - first_segment_frames) / advance_per_segment) + 1
+
+
+def estimate_singing_segments(duration_seconds: float | None) -> int | None:
+    """H3 唱歌分段预估（与工作流时长规划一致）。
+
+    第 1 段装 362 帧（≈15.08s @24fps），之后每段在前段基础上多装
+    (362-22)=340 帧（≈14.17s，段间 22 帧续接）。时长未知时返回 None。
+    """
+    if not duration_seconds or duration_seconds <= 0:
+        return None
+    import math
+
+    frames = max(1, round(duration_seconds * H3_FPS))
+    capacity = 0
+    for index in range(1, 6):
+        capacity += H3_CLIP_FRAMES if index == 1 else (H3_CLIP_FRAMES - H3_CONTEXT_FRAMES)
+        if frames <= capacity:
+            return index
+    return 5
 
 
 async def media_metadata(path: Path) -> dict[str, Any]:
