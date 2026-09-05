@@ -38,8 +38,10 @@ MIN_FRAME_SHARE = 0.40     # 带至少出现在多少比例的采样帧里
 MERGE_GAP = 60             # 相邻带间隔 ≤ 该值合并（双行字幕）
 X_MIN_SPAN_RATIO = 0.15    # 横向跨度至少占画面宽的比例
 MAX_DECODE_WIDTH = 1280    # 分析解码宽度上限（保比例）
-PAD_FRAC_X = 0.04          # 横向外扩：带宽的 4%（保底若干像素）
-PAD_FRAC_Y = 0.16          # 纵向外扩：带高的 16%
+# 横向外扩要明显大于文字两端的淡笔画/阴影：单侧 = 带宽的 12%，保底 20 源像素
+PAD_FRAC_X = 0.12
+PAD_MIN_X = 20
+PAD_FRAC_Y = 0.16          # 纵向外扩：带高的 16%（保底若干像素）
 
 
 def _probe_stream(video: Path) -> dict:
@@ -176,25 +178,28 @@ def _locate(frames: list[np.ndarray]) -> dict:
             y0, y1 = min(y0, cy0), max(y1, cy1)  # 多条持续字幕（如歌名+歌词）时取并集
             break
 
-    # 横向范围：跨帧在带内取最大列梯度，再取覆盖 p2~p98
+    # 横向范围：跨帧在带内取最大列梯度，再取覆盖 p1~p99（放宽阈值与分位数，
+    # 把两侧低对比的淡笔画/阴影也算进范围，避免字幕两端残留）
     acc = np.zeros(scaled_w - 1, dtype=np.float32)
     for gray in frames:
         gx = np.abs(np.diff(gray, axis=1))[y0:y1 + 1, :]
         acc = np.maximum(acc, gx.mean(axis=0))
-    thr = float(acc.mean() + 0.9 * acc.std())
+    thr = float(acc.mean() + 0.6 * acc.std())
     hot_cols = np.where(acc > thr)[0]
     if len(hot_cols) < max(12, int((scaled_w - 1) * X_MIN_SPAN_RATIO)):
         return {"ok": False, "reason": "字幕带横向跨度过窄或缺失"}
-    x0, x1 = np.percentile(hot_cols, [2, 98]).astype(int)
+    x0, x1 = np.percentile(hot_cols, [1, 99]).astype(int)
     x0, x1 = int(x0), int(x1)
 
-    pad_x = max(8, int((x1 - x0) * PAD_FRAC_X))
+    pad_x = max(PAD_MIN_X, int((x1 - x0) * PAD_FRAC_X))
     pad_y = max(6, int((y1 - y0 + 1) * PAD_FRAC_Y))
+    # 横向大幅外扩后仍保留少量画布安全边（≤3% 每侧），避免整帧拉满误伤边缘 UI
+    margin = max(8, int((scaled_w - 1) * 0.03))
     return {
         "ok": True,
-        "x0": max(0, x0 - pad_x),
+        "x0": max(margin, x0 - pad_x),
         "y0": max(0, y0 - pad_y),
-        "x1": min(scaled_w - 1, x1 + pad_x),
+        "x1": min(scaled_w - 1 - margin, x1 + pad_x),
         "y1": min(scaled_h - 1, y1 + pad_y),
         "scaledW": scaled_w,
         "scaledH": scaled_h,
