@@ -108,7 +108,14 @@ export function UpScaleRoute() {
       const response = await fetch("/api/jobs/recent", { cache: "no-store" });
       if (!response.ok) return;
       const payload = await response.json() as RecentPayload;
-      setRecent((payload.jobs || []).filter((item) => item.media.length > 0));
+      // 历史任务一律放大「最终成片」，不再让用户选原版/迁移等变体
+      const jobs = (payload.jobs || []).filter((item) => item.media.some((entry) => entry.key === "final"));
+      setRecent(jobs);
+      setRecentPick((current) => {
+        if (current && jobs.some((item) => item.id === current.jobId)) return current;
+        const first = jobs[0]?.media.find((entry) => entry.key === "final");
+        return first ? { jobId: jobs[0].id, key: "final", label: first.label } : null;
+      });
     } catch {
       // 忽略：服务未就绪
     }
@@ -178,7 +185,7 @@ export function UpScaleRoute() {
       return;
     }
     if (mode === "recent" && !recentPick) {
-      setLocalError("请先选择一个任务成片。");
+      setLocalError("暂无可放大的历史任务成片。");
       return;
     }
     setSubmitting(true);
@@ -228,7 +235,7 @@ export function UpScaleRoute() {
                 <strong>上传本地视频</strong><span>MP4 / MOV / MKV / WebM</span>
               </button>
               <button type="button" role="radio" aria-checked={mode === "recent"} className={mode === "recent" ? "selected" : ""} onClick={() => setMode("recent")}>
-                <strong>从最近任务选</strong><span>歌曲原版 / 迁移成片等</span>
+                <strong>从最近任务选</strong><span>直接放大该任务的最终成片</span>
               </button>
             </div>
 
@@ -250,32 +257,33 @@ export function UpScaleRoute() {
             ) : (
               <div className="recent-pick">
                 {recent.length === 0 ? (
-                  <p className="queue-empty">暂无可用的历史成片（先跑一单歌曲/迁移）</p>
+                  <p className="queue-empty">暂无可放大的最终成片（先完成一单歌曲/迁移任务）</p>
                 ) : (
-                  recent.slice(0, 6).map((item) => (
-                    <div className="recent-item" key={item.id}>
-                      <div className="recent-title">
-                        <strong>{kindLabel(item.kind)} · {item.title}</strong>
-                        <span>{item.status === "completed" ? "已完成" : item.status}</span>
-                      </div>
-                      <div className="recent-media">
-                        {item.media.map((media) => (
-                          <button
-                            key={media.key}
-                            className={`${recentPick?.jobId === item.id && recentPick?.key === media.key ? "selected" : ""}`}
-                            onClick={() => setRecentPick({ jobId: item.id, key: media.key, label: media.label })}
-                          >
-                            {media.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))
+                  recent.slice(0, 6).map((item) => {
+                    const media = item.media.find((entry) => entry.key === "final");
+                    const selected = recentPick?.jobId === item.id;
+                    return (
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        className={`recent-choice ${selected ? "selected" : ""}`}
+                        key={item.id}
+                        onClick={() => media && setRecentPick({ jobId: item.id, key: "final", label: media.label })}
+                      >
+                        <span className="recent-choice-head">
+                          <strong>{kindLabel(item.kind)} · {item.title}</strong>
+                          <em>{item.status === "completed" ? "已完成" : item.status}</em>
+                        </span>
+                        <span className="recent-choice-target"><MagnifyingGlassPlus weight="bold" /> 放大其{media?.label || "最终成片"}</span>
+                      </button>
+                    );
+                  })
                 )}
               </div>
             )}
             {mode === "recent" && recentPick && (
-              <p className="field-note">将放大：{recentPick.label}（{recentPick.jobId.slice(0, 8)}）</p>
+              <p className="field-note">将放大任务 {recentPick.jobId.slice(0, 8)} 的最终成片（{kindLabel(recent.find((item) => item.id === recentPick.jobId)?.kind)}）</p>
             )}
           </div>
 
