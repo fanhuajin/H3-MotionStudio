@@ -29,6 +29,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Canvas parameter groups live in `backend/settings.py` `CANVAS_PARAMS` (4:3 = 512×384, mask 430×58 at (256,344), HD 1440×1080; 9:16 = 512×896 per SCAIL2-Easy 512p rule, mask 430×135 at (256,803), HD 1080×1920). Tune numbers there, never in the JSONs.
 - Backend code changes only take effect after the local uvicorn service restarts and `npm run build` refreshes `dist`; while the user has a job running, do not restart the service or rebuild the frontend.
 - After each completed implementation batch, commit and push the changes to `origin/main`.
+- The final deliverable of an independent upscale job is stored on disk under the marked name `{job_id}_upscale_最终版.mp4` (the workflow's audio-muxed `*_00001-audio.mp4` is atomically renamed and the job state updated at job end); the same-prefix `*_00001.png` (first-frame preview) and the audio-less `*_00001.mp4` are intermediates. The upscale result panel and history picker always point at the marked final file only.
 
 ## Git rule（用户硬性规则：每次修改完成必须提交 GitHub）
 

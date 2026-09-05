@@ -960,6 +960,23 @@ async def run_migrate_pipeline(job_id: str) -> None:
                 store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
 
 
+def mark_upscale_final(path: Path) -> Path:
+    """给二采放大成品一个明确的「最终版」文件名标识。
+
+    ComfyUI 工作流会同时留下 `*_00001.png`、无音频的 `*_00001.mp4`
+    与带原音频的 `*_00001-audio.mp4`，从输出目录取片时容易拿错。
+    任务收尾时把带音频的成品改名为 `{job_id}_upscale_最终版.mp4`；
+    改名失败（如文件被占用）时退回原路径，不阻断任务。
+    """
+    job_id = path.stem.split("_upscale_")[0]
+    marked = path.with_name(f"{job_id}_upscale_最终版.mp4")
+    try:
+        os.replace(path, marked)
+        return marked
+    except OSError:
+        return path
+
+
 async def run_upscale_job(job_id: str) -> None:
     """独立「二采放大」任务：按所选倍数（2×/4×）RealESRGAN 放大并收 1080p 档。"""
     async with pipeline_lock:
@@ -997,8 +1014,9 @@ async def run_upscale_job(job_id: str) -> None:
                 upscale_model=model,
             )
             final = await run_comfy_workflow(job_id, "upscale", upscale, "8")
+            final = await asyncio.to_thread(mark_upscale_final, final)
             store.update(job_id, finalOutput=str(final), finalReady=True)
-            store.add_log(job_id, f"放大成片已保存：{final.name}")
+            store.add_log(job_id, f"最终成片已保存并标记：{final.name}")
             store.update(
                 job_id,
                 status="completed",

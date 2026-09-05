@@ -354,7 +354,7 @@ export function UpScaleRoute() {
 
           {job?.finalReady && (
             <section className="result-panel">
-              <div className="result-heading"><h3>放大结果</h3><span><Check weight="bold" /> 放大成片已完成</span></div>
+              <div className="result-heading"><h3>放大结果</h3><span><Check weight="bold" /> 最终成片已完成</span></div>
               <div className="result-grid">
                 <div className="result-video">
                   <video src={`/api/jobs/${job.id}/media/final#t=0.001`} controls preload="auto" />
@@ -363,7 +363,7 @@ export function UpScaleRoute() {
                   <div className="result-title">
                     <FilmSlate />
                     <div>
-                      <strong>{job.multiplier || "2×/4×"} 放大成片</strong>
+                      <strong>最终成片 · {job.multiplier || "2×/4×"} 放大</strong>
                       <span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ""}</span>
                     </div>
                   </div>
@@ -373,7 +373,7 @@ export function UpScaleRoute() {
                     <div><dt>完成时间</dt><dd>{completionTime}</dd></div>
                     {totalElapsedMs != null && <div className="total-elapsed"><dt>任务总耗时</dt><dd>{formatElapsedMs(totalElapsedMs)}</dd></div>}
                   </dl>
-                  <a className="result-button primary" href={`/api/jobs/${job.id}/media/final?download=1`}><DownloadSimple /> 下载放大成片</a>
+                  <a className="result-button primary" href={`/api/jobs/${job.id}/media/final?download=1`}><DownloadSimple /> 下载最终成片</a>
                   <a className="result-button" href={`/api/jobs/${job.id}/media/final`} target="_blank" rel="noreferrer"><Eye /> 在线查看</a>
                 </div>
               </div>
