@@ -784,6 +784,16 @@ export function MigrateRoute() {
                   : <>预计 {liveJob.estimatedSegments} 段</>}
               </span>
             )}
+            {liveJob?.cleanBatches != null && liveJob?.cleanBatches > 1 && liveJob?.stage === "cleaning" && (
+              <span
+                className={`job-segments ${liveJob.cleanBatch ? "live" : ""}`}
+                title={`去字幕分批执行：共 ${liveJob.cleanBatches} 段（8GB 显存保护，段间重叠衔接，完成后自动拼接并回灌原音频）`}
+              >
+                {liveJob.cleanBatch
+                  ? <>去字幕 {liveJob.cleanBatch}/{liveJob.cleanBatches}<i><b style={{ width: `${Math.min(100, (liveJob.cleanBatch / liveJob.cleanBatches) * 100)}%` }} /></i></>
+                  : <>预计 {liveJob.cleanBatches} 段去字幕</>}
+              </span>
+            )}
             {jobActive && totalElapsedMs != null && (
               <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
             )}

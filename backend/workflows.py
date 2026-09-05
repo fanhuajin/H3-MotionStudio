@@ -151,13 +151,15 @@ def prepare_clean_workflow(
     output_prefix: str,
     source_path,
     canvas: dict | None = None,
+    frame_window: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """视频-去字幕-ProPainter-固定底部：替换原视频、输出前缀与可选竖版画布。
 
     #1 VHS_LoadVideo(带字幕原视频) -> #2 CreateShapeMask(固定底部字幕遮罩) ->
     #3 ProPainterInpaint -> #5 VHS_VideoCombine(带原音频、原帧率)。
     默认(4:3)参数保持作者原状；9:16 时按 canvas 组替换读取尺寸、遮罩坐标与
-    ProPainter 画布。
+    ProPainter 画布。frame_window=(skip_first_frames, frame_load_cap) 供
+    显存分批：每次只读取源视频的一段帧窗口（各段仍用同一画布/遮罩/ProPainter 参数）。
     """
     workflow = copy.deepcopy(source_path if isinstance(source_path, dict) else load_workflow(source_path))
     canvas = canvas or {}
@@ -184,6 +186,13 @@ def prepare_clean_workflow(
             raise ValueError("ProPainterInpaint widgets_values is not a list")
         paint_widgets[0] = int(canvas["clean_width"])
         paint_widgets[1] = int(canvas["clean_height"])
+
+    if frame_window is not None:
+        skip, cap = int(frame_window[0]), int(frame_window[1])
+        if skip < 0 or cap <= 0:
+            raise ValueError(f"prepare_clean_workflow 收到非法帧窗口：{frame_window!r}")
+        _set_vhs_widget(workflow, 1, "skip_first_frames", skip)
+        _set_vhs_widget(workflow, 1, "frame_load_cap", cap)
 
     _set_vhs_widget(workflow, 1, "video", source_name)
     _set_vhs_widget(workflow, 5, "filename_prefix", output_prefix)

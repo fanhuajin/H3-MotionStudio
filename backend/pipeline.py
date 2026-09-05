@@ -931,6 +931,295 @@ async def run_pipeline(job_id: str) -> None:
                 store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
 
 
+# ---------------------------------------------------------------------------
+# 去字幕分批（8GB 显存保护）：ProPainter 单次执行会常驻整段视频帧 + 两套逐帧
+# 遮罩（512×896 约 9.2MB/帧），再叠加内部 RAFT 每 12 帧的全分辨率相关体积尖峰
+# （512×896 约 2.3GB）——9:16 长视频整段一次跑会 OOM。按 CANVAS_PARAMS 的
+# clean_batch_frames / clean_batch_overlap 拆段：每批只让 VHS 读取一个帧窗口，
+# 段间重叠帧为边界提供时序上下文，逐段裁掉重叠后 concat，并回灌原音频。
+# ---------------------------------------------------------------------------
+
+
+async def probe_media_frames(path: Path) -> int | None:
+    """用 ffprobe 探测视频总帧数；失败返回 None（由调用方退回单次整段执行）。"""
+    command = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=nb_frames,r_frame_rate,avg_frame_rate",
+        "-show_entries", "format=duration", "-of", "json", str(path),
+    ]
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            command,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            creationflags=_creation_flags(),
+            timeout=30,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    stream = (payload.get("streams") or [{}])[0]
+    try:
+        if stream.get("nb_frames"):
+            return int(stream["nb_frames"])
+    except (TypeError, ValueError):
+        pass
+    fps = _parse_frame_rate(stream.get("r_frame_rate")) or _parse_frame_rate(stream.get("avg_frame_rate"))
+    try:
+        duration = float((payload.get("format") or {}).get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration > 0 and fps:
+        return max(1, round(duration * fps))
+    return None
+
+
+def plan_clean_frame_batches(total: int, batch: int, overlap: int) -> list[tuple[int, int, int, int]]:
+    """把 [0, total) 拆成读取窗口：(load_start, load_cap, keep_offset, keep_frames)。
+
+    相邻批次之间重叠 overlap 帧：后一段开头多读的 overlap 帧在拼接时裁掉
+    （keep_offset/keep_frames 指明该批输出中要保留的帧窗口），保证段边界
+    的前后时序上下文连续且最终帧数精确等于 total。
+    """
+    step = batch - overlap  # 每批实际推进的帧数
+    plan: list[tuple[int, int, int, int]] = []
+    position = 0
+    while position < total:
+        load_start = max(0, position - overlap)
+        load_cap = min(batch, total - load_start)
+        keep_offset = position - load_start
+        keep_frames = min(step, total - position)
+        plan.append((load_start, load_cap, keep_offset, keep_frames))
+        position += step
+    return plan
+
+
+def run_ffmpeg_capture(command: list[str], what: str) -> str:
+    """同步执行 ffmpeg/ffprobe，失败抛 PipelineError（附带输出尾部）。"""
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            creationflags=_creation_flags(),
+            timeout=1800,
+        )
+    except OSError as error:
+        raise PipelineError(f"{what}失败", f"无法启动 ffmpeg：{error}") from error
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or result.stdout or "").splitlines()[-40:])
+        raise PipelineError(f"{what}失败", tail or f"ffmpeg 退出码 {result.returncode}")
+    return result.stdout
+
+
+def media_has_audio(path: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            creationflags=_creation_flags(),
+            timeout=30,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+async def assemble_clean_parts(
+    job_id: str,
+    parts: list[tuple[Path, int, int]],
+    audio_source: Path,
+    prefix: str,
+    total_frames: int,
+) -> Path:
+    """把各批输出裁掉重叠后按序拼接并回灌源音频，产出 {prefix 名}.mp4。
+
+    parts 为 [(工作流输出视频, keep_offset, keep_frames)]。帧级裁切必须重编码，
+    每段长度很小（≤ 单批帧数），成本可忽略；拼接用 concat demuxer -c copy，
+    最后从源视频复制原音频轨道。最终帧数必须与 total_frames 一致。
+    """
+    folder = COMFY_OUTPUT / "video" / "H3_MotionStudio"
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = Path(prefix).name
+    final_path = folder / f"{stem}.mp4"
+    workdir = folder / f".{stem}_parts"
+    workdir.mkdir(parents=True, exist_ok=True)
+    list_file = workdir / "concat.txt"
+    trimmed: list[Path] = []
+    try:
+        store.set_milestone(
+            job_id, "clean_save", status="running",
+            currentNode=f"拼接 {len(parts)} 段去字幕视频", progress=5,
+        )
+        store.update(job_id, currentNodeTitle=f"拼接 {len(parts)} 段去字幕视频")
+        with list_file.open("w", encoding="utf-8") as handle:
+            for index, (part, keep_offset, keep_frames) in enumerate(parts):
+                raise_if_cancelled(job_id)
+                trimmed_path = workdir / f"part_{index:02d}.mp4"
+                await asyncio.to_thread(
+                    run_ffmpeg_capture,
+                    [
+                        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+                        "-i", str(part), "-map", "0:v:0", "-an",
+                        "-vf", f"trim=start_frame={keep_offset}:end_frame={keep_offset + keep_frames},setpts=PTS-STARTPTS",
+                        "-c:v", "libx264", "-preset", "medium", "-crf", "19",
+                        "-pix_fmt", "yuv420p", str(trimmed_path),
+                    ],
+                    "去字幕分段裁剪",
+                )
+                trimmed.append(trimmed_path)
+                handle.write(f"file '{trimmed_path.as_posix()}'\n")
+        raise_if_cancelled(job_id)
+        store.set_milestone(job_id, "clean_save", currentNode="逐段拼接", progress=60)
+        video_only = workdir / "joined.mp4"
+        await asyncio.to_thread(
+            run_ffmpeg_capture,
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-f", "concat", "-safe", "0", "-i", str(list_file), "-c", "copy", str(video_only),
+            ],
+            "去字幕分段拼接",
+        )
+        store.set_milestone(job_id, "clean_save", currentNode="回灌原始音频", progress=85)
+        if await asyncio.to_thread(media_has_audio, audio_source):
+            await asyncio.to_thread(
+                run_ffmpeg_capture,
+                [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin",
+                    "-i", str(video_only), "-i", str(audio_source),
+                    "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "copy",
+                    "-movflags", "+faststart", str(final_path),
+                ],
+                "去字幕成片回灌音频",
+            )
+        else:
+            shutil.move(str(video_only), str(final_path))
+        frames_after = await probe_media_frames(final_path)
+        if frames_after != total_frames:
+            raise PipelineError(
+                "去字幕拼接帧数与源视频不一致",
+                f"预期 {total_frames} 帧，拼接结果为 {frames_after} 帧（{final_path}）",
+            )
+        store.set_milestone(job_id, "clean_save", status="completed", progress=100, currentNode=None)
+        store.update(job_id, currentNodeTitle=None)
+        return final_path
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+async def _project_clean_progress(job_id: str) -> None:
+    """paint 里程碑的批内平滑进度：按已耗时/预估时长线性投影，批间自动重锚。
+
+    去字幕工作流没有采样节点，ComfyUI 不广播 progress 事件；分批执行时 pipeline
+    在每个批次开头写入 cleanBatch/cleanBatches/cleanBatchEstSecs，本任务把
+    「批内投影 × 段位置」折算成整段百分比，让执行面板的进度条持续可见。
+    """
+    last_index: int | None = None
+    anchored_at = 0.0
+    while True:
+        await asyncio.sleep(2)
+        state = store.get(job_id)
+        if not state or state.get("stage") != "cleaning" or not state.get("cleanBatches"):
+            return
+        total = int(state.get("cleanBatches") or 0)
+        index = int(state.get("cleanBatch") or 0)
+        if total <= 0 or index <= 0:
+            return
+        if index != last_index:
+            last_index = index
+            anchored_at = time.monotonic()
+        base = ((index - 1) / total) * 100
+        running = {item["id"] for item in state.get("milestones", []) if item.get("status") == "running"}
+        if "paint" in running:
+            estimate = float(state.get("cleanBatchEstSecs") or 0)
+            fraction = min(0.97, max(0.0, (time.monotonic() - anchored_at) / estimate)) if estimate > 0 else 0.0
+            store.set_milestone(job_id, "paint", progress=round(base + fraction * (100 / total), 1))
+        elif index <= total:
+            store.update(job_id, progress=round(base, 1))
+
+
+async def run_clean_workflow(job_id: str, drive_name: str, params: dict[str, Any], prefix: str) -> Path:
+    """去字幕执行入口：源帧数超过单批安全上限时分批执行，否则单次整段执行。"""
+    drive_path = COMFY_INPUT / drive_name
+    if not drive_path.is_file():
+        raise PipelineError("找不到去字幕输入视频", f"预期文件：{drive_path}")
+
+    def single_run() -> Any:
+        workflow = prepare_clean_workflow(drive_name, prefix, CLEAN_WORKFLOW, canvas=params)
+        return run_comfy_workflow(job_id, "clean", workflow, "5")
+
+    total_frames = await probe_media_frames(drive_path)
+    batch = int(params.get("clean_batch_frames") or 0)
+    overlap = int(params.get("clean_batch_overlap") or 0)
+    if not total_frames or batch <= 0 or overlap <= 0 or overlap >= batch or total_frames <= batch:
+        store.add_log(job_id, "源视频帧数未超单批安全上限（或无法探测），去字幕按单次整段执行。")
+        return await single_run()
+
+    plan = plan_clean_frame_batches(total_frames, batch, overlap)
+    batch_count = len(plan)
+    store.add_log(
+        job_id,
+        f"源视频共 {total_frames} 帧，超出 8GB 单批安全上限（{batch} 帧）：去字幕分 {batch_count} 段执行，"
+        f"段间重叠 {overlap} 帧衔接，完成后自动拼接并回灌原音频。",
+    )
+    store.update(job_id, cleanBatches=batch_count, cleanBatch=None, cleanBatchEstSecs=None)
+    parts: list[tuple[Path, int, int]] = []
+    projector = asyncio.create_task(_project_clean_progress(job_id))
+    previous_real: float | None = None
+    previous_cap = 0
+    try:
+        for index, (load_start, load_cap, keep_offset, keep_frames) in enumerate(plan, start=1):
+            raise_if_cancelled(job_id)
+            if previous_real and previous_cap:
+                estimate = max(20.0, previous_real * load_cap / previous_cap)
+            else:
+                # 首段经验初值 ≈1.6s/帧（ProPainter 512×896 全流程实测量级）
+                estimate = float(load_cap) * 1.6
+            store.update(job_id, cleanBatch=index, cleanBatchEstSecs=round(estimate))
+            store.add_log(
+                job_id,
+                f"去字幕第 {index}/{batch_count} 段：读取源帧 {load_start}–{load_start + load_cap}"
+                f"（保留 {keep_offset}–{keep_offset + keep_frames}）。",
+            )
+            batch_started = time.monotonic()
+            part_prefix = f"{prefix}_b{index:02d}"
+            workflow = prepare_clean_workflow(
+                drive_name, part_prefix, CLEAN_WORKFLOW,
+                canvas=params, frame_window=(load_start, load_cap),
+            )
+            part_path = await run_comfy_workflow(job_id, "clean", workflow, "5")
+            parts.append((part_path, keep_offset, keep_frames))
+            previous_real = time.monotonic() - batch_started
+            previous_cap = load_cap
+            store.add_log(job_id, f"去字幕第 {index}/{batch_count} 段完成：{part_path.name}")
+        raise_if_cancelled(job_id)
+        return await assemble_clean_parts(job_id, parts, drive_path, prefix, total_frames)
+    finally:
+        projector.cancel()
+        try:
+            await projector
+        except asyncio.CancelledError:
+            pass
+        store.update(job_id, cleanBatch=None, cleanBatches=None, cleanBatchEstSecs=None)
+        # 清理各批中间产物（同 stem 的 *-audio / 首帧 png 等一并删除；拼接成品不在其列）
+        for part_path, _, _ in parts:
+            try:
+                for leftover in part_path.parent.glob(f"{part_path.stem}*"):
+                    leftover.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 async def run_migrate_pipeline(job_id: str) -> None:
     """动作迁移任务：可选去字幕 → SCAIL 长视频动作迁移/人物替换 → 可选 1080P 高清。
 
@@ -959,13 +1248,12 @@ async def run_migrate_pipeline(job_id: str) -> None:
             if state.get("removeSubtitles"):
                 store.update(job_id, stage="cleaning")
                 store.add_log(job_id, "去字幕开关已开启：先运行 ProPainter 去字幕工作流。")
-                clean = prepare_clean_workflow(
+                cleaned = await run_clean_workflow(
+                    job_id,
                     drive_name,
+                    params,
                     f"video/H3_MotionStudio/{job_id}_clean",
-                    CLEAN_WORKFLOW,
-                    canvas=params,
                 )
-                cleaned = await run_comfy_workflow(job_id, "clean", clean, "5")
                 store.update(job_id, cleanOutput=str(cleaned), cleanReady=True)
                 store.add_log(job_id, f"无字幕视频已保存：{cleaned.name}")
                 drive_input = await asyncio.to_thread(link_into_input_as, cleaned, job_id, "clean")

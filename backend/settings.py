@@ -63,6 +63,12 @@ H3_CONTEXT_FRAMES = 22
 # 替换为竖版数值 —— 与 SCAIL2-Easy 官方 512p 规则一致（短边对齐后长边对齐 32，
 # 9:16 → 512×896；高清按抖音竖屏标准 1080×1920）。遮罩按作者 4:3 版贴底比例
 # (中心 y=0.896H、高=0.151H、宽=0.84W) 等比换算，实测后如需微调改这里即可。
+#
+# clean_batch_frames / clean_batch_overlap：去字幕 ProPainter 的 8GB 显存分批参数。
+# 单次执行常驻显存 ≈ 帧数 × 画布字节（视频 fp32 + 两套逐帧遮罩，512×896 约 9.2MB/帧），
+# 叠加 ProPainter 内部 RAFT 每 12 帧的全分辨率相关体积尖峰（512×896 约 2.3GB）。
+# 源帧数超过单批上限时，pipeline 按"每批 ≤ 上限帧 + 段间 overlap 帧重叠"拆段执行，
+# 逐段裁掉重叠后拼接并回灌原音频；段间重叠保证边界处的时序上下文连续（拼缝不可见）。
 CANVAS_PARAMS: dict[str, dict] = {
     "4:3": {
         "clean_width": 512,
@@ -75,6 +81,8 @@ CANVAS_PARAMS: dict[str, dict] = {
         "migrate_height": 384,
         "hd_width": 1440,
         "hd_height": 1080,
+        "clean_batch_frames": 900,
+        "clean_batch_overlap": 24,
     },
     "9:16": {
         "clean_width": 512,
@@ -87,6 +95,8 @@ CANVAS_PARAMS: dict[str, dict] = {
         "migrate_height": 896,
         "hd_width": 1080,
         "hd_height": 1920,
+        "clean_batch_frames": 300,
+        "clean_batch_overlap": 24,
     },
 }
 DEFAULT_CANVAS = "9:16"

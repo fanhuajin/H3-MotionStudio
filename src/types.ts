@@ -38,6 +38,11 @@ export interface JobState {
   /** 长视频分段：预估总段数与当前段（每段81帧、重叠5帧衔接） */
   estimatedSegments?: number | null;
   currentSegment?: number | null;
+  /** 去字幕分批（8GB 显存保护）：预计总批数与当前批；批内平滑进度由后端投影 */
+  cleanBatches?: number | null;
+  cleanBatch?: number | null;
+  /** 当前批预估秒数（后端用于把批内耗时折算成整段进度） */
+  cleanBatchEstSecs?: number | null;
   referenceName?: string;
   referenceSize?: number;
   referenceInputName?: string;
