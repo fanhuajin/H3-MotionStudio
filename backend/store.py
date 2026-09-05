@@ -25,12 +25,11 @@ def format_elapsed(started_at: str, finished_at: str) -> str:
 
 
 def initial_milestones() -> list[dict[str, Any]]:
+    # 歌曲生成：原版成片 →（关闭 ComfyUI）→ RVC 音色 → 输出；二采放大已移至独立路由
     return [
         {"id": "input", "label": "读取视频与音频", "subtitle": "加载输入视频，分离音频轨道", "status": "pending"},
         {"id": "h3", "label": "H3 分段生成", "subtitle": "按时长生成连续唱歌片段", "status": "pending"},
         {"id": "stitch", "label": "防闪拼接", "subtitle": "平滑衔接并裁切到输入时长", "status": "pending"},
-        {"id": "upscale", "label": "RealESRGAN 4× 放大", "subtitle": "逐帧超采样并缩放到 1080P", "status": "pending"},
-        {"id": "hd", "label": "输出 1440 × 1080", "subtitle": "保存高清加强成片", "status": "pending"},
         {"id": "handoff", "label": "关闭 ComfyUI", "subtitle": "释放内存和显存，切换到 RVC", "status": "pending"},
         {"id": "stems", "label": "分离人声与伴奏", "subtitle": "Demucs 提取演唱人声", "status": "pending"},
         {"id": "voice", "label": f"转换为 {RVC_MODEL.stem} 音色", "subtitle": "RVC 模型执行音色转换", "status": "pending"},
@@ -38,12 +37,21 @@ def initial_milestones() -> list[dict[str, Any]]:
     ]
 
 
-def migrate_milestones(remove_subtitles: bool, mode: str, hd1080: bool, ratio: str = "4:3") -> list[dict[str, Any]]:
-    """动作迁移路由的里程碑模板（不含 RVC：输出保留原音频）。
+def upscale_milestones() -> list[dict[str, Any]]:
+    """二采放大路由里程碑：放大 → 收 1080p 档输出。"""
+    return [
+        {"id": "upscale", "label": "RealESRGAN 逐帧放大", "subtitle": "8 帧分批超采样", "status": "pending"},
+        {"id": "hd", "label": "收 1080p 档输出", "subtitle": "缩放并封装输出视频", "status": "pending"},
+    ]
 
-    链路：可选「去字幕-ProPainter」→ SCAIL-2 长视频分段 动作迁移/人物替换
-    → 可选 RealESRGAN 1080P 高清加强。id 与 pipeline 内按节点解析的阶段一一对应。
+
+def migrate_milestones(remove_subtitles: bool, mode: str, ratio: str = "4:3") -> list[dict[str, Any]]:
+    """动作迁移路由的里程碑模板（不含 RVC：输出保留原音频；不做二采放大）。
+
+    链路：可选「去字幕-ProPainter」→ SCAIL-2 长视频分段 动作迁移/人物替换。
+    需要高清时用独立的「二采放大」路由处理。id 与 pipeline 内阶段一一对应。
     """
+    del ratio  # 比例只影响画布参数，里程碑不再区分倍数
     transfer = "人物替换" if mode == "replacement" else "动作迁移"
     milestones: list[dict[str, Any]] = []
     if remove_subtitles:
@@ -68,22 +76,6 @@ def migrate_milestones(remove_subtitles: bool, mode: str, hd1080: bool, ratio: s
         },
         {"id": "save", "label": "拼接输出成片", "subtitle": "逐段衔接并封装输出视频", "status": "pending"},
     ]
-    if hd1080:
-        # 9:16（512×896 → 1080×1920 仅 ~2.1×）用 x2plus 快速档；4:3（~2.8×）用 x4plus
-        multiplier = "2" if ratio == "9:16" else "4"
-        milestones += [
-            {
-                "id": "upscale",
-                "label": f"RealESRGAN {multiplier}× 放大",
-                "subtitle": (
-                    "2× 快速档（竖版目标放大仅 2.1×）"
-                    if ratio == "9:16"
-                    else "逐帧超采样到 1440×1080"
-                ),
-                "status": "pending",
-            },
-            {"id": "hd", "label": "输出 1080P 高清成片", "subtitle": "保存高清加强成片", "status": "pending"},
-        ]
     return milestones
 
 
@@ -162,6 +154,15 @@ class JobStore:
                 "SELECT state_json FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
         return json.loads(row["state_json"]) if row else None
+
+    def recent(self, limit: int = 8) -> list[dict[str, Any]]:
+        """最近任务（按创建时间倒序），供“从最近任务选”使用。"""
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM jobs ORDER BY created_at DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [json.loads(row["state_json"]) for row in rows]
 
     def update(self, job_id: str, **changes: Any) -> dict[str, Any]:
         state = self.get(job_id)

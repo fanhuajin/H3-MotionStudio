@@ -38,6 +38,7 @@ from .settings import (
     SCAIL_UNET_INT8,
     SINGING_WORKFLOW,
     UPSCALE_MODEL_X2,
+    UPSCALE_MODEL_X4,
     UPSCALE_WORKFLOW,
     canvas_params,
 )
@@ -759,20 +760,10 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
     return expected.resolve()
 
 
-async def _run_enhance_and_voice(job_id: str, original: Path) -> None:
-    linked = await asyncio.to_thread(link_into_input, original, job_id)
-    upscale = prepare_upscale_workflow(
-        linked.name,
-        f"video/H3_MotionStudio/{job_id}_1080P",
-        UPSCALE_WORKFLOW,
-    )
-    store.update(job_id, stage="enhancing")
-    enhanced = await run_comfy_workflow(job_id, "upscale", upscale, "8")
-    store.update(job_id, enhancedOutput=str(enhanced), enhancedReady=True)
-    store.add_log(job_id, f"高清加强成片已保存：{enhanced.name}")
-
+async def _run_voice(job_id: str, original: Path) -> None:
+    """歌曲生成收尾：二采放大已移至独立路由，这里原版成片直接进 RVC。"""
     await resources.stop_comfy(job_id)
-    final = await run_rvc(job_id, enhanced)
+    final = await run_rvc(job_id, original)
     store.update(
         job_id,
         status="completed",
@@ -820,7 +811,7 @@ async def run_pipeline(job_id: str) -> None:
             store.update(job_id, originalOutput=str(original), originalReady=True)
             store.add_log(job_id, f"原版成片已保存：{original.name}")
 
-            await _run_enhance_and_voice(job_id, original)
+            await _run_voice(job_id, original)
         except Exception as error:
             if is_job_cancelled(job_id):
                 await finish_cancelled(job_id)
@@ -865,7 +856,6 @@ async def run_migrate_pipeline(job_id: str) -> None:
             state = store.get(job_id) or state
             params = canvas_params(state.get("canvas") or DEFAULT_CANVAS)
             mode = state.get("migrateMode") or "animation"
-            hd1080 = bool(state.get("hd1080"))
             drive_name = state["sourceInputName"]
 
             if state.get("removeSubtitles"):
@@ -928,27 +918,8 @@ async def run_migrate_pipeline(job_id: str) -> None:
             )
             store.update(job_id, draftOutput=str(draft), draftReady=True)
             store.add_log(job_id, f"迁移成片已保存：{draft.name}")
-
-            if hd1080:
-                store.update(job_id, stage="enhancing")
-                draft_input = await asyncio.to_thread(link_into_input_as, draft, job_id, "draft")
-                # 9:16 只需 ~2.1×：x2plus 即可（时间约 1/4）；4:3（~2.8×）保持 x4plus
-                ratio = state.get("canvas") or DEFAULT_CANVAS
-                hd_model = UPSCALE_MODEL_X2 if ratio == "9:16" else None
-                upscale = prepare_upscale_workflow(
-                    draft_input.name,
-                    f"video/H3_MotionStudio/{job_id}_1080P",
-                    UPSCALE_WORKFLOW,
-                    scale=(params["hd_width"], params["hd_height"]),
-                    upscale_model=hd_model,
-                )
-                if hd_model:
-                    store.add_log(job_id, f"高清档使用 {hd_model}（2× 超分，9:16 目标放大仅 2.1×）")
-                final = await run_comfy_workflow(job_id, "upscale", upscale, "8")
-                store.update(job_id, enhancedOutput=str(final), enhancedReady=True)
-                store.add_log(job_id, f"1080P 高清成片已保存：{final.name}")
-            else:
-                final = draft
+            # 二采放大已移至独立路由：迁移成片即最终输出
+            final = draft
 
             store.update(
                 job_id,
@@ -973,6 +944,82 @@ async def run_migrate_pipeline(job_id: str) -> None:
                 summary, detail = error.summary, error.detail
             else:
                 summary, detail = "动作迁移执行失败", repr(error)
+            store.add_log(job_id, f"错误：{summary}")
+            failed_state = store.get(job_id) or {}
+            running = next(
+                (item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"),
+                None,
+            )
+            if running:
+                store.set_milestone(job_id, running, status="error")
+            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())
+            try:
+                if await comfy_health():
+                    await resources.stop_comfy(job_id)
+            except Exception as stop_error:
+                store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
+
+
+async def run_upscale_job(job_id: str) -> None:
+    """独立「二采放大」任务：按所选倍数（2×/4×）RealESRGAN 放大并收 1080p 档。"""
+    async with pipeline_lock:
+        state = store.get(job_id)
+        if not state:
+            return
+        if is_job_cancelled(job_id):
+            await finish_cancelled(job_id)
+            return
+        store.update(
+            job_id,
+            status="running",
+            stage="starting",
+            errorSummary=None,
+            errorDetail=None,
+            startedAt=now_iso(),
+            finishedAt=None,
+        )
+        try:
+            await resources.ensure_comfy(job_id)
+            state = store.get(job_id) or state
+            source_name = state["sourceInputName"]
+            model = state.get("upscaleModel") or UPSCALE_MODEL_X4
+            scale = (int(state["targetWidth"]), int(state["targetHeight"]))
+            store.update(job_id, stage="upscaling")
+            store.add_log(
+                job_id,
+                f"二采放大：{state.get('multiplier') or '?'} · {model} → 输出 {scale[0]}×{scale[1]}",
+            )
+            upscale = prepare_upscale_workflow(
+                source_name,
+                f"video/H3_MotionStudio/{job_id}_upscale",
+                UPSCALE_WORKFLOW,
+                scale=scale,
+                upscale_model=model,
+            )
+            final = await run_comfy_workflow(job_id, "upscale", upscale, "8")
+            store.update(job_id, finalOutput=str(final), finalReady=True)
+            store.add_log(job_id, f"放大成片已保存：{final.name}")
+            store.update(
+                job_id,
+                status="completed",
+                stage="completed",
+                currentNodeId=None,
+                currentNodeTitle=None,
+                progress=100,
+                progressValue=None,
+                progressMax=None,
+                output=await media_metadata(final),
+                finishedAt=now_iso(),
+            )
+            store.add_log(job_id, "二采放大任务已完成。")
+        except Exception as error:
+            if is_job_cancelled(job_id):
+                await finish_cancelled(job_id)
+                return
+            if isinstance(error, PipelineError):
+                summary, detail = error.summary, error.detail
+            else:
+                summary, detail = "二采放大执行失败", repr(error)
             store.add_log(job_id, f"错误：{summary}")
             failed_state = store.get(job_id) or {}
             running = next(
@@ -1050,14 +1097,13 @@ async def retry_enhance(job_id: str) -> None:
 async def retry_voice(job_id: str) -> None:
     async with pipeline_lock:
         state = store.get(job_id)
-        if not state or not state.get("enhancedOutput"):
-            raise PipelineError("没有可用于音色转换的高清成片")
+        # 歌曲生成已无二采：优先高清成片（历史任务），否则直接用原版成片
+        source = Path(state.get("enhancedOutput") or state.get("originalOutput") or "") if state else Path()
+        if not source.is_file():
+            raise PipelineError("没有可用于音色转换的成片")
         if is_job_cancelled(job_id):
             await finish_cancelled(job_id)
             return
-        enhanced = Path(state["enhancedOutput"])
-        if not enhanced.is_file():
-            raise PipelineError("高清成片文件不存在", str(enhanced))
         store.update(job_id, status="running", stage="handoff", errorSummary=None, errorDetail=None, finalReady=False, startedAt=now_iso(), finishedAt=None)
         for milestone in ("handoff", "stems", "voice", "mux"):
             store.set_milestone(job_id, milestone, status="pending", progress=None, currentNode=None)
@@ -1066,7 +1112,7 @@ async def retry_voice(job_id: str) -> None:
         else:
             store.set_milestone(job_id, "handoff", status="completed", progress=100)
         try:
-            final = await run_rvc(job_id, enhanced)
+            final = await run_rvc(job_id, source)
             store.update(
                 job_id,
                 status="completed",

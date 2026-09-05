@@ -46,6 +46,7 @@ from .pipeline import (
     retry_voice,
     run_migrate_pipeline,
     run_pipeline,
+    run_upscale_job,
 )
 from .settings import (
     COMFY_INPUT,
@@ -56,10 +57,12 @@ from .settings import (
     MIGRATE_REFERENCE,
     PROJECT_ROOT,
     SINGING_WORKFLOW,
+    UPSCALE_MODEL_X2,
+    UPSCALE_MODEL_X4,
     canvas_params,
     required_paths,
 )
-from .store import initial_milestones, migrate_milestones, now_iso, store
+from .store import initial_milestones, migrate_milestones, now_iso, store, upscale_milestones
 from .workflows import load_workflow, node_by_id
 
 
@@ -70,6 +73,42 @@ def spawn(coroutine) -> None:
     task = asyncio.create_task(coroutine)
     running_tasks.add(task)
     task.add_done_callback(running_tasks.discard)
+
+
+# 任务成片字段映射（media key → (state 字段, 就绪标记, 显示名)）
+OUTPUT_MEDIA_FIELDS = (
+    ("final", "finalOutput", "finalReady", "最终成片"),
+    ("original", "originalOutput", "originalReady", "原版成片"),
+    ("draft", "draftOutput", "draftReady", "迁移成片"),
+    ("clean", "cleanOutput", "cleanReady", "去字幕视频"),
+    ("enhanced", "enhancedOutput", "enhancedReady", "高清成片"),
+)
+
+
+def _job_media_entries(state: dict[str, Any]) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for key, field, flag, label in OUTPUT_MEDIA_FIELDS:
+        if not state.get(flag) or not state.get(field):
+            continue
+        path = Path(state[field]).resolve()
+        if not path.is_file():
+            continue
+        entries.append({
+            "key": key,
+            "label": label,
+            "url": f"/api/jobs/{state['id']}/media/{key}",
+        })
+    return entries
+
+
+def _upscale_target(width: int, height: int) -> tuple[int, int]:
+    """按源宽高比就近选择 1080p 标准档（4:3/16:9 横屏，3:4/9:16 竖屏）。"""
+    aspect = width / max(1, height)
+    if aspect >= 1:
+        candidates = ((4 / 3, 1440, 1080), (16 / 9, 1920, 1080))
+    else:
+        candidates = ((3 / 4, 1080, 1440), (9 / 16, 1080, 1920))
+    return min(candidates, key=lambda item: abs(aspect - item[0]))[1:]
 
 
 def transcode_source_to_30fps(source: Path, target: Path) -> None:
@@ -229,6 +268,24 @@ async def latest_job(kind: str | None = Query(None)):
     return JSONResponse(state, headers={"Cache-Control": "no-store"})
 
 
+@app.get("/api/jobs/recent")
+async def recent_jobs():
+    """最近任务及可用成片，供「二采放大」选择输入。必须在 {job_id} 路由前注册。"""
+    jobs: list[dict[str, Any]] = []
+    for state in store.recent(8):
+        title = state.get("sourceName") or state["id"]
+        kind = state.get("kind") or "singing"
+        jobs.append({
+            "id": state["id"],
+            "kind": kind,
+            "status": state["status"],
+            "title": title,
+            "createdAt": state.get("createdAt"),
+            "media": _job_media_entries(state),
+        })
+    return {"jobs": jobs}
+
+
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str):
     state = store.get(job_id)
@@ -333,7 +390,6 @@ async def create_migrate_job(
     ratio: str = Form("9:16"),
     remove_subtitles: str = Form("0"),
     mode: str = Form("animation"),
-    hd1080: str = Form("0"),
     content_prompt: str = Form(""),
     video_prompt: str = Form(""),
     image_prompt: str = Form(""),
@@ -349,7 +405,6 @@ async def create_migrate_job(
     if mode not in {"animation", "replacement"}:
         raise HTTPException(400, "迁移模式只能是 animation（动作迁移）或 replacement（人物替换）")
     clean_on = remove_subtitles in {"1", "true", "on", "yes"}
-    hd_on = hd1080 in {"1", "true", "on", "yes"}
 
     extension = Path(video.filename or "input.mp4").suffix.lower()
     if extension not in VIDEO_UPLOAD_SUFFIXES:
@@ -414,7 +469,6 @@ async def create_migrate_job(
         "canvas": ratio,
         "migrateMode": mode,
         "removeSubtitles": clean_on,
-        "hd1080": hd_on,
         "contentPrompt": content_prompt,
         "videoPrompt": video_prompt,
         "imagePrompt": image_prompt,
@@ -441,7 +495,7 @@ async def create_migrate_job(
         "progress": 0,
         "progressValue": None,
         "progressMax": None,
-        "milestones": migrate_milestones(clean_on, mode, hd_on, ratio),
+        "milestones": migrate_milestones(clean_on, mode, ratio),
         "logs": [{
             "time": created_at,
             "message": (
@@ -472,6 +526,102 @@ async def create_migrate_job(
     return state
 
 
+@app.post("/api/jobs/upscale")
+async def create_upscale_job(
+    video: UploadFile | None = File(None),
+    source_job_id: str = Form(""),
+    source_key: str = Form("final"),
+    multiplier: str = Form("4x"),
+):
+    """独立二采放大：上传视频或引用最近任务成片，按 2×/4× 放大后收 1080p 档。"""
+    active = store.active()
+    if active:
+        raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
+    if multiplier not in {"2x", "4x"}:
+        raise HTTPException(400, "放大倍数只能是 2x 或 4x")
+    if video is None and not source_job_id:
+        raise HTTPException(400, "请上传视频或选择最近任务成片")
+
+    COMFY_INPUT.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex
+    target = COMFY_INPUT / f"motionstudio_{job_id}_upscale_src.mp4"
+
+    source_name_text = ""
+    if video is not None and video.filename:
+        extension = Path(video.filename).suffix.lower()
+        if extension not in VIDEO_UPLOAD_SUFFIXES:
+            raise HTTPException(400, "只支持 MP4、MOV、MKV 或 WebM 视频")
+        target = COMFY_INPUT / f"motionstudio_{job_id}_upscale_src{extension}"
+        try:
+            with target.open("wb") as destination:
+                while chunk := await video.read(1024 * 1024):
+                    destination.write(chunk)
+        finally:
+            await video.close()
+        source_name_text = video.filename
+    else:
+        source_state = store.get(source_job_id)
+        field = dict((key, field) for key, field, _flag, _label in OUTPUT_MEDIA_FIELDS).get(source_key)
+        source_path = Path(source_state.get(field) or "") if source_state and field else Path()
+        if not source_state or not source_path.is_file():
+            raise HTTPException(400, "所选任务的成片不存在，请重新选择")
+        target = COMFY_INPUT / f"motionstudio_{job_id}_upscale_src{source_path.suffix.lower() or '.mp4'}"
+        await asyncio.to_thread(shutil.copy2, source_path, target)
+        source_name_text = f"{source_state['id'][:8]} {source_key}"
+
+    metadata = await media_metadata(target)
+    width = int(metadata.get("width") or 1440)
+    height = int(metadata.get("height") or 1080)
+    scale = _upscale_target(width, height)
+    model = UPSCALE_MODEL_X2 if multiplier == "2x" else UPSCALE_MODEL_X4
+    created_at = now_iso()
+    state = {
+        "id": job_id,
+        "kind": "upscale",
+        "multiplier": multiplier,
+        "upscaleModel": model,
+        "targetWidth": scale[0],
+        "targetHeight": scale[1],
+        "status": "queued",
+        "stage": "upload",
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "sourceName": source_name_text,
+        "sourceSize": target.stat().st_size,
+        "sourceDuration": metadata.get("duration"),
+        "sourceFps": metadata.get("fps"),
+        "sourceInputName": target.name,
+        "sourcePath": str(target.resolve()),
+        "currentNodeId": None,
+        "currentNodeTitle": "等待启动 ComfyUI",
+        "progress": 0,
+        "progressValue": None,
+        "progressMax": None,
+        "milestones": upscale_milestones(),
+        "logs": [{
+            "time": created_at,
+            "message": f"已接收放大源：{source_name_text} · {width}×{height} · 倍数 {multiplier} → 输出 {scale[0]}×{scale[1]}",
+        }],
+        "errorSummary": None,
+        "errorDetail": None,
+        "originalReady": False,
+        "cleanReady": False,
+        "draftReady": False,
+        "enhancedReady": False,
+        "finalReady": False,
+        "originalOutput": None,
+        "cleanOutput": None,
+        "draftOutput": None,
+        "enhancedOutput": None,
+        "finalOutput": None,
+        "output": None,
+        "promptIds": {},
+    }
+    store.create(state)
+    spawn(run_upscale_job(job_id))
+    return state
+
+
 @app.post("/api/jobs/{job_id}/retry-voice")
 async def retry_job_voice(job_id: str):
     state = store.get(job_id)
@@ -479,8 +629,8 @@ async def retry_job_voice(job_id: str):
         raise HTTPException(404, "任务不存在")
     if store.active() and store.active()["id"] != job_id:
         raise HTTPException(409, "另一个任务正在运行")
-    if not state.get("enhancedReady"):
-        raise HTTPException(400, "没有可用于音色转换的高清成片")
+    if not (state.get("enhancedReady") or state.get("originalReady")):
+        raise HTTPException(400, "没有可用于音色转换的成片")
     spawn(retry_voice(job_id))
     return store.update(job_id, status="queued", stage="handoff")
 
@@ -927,6 +1077,10 @@ if dist_dir.is_dir():
 
     @app.get("/migrate", include_in_schema=False)
     async def migrate_frontend():
+        return FileResponse(dist_dir / "index.html")
+
+    @app.get("/upscale", include_in_schema=False)
+    async def upscale_frontend():
         return FileResponse(dist_dir / "index.html")
 
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")

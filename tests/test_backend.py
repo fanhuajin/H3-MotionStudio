@@ -179,14 +179,25 @@ class WorkflowPreparationTests(unittest.TestCase):
 
     def test_migrate_milestones_follow_options(self) -> None:
         self.assertEqual(
-            [m["id"] for m in migrate_milestones(False, "animation", False)],
+            [m["id"] for m in migrate_milestones(False, "animation", "4:3")],
             ["prep", "sam", "migrate", "save"],
         )
-        ids = [m["id"] for m in migrate_milestones(True, "replacement", True)]
+        ids = [m["id"] for m in migrate_milestones(True, "replacement", "9:16")]
         self.assertEqual(ids[:4], ["read", "mask", "paint", "clean_save"])
-        self.assertEqual(ids[-2:], ["upscale", "hd"])
-        replacement = next(m for m in migrate_milestones(False, "replacement", False) if m["id"] == "migrate")
+        # 二采放大已移至独立路由：动作迁移不再包含 upscale/hd 里程碑
+        self.assertNotIn("upscale", ids)
+        self.assertNotIn("hd", ids)
+        replacement = next(m for m in migrate_milestones(False, "replacement", "4:3") if m["id"] == "migrate")
         self.assertIn("替换", replacement["label"])
+
+    def test_upscale_milestones_and_target_1080p(self) -> None:
+        from backend.app import _upscale_target
+        from backend.store import upscale_milestones
+        self.assertEqual([m["id"] for m in upscale_milestones()], ["upscale", "hd"])
+        self.assertEqual(_upscale_target(512, 384), (1440, 1080))    # 4:3
+        self.assertEqual(_upscale_target(512, 896), (1080, 1920))    # 9:16
+        self.assertEqual(_upscale_target(1920, 1080), (1920, 1080))  # 16:9
+        self.assertEqual(_upscale_target(640, 480), (1440, 1080))
 
     def test_estimate_migrate_segments_matches_workflow_formula(self) -> None:
         from backend.pipeline import estimate_migrate_segments
@@ -195,12 +206,6 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(estimate_migrate_segments(81), 1)
         self.assertEqual(estimate_migrate_segments(40), 1)
         self.assertIsNone(estimate_migrate_segments(None))
-
-    def test_migrate_hd_milestone_label_follows_canvas_ratio(self) -> None:
-        hd_916 = next(m for m in migrate_milestones(False, "animation", True, ratio="9:16") if m["id"] == "upscale")
-        self.assertIn("2×", hd_916["label"])
-        hd_43 = next(m for m in migrate_milestones(False, "animation", True, ratio="4:3") if m["id"] == "upscale")
-        self.assertIn("4×", hd_43["label"])
 
     def test_graph_to_api_prompt_keeps_autogrow_expanded_inputs(self) -> None:
         """ComfyUI v3 Autogrow（ComfyMathExpression values.a/b…）的链接不能被丢弃。"""

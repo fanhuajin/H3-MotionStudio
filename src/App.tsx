@@ -11,6 +11,7 @@ import {
   FilmSlate,
   Graph,
   Info,
+  MagnifyingGlassPlus,
   MusicNotes,
   PersonSimpleRun,
   Play,
@@ -25,6 +26,7 @@ import { MigrateRoute } from "./MigrateRoute";
 import { QueuePanel } from "./QueuePanel";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
+import { UpScaleRoute } from "./UpScaleRoute";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
 
@@ -32,8 +34,6 @@ const EMPTY_MILESTONES: Milestone[] = [
   { id: "input", label: "读取视频与音频", subtitle: "加载输入视频，分离音频轨道", status: "pending" },
   { id: "h3", label: "H3 分段生成", subtitle: "按时长生成连续唱歌片段", status: "pending" },
   { id: "stitch", label: "防闪拼接", subtitle: "平滑衔接并裁切到输入时长", status: "pending" },
-  { id: "upscale", label: "RealESRGAN 4× 放大", subtitle: "逐帧超采样并缩放到 1080P", status: "pending" },
-  { id: "hd", label: "输出 1440 × 1080", subtitle: "保存高清加强成片", status: "pending" },
   { id: "handoff", label: "关闭 ComfyUI", subtitle: "释放内存和显存，切换到 RVC", status: "pending" },
   { id: "stems", label: "分离人声与伴奏", subtitle: "Demucs 提取演唱人声", status: "pending" },
   { id: "voice", label: "转换为 ranran 音色", subtitle: "RVC 模型执行音色转换", status: "pending" },
@@ -152,7 +152,7 @@ const DEMO_MILESTONES: Milestone[] = EMPTY_MILESTONES.map((step, index) => ({
   ...step,
   status: "completed",
   progress: 100,
-  elapsed: ["00:05", "01:20", "00:15", "01:45", "00:08", "00:04", "00:38", "01:12", "00:06"][index],
+  elapsed: ["00:05", "01:20", "00:15", "00:04", "00:38", "01:12", "00:06"][index],
 }));
 
 const DEMO_JOB: JobState = {
@@ -177,9 +177,9 @@ const DEMO_JOB: JobState = {
     { time: new Date().toISOString(), message: "最终 MP4 已完成音频替换。" },
   ],
   originalReady: true,
-  enhancedReady: true,
+  enhancedReady: false,
   finalReady: true,
-  output: { width: 1440, height: 1080, duration: 32.4, size: 48_700_000, completedAt: new Date().toISOString() },
+  output: { width: 640, height: 480, duration: 32.4, size: 9_600_000, completedAt: new Date().toISOString() },
 };
 
 function formatBytes(value?: number | null) {
@@ -550,19 +550,6 @@ function MotionStudioRoute() {
     connectJob(job.id);
   };
 
-  const retryEnhance = async () => {
-    if (!job) return;
-    setLocalError(null);
-    const response = await fetch(`/api/jobs/${job.id}/retry-enhance`, { method: "POST" });
-    const payload = await response.json();
-    if (!response.ok) {
-      setLocalError(payload.detail || "无法重新进行 1080P 高清转换");
-      return;
-    }
-    setJob(payload);
-    connectJob(job.id);
-  };
-
   const completionTime = useMemo(() => {
     const value = job?.output?.completedAt;
     if (!value) return "--";
@@ -575,7 +562,7 @@ function MotionStudioRoute() {
         <div>
           <p className="route-eyebrow"><span /> H3 · MOTION STUDIO</p>
           <h1>让演唱视频，<em>动起来。</em></h1>
-          <p className="route-description">人物参考、演唱视频、动作和运镜，一条链路完成高清成片与音色转换。</p>
+          <p className="route-description">人物参考、演唱视频、动作和运镜，一条链路完成唱歌成片与音色转换；需要高清时用「二采放大」单独处理。</p>
         </div>
         <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
       </header>
@@ -711,7 +698,7 @@ function MotionStudioRoute() {
               <div className="result-grid">
                 <div className="result-video"><video src={!demoMode && (resultUrl || originalUrl) ? `${resultUrl || originalUrl}#t=0.001` : undefined} controls preload="auto" poster={demoMode ? config.fixedReferenceUrl : undefined} /></div>
                 <div className="result-details">
-                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? "最终成片 · ranran 音色" : "原版成片"}</strong><span>{job.finalReady ? "1440 × 1080" : "640 × 480"}</span></div></div>
+                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? "最终成片 · ranran 音色" : "原版成片"}</strong><span>640 × 480</span></div></div>
                   <dl>
                     <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>
@@ -722,8 +709,7 @@ function MotionStudioRoute() {
                   </dl>
                   {job.finalReady && <a className="result-button primary" href={`/api/jobs/${job.id}/media/final?download=1`}><DownloadSimple /> 下载最终成片</a>}
                   {job.originalReady && <a className="result-button" href={`/api/jobs/${job.id}/media/original`} target="_blank" rel="noreferrer"><Eye /> 查看原版</a>}
-                  {job.status === "failed" && job.originalReady && !job.enhancedReady && <button className="result-button" onClick={retryEnhance} disabled={isBusy}><ArrowsClockwise /> 重新转换 1080P</button>}
-                  {job.enhancedReady && <button className="result-button" onClick={retryVoice} disabled={isBusy}><ArrowsClockwise /> 重新音色转换</button>}
+                  {job.status === "failed" && job.originalReady && !job.finalReady && <button className="result-button" onClick={retryVoice} disabled={isBusy}><ArrowsClockwise /> 重新音色转换</button>}
                 </div>
               </div>
             </section>
@@ -760,6 +746,7 @@ export function App() {
   const path = window.location.pathname.replace(/\/+$/, "");
   const isDouyinRoute = path === "/douyin";
   const isMigrateRoute = path === "/migrate";
+  const isUpscaleRoute = path === "/upscale";
 
   return (
     <div className="desktop-app-shell">
@@ -785,7 +772,7 @@ export function App() {
               <span>影动生成</span>
             </a>
           </div>
-          <p className="route-caption">下载 · 生成 · 迁移</p>
+          <p className="route-caption">下载 · 生成 · 迁移 · 放大</p>
 
           {isDouyinRoute ? (
             <>
@@ -799,15 +786,20 @@ export function App() {
           ) : (
             <>
               <p className="sidebar-section-label">创作与管理</p>
-              <a className={!isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
+              <a className={!isMigrateRoute && !isUpscaleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
                 <MusicNotes weight="fill" />
                 <span>歌曲生成</span>
-                {!isMigrateRoute && <i />}
+                {!isMigrateRoute && !isUpscaleRoute && <i />}
               </a>
               <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
                 <PersonSimpleRun />
                 <span>动作迁移</span>
                 {isMigrateRoute && <i />}
+              </a>
+              <a className={isUpscaleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/upscale">
+                <MagnifyingGlassPlus />
+                <span>二采放大</span>
+                {isUpscaleRoute && <i />}
               </a>
             </>
           )}
@@ -825,7 +817,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : <MotionStudioRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isUpscaleRoute ? <UpScaleRoute /> : <MotionStudioRoute />}
       </div>
     </div>
   );

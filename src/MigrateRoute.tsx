@@ -214,15 +214,13 @@ function ratioLabel(ratio: CanvasRatio) {
   return ratio === "9:16" ? "9:16 · 竖版（抖音）" : "4:3 · 横版";
 }
 
-function ratioNote(ratio: CanvasRatio, mode: MigrateMode, hd1080: boolean) {
+function ratioNote(ratio: CanvasRatio, mode: MigrateMode) {
   const canvas = ratio === "9:16" ? "512×896" : "512×384";
-  const hd = ratio === "9:16" ? "1080×1920" : "1440×1080";
-  return `${canvas} 加速草稿${hd1080 ? ` → ${hd} 高清成片` : ""} · ${mode === "animation" ? "动作迁移" : "人物替换"}`;
+  return `${canvas} 成片 · ${mode === "animation" ? "动作迁移" : "人物替换"}`;
 }
 
-function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, hd1080: boolean, ratio: CanvasRatio): Milestone[] {
+function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, ratio: CanvasRatio): Milestone[] {
   const transfer = mode === "replacement" ? "人物替换" : "动作迁移";
-  const multiplier = ratio === "9:16" ? "2" : "4";
   const list: Milestone[] = [];
   if (removeSubtitles) {
     list.push(
@@ -246,17 +244,6 @@ function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, h
     },
     { id: "save", label: "拼接输出成片", subtitle: "逐段衔接并封装输出视频", status: "pending" },
   );
-  if (hd1080) {
-    list.push(
-      {
-        id: "upscale",
-        label: `RealESRGAN ${multiplier}× 放大`,
-        subtitle: ratio === "9:16" ? "2× 快速档（竖版目标放大仅 2.1×）" : "逐帧超采样到所选比例高清",
-        status: "pending",
-      },
-      { id: "hd", label: "输出高清成片", subtitle: "保存高清加强成片", status: "pending" },
-    );
-  }
   return list;
 }
 
@@ -309,7 +296,6 @@ export function MigrateRoute() {
   const [ratio, setRatio] = useState<CanvasRatio>(draft?.ratio || "9:16");
   const [mode, setMode] = useState<MigrateMode>(draft?.mode || "animation");
   const [removeSubtitles, setRemoveSubtitles] = useState<boolean>(draft?.removeSubtitles ?? false);
-  const [hd1080, setHd1080] = useState<boolean>(draft?.hd1080 ?? false);
   const [contentPrompt, setContentPrompt] = useState(draft?.contentPrompt ?? "a person singing");
   const [videoPrompt, setVideoPrompt] = useState(draft?.videoPrompt ?? "person");
   const [imagePrompt, setImagePrompt] = useState(draft?.imagePrompt ?? "person");
@@ -330,11 +316,11 @@ export function MigrateRoute() {
   }, [lightboxImage]);
 
   // 运行/排队中的任务显示其真实里程碑；否则按当前表单设置实时预览
-  // （切换 4:3/9:16、模式、去字幕、高清档位时流程文案立即同步）
+  // （切换 4:3/9:16、模式、去字幕时流程文案立即同步）
   const liveJob = job && (job.status === "queued" || job.status === "running") ? job : null;
   const milestones = liveJob?.milestones?.length
     ? liveJob.milestones
-    : migrateMilestoneSkeleton(removeSubtitles, mode, hd1080, ratio);
+    : migrateMilestoneSkeleton(removeSubtitles, mode, ratio);
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
   const jobActive = Boolean(liveJob);
   const tickNow = useNowTick(jobActive);
@@ -353,7 +339,6 @@ export function MigrateRoute() {
       ratio,
       mode,
       removeSubtitles,
-      hd1080,
       contentPrompt,
       videoPrompt,
       imagePrompt,
@@ -362,7 +347,7 @@ export function MigrateRoute() {
       imageName: imageFile?.name ?? null,
       imageSize: imageFile?.size ?? null,
     });
-  }, [ratio, mode, removeSubtitles, hd1080, contentPrompt, videoPrompt, imagePrompt, file, imageFile]);
+  }, [ratio, mode, removeSubtitles, contentPrompt, videoPrompt, imagePrompt, file, imageFile]);
 
   const connectJob = useCallback((jobId: string) => {
     socketRef.current?.close();
@@ -521,7 +506,6 @@ export function MigrateRoute() {
           setRatio((latest.canvas as CanvasRatio) || "9:16");
           setMode((latest.migrateMode as MigrateMode) || "animation");
           setRemoveSubtitles(Boolean(latest.removeSubtitles));
-          setHd1080(Boolean(latest.hd1080));
           setContentPrompt(latest.contentPrompt ?? "a person singing");
           setVideoPrompt(latest.videoPrompt ?? "person");
           setImagePrompt(latest.imagePrompt ?? "person");
@@ -530,7 +514,6 @@ export function MigrateRoute() {
           setRatio(draftSource.ratio || "9:16");
           setMode(draftSource.mode || "animation");
           setRemoveSubtitles(draftSource.removeSubtitles ?? false);
-          setHd1080(draftSource.hd1080 ?? false);
           setContentPrompt(draftSource.contentPrompt ?? "a person singing");
           setVideoPrompt(draftSource.videoPrompt ?? "person");
           setImagePrompt(draftSource.imagePrompt ?? "person");
@@ -590,7 +573,6 @@ export function MigrateRoute() {
     form.append("ratio", ratio);
     form.append("remove_subtitles", removeSubtitles ? "1" : "0");
     form.append("mode", mode);
-    form.append("hd1080", hd1080 ? "1" : "0");
     form.append("content_prompt", contentPrompt);
     form.append("video_prompt", videoPrompt);
     form.append("image_prompt", imagePrompt);
@@ -618,9 +600,8 @@ export function MigrateRoute() {
   const cleanUrl = job?.cleanReady ? `/api/jobs/${job.id}/media/clean` : null;
   const originalUrl = job?.id ? `/api/jobs/${job.id}/input/video/preview` : null;
   const showResult = job && (job.finalReady || job.draftReady || job.cleanReady);
-  const showDraftSeparately = Boolean(job?.draftReady && job?.finalReady && job?.enhancedReady);
   const resultCaption = job?.finalReady
-    ? job.enhancedReady ? "高清成片已完成" : "迁移成片已完成"
+    ? "迁移成片已完成"
     : job?.draftReady ? "迁移草稿已生成" : "中间产物已保留";
 
   return (
@@ -629,7 +610,7 @@ export function MigrateRoute() {
         <div>
           <p className="route-eyebrow"><span /> H3 · ACTION MIGRATION</p>
           <h1>让参考人物，<em>动起来。</em></h1>
-          <p className="route-description">上传一段动作视频与人物参考图，按所选画布把动作迁移/替换到参考人物身上，可选去字幕与 1080P 高清输出。</p>
+          <p className="route-description">上传一段动作视频与人物参考图，按所选画布把动作迁移/替换到参考人物身上，可选去字幕；需要高清时用「二采放大」单独处理。</p>
         </div>
         <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
       </header>
@@ -750,14 +731,8 @@ export function MigrateRoute() {
                 title="去除底部字幕"
                 description="视频底部有字幕/水印条时开启：先用 ProPainter 固定底部修复，再把干净视频用于迁移"
               />
-              <ToggleRow
-                checked={hd1080}
-                onChange={setHd1080}
-                title="1080P 高清加强"
-                description={`迁移完成后追加 RealESRGAN ${ratio === "9:16" ? "2×（快速档，目标仅2.1×放大）" : "4×"}：${ratio === "9:16" ? "1080×1920 竖版" : "1440×1080"}，耗时会增加`}
-              />
             </div>
-            <p className="field-note">当前设置：{ratioNote(ratio, mode, hd1080)}{removeSubtitles ? " · 先去除字幕" : ""}。输出保留原视频音频与帧率。</p>
+            <p className="field-note">当前设置：{ratioNote(ratio, mode)}{removeSubtitles ? " · 先去除字幕" : ""}。输出保留原视频音频与帧率；需要高清时用「二采放大」单独处理。</p>
           </div>
 
           {!config.environmentReady && config.missingRequirements.length > 0 && (
@@ -828,7 +803,7 @@ export function MigrateRoute() {
                   <div className="result-title">
                     <FilmSlate />
                     <div>
-                      <strong>{job.finalReady ? (job.enhancedReady ? "高清成片" : "迁移成片") : job.draftReady ? "迁移草稿" : "中间产物"}</strong>
+                      <strong>{job.finalReady ? "迁移成片" : job.draftReady ? "迁移草稿" : "中间产物"}</strong>
                       <span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ratioLabel(ratio)}</span>
                     </div>
                   </div>
@@ -841,7 +816,6 @@ export function MigrateRoute() {
                     )}
                   </dl>
                   {finalUrl && <a className="result-button primary" href={`${finalUrl}?download=1`}><DownloadSimple /> 下载成片</a>}
-                  {showDraftSeparately && draftUrl && <a className="result-button" href={draftUrl} target="_blank" rel="noreferrer"><Eye /> 查看迁移草稿</a>}
                   {cleanUrl && <a className="result-button" href={cleanUrl} target="_blank" rel="noreferrer"><Eye /> 查看去字幕视频</a>}
                   {originalUrl && <a className="result-button" href={originalUrl} target="_blank" rel="noreferrer"><Eye /> 查看原始视频</a>}
                 </div>
