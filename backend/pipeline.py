@@ -439,8 +439,15 @@ async def run_comfy_workflow(
         store.add_log(job_id, f"工作流已进入 ComfyUI 队列：{prompt_id}")
         store.update(job_id, promptIds={**((store.get(job_id) or {}).get("promptIds") or {}), kind: prompt_id})
         active_milestone: str | None = None
-        segment_count = 0  # migrate：已完成的采样段数（MieLoopEnd 每段收尾触发）
+        segment_count = 0  # migrate（回退路径）：MieLoopEnd(453) 每段收尾触发的已完段数
         segment_seen = False  # 首个采样节点是否已出现（置 currentSegment=1）
+        # 9:16 分块采样：ComfyUI 对每个分段广播一组 max=6 的采样周期（1/6..6/6）。
+        # executing-453 事件并非每段都广播（实测只出现在首段收尾），分段徽章
+        # 以该周期的"段起点"（value=1）为准推进；无分块周期时退回 453 计数。
+        segment_cycles = 0
+        segment_cycle_open = False
+        segment_cycle_v1_at = 0.0
+        segment_via_cycles = False
         plan = _PLAN_BY_KIND.get(kind)
         plan_index = -1
 
@@ -497,11 +504,14 @@ async def run_comfy_workflow(
                 title = titles.get(node_id, node_id)
                 if kind == "migrate":
                     # 段位锚点：WanSCAILToVideo(361)只在首段广播 executing，
-                    # MieLoopEnd(453)在每段收尾广播 → 用它推进"已完成段数"。
+                    # MieLoopEnd(453)并非每段都广播——优先用 progress 分支的
+                    # 6 块采样周期计数；只有从未出现分块周期（如 4:3 无分块）
+                    # 时才退回 executing-453 计数。
                     if node_id == "361" and not segment_seen:
                         segment_seen = True
-                        store.update(job_id, currentSegment=1)
-                    elif node_id == "453":
+                        if not segment_via_cycles:
+                            store.update(job_id, currentSegment=1)
+                    elif node_id == "453" and not segment_via_cycles:
                         segment_count += 1
                         job_state = store.get(job_id) or {}
                         store.update(
@@ -538,6 +548,27 @@ async def run_comfy_workflow(
                 value = int(data.get("value") or 0)
                 maximum = max(1, int(data.get("max") or 1))
                 percent = min(100.0, value / maximum * 100.0)
+                if kind == "migrate" and maximum == 6:
+                    # 9:16 分块采样周期 1/6..6/6 ≈ 一个分段：value=1 表示新一段
+                    # 开始采样，用它推进"当前段位"（实测周期间隔 ≈ 单段生成时长）。
+                    if not segment_via_cycles:
+                        segment_via_cycles = True
+                        store.add_log(job_id, "分段计数采用 6 块采样周期（每段 1/6→6/6）。")
+                    if value == 1:
+                        # 防抖：同一周期的重复 v1（毫秒级重放）不重复计数；
+                        # 上一周期未收到 6 就回归 1（>60s 后）视为新段起点。
+                        if not segment_cycle_open or (time.monotonic() - segment_cycle_v1_at) > 60:
+                            segment_cycle_open = True
+                            segment_cycle_v1_at = time.monotonic()
+                            segment_cycles += 1
+                            job_state = store.get(job_id) or {}
+                            store.update(
+                                job_id,
+                                currentSegment=min(segment_cycles, job_state.get("estimatedSegments") or 999),
+                                estimatedSegments=job_state.get("estimatedSegments"),
+                            )
+                    elif value >= 6:
+                        segment_cycle_open = False
                 node_id = str(data.get("node") or (store.get(job_id) or {}).get("currentNodeId") or "")
                 title = titles.get(node_id, (store.get(job_id) or {}).get("currentNodeTitle") or "正在处理")
                 if active_milestone:
