@@ -326,10 +326,17 @@ function MotionStudioRoute() {
     return () => window.clearInterval(timer);
   }, [job?.id, job?.status]);
 
+  // 预览 object URL 只在组件卸载时释放：不能把两个 URL 放进依赖数组——其中
+  // 一个变化会触发 cleanup 撤销另一个仍在使用中的 blob（卡片旧图已解码仍在
+  // 显示，但「放大预览」等新建 <img> 用同一已撤销 URL 加载必然失败）。
+  const previewUrlRef = useRef<string | null>(null);
+  const imagePreviewUrlRef = useRef<string | null>(null);
+  previewUrlRef.current = previewUrl;
+  imagePreviewUrlRef.current = imagePreviewUrl;
   useEffect(() => () => {
-    releaseObjectUrl(previewUrl);
-    releaseObjectUrl(imagePreviewUrl);
-  }, [previewUrl, imagePreviewUrl]);
+    releaseObjectUrl(previewUrlRef.current);
+    releaseObjectUrl(imagePreviewUrlRef.current);
+  }, []);
 
   const chooseImage = useCallback((nextFile: File | null) => {
     if (!nextFile) return;

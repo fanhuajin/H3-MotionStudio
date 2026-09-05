@@ -371,11 +371,18 @@ export function MigrateRoute() {
     return () => window.clearInterval(timer);
   }, [job?.id, job?.status]);
 
+  // 预览 object URL 只在组件卸载时释放（含 socket 关闭）：若把 URL 放进依赖
+  // 数组，任何一个预览变化都会触发 cleanup 撤销另一个仍在使用中的 blob，
+  // 导致「放大预览」等新建 <img> 无法再加载同一 URL。
+  const previewUrlRef = useRef<string | null>(null);
+  const imagePreviewUrlRef = useRef<string | null>(null);
+  previewUrlRef.current = previewUrl;
+  imagePreviewUrlRef.current = imagePreviewUrl;
   useEffect(() => () => {
-    releaseObjectUrl(previewUrl);
-    releaseObjectUrl(imagePreviewUrl);
+    releaseObjectUrl(previewUrlRef.current);
+    releaseObjectUrl(imagePreviewUrlRef.current);
     socketRef.current?.close();
-  }, [previewUrl, imagePreviewUrl]);
+  }, []);
 
   const chooseImage = useCallback((nextFile: File | null) => {
     if (!nextFile) return;
