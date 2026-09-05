@@ -361,6 +361,16 @@ export function UpScaleRoute() {
                 <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
               </span>
             )}
+            {job?.status === "running" && job?.stage === "upscaling" && job.estimatedSegments != null && (
+              <span
+                className={`job-segments ${job.currentSegment ? "live" : ""}`}
+                title={`放大分批执行：共 ${job.estimatedSegments} 段（每段 8 帧超采样，8GB 显存安全分批）${job.sourceFps ? ` · 源视频 ${job.sourceFps}fps` : ""}`}
+              >
+                {job.currentSegment
+                  ? <>放大 {job.currentSegment}/{job.estimatedSegments}<i><b style={{ width: `${Math.min(100, (job.currentSegment / job.estimatedSegments) * 100)}%` }} /></i></>
+                  : <>预计 {job.estimatedSegments} 段放大</>}
+              </span>
+            )}
             {jobActive && totalElapsedMs != null && (
               <span className="job-timer" title="任务已运行时间（含排队）"><Play weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
             )}

@@ -33,6 +33,11 @@ MIGRATE_REFERENCE = COMFY_INPUT / "singing_portrait_4x3_1440x1080.png"
 UPSCALE_MODEL_X4 = "RealESRGAN_x4plus.pth"
 UPSCALE_MODEL_X2 = "RealESRGAN_x2plus.pth"
 
+# 二采放大 8GB 安全分批：与工作流 ① VHS_BatchManager「每批 8 帧」一致。
+# 提交时按 ceil(源帧数 / 每批帧数) 预估总段数，运行时每个 VHS meta-batch
+# 窗口（一次新 prompt 执行 = 处理一批帧）推进「放大 X/N」徽章。
+UPSCALE_BATCH_FRAMES = 8
+
 # 动作迁移模型组合（博主 wan21_scail-2_loop 配置复刻）：
 # - int8_convrot 主模型（RTX30 走 INT8 张量核，比 fp8 更省/更快）文件存在则自动启用
 # - lightx2v 蒸馏 LoRA 用 rank64（博主两个版本都用 rank64，本机已存在）

@@ -43,6 +43,7 @@ from .settings import (
     SINGING_WORKFLOW,
     SUBTITLE_DETECT,
     SUBTITLE_DETECT_SCRIPT,
+    UPSCALE_BATCH_FRAMES,
     UPSCALE_MODEL_X2,
     UPSCALE_MODEL_X4,
     UPSCALE_WORKFLOW,
@@ -528,6 +529,16 @@ async def run_comfy_workflow(
                 active_prompt_id = message_prompt_id
                 if message_prompt_id not in seen_prompt_ids:
                     seen_prompt_ids.append(message_prompt_id)
+                    # VHS meta-batch 每批（8 帧/批）会以一个新 prompt 执行：新 prompt
+                    # 出现即下一批开始，用它推进「放大 X/N」徽章（不超预估总段数）。
+                    job_state = store.get(job_id) or {}
+                    estimated = job_state.get("estimatedSegments")
+                    if estimated:
+                        store.update(
+                            job_id,
+                            currentSegment=min(len(seen_prompt_ids), int(estimated)),
+                            estimatedSegments=int(estimated),
+                        )
 
             if event == "executing":
                 node_id = data.get("node")
@@ -1481,6 +1492,13 @@ async def run_upscale_job(job_id: str) -> None:
                 job_id,
                 f"二采放大：{state.get('multiplier') or '?'} · {model} → 输出 {scale[0]}×{scale[1]}",
             )
+            estimated_segments = state.get("estimatedSegments")
+            if estimated_segments:
+                store.update(job_id, currentSegment=1, estimatedSegments=int(estimated_segments))
+                store.add_log(
+                    job_id,
+                    f"放大分批：共 {estimated_segments} 段（每段 {UPSCALE_BATCH_FRAMES} 帧，8GB 显存保护）。",
+                )
             upscale = prepare_upscale_workflow(
                 source_name,
                 f"video/H3_MotionStudio/{job_id}_upscale",
@@ -1498,6 +1516,8 @@ async def run_upscale_job(job_id: str) -> None:
                 stage="completed",
                 currentNodeId=None,
                 currentNodeTitle=None,
+                currentSegment=estimated_segments if estimated_segments else None,
+                estimatedSegments=estimated_segments if estimated_segments else None,
                 progress=100,
                 progressValue=None,
                 progressMax=None,

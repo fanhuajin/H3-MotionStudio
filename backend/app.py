@@ -59,6 +59,7 @@ from .settings import (
     MIGRATE_REFERENCE,
     PROJECT_ROOT,
     SINGING_WORKFLOW,
+    UPSCALE_BATCH_FRAMES,
     UPSCALE_MODEL_X2,
     UPSCALE_MODEL_X4,
     canvas_params,
@@ -587,6 +588,12 @@ async def create_upscale_job(
     height = int(metadata.get("height") or 1080)
     scale = _upscale_target(width, height)
     model = UPSCALE_MODEL_X2 if multiplier == "2x" else UPSCALE_MODEL_X4
+    source_frames = int(metadata.get("frames") or 0) or None
+    estimated_segments = (
+        max(1, (source_frames + UPSCALE_BATCH_FRAMES - 1) // UPSCALE_BATCH_FRAMES)
+        if source_frames
+        else None
+    )
     created_at = now_iso()
     state = {
         "id": job_id,
@@ -603,6 +610,8 @@ async def create_upscale_job(
         "sourceSize": target.stat().st_size,
         "sourceDuration": metadata.get("duration"),
         "sourceFps": metadata.get("fps"),
+        "estimatedSegments": estimated_segments,
+        "currentSegment": None,
         "sourceInputName": target.name,
         "sourcePath": str(target.resolve()),
         "currentNodeId": None,
@@ -613,7 +622,10 @@ async def create_upscale_job(
         "milestones": upscale_milestones(),
         "logs": [{
             "time": created_at,
-            "message": f"已接收放大源：{source_name_text} · {width}×{height} · 倍数 {multiplier} → 输出 {scale[0]}×{scale[1]}",
+            "message": (
+                f"已接收放大源：{source_name_text} · {width}×{height} · 倍数 {multiplier} → 输出 {scale[0]}×{scale[1]}"
+                + (f" · 预计 {estimated_segments} 段（每段 {UPSCALE_BATCH_FRAMES} 帧分批）" if estimated_segments else "")
+            ),
         }],
         "errorSummary": None,
         "errorDetail": None,
