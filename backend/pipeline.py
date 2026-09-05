@@ -438,7 +438,8 @@ async def run_comfy_workflow(
         store.add_log(job_id, f"工作流已进入 ComfyUI 队列：{prompt_id}")
         store.update(job_id, promptIds={**((store.get(job_id) or {}).get("promptIds") or {}), kind: prompt_id})
         active_milestone: str | None = None
-        segment_count = 0  # migrate：已开始的采样段数（每段 WanSCAILToVideo 执行一次）
+        segment_count = 0  # migrate：已完成的采样段数（MieLoopEnd 每段收尾触发）
+        segment_seen = False  # 首个采样节点是否已出现（置 currentSegment=1）
         plan = _PLAN_BY_KIND.get(kind)
         plan_index = -1
 
@@ -493,15 +494,20 @@ async def run_comfy_workflow(
                     break
                 node_id = str(node_id)
                 title = titles.get(node_id, node_id)
-                if kind == "migrate" and node_id == "361":
-                    # 每段采样（WanSCAILToVideo）执行一次 → 当前进行到第几段
-                    segment_count += 1
-                    job_state = store.get(job_id) or {}
-                    store.update(
-                        job_id,
-                        currentSegment=segment_count,
-                        estimatedSegments=job_state.get("estimatedSegments"),
-                    )
+                if kind == "migrate":
+                    # 段位锚点：WanSCAILToVideo(361)只在首段广播 executing，
+                    # MieLoopEnd(453)在每段收尾广播 → 用它推进"已完成段数"。
+                    if node_id == "361" and not segment_seen:
+                        segment_seen = True
+                        store.update(job_id, currentSegment=1)
+                    elif node_id == "453":
+                        segment_count += 1
+                        job_state = store.get(job_id) or {}
+                        store.update(
+                            job_id,
+                            currentSegment=min(segment_count + 1, job_state.get("estimatedSegments") or 999),
+                            estimatedSegments=job_state.get("estimatedSegments"),
+                        )
                 if plan is not None:
                     # 里程碑只前进不倒退：长视频 Mie 循环会重复执行读取/SAM/采样节点，
                     # 重复与未列入节点只刷新当前标题，避免进度面板来回跳阶段。
