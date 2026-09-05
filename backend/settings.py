@@ -47,6 +47,14 @@ RVC_MODEL = RVC_ROOT / "assets" / "weights" / "ranran.pth"
 # ranran 无专属 index：该路径为可选候选（存在才启用索引，缺失则以无索引模式运行）
 RVC_INDEX = RVC_ROOT / "assets" / "indices" / "ranran.index"
 
+# 去字幕字幕条定位：提交去字幕工作流前，用 backend/subtitle_detect.py（ComfyUI 自带
+# python 运行，需 numpy/Pillow）对视频 30%~97% 时段抽帧、逐帧检测+跨帧投票，自动
+# 定位持续显示的字幕条（跳过片头标题），再按 VHS 拉伸映射换算成画布遮罩坐标并
+# 替换固定底部遮罩；检测失败或无结果时回退 CANVAS_PARAMS 的固定底部参数。
+# 环境变量 H3_SUBTITLE_DETECT=0 可关闭自动检测（回到固定底部）。
+SUBTITLE_DETECT = os.getenv("H3_SUBTITLE_DETECT", "1") != "0"
+SUBTITLE_DETECT_SCRIPT = PROJECT_ROOT / "backend" / "subtitle_detect.py"
+
 DB_PATH = DATA_DIR / "motionstudio.db"
 COMFY_LOG = DATA_DIR / "comfyui.log"
 MAX_DURATION_SECONDS = 40.0

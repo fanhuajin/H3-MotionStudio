@@ -41,6 +41,8 @@ from .settings import (
     RVC_SCRIPT,
     SCAIL_UNET_INT8,
     SINGING_WORKFLOW,
+    SUBTITLE_DETECT,
+    SUBTITLE_DETECT_SCRIPT,
     UPSCALE_MODEL_X2,
     UPSCALE_MODEL_X4,
     UPSCALE_WORKFLOW,
@@ -1148,19 +1150,106 @@ async def _project_clean_progress(job_id: str) -> None:
             store.update(job_id, progress=round(base, 1))
 
 
+async def detect_subtitle_box(job_id: str, drive_path: Path) -> tuple[int, int, int, int, int, int] | None:
+    """自动定位持续字幕条（源像素坐标）。
+
+    用 ComfyUI 自带 python（含 numpy/Pillow）执行 backend/subtitle_detect.py；
+    返回 (x0, y0, x1, y1, srcW, srcH)。失败/关闭时返回 None 并回退固定遮罩。
+    """
+    if not SUBTITLE_DETECT or not SUBTITLE_DETECT_SCRIPT.is_file() or not COMFY_PYTHON.is_file():
+        return None
+    store.add_log(job_id, "正在检测字幕位置（取视频中后段帧，跳过片头标题）……")
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [str(COMFY_PYTHON), str(SUBTITLE_DETECT_SCRIPT), str(drive_path)],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            creationflags=_creation_flags(),
+            timeout=240,
+        )
+    except OSError as error:
+        store.add_log(job_id, f"字幕位置检测未能启动：{error}")
+        return None
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout or "").strip().splitlines()
+        store.add_log(job_id, f"字幕位置检测失败：{tail[-1] if tail else f'退出码 {result.returncode}'}")
+        return None
+    try:
+        payload = json.loads((result.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        store.add_log(job_id, "字幕位置检测输出无法解析，使用默认底部遮罩。")
+        return None
+    if not payload.get("ok"):
+        store.add_log(job_id, f"未检测到持续字幕条（{payload.get('reason') or '未知原因'}），使用默认底部遮罩。")
+        return None
+    try:
+        box = (
+            int(payload["x0"]), int(payload["y0"]), int(payload["x1"]), int(payload["y1"]),
+            int(payload["srcW"]), int(payload["srcH"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        store.add_log(job_id, "字幕位置检测结果字段缺失，使用默认底部遮罩。")
+        return None
+    return box
+
+
+def mask_params_from_box(box: tuple[int, int, int, int, int, int], params: dict[str, Any]) -> dict[str, Any]:
+    """把源像素字幕框按 VHS 拉伸映射换算为画布遮罩参数（覆盖 CANVAS_PARAMS）。
+
+    VHS_LoadVideo 同时给定 custom_width/height 时直接拉伸到画布（无保比例），
+    因此画布坐标 = 源坐标 × (画布宽/源宽, 画布高/源高)，再夹取到画布内。
+    """
+    x0, y0, x1, y1, src_w, src_h = box
+    clean_w = int(params["clean_width"])
+    clean_h = int(params["clean_height"])
+    fx = clean_w / max(1, src_w)
+    fy = clean_h / max(1, src_h)
+    cx = int(round((x0 + x1) / 2 * fx))
+    cy = int(round((y0 + y1) / 2 * fy))
+    mask_w = max(24, int(round((x1 - x0) * fx)))
+    mask_h = max(16, int(round((y1 - y0) * fy)))
+    cx = max(mask_w // 2 + 1, min(clean_w - mask_w // 2 - 1, cx))
+    cy = max(mask_h // 2 + 1, min(clean_h - mask_h // 2 - 1, cy))
+    if mask_w > clean_w - 4:
+        mask_w = clean_w - 4
+    if mask_h > clean_h - 4:
+        mask_h = clean_h - 4
+    return {**params, "mask_center_x": cx, "mask_center_y": cy, "mask_width": mask_w, "mask_height": mask_h}
+
+
 async def run_clean_workflow(job_id: str, drive_name: str, params: dict[str, Any], prefix: str) -> Path:
-    """去字幕执行入口：源帧数超过单批安全上限时分批执行，否则单次整段执行。"""
+    """去字幕执行入口：先自动定位字幕条替换遮罩，再按帧数决定单次或分批执行。"""
     drive_path = COMFY_INPUT / drive_name
     if not drive_path.is_file():
         raise PipelineError("找不到去字幕输入视频", f"预期文件：{drive_path}")
 
+    params_clean = dict(params)
+    detected = await detect_subtitle_box(job_id, drive_path)
+    if detected is not None:
+        x0, y0, x1, y1, src_w, src_h = detected
+        params_clean = mask_params_from_box(detected, params_clean)
+        store.add_log(
+            job_id,
+            f"字幕条已自动定位：源帧 x {x0}–{x1} · y {y0}–{y1}（{src_w}×{src_h}）→ "
+            f"画布遮罩 {params_clean['mask_width']}×{params_clean['mask_height']} @ "
+            f"({params_clean['mask_center_x']}, {params_clean['mask_center_y']})",
+        )
+    else:
+        store.add_log(
+            job_id,
+            f"使用默认固定底部遮罩（{params['mask_width']}×{params['mask_height']} @ "
+            f"({params['mask_center_x']}, {params['mask_center_y']})）。",
+        )
+
     def single_run() -> Any:
-        workflow = prepare_clean_workflow(drive_name, prefix, CLEAN_WORKFLOW, canvas=params)
+        workflow = prepare_clean_workflow(drive_name, prefix, CLEAN_WORKFLOW, canvas=params_clean)
         return run_comfy_workflow(job_id, "clean", workflow, "5")
 
     total_frames = await probe_media_frames(drive_path)
-    batch = int(params.get("clean_batch_frames") or 0)
-    overlap = int(params.get("clean_batch_overlap") or 0)
+    batch = int(params_clean.get("clean_batch_frames") or 0)
+    overlap = int(params_clean.get("clean_batch_overlap") or 0)
     if not total_frames or batch <= 0 or overlap <= 0 or overlap >= batch or total_frames <= batch:
         store.add_log(job_id, "源视频帧数未超单批安全上限（或无法探测），去字幕按单次整段执行。")
         return await single_run()
@@ -1195,7 +1284,7 @@ async def run_clean_workflow(job_id: str, drive_name: str, params: dict[str, Any
             part_prefix = f"{prefix}_b{index:02d}"
             workflow = prepare_clean_workflow(
                 drive_name, part_prefix, CLEAN_WORKFLOW,
-                canvas=params, frame_window=(load_start, load_cap),
+                canvas=params_clean, frame_window=(load_start, load_cap),
             )
             part_path = await run_comfy_workflow(job_id, "clean", workflow, "5")
             parts.append((part_path, keep_offset, keep_frames))
