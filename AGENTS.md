@@ -29,3 +29,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Canvas parameter groups live in `backend/settings.py` `CANVAS_PARAMS` (4:3 = 512×384, mask 430×58 at (256,344), HD 1440×1080; 9:16 = 512×896 per SCAIL2-Easy 512p rule, mask 430×135 at (256,803), HD 1080×1920). Tune numbers there, never in the JSONs.
 - Backend code changes only take effect after the local uvicorn service restarts and `npm run build` refreshes `dist`; while the user has a job running, do not restart the service or rebuild the frontend.
 - After each completed implementation batch, commit and push the changes to `origin/main`.
+
+## Git rule（用户硬性规则：每次修改完成必须提交 GitHub）
+
+- 每一次修改（不论大小：前端、后端、样式、文案、文档、配置、工作流参数）完成后，只要已验证通过，就必须立即 `git add` → `git commit` → `git push origin main`，并在同一次回复中告知用户提交哈希。
+- 不允许在一个回合结束时留下已完成但未提交的改动；提交动作不得拖延到"批量攒齐"再执行。
