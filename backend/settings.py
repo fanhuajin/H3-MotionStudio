@@ -92,6 +92,33 @@ def canvas_params(ratio: str) -> dict:
     return params
 
 
+# 歌曲生成路由：画布比例参数组。唱歌工作流 JSON 固定为 4:3（640×480）布局，
+# 运行时按比例替换五个 H3 分段节点（15/29/400/420/440）的生成宽高与
+# ImageScaleToTotalPixels(269) 的参考图缩放档。9:16 采用 480×864（≈0.41MP，
+# 短边 480 与横版同规格、宽高均为 32 倍数），比横版像素多约 35%；之后要高清
+# 可直接用独立「二采放大」路由收 1080×1920。调数值只改这里。
+SINGING_CANVAS_PARAMS: dict[str, dict] = {
+    "4:3": {
+        "sing_width": 640,
+        "sing_height": 480,
+        "megapixels": 0.31,  # 640×480 = 0.307MP
+    },
+    "9:16": {
+        "sing_width": 480,
+        "sing_height": 864,
+        "megapixels": 0.41,  # 480×864 = 0.415MP
+    },
+}
+DEFAULT_SINGING_CANVAS = "4:3"
+
+
+def singing_canvas_params(ratio: str) -> dict:
+    params = SINGING_CANVAS_PARAMS.get(ratio or "")
+    if not params:
+        raise ValueError(f"不支持的画布比例：{ratio!r}（可选 4:3 / 9:16）")
+    return params
+
+
 def required_paths() -> dict[str, Path]:
     paths = {
         "ComfyUI Python": COMFY_PYTHON,

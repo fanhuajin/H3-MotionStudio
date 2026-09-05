@@ -52,6 +52,7 @@ from .settings import (
     COMFY_INPUT,
     COMFY_URL,
     DATA_DIR,
+    DEFAULT_SINGING_CANVAS,
     FIXED_REFERENCE,
     MAX_DURATION_SECONDS,
     MIGRATE_REFERENCE,
@@ -61,6 +62,7 @@ from .settings import (
     UPSCALE_MODEL_X4,
     canvas_params,
     required_paths,
+    singing_canvas_params,
 )
 from .store import initial_milestones, migrate_milestones, now_iso, store, upscale_milestones
 from .workflows import load_workflow, node_by_id
@@ -301,10 +303,16 @@ async def create_job(
     action_prompt: str = Form(""),
     camera_prompt: str = Form(""),
     duration: float | None = Form(None),
+    ratio: str = Form(DEFAULT_SINGING_CANVAS),
 ):
     active = store.active()
     if active:
         raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
+
+    try:
+        singing_canvas_params(ratio)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
 
     if duration and duration > MAX_DURATION_SECONDS + 0.25:
         raise HTTPException(400, f"视频不能超过 {int(MAX_DURATION_SECONDS)} 秒")
@@ -345,6 +353,7 @@ async def create_job(
     state = {
         "id": job_id,
         "kind": "singing",
+        "canvas": ratio,
         "status": "queued",
         "stage": "upload",
         "createdAt": created_at,
@@ -366,7 +375,7 @@ async def create_job(
         "progressValue": None,
         "progressMax": None,
         "milestones": initial_milestones(),
-        "logs": [{"time": created_at, "message": f"已接收人物图片与演唱视频：{reference_image.filename or reference_input_name} / {video.filename or input_name}"}],
+        "logs": [{"time": created_at, "message": f"已接收人物图片与演唱视频：{reference_image.filename or reference_input_name} / {video.filename or input_name} · 画布 {ratio}"}],
         "errorSummary": None,
         "errorDetail": None,
         "originalReady": False,

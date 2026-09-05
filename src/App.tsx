@@ -55,7 +55,20 @@ const DRAFT_DB_NAME = "h3-motionstudio-draft";
 const DRAFT_DB_VERSION = 1;
 const DRAFT_FILE_STORE = "files";
 
+type CanvasRatio = "4:3" | "9:16";
+
+// 与后端 backend/settings.py SINGING_CANVAS_PARAMS 保持一致
+const CANVAS_DIMENSIONS: Record<CanvasRatio, string> = {
+  "4:3": "640 × 480",
+  "9:16": "480 × 864",
+};
+
+function canvasDimensionLabel(canvas?: string | null) {
+  return canvas === "9:16" ? CANVAS_DIMENSIONS["9:16"] : CANVAS_DIMENSIONS["4:3"];
+}
+
 interface DraftState {
+  ratio?: CanvasRatio;
   actionPrompt?: string;
   cameraPrompt?: string;
   videoName?: string | null;
@@ -279,6 +292,7 @@ function MotionStudioRoute() {
     return () => window.removeEventListener("keydown", onKey);
   }, [lightboxImage]);
   const [duration, setDuration] = useState<number | null>(null);
+  const [ratio, setRatio] = useState<CanvasRatio>(() => readDraft()?.ratio || "4:3");
   const [actionPrompt, setActionPrompt] = useState(() => readDraft()?.actionPrompt || "");
   const [cameraPrompt, setCameraPrompt] = useState(() => readDraft()?.cameraPrompt || "");
   const [job, setJob] = useState<JobState | null>(demoMode ? DEMO_JOB : null);
@@ -470,6 +484,7 @@ function MotionStudioRoute() {
     ]).then(([nextConfig, latest]) => {
       if (cancelled) return;
       setConfig(nextConfig);
+      setRatio((latest?.canvas as CanvasRatio | undefined) || draft?.ratio || "4:3");
       setActionPrompt(latest?.actionPrompt || draft?.actionPrompt || nextConfig.defaultAction || "");
       setCameraPrompt(latest?.cameraPrompt || draft?.cameraPrompt || nextConfig.defaultCamera || "");
       if (demoMode) {
@@ -492,8 +507,8 @@ function MotionStudioRoute() {
 
   useEffect(() => {
     if (demoMode) return;
-    writeDraft({ actionPrompt, cameraPrompt });
-  }, [actionPrompt, cameraPrompt, demoMode]);
+    writeDraft({ ratio, actionPrompt, cameraPrompt });
+  }, [ratio, actionPrompt, cameraPrompt, demoMode]);
 
   const clearFile = () => {
     previewTokenRef.current += 1;
@@ -530,6 +545,7 @@ function MotionStudioRoute() {
     if (imageFile) form.append("reference_image", imageFile);
     form.append("action_prompt", actionPrompt);
     form.append("camera_prompt", cameraPrompt);
+    form.append("ratio", ratio);
     if (duration != null) form.append("duration", String(duration));
     try {
       const response = await fetch("/api/jobs", { method: "POST", body: form });
@@ -577,7 +593,20 @@ function MotionStudioRoute() {
       <main className="workspace">
         <section className="input-panel" aria-label="生成设置">
           <div className="field-block">
-            <div className="field-heading"><h2><span>1.</span> 上传人物图片与演唱视频</h2></div>
+            <div className="field-heading"><h2><span>1.</span> 画布比例 <em>（先选择，全链路按此输出）</em></h2></div>
+            <div className="ratio-cards" role="radiogroup" aria-label="画布比例">
+              <button type="button" role="radio" aria-checked={ratio === "4:3"} className={ratio === "4:3" ? "selected" : ""} onClick={() => setRatio("4:3")}>
+                <strong>4:3 · 横版</strong><span>现有成片比例 · 生成 640×480</span>
+              </button>
+              <button type="button" role="radio" aria-checked={ratio === "9:16"} className={ratio === "9:16" ? "selected" : ""} onClick={() => setRatio("9:16")}>
+                <strong>9:16 · 竖版</strong><span>抖音发布常用 · 生成 480×864</span>
+              </button>
+            </div>
+            <p className="field-note">H3 分段生成、参考图适配与最终成片都按所选画布输出；9:16 竖版请配合上传竖版人物图。</p>
+          </div>
+
+          <div className="field-block">
+            <div className="field-heading"><h2><span>2.</span> 上传人物图片与演唱视频</h2></div>
             <div className="source-grid">
               <div className="source-card image-source">
                 <div className="source-label">人物参考图</div>
@@ -594,7 +623,7 @@ function MotionStudioRoute() {
                   </div>
                 ) : (
                   <button className="image-empty" onClick={() => imageInputRef.current?.click()}>
-                    <UploadSimple /><strong>上传图片</strong><span>PNG / JPG / WebP</span>
+                    <UploadSimple /><strong>上传图片</strong><span>PNG / JPG / WebP · 建议 {ratio === "9:16" ? "竖版" : "横版"}</span>
                   </button>
                 )}
               </div>
@@ -638,16 +667,16 @@ function MotionStudioRoute() {
             </div>
               </div>
             </div>
-            <p className="field-note">图片作为人物与首帧参考；视频提供歌声与时长。音色转换会在 ComfyUI 完全关闭后自动进行。</p>
+            <p className="field-note">图片作为人物与首帧参考；视频提供歌声与时长。输出 {canvasDimensionLabel(ratio)}（{ratio === "9:16" ? "9:16 竖版" : "4:3 横版"}），人物图与演唱视频会按此画布统一适配；音色转换会在 ComfyUI 完全关闭后自动进行。</p>
           </div>
 
           <div className="field-block text-field">
-            <div className="field-heading"><h2><span>2.</span> 人物动作 <em>（表情、肢体与互动细节）</em></h2><span>{actionPrompt.length} / 2000</span></div>
+            <div className="field-heading"><h2><span>3.</span> 人物动作 <em>（表情、肢体与互动细节）</em></h2><span>{actionPrompt.length} / 2000</span></div>
             <textarea value={actionPrompt} maxLength={2000} onChange={(event) => setActionPrompt(event.target.value)} placeholder="描述人物在不同时间段的动作；留空将使用工作流默认动作。" />
           </div>
 
           <div className="field-block text-field">
-            <div className="field-heading"><h2><span>3.</span> 运镜要求 <em>（镜头运动与构图节奏）</em></h2><span>{cameraPrompt.length} / 2000</span></div>
+            <div className="field-heading"><h2><span>4.</span> 运镜要求 <em>（镜头运动与构图节奏）</em></h2><span>{cameraPrompt.length} / 2000</span></div>
             <textarea value={cameraPrompt} maxLength={2000} onChange={(event) => setCameraPrompt(event.target.value)} placeholder="描述推、拉、摇、移以及人物构图；留空将使用工作流默认运镜。" />
           </div>
 
@@ -705,7 +734,7 @@ function MotionStudioRoute() {
               <div className="result-grid">
                 <div className="result-video"><video src={!demoMode && (resultUrl || originalUrl) ? `${resultUrl || originalUrl}#t=0.001` : undefined} controls preload="auto" poster={demoMode ? config.fixedReferenceUrl : undefined} /></div>
                 <div className="result-details">
-                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? "最终成片 · ranran 音色" : "原版成片"}</strong><span>640 × 480</span></div></div>
+                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? "最终成片 · ranran 音色" : "原版成片"}</strong><span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : canvasDimensionLabel((job.canvas as CanvasRatio | undefined) || ratio)}</span></div></div>
                   <dl>
                     <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>

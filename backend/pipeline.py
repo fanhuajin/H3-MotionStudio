@@ -26,6 +26,7 @@ from .settings import (
     COMFY_URL,
     COMFY_WS,
     DEFAULT_CANVAS,
+    DEFAULT_SINGING_CANVAS,
     DIFFUSION_MODELS_DIR,
     LIGHTX2V_LORA_RANK64,
     MIGRATE_WORKFLOW,
@@ -41,10 +42,12 @@ from .settings import (
     UPSCALE_MODEL_X4,
     UPSCALE_WORKFLOW,
     canvas_params,
+    singing_canvas_params,
 )
 from .store import now_iso, store
 from .workflows import (
     graph_to_api_prompt,
+    patch_h3_lyrics_canvas,
     patch_wan_chunk_feedforward,
     prepare_clean_workflow,
     prepare_migrate_workflow,
@@ -404,6 +407,7 @@ async def run_comfy_workflow(
     workflow: dict[str, Any],
     preferred_output_node: str,
     wan_chunk: bool = False,
+    h3_canvas: str | None = None,
 ) -> Path:
     info = await object_info()
     prompt = graph_to_api_prompt(workflow, info)
@@ -413,6 +417,15 @@ async def run_comfy_workflow(
                 store.add_log(job_id, "已自动注入 WanChunkFeedForward 分块计算（降低 9:16 采样显存峰值）")
         except Exception as error:  # 注入失败不应阻断任务
             store.add_log(job_id, f"WanChunkFeedForward 注入跳过：{error}")
+    if kind == "singing" and h3_canvas and h3_canvas == "9:16":
+        # 9:16 构图提示词由歌词节点按 canvas_ratio 拼装；节点未升级（缺输入）时
+        # 拒绝执行，避免竖版画布配横版构图文案。4:3 是节点默认值，无需注入。
+        if not patch_h3_lyrics_canvas(prompt, info, h3_canvas):
+            raise PipelineError(
+                "ComfyUI 歌词节点版本过旧，无法生成 9:16 构图提示词",
+                "H3AutoLyricsFromAudio5StyleSafeCamera 缺少 canvas_ratio 可选输入。"
+                "请先重启 ComfyUI（或关闭正在运行的 ComfyUI 进程，由本工具按需启动）后再提交 9:16 任务。",
+            )
     titles = workflow_titles(workflow)
     types = workflow_types(workflow)
     client_id = f"motionstudio-{job_id}-{kind}-{uuid.uuid4().hex[:8]}"
@@ -829,6 +842,9 @@ async def run_pipeline(job_id: str) -> None:
         try:
             await resources.ensure_comfy(job_id)
             state = store.get(job_id) or state
+            canvas_ratio = state.get("canvas") or DEFAULT_SINGING_CANVAS
+            canvas = singing_canvas_params(canvas_ratio)
+            store.add_log(job_id, f"画布比例：{canvas_ratio}（生成 {canvas['sing_width']}×{canvas['sing_height']}）")
             singing = prepare_singing_workflow(
                 state["sourceInputName"],
                 state["referenceInputName"],
@@ -836,9 +852,10 @@ async def run_pipeline(job_id: str) -> None:
                 state.get("cameraPrompt") or "",
                 f"video/H3_MotionStudio/{job_id}_原版",
                 SINGING_WORKFLOW,
+                canvas=canvas,
             )
             store.update(job_id, stage="singing")
-            original = await run_comfy_workflow(job_id, "singing", singing, "59")
+            original = await run_comfy_workflow(job_id, "singing", singing, "59", h3_canvas=canvas_ratio)
             store.update(job_id, originalOutput=str(original), originalReady=True)
             store.add_log(job_id, f"原版成片已保存：{original.name}")
 

@@ -24,7 +24,15 @@ def prepare_singing_workflow(
     camera_prompt: str,
     output_prefix: str,
     source_path,
+    canvas: dict | None = None,
 ) -> dict[str, Any]:
+    """视频-单图唱歌-自动拼接40秒内：替换图片/音源/动作运镜/输出前缀与可选画布。
+
+    工作流 JSON 固定为 4:3（640×480）布局：五个 H3 分段节点（15/29/400/420/440）
+    的 width/height 与 ImageScaleToTotalPixels(269) 的 megapixels 在 9:16 时
+    由 canvas 组替换（数值只改 backend/settings.py 的 SINGING_CANVAS_PARAMS）。
+    分段内构图提示词的比例文案由歌词节点（canvas_ratio 输入）在 ComfyUI 内生成。
+    """
     workflow = copy.deepcopy(source_path if isinstance(source_path, dict) else load_workflow(source_path))
     image_node = node_by_id(workflow, 307)
     image_node["widgets_values"][0] = reference_name
@@ -39,9 +47,54 @@ def prepare_singing_workflow(
     if camera_prompt.strip():
         values[2] = camera_prompt.strip()
 
+    canvas = canvas or {}
+    if canvas:
+        # 五个 H3 分段节点统一替换生成宽高（widgets 布局 [提示词, width, height, ...]）
+        for clip_id in (15, 29, 400, 420, 440):
+            clip = node_by_id(workflow, clip_id)
+            widgets = clip.get("widgets_values") or []
+            if not isinstance(widgets, list) or len(widgets) < 3:
+                raise ValueError(f"H3 clip node {clip_id} widgets_values is too short for width/height")
+            widgets[1] = int(canvas["sing_width"])
+            widgets[2] = int(canvas["sing_height"])
+        # 参考图缩放档跟随画布像素总量（widgets 布局 [upscale_method, megapixels, resolution_steps]）
+        scale_node = node_by_id(workflow, 269)
+        scale_widgets = scale_node.get("widgets_values") or []
+        if not isinstance(scale_widgets, list) or len(scale_widgets) < 2:
+            raise ValueError("ImageScaleToTotalPixels widgets_values is not a list")
+        scale_widgets[1] = float(canvas["megapixels"])
+
     save_node = node_by_id(workflow, 59)
     save_node["widgets_values"][0] = output_prefix
     return workflow
+
+
+def patch_h3_lyrics_canvas(
+    prompt: dict[str, Any],
+    object_info: dict[str, Any],
+    canvas_ratio: str,
+) -> bool:
+    """给歌词节点（H3AutoLyricsFromAudio5StyleSafeCamera）注入画布比例。
+
+    该节点运行时会把比例文案（4:3/640×480 vs 9:16/480×864）拼进每段构图提示词；
+    4:3 是节点默认值可跳过。返回是否成功注入——旧版 ComfyUI（节点未升级、
+    object_info 缺少 canvas_ratio 可选输入）返回 False，9:16 时由调用方报错。
+    """
+    node = prompt.get("480")
+    if not node:
+        return canvas_ratio == "4:3"
+    if canvas_ratio == "4:3":
+        return True  # 4:3 是节点默认文案，无需注入
+    if canvas_ratio != "9:16":
+        return False
+    definition = (object_info or {}).get(node.get("class_type") or "")
+    if not definition:
+        return False
+    optional = ((definition.get("input") or {}).get("optional") or {})
+    if "canvas_ratio" not in optional:
+        return False
+    node.setdefault("inputs", {})["canvas_ratio"] = canvas_ratio
+    return True
 
 
 def prepare_upscale_workflow(

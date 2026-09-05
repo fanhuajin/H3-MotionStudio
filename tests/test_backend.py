@@ -18,11 +18,13 @@ from backend.settings import (
     UPSCALE_WORKFLOW,
     canvas_params,
     required_paths,
+    singing_canvas_params,
 )
 from backend.store import format_elapsed, migrate_milestones
 from backend.workflows import (
     graph_to_api_prompt,
     node_by_id,
+    patch_h3_lyrics_canvas,
     patch_wan_chunk_feedforward,
     prepare_clean_workflow,
     prepare_migrate_workflow,
@@ -59,6 +61,126 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(node_by_id(prepared, 480)["widgets_values"][1], "unit action")
         self.assertEqual(node_by_id(prepared, 480)["widgets_values"][2], "unit camera")
         self.assertEqual(node_by_id(prepared, 59)["widgets_values"][0], "video/H3_MotionStudio/unit-original")
+
+    def test_singing_canvas_groups_and_defaults(self) -> None:
+        self.assertEqual(singing_canvas_params("4:3")["sing_width"], 640)
+        self.assertEqual(singing_canvas_params("4:3")["sing_height"], 480)
+        portrait = singing_canvas_params("9:16")
+        self.assertEqual((portrait["sing_width"], portrait["sing_height"]), (480, 864))
+        self.assertAlmostEqual(portrait["megapixels"], 0.41)
+        with self.assertRaises(ValueError):
+            singing_canvas_params("16:9")
+
+    def test_singing_workflow_keeps_author_4x3_defaults_when_canvas_omitted(self) -> None:
+        prepared = prepare_singing_workflow(
+            "unit-source.mp4", "unit-person.png", "", "", "video/H3_MotionStudio/unit", SINGING_WORKFLOW
+        )
+        for clip_id in (15, 29, 400, 420, 440):
+            widgets = node_by_id(prepared, clip_id)["widgets_values"]
+            self.assertEqual(widgets[1:3], [640, 480], f"clip {clip_id} should stay 640x480")
+        self.assertEqual(node_by_id(prepared, 269)["widgets_values"][1], 0.31)
+
+    def test_singing_workflow_9x16_replaces_every_clip_canvas_and_reference_scale(self) -> None:
+        prepared = prepare_singing_workflow(
+            "unit-source.mp4",
+            "unit-person.png",
+            "",
+            "",
+            "video/H3_MotionStudio/unit",
+            SINGING_WORKFLOW,
+            canvas=singing_canvas_params("9:16"),
+        )
+        for clip_id in (15, 29, 400, 420, 440):
+            widgets = node_by_id(prepared, clip_id)["widgets_values"]
+            self.assertEqual(widgets[1:3], [480, 864], f"clip {clip_id} should be 480x864")
+        self.assertAlmostEqual(node_by_id(prepared, 269)["widgets_values"][1], 0.41)
+        # 4:3 显式传入与作者默认一致（幂等）
+        horizontal = prepare_singing_workflow(
+            "unit-source.mp4",
+            "unit-person.png",
+            "",
+            "",
+            "video/H3_MotionStudio/unit",
+            SINGING_WORKFLOW,
+            canvas=singing_canvas_params("4:3"),
+        )
+        for clip_id in (15, 29, 400, 420, 440):
+            self.assertEqual(node_by_id(horizontal, clip_id)["widgets_values"][1:3], [640, 480])
+
+    def test_h3_lyrics_canvas_injection_guards_stale_comfyui(self) -> None:
+        prompt = {
+            "480": {
+                "class_type": "H3AutoLyricsFromAudio5StyleSafeCamera",
+                "inputs": {"action_direction": "sings"},
+            }
+        }
+        info_new = {
+            "H3AutoLyricsFromAudio5StyleSafeCamera": {
+                "input": {
+                    "required": {"action_direction": ["STRING", {}]},
+                    "optional": {"canvas_ratio": [["4:3", "9:16"], {}]},
+                },
+                "output": {},
+            }
+        }
+        # 9:16 注入成功
+        self.assertTrue(patch_h3_lyrics_canvas(prompt, info_new, "9:16"))
+        self.assertEqual(prompt["480"]["inputs"]["canvas_ratio"], "9:16")
+        # 4:3 是节点默认：不写输入也算成功
+        untouched = {
+            "480": {"class_type": "H3AutoLyricsFromAudio5StyleSafeCamera", "inputs": {}},
+        }
+        self.assertTrue(patch_h3_lyrics_canvas(untouched, info_new, "4:3"))
+        self.assertNotIn("canvas_ratio", untouched["480"]["inputs"])
+        # 旧版 ComfyUI（节点未升级、没有 canvas_ratio 输入）→ False，9:16 不得放行
+        info_old = {
+            "H3AutoLyricsFromAudio5StyleSafeCamera": {
+                "input": {"required": {"action_direction": ["STRING", {}]}},
+                "output": {},
+            }
+        }
+        self.assertFalse(patch_h3_lyrics_canvas(prompt, info_old, "9:16"))
+        # 4:3 在旧版节点上同样视为成功（提示词默认即 4:3）
+        self.assertTrue(patch_h3_lyrics_canvas(untouched, info_old, "4:3"))
+
+    def test_h3_lyrics_node_portrait_prompt_rewrites_canvas_text(self) -> None:
+        """歌词节点（ComfyUI 环境）9:16 文案改写：4:3 原样、9:16 无残留横版字面量。"""
+        node_file = Path(r"D:\Comfyui\ComfyUI\custom_nodes\h3_media_duration_router\__init__.py")
+        if not node_file.is_file():
+            self.skipTest("h3_media_duration_router 自定义节点未安装")
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("h3_media_duration_router_canvas", node_file)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        landscape = (
+            "Continue the same performance in the connected frame as a full-canvas 4:3 landscape "
+            "composition at 640x480 from the connected 4:3 reference frame and the protected "
+            "handover frames. Compose specifically for a 4:3 safe frame: keep comfortable headroom, "
+            "keep the face, mouth, shoulders, and any requested hand gesture inside the frame, and "
+            "keep lateral body movement restrained so the performer never drifts into an edge crop. "
+            "Camera directions for this segment: 缓慢推近. Keep the motion restrained and physically "
+            "coherent for a 4:3 landscape frame, preserve the same scene, maintain comfortable "
+            "headroom, and keep the performer's face, mouth, shoulders, and active hands comfortably "
+            "visible. Avoid large lateral travel, excessive push-in, edge cropping, or "
+            "vertical-video-style composition. Do not add intentional camera movement; preserve the "
+            "established framing with only an almost imperceptible natural handheld breathing drift, "
+            "maintaining a balanced full-canvas 4:3 landscape composition with comfortable headroom."
+        )
+        portrait = module.portrait_prompt(landscape)
+        self.assertIn("full-canvas 9:16 portrait composition at 480x864", portrait)
+        self.assertIn("connected 9:16 reference frame", portrait)
+        self.assertIn("Compose specifically for a 9:16 safe frame", portrait)
+        self.assertIn("coherent for a 9:16 portrait frame", portrait)
+        self.assertIn("horizontal-video-style composition", portrait)
+        self.assertIn("maintaining a balanced full-canvas 9:16 portrait composition", portrait)
+        self.assertNotIn("4:3", portrait)
+        self.assertNotIn("640x480", portrait)
+        self.assertNotIn("vertical-video-style", portrait)
+        # 无横版字面量时原样返回
+        plain = "普通提示词，无画布字面量。"
+        self.assertEqual(module.portrait_prompt(plain), plain)
 
     def test_upscale_video_and_output_are_replaced(self) -> None:
         prepared = prepare_upscale_workflow(
