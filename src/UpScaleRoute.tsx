@@ -83,6 +83,39 @@ function MilestoneIcon({ status }: { status: MilestoneStatus }) {
   return <Circle weight="regular" />;
 }
 
+function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number; liveNow?: number | null }) {
+  const progressText = step.progressMax
+    ? `采样 ${step.progressValue ?? 0} / ${step.progressMax} · ${Math.round(step.progress ?? 0)}%`
+    : step.currentNode || null;
+  const elapsedText =
+    step.status === "running" && step.startedAt && liveNow
+      ? formatElapsedMs(liveNow - Date.parse(step.startedAt))
+      : step.elapsed || "--:--";
+
+  return (
+    <div className={`pipeline-row state-${step.status} comfy-row`}>
+      <div className="rail"><span className="rail-icon"><MilestoneIcon status={step.status} /></span></div>
+      <div className="pipeline-card">
+        <span className="step-number">{String(index + 1).padStart(2, "0")}</span>
+        <div className="step-copy">
+          <div className="step-title-line">
+            <strong>{step.label}</strong>
+            {progressText && <span className="node-detail">{progressText}</span>}
+          </div>
+          <span>{step.subtitle}</span>
+          {step.status === "running" && step.progress != null && (
+            <div className="node-progress" aria-label={`进度 ${Math.round(step.progress)}%`}>
+              <span style={{ width: `${Math.max(3, step.progress)}%` }} />
+            </div>
+          )}
+        </div>
+        <span className="elapsed">{elapsedText}</span>
+        <span className="status-chip">{statusLabel(step.status)}</span>
+      </div>
+    </div>
+  );
+}
+
 export function UpScaleRoute() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -336,18 +369,7 @@ export function UpScaleRoute() {
           <div className={`pipeline ${job?.finalReady ? "pipeline-compact" : ""}`}>
             {milestones.map((step, index) => (
               <div className="pipeline-step" key={step.id}>
-                <div className={`pipeline-row state-${step.status} comfy-row`}>
-                  <div className="rail"><span className="rail-icon"><MilestoneIcon status={step.status} /></span></div>
-                  <div className="pipeline-card">
-                    <span className="step-number">{String(index + 1).padStart(2, "0")}</span>
-                    <div className="step-copy">
-                      <div className="step-title-line"><strong>{step.label}</strong></div>
-                      <span>{step.subtitle}</span>
-                    </div>
-                    <span className="elapsed">{step.elapsed || "--:--"}</span>
-                    <span className="status-chip">{statusLabel(step.status)}</span>
-                  </div>
-                </div>
+                <PipelineRow step={step} index={index} liveNow={jobActive ? tickNow : null} />
               </div>
             ))}
           </div>
