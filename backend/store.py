@@ -45,6 +45,18 @@ def upscale_milestones() -> list[dict[str, Any]]:
     ]
 
 
+def lyrics_milestones() -> list[dict[str, Any]]:
+    """歌词字幕路由（多语言）：提取 → Demucs 分离人声 → 自动语种识别实测
+    逐句时间 → 与歌词文本对齐 → 剪映手书风格烧录。不经过 ComfyUI/RVC。"""
+    return [
+        {"id": "read", "label": "读取视频与音频", "subtitle": "加载视频并提取音轨", "status": "pending"},
+        {"id": "stems", "label": "Demucs 人声分离", "subtitle": "提取演唱人声备用", "status": "pending"},
+        {"id": "asr", "label": "语音识别实测时间", "subtitle": "自动语种 · 逐词时间戳", "status": "pending"},
+        {"id": "align", "label": "歌词逐句对齐", "subtitle": "识别结果与歌词文本匹配", "status": "pending"},
+        {"id": "render", "label": "字幕烧录", "subtitle": "剪映手书 · 白字细描边", "status": "pending"},
+    ]
+
+
 def migrate_milestones(remove_subtitles: bool, mode: str, ratio: str = "4:3") -> list[dict[str, Any]]:
     """动作迁移路由的里程碑模板（不含 RVC：输出保留原音频；不做二采放大）。
 

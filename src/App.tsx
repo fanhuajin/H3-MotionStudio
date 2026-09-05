@@ -16,12 +16,14 @@ import {
   PersonSimpleRun,
   Play,
   SpinnerGap,
+  Subtitles,
   Timer,
   UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import { DouyinRoute } from "./DouyinRoute";
+import { LyricRoute } from "./LyricRoute";
 import { MigrateRoute } from "./MigrateRoute";
 import { QueuePanel } from "./QueuePanel";
 import { SystemMonitor } from "./SystemMonitor";
@@ -793,6 +795,7 @@ export function App() {
   const isDouyinRoute = path === "/douyin";
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
+  const isLyricsRoute = path === "/lyrics";
 
   return (
     <div className="desktop-app-shell">
@@ -818,7 +821,7 @@ export function App() {
               <span>影动生成</span>
             </a>
           </div>
-          <p className="route-caption">下载 · 生成 · 迁移 · 放大</p>
+          <p className="route-caption">下载 · 生成 · 迁移 · 放大 · 歌词</p>
 
           {isDouyinRoute ? (
             <>
@@ -832,10 +835,10 @@ export function App() {
           ) : (
             <>
               <p className="sidebar-section-label">创作与管理</p>
-              <a className={!isMigrateRoute && !isUpscaleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
+              <a className={!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
                 <MusicNotes weight="fill" />
                 <span>歌曲生成</span>
-                {!isMigrateRoute && !isUpscaleRoute && <i />}
+                {!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute && <i />}
               </a>
               <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
                 <PersonSimpleRun />
@@ -846,6 +849,11 @@ export function App() {
                 <MagnifyingGlassPlus />
                 <span>二采放大</span>
                 {isUpscaleRoute && <i />}
+              </a>
+              <a className={isLyricsRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/lyrics">
+                <Subtitles />
+                <span>歌词字幕</span>
+                {isLyricsRoute && <i />}
               </a>
             </>
           )}
@@ -863,7 +871,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isUpscaleRoute ? <UpScaleRoute /> : <MotionStudioRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isLyricsRoute ? <LyricRoute /> : <MotionStudioRoute />}
       </div>
     </div>
   );

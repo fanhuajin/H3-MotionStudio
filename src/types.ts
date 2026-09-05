@@ -35,6 +35,11 @@ export interface JobState {
   sourceFps?: number | null;
   /** 二采放大任务参数（kind === "upscale"） */
   multiplier?: string | null;
+  /** 歌词字幕任务参数（kind === "lyrics"） */
+  songName?: string | null;
+  lyricLang?: string | null;
+  lyricLangLabel?: string | null;
+  lyricAsrLang?: string | null;
   /** 长视频分段：预估总段数与当前段（每段81帧、重叠5帧衔接） */
   estimatedSegments?: number | null;
   currentSegment?: number | null;

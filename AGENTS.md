@@ -35,6 +35,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Backend code changes only take effect after the local uvicorn service restarts and `npm run build` refreshes `dist`; while the user has a job running, do not restart the service or rebuild the frontend.
 - After each completed implementation batch, commit and push the changes to `origin/main`.
 - The final deliverable of an independent upscale job is stored on disk under the marked name `{job_id}_upscale_最终版.mp4` (the workflow's audio-muxed `*_00001-audio.mp4` is atomically renamed and the job state updated at job end); the same-prefix `*_00001.png` (first-frame preview) and the audio-less `*_00001.mp4` are intermediates. The upscale result panel and history picker always point at the marked final file only.
+- 歌词字幕是 `/lyrics` 路由（sidebar「创作与管理」第四项，位于二采放大之下；多语言通用：韩/日/中/英等）。流程：上传视频或从最近成片选 → 网易云搜歌（`/api/lyrics/search` 自动识别歌词原语种与是否含中文翻译，`/api/lyrics/lyric` 取全文）→ 编辑/确认歌词行 → 提交 kind=`lyrics` 任务。时间轴**不用歌词库时间**：`scripts/lyrics_stage.py`（RVC venv python，需 faster-whisper）先 HDEMUCS 分离人声再 faster-whisper（本地模型 `LYRICS_ASR_MODEL`，CPU int8、自动语种、词级时间戳）实测；`backend/lyrics_worker.py` 的 `align_line_times` 用官方时间窗 ±3.2s 约束 + difflib 相似度 ≥0.5 把每行歌词锚到词时间戳，未命中行在相邻锚点间按官方时间线性插值，**越界/尾行（超出最后识别词 1s）自动截除**。交付 = 烧录 mp4（剪映手书 JYgangbi，字号≈剪映字号10：fontSize≈88×H/1080；双语惯例=原词上/中文下；同刻两条底部字幕按事件顺序堆叠——**先写翻译行占底、后写原词行叠上**；ASS 时间必须 `h:mm:ss.cc` 两位百分秒，三位毫秒会让 libass 全部时间解析失败）；Srt 侧写在同目录但不进 UI。
+- 里程碑：read→stems(Demucs)→asr(自动语种识别)→align→render；全程不经过 ComfyUI/RVC，但与其它任务共用 `pipeline_lock` 单任务互斥；`originalReady` 指源视频（data/lyrics/{job}/source.*），最终成片在 `output/video/H3_MotionStudio/{job_id}_歌词字幕.mp4`。
 
 ## Git rule（用户硬性规则：每次修改完成必须提交 GitHub）
 

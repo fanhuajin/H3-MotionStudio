@@ -1228,3 +1228,43 @@ body {
 @media (max-width: 760px) {
   .upscale-route { padding: 24px 14px 45px; }
 }
+
+/* ===== 歌词字幕路由 ===== */
+.lyric-search-row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+.text-input {
+  flex: 1 1 auto; min-width: 0;
+  padding: 11px 13px; border-radius: 10px;
+  background: #0d0a23; border: 1px solid var(--shell-line);
+  color: var(--shell-copy); font-size: 13px; outline: none;
+}
+.text-input:focus { border-color: var(--shell-accent); box-shadow: 0 0 0 3px var(--shell-accent-soft); }
+.search-button {
+  display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto;
+  padding: 11px 16px; border-radius: 10px; cursor: pointer;
+  background: var(--shell-accent-soft); border: 1px solid var(--shell-accent);
+  color: var(--shell-accent); font-size: 12px; font-weight: 600;
+}
+.search-button:disabled { opacity: .55; cursor: default; }
+.search-button svg { width: 15px; height: 15px; }
+.lyric-candidates { margin-top: 12px; max-height: 300px; overflow: auto; }
+.lyric-editor { margin-top: 12px; border: 1px solid var(--shell-line); border-radius: 12px; padding: 12px; background: var(--shell-panel-soft); }
+.lyric-editor-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  color: var(--shell-copy); font-size: 12px; margin-bottom: 10px;
+}
+.lyric-editor-head svg { color: var(--shell-accent); }
+.lyric-editor-head button {
+  cursor: pointer; color: var(--shell-muted); background: none; border: none;
+  font-size: 11px; text-decoration: underline;
+}
+.lyric-editor-head button:hover { color: var(--shell-accent); }
+.lyric-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.lyric-columns label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.lyric-columns label > span { color: var(--shell-muted); font-size: 10px; display: inline-flex; align-items: center; gap: 6px; }
+.lyric-columns label > span svg { width: 12px; height: 12px; color: var(--shell-accent); }
+.lyric-columns textarea {
+  resize: vertical; min-height: 220px; padding: 10px 12px; border-radius: 10px;
+  background: #0d0a23; border: 1px solid var(--shell-line); color: var(--shell-copy);
+  font-size: 13px; line-height: 1.9; outline: none; font-family: inherit;
+}
+.lyric-columns textarea:focus { border-color: var(--shell-accent); }

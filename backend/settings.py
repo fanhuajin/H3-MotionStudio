@@ -52,6 +52,19 @@ RVC_MODEL = RVC_ROOT / "assets" / "weights" / "ranran.pth"
 # ranran 无专属 index：该路径为可选候选（存在才启用索引，缺失则以无索引模式运行）
 RVC_INDEX = RVC_ROOT / "assets" / "indices" / "ranran.index"
 
+# 歌词字幕路由（多语言）：用 RVC 环境的 torchaudio HDEMUCS 分离人声，再用
+# faster-whisper（本地模型目录，缺省 D:\tmp\fw-base，可用 H3_WHISPER_MODEL 覆盖）
+# 自动识别语种并实测每句演唱时间，官方歌词只取文本（韩/日/中/英均可）。
+LYRICS_ASR_PY = RVC_PYTHON
+LYRICS_ASR_MODEL = Path(os.getenv("H3_WHISPER_MODEL", r"D:\tmp\fw-base"))
+# 剪映手书（内部名 JYgangbi）：剪映缓存字体；直出版默认 白字细描边·字号≈剪映字号10。
+JY_SHOU_SHU_FONT = Path(
+    os.getenv(
+        "H3_JY_FONT",
+        r"C:\Users\admin\AppData\Local\JianyingPro\User Data\Cache\effect\110450154\2e85dc679048a1da139661e050438ec2\JYgangbi.add_full_width_chars.ttf",
+    )
+)
+
 # 去字幕字幕条定位：提交去字幕工作流前，用 backend/subtitle_detect.py（ComfyUI 自带
 # python 运行，需 numpy/Pillow）对视频 30%~97% 时段抽帧、逐帧检测+跨帧投票，自动
 # 定位持续显示的字幕条（跳过片头标题），再按 VHS 拉伸映射换算成画布遮罩坐标并

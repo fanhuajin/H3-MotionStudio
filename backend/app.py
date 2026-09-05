@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import mimetypes
 import secrets
@@ -37,6 +38,7 @@ from .douyin_service import (
     douyin_service,
     is_douyin_url,
 )
+from .lyrics_worker import lang_label, netease_lyric, netease_search, run_lyrics_job
 from .pipeline import (
     PipelineError,
     comfy_health,
@@ -51,6 +53,7 @@ from .pipeline import (
 )
 from .settings import (
     COMFY_INPUT,
+    COMFY_OUTPUT,
     COMFY_URL,
     DATA_DIR,
     DEFAULT_SINGING_CANVAS,
@@ -66,7 +69,7 @@ from .settings import (
     required_paths,
     singing_canvas_params,
 )
-from .store import initial_milestones, migrate_milestones, now_iso, store, upscale_milestones
+from .store import initial_milestones, lyrics_milestones, migrate_milestones, now_iso, store, upscale_milestones
 from .workflows import load_workflow, node_by_id
 
 
@@ -644,6 +647,141 @@ async def create_upscale_job(
     }
     store.create(state)
     spawn(run_upscale_job(job_id))
+    return state
+
+
+# ---------------------------------------------------------------------------
+# 歌词字幕（多语言）：搜索官方歌词 → 自动语种识别实测逐句时间 → 剪映手书烧录
+# ---------------------------------------------------------------------------
+
+LYRICS_OUT_DIR = COMFY_OUTPUT / "video" / "H3_MotionStudio"
+
+
+@app.get("/api/lyrics/search")
+async def lyrics_search(q: str = Query(..., min_length=1), limit: int = Query(6, ge=1, le=10)):
+    try:
+        return {"results": await netease_search(q, limit)}
+    except PipelineError as error:
+        raise HTTPException(502, error.detail) from error
+
+
+@app.get("/api/lyrics/lyric")
+async def lyrics_detail(song_id: int = Query(...)):
+    try:
+        payload = await netease_lyric(song_id)
+        payload["langLabel"] = lang_label(payload.get("lang") or "")
+        return payload
+    except PipelineError as error:
+        raise HTTPException(502, error.detail) from error
+
+
+@app.post("/api/jobs/lyrics")
+async def create_lyrics_job(
+    video: UploadFile | None = File(None),
+    source_job_id: str = Form(""),
+    source_key: str = Form("final"),
+    song_name: str = Form(""),
+    lines_json: str = Form("[]"),
+):
+    """歌词字幕任务：上传/选择视频 + 已确认的歌词行（[{orig,zh}]），后台
+    demucs+whisper 实测逐句时间后按剪映手书风格烧录。不经过 ComfyUI。"""
+    active = store.active()
+    if active:
+        raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
+    if video is None and not source_job_id:
+        raise HTTPException(400, "请上传视频或选择最近任务成片")
+    try:
+        lines = json.loads(lines_json or "[]")
+        if not isinstance(lines, list):
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "歌词行数据格式不正确") from None
+    lines = [
+        {
+            "time": float(line["time"]) if (line.get("time") or 0) > 0 else None,
+            "orig": str(line.get("orig") or line.get("text") or "").strip(),
+            "zh": str(line.get("zh") or "").strip(),
+        }
+        for line in lines
+        if isinstance(line, dict) and (line.get("orig") or line.get("text") or "").strip()
+    ]
+    if not lines:
+        raise HTTPException(400, "没有可用的歌词行，请先搜索确认歌词")
+    if len(lines) > 400:
+        raise HTTPException(400, "歌词行数过多（上限 400）")
+
+    job_id = uuid.uuid4().hex
+    job_dir = DATA_DIR / "lyrics" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    target = job_dir / "source.mp4"
+
+    source_name_text = ""
+    if video is not None and video.filename:
+        extension = Path(video.filename).suffix.lower()
+        if extension not in VIDEO_UPLOAD_SUFFIXES:
+            raise HTTPException(400, "只支持 MP4、MOV、MKV 或 WebM 视频")
+        target = job_dir / f"source{extension}"
+        try:
+            with target.open("wb") as destination:
+                while chunk := await video.read(1024 * 1024):
+                    destination.write(chunk)
+        finally:
+            await video.close()
+        source_name_text = video.filename
+    else:
+        source_state = store.get(source_job_id)
+        field = dict((key, field) for key, field, _flag, _label in OUTPUT_MEDIA_FIELDS).get(source_key)
+        source_path = Path(source_state.get(field) or "") if source_state and field else Path()
+        if not source_state or not source_path.is_file():
+            raise HTTPException(400, "所选任务的成片不存在，请重新选择")
+        target = job_dir / f"source{source_path.suffix.lower() or '.mp4'}"
+        await asyncio.to_thread(shutil.copy2, source_path, target)
+        source_name_text = f"{source_state['id'][:8]} {source_key}"
+
+    from .lyrics_worker import detect_lang
+
+    lang = detect_lang(" ".join(line["orig"] for line in lines[:12]))
+    created_at = now_iso()
+    state = {
+        "id": job_id,
+        "kind": "lyrics",
+        "status": "queued",
+        "stage": "upload",
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "sourceName": source_name_text,
+        "songName": song_name,
+        "lyricLang": lang,
+        "lyricLangLabel": lang_label(lang),
+        "lyricLines": lines,
+        "lyricsSource": str(target.resolve()),
+        "lyricsDir": str(job_dir),
+        "lyricsOutDir": str(LYRICS_OUT_DIR),
+        "currentNodeId": None,
+        "currentNodeTitle": "等待开始识别",
+        "progress": 0,
+        "progressValue": None,
+        "progressMax": None,
+        "milestones": lyrics_milestones(),
+        "logs": [{
+            "time": created_at,
+            "message": (
+                f"已接收歌词字幕源：{source_name_text} · {len(lines)} 行歌词"
+                + (f" · {lang_label(lang)}" if lang else "")
+                + (f" · 《{song_name}》" if song_name else "")
+            ),
+        }],
+        "errorSummary": None,
+        "errorDetail": None,
+        "originalReady": True,
+        "originalOutput": str(target.resolve()),
+        "finalReady": False,
+        "finalOutput": None,
+        "output": None,
+        "promptIds": {},
+    }
+    store.create(state)
+    spawn(run_lyrics_job(job_id))
     return state
 
 
