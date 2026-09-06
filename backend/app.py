@@ -309,6 +309,7 @@ async def create_job(
     camera_prompt: str = Form(""),
     duration: float | None = Form(None),
     ratio: str = Form(DEFAULT_SINGING_CANVAS),
+    use_rvc: str = Form("1"),
 ):
     active = store.active()
     if active:
@@ -318,6 +319,9 @@ async def create_job(
         singing_canvas_params(ratio)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
+
+    # RVC 音色转换开关（默认开启）：关闭后跳过整个 RVC 流程，成片保留原声
+    use_rvc_on = use_rvc in {"1", "true", "on", "yes"}
 
     if duration and duration > MAX_DURATION_SECONDS + 0.25:
         raise HTTPException(400, f"视频不能超过 {int(MAX_DURATION_SECONDS)} 秒")
@@ -377,13 +381,14 @@ async def create_job(
         "referencePath": str(reference_input_path.resolve()),
         "actionPrompt": action_prompt,
         "cameraPrompt": camera_prompt,
+        "useRvc": use_rvc_on,
         "currentNodeId": None,
         "currentNodeTitle": "等待启动 ComfyUI",
         "progress": 0,
         "progressValue": None,
         "progressMax": None,
-        "milestones": initial_milestones(),
-        "logs": [{"time": created_at, "message": f"已接收人物图片与演唱视频：{reference_image.filename or reference_input_name} / {video.filename or input_name} · 画布 {ratio}"}],
+        "milestones": initial_milestones(use_rvc_on),
+        "logs": [{"time": created_at, "message": f"已接收人物图片与演唱视频：{reference_image.filename or reference_input_name} / {video.filename or input_name} · 画布 {ratio}" + ("" if use_rvc_on else " · RVC 音色转换已关闭，成片将保留原声")}],
         "errorSummary": None,
         "errorDetail": None,
         "originalReady": False,
@@ -1244,6 +1249,10 @@ if dist_dir.is_dir():
 
     @app.get("/upscale", include_in_schema=False)
     async def upscale_frontend():
+        return FileResponse(dist_dir / "index.html")
+
+    @app.get("/lyrics", include_in_schema=False)
+    async def lyrics_frontend():
         return FileResponse(dist_dir / "index.html")
 
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")

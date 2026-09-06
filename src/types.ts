@@ -62,6 +62,8 @@ export interface JobState {
   imagePrompt?: string;
   actionPrompt: string;
   cameraPrompt: string;
+  /** RVC 音色转换开关（歌曲生成；false = 跳过转换，成片保留原声） */
+  useRvc?: boolean;
   currentNodeId?: string | null;
   currentNodeTitle?: string | null;
   progress?: number | null;

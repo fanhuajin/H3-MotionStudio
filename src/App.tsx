@@ -42,6 +42,9 @@ const EMPTY_MILESTONES: Milestone[] = [
   { id: "mux", label: "替换最终成片音频", subtitle: "重新混音并封装最终 MP4", status: "pending" },
 ];
 
+// RVC 流程里程碑（音色转换开关关闭时不展示、后端也不执行）
+const RVC_MILESTONE_IDS = new Set(["handoff", "stems", "voice", "mux"]);
+
 const FALLBACK_CONFIG: AppConfig = {
   comfyuiConnected: false,
   fixedReferenceUrl: "/assets/fixed-reference.png",
@@ -71,6 +74,7 @@ function canvasDimensionLabel(canvas?: string | null) {
 
 interface DraftState {
   ratio?: CanvasRatio;
+  useRvc?: boolean;
   actionPrompt?: string;
   cameraPrompt?: string;
   videoName?: string | null;
@@ -185,6 +189,7 @@ const DEMO_JOB: JobState = {
   referenceSize: 4_800_000,
   actionPrompt: "主角自然深情地演唱，眼神专注，偶尔闭眼沉浸；副歌时情绪增强，微微抬头，右手轻抬并随节奏摆动；整体动作自然流畅。",
   cameraPrompt: "以稳定的推轨为主，开场中景缓慢推进至近景；副歌时轻微环绕 15°，保持主体居中；间奏切至侧面 3/4 角度，收尾回到正面特写。",
+  useRvc: true,
   milestones: DEMO_MILESTONES,
   logs: [
     { time: new Date().toISOString(), message: "ComfyUI 工作流已完成，显存已释放。" },
@@ -270,6 +275,39 @@ function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number;
   );
 }
 
+function ToggleRow({
+  checked,
+  onChange,
+  title,
+  description,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  title: string;
+  description: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="toggle-row">
+      <div className="toggle-copy">
+        <strong>{title}</strong>
+        <span>{description}</span>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        className={`toggle-switch ${checked ? "on" : ""}`}
+        onClick={() => onChange(!checked)}
+        disabled={disabled}
+      >
+        <span />
+      </button>
+    </div>
+  );
+}
+
 function MotionStudioRoute() {
   const demoMode = new URLSearchParams(window.location.search).get("demo") === "complete";
   const inputRef = useRef<HTMLInputElement>(null);
@@ -297,13 +335,18 @@ function MotionStudioRoute() {
   const [ratio, setRatio] = useState<CanvasRatio>(() => readDraft()?.ratio || "4:3");
   const [actionPrompt, setActionPrompt] = useState(() => readDraft()?.actionPrompt || "");
   const [cameraPrompt, setCameraPrompt] = useState(() => readDraft()?.cameraPrompt || "");
+  const [useRvc, setUseRvc] = useState<boolean>(() => readDraft()?.useRvc ?? true);
   const [job, setJob] = useState<JobState | null>(demoMode ? DEMO_JOB : null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
-  const milestones = job?.milestones?.length ? job.milestones : EMPTY_MILESTONES;
+  const milestones = job?.milestones?.length
+    ? job.milestones
+    : useRvc
+      ? EMPTY_MILESTONES
+      : EMPTY_MILESTONES.filter((step) => !RVC_MILESTONE_IDS.has(step.id));
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
   const jobActive = Boolean(job && ["queued", "running"].includes(job.status));
   const tickNow = useNowTick(jobActive);
@@ -489,6 +532,7 @@ function MotionStudioRoute() {
       setRatio((latest?.canvas as CanvasRatio | undefined) || draft?.ratio || "4:3");
       setActionPrompt(latest?.actionPrompt || draft?.actionPrompt || nextConfig.defaultAction || "");
       setCameraPrompt(latest?.cameraPrompt || draft?.cameraPrompt || nextConfig.defaultCamera || "");
+      setUseRvc(latest?.useRvc ?? draft?.useRvc ?? true);
       if (demoMode) {
         setJob(DEMO_JOB);
         setActionPrompt(DEMO_JOB.actionPrompt);
@@ -509,8 +553,8 @@ function MotionStudioRoute() {
 
   useEffect(() => {
     if (demoMode) return;
-    writeDraft({ ratio, actionPrompt, cameraPrompt });
-  }, [ratio, actionPrompt, cameraPrompt, demoMode]);
+    writeDraft({ ratio, actionPrompt, cameraPrompt, useRvc });
+  }, [ratio, actionPrompt, cameraPrompt, useRvc, demoMode]);
 
   const clearFile = () => {
     previewTokenRef.current += 1;
@@ -548,6 +592,7 @@ function MotionStudioRoute() {
     form.append("action_prompt", actionPrompt);
     form.append("camera_prompt", cameraPrompt);
     form.append("ratio", ratio);
+    form.append("use_rvc", useRvc ? "1" : "0");
     if (duration != null) form.append("duration", String(duration));
     try {
       const response = await fetch("/api/jobs", { method: "POST", body: form });
@@ -669,7 +714,7 @@ function MotionStudioRoute() {
             </div>
               </div>
             </div>
-            <p className="field-note">图片作为人物与首帧参考；视频提供歌声与时长。输出 {canvasDimensionLabel(ratio)}（{ratio === "9:16" ? "9:16 竖版" : "4:3 横版"}），人物图与演唱视频会按此画布统一适配；音色转换会在 ComfyUI 完全关闭后自动进行。</p>
+            <p className="field-note">图片作为人物与首帧参考；视频提供歌声与时长。输出 {canvasDimensionLabel(ratio)}（{ratio === "9:16" ? "9:16 竖版" : "4:3 横版"}），人物图与演唱视频会按此画布统一适配；{useRvc ? "音色转换会在 ComfyUI 完全关闭后自动进行" : "RVC 音色转换已关闭，成片将保留原版人声"}。</p>
           </div>
 
           <div className="field-block text-field">
@@ -680,6 +725,23 @@ function MotionStudioRoute() {
           <div className="field-block text-field">
             <div className="field-heading"><h2><span>4.</span> 运镜要求 <em>（镜头运动与构图节奏）</em></h2><span>{cameraPrompt.length} / 2000</span></div>
             <textarea value={cameraPrompt} maxLength={2000} onChange={(event) => setCameraPrompt(event.target.value)} placeholder="描述推、拉、摇、移以及人物构图；留空将使用工作流默认运镜。" />
+          </div>
+
+          <div className="field-block">
+            <div className="field-heading"><h2><span>5.</span> 音色转换 <em>（RVC，默认开启）</em></h2></div>
+            <ToggleRow
+              checked={useRvc}
+              onChange={setUseRvc}
+              title="RVC 音色转换"
+              description={useRvc
+                ? "开启：ComfyUI 生成结束后自动转换人声为 ranran 音色（先完全关闭 ComfyUI 再执行）。"
+                : "关闭：跳过 RVC 流程，成片保留上传视频的原版人声。"}
+            />
+            <p className="field-note">
+              {useRvc
+                ? "开启后，成片人声将替换为目标音色；整个流程在 ComfyUI 完全关闭后才会启动 RVC。"
+                : "关闭后任务在 ComfyUI 生成完成时直接结束（不再关闭 ComfyUI、不再执行 Demucs 分离与音色转换），更快出片。"}
+            </p>
           </div>
 
           {!config.environmentReady && config.missingRequirements.length > 0 && (
@@ -746,7 +808,7 @@ function MotionStudioRoute() {
               <div className="result-grid">
                 <div className="result-video"><video src={!demoMode && (resultUrl || originalUrl) ? `${resultUrl || originalUrl}#t=0.001` : undefined} controls preload="auto" poster={demoMode ? config.fixedReferenceUrl : undefined} /></div>
                 <div className="result-details">
-                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? "最终成片 · ranran 音色" : "原版成片"}</strong><span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : canvasDimensionLabel((job.canvas as CanvasRatio | undefined) || ratio)}</span></div></div>
+                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? (job.useRvc === false ? "最终成片 · 保留原声" : "最终成片 · ranran 音色") : "原版成片"}</strong><span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : canvasDimensionLabel((job.canvas as CanvasRatio | undefined) || ratio)}</span></div></div>
                   <dl>
                     <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>
@@ -757,7 +819,7 @@ function MotionStudioRoute() {
                   </dl>
                   {job.finalReady && <a className="result-button primary" href={`/api/jobs/${job.id}/media/final?download=1`}><DownloadSimple /> 下载最终成片</a>}
                   {job.originalReady && <a className="result-button" href={`/api/jobs/${job.id}/media/original`} target="_blank" rel="noreferrer"><Eye /> 查看原版</a>}
-                  {job.status === "failed" && job.originalReady && !job.finalReady && <button className="result-button" onClick={retryVoice} disabled={isBusy}><ArrowsClockwise /> 重新音色转换</button>}
+                  {job.status === "failed" && job.originalReady && !job.finalReady && <button className="result-button" onClick={retryVoice} disabled={isBusy}><ArrowsClockwise /> {job.useRvc === false ? "重新完成成片" : "重新音色转换"}</button>}
                 </div>
               </div>
             </section>

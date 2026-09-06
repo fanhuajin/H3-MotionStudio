@@ -24,17 +24,22 @@ def format_elapsed(started_at: str, finished_at: str) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def initial_milestones() -> list[dict[str, Any]]:
-    # 歌曲生成：原版成片 →（关闭 ComfyUI）→ RVC 音色 → 输出；二采放大已移至独立路由
-    return [
+def initial_milestones(use_rvc: bool = True) -> list[dict[str, Any]]:
+    # 歌曲生成：原版成片 →（关闭 ComfyUI）→ RVC 音色 → 输出；二采放大已移至独立路由。
+    # use_rvc=False 时跳过整个 RVC 流程（不关闭 ComfyUI、不转音色），只保留生成段里程碑。
+    milestones = [
         {"id": "input", "label": "读取视频与音频", "subtitle": "加载输入视频，分离音频轨道", "status": "pending"},
         {"id": "h3", "label": "H3 分段生成", "subtitle": "按时长生成连续唱歌片段", "status": "pending"},
         {"id": "stitch", "label": "防闪拼接", "subtitle": "平滑衔接并裁切到输入时长", "status": "pending"},
-        {"id": "handoff", "label": "关闭 ComfyUI", "subtitle": "释放内存和显存，切换到 RVC", "status": "pending"},
-        {"id": "stems", "label": "分离人声与伴奏", "subtitle": "Demucs 提取演唱人声", "status": "pending"},
-        {"id": "voice", "label": f"转换为 {RVC_MODEL.stem} 音色", "subtitle": "RVC 模型执行音色转换", "status": "pending"},
-        {"id": "mux", "label": "替换最终成片音频", "subtitle": "重新混音并封装最终 MP4", "status": "pending"},
     ]
+    if use_rvc:
+        milestones += [
+            {"id": "handoff", "label": "关闭 ComfyUI", "subtitle": "释放内存和显存，切换到 RVC", "status": "pending"},
+            {"id": "stems", "label": "分离人声与伴奏", "subtitle": "Demucs 提取演唱人声", "status": "pending"},
+            {"id": "voice", "label": f"转换为 {RVC_MODEL.stem} 音色", "subtitle": "RVC 模型执行音色转换", "status": "pending"},
+            {"id": "mux", "label": "替换最终成片音频", "subtitle": "重新混音并封装最终 MP4", "status": "pending"},
+        ]
+    return milestones
 
 
 def upscale_milestones() -> list[dict[str, Any]]:

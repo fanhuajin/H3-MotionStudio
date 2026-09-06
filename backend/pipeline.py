@@ -868,7 +868,7 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
 
 
 async def _run_voice(job_id: str, original: Path) -> None:
-    """歌曲生成收尾：二采放大已移至独立路由，这里原版成片直接进 RVC。"""
+    """歌曲生成收尾（RVC 开关开启）：二采放大已移至独立路由，这里原版成片直接进 RVC。"""
     await resources.stop_comfy(job_id)
     final = await run_rvc(job_id, original)
     store.update(
@@ -883,6 +883,31 @@ async def _run_voice(job_id: str, original: Path) -> None:
         output=await media_metadata(final),
         finishedAt=now_iso(),
     )
+
+
+async def _complete_without_rvc(job_id: str, original: Path) -> None:
+    """RVC 开关关闭时的歌曲生成收尾：跳过音色转换，原版成片即最终输出。
+
+    不走 RVC 流程（不关闭 ComfyUI、不转音色），ComfyUI 生成完成后任务直接结束；
+    若历史状态里残留 RVC 里程碑（中断恢复等），统一标为跳过，避免卡在运行中。
+    """
+    for milestone_id in ("handoff", "stems", "voice", "mux"):
+        store.set_milestone(job_id, milestone_id, status="skipped", currentNode=None, progress=None)
+    store.update(
+        job_id,
+        status="completed",
+        stage="completed",
+        finalOutput=str(original),
+        finalReady=True,
+        currentNodeId=None,
+        currentNodeTitle=None,
+        progress=100,
+        progressValue=None,
+        progressMax=None,
+        output=await media_metadata(original),
+        finishedAt=now_iso(),
+    )
+    store.add_log(job_id, "RVC 音色转换开关已关闭：跳过转换流程，原版成片即最终输出（保留原声）。")
 
 
 async def run_pipeline(job_id: str) -> None:
@@ -922,7 +947,11 @@ async def run_pipeline(job_id: str) -> None:
             store.update(job_id, originalOutput=str(original), originalReady=True)
             store.add_log(job_id, f"原版成片已保存：{original.name}")
 
-            await _run_voice(job_id, original)
+            state = store.get(job_id) or state
+            if state.get("useRvc", True):
+                await _run_voice(job_id, original)
+            else:
+                await _complete_without_rvc(job_id, original)
         except Exception as error:
             if is_job_cancelled(job_id):
                 await finish_cancelled(job_id)
@@ -1616,6 +1645,15 @@ async def retry_voice(job_id: str) -> None:
             raise PipelineError("没有可用于音色转换的成片")
         if is_job_cancelled(job_id):
             await finish_cancelled(job_id)
+            return
+        if state and not state.get("useRvc", True):
+            # RVC 开关关闭：不需要音色转换，把保留的成片直接收尾为最终输出
+            try:
+                await _complete_without_rvc(job_id, source)
+            except Exception as error:
+                summary = error.summary if isinstance(error, PipelineError) else "任务收尾失败"
+                detail = error.detail if isinstance(error, PipelineError) else repr(error)
+                store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())
             return
         store.update(job_id, status="running", stage="handoff", errorSummary=None, errorDetail=None, finalReady=False, startedAt=now_iso(), finishedAt=None)
         for milestone in ("handoff", "stems", "voice", "mux"):
