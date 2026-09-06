@@ -1268,3 +1268,38 @@ body {
   font-size: 13px; line-height: 1.9; outline: none; font-family: inherit;
 }
 .lyric-columns textarea:focus { border-color: var(--shell-accent); }
+
+/* ===== 歌词字幕路由：与 动作迁移/二采放大 一致的页面容器与面板样式 ===== */
+.lyrics-route { max-width: 1400px; margin: 0 auto; padding: 42px 30px 34px; }
+.lyrics-route .workspace {
+  min-height: 0;
+  grid-template-columns: minmax(390px, 42.6%) minmax(540px, 57.4%);
+  overflow: hidden;
+  border: 1px solid var(--shell-line);
+  border-radius: 12px;
+  background: var(--shell-panel);
+}
+.lyrics-route .input-panel,
+.lyrics-route .execution-panel { padding: 20px 21px 24px; background: #0c0922; }
+.lyrics-route .input-panel { border-right-color: var(--shell-line); }
+.lyrics-route .source-card,
+.lyrics-route .text-field textarea,
+.lyrics-route .pipeline,
+.lyrics-route .result-panel,
+.lyrics-route .log-panel { border-color: var(--shell-line-strong); background: #0a081e; }
+.lyrics-route .media-input,
+.lyrics-route .image-preview-button,
+.lyrics-route .image-empty,
+.lyrics-route .empty-upload { background: #0a081e; }
+.lyrics-route .pipeline-card { border-color: #302646; background: #120e2b; }
+.lyrics-route .primary-action { color: #071116; background: var(--shell-accent); box-shadow: none; }
+.lyrics-route .primary-action:not(:disabled):hover { filter: brightness(1.05); }
+.lyrics-route .result-button.primary { color: #071116; background: var(--shell-accent); }
+
+@media (max-width: 1180px) {
+  .lyrics-route .workspace { grid-template-columns: 1fr; }
+  .lyrics-route .input-panel { border-right: 0; border-bottom: 1px solid var(--shell-line); }
+}
+@media (max-width: 760px) {
+  .lyrics-route { padding: 24px 14px 45px; }
+}
