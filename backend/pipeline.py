@@ -91,6 +91,9 @@ class ResourceManager:
         self.comfy_log_handle = None
 
     async def ensure_comfy(self, job_id: str) -> None:
+        # 启动/复用 ComfyUI 前先清掉异常残留的 RVC（上次后端在转换阶段被强杀等），
+        # 防止新任务在旧 RVC 仍占显存时又拉起 ComfyUI 造成双占。
+        await self.kill_orphan_rvc(job_id)
         if await comfy_health():
             store.add_log(job_id, "ComfyUI 已在运行，继续使用当前服务。")
             return
@@ -150,6 +153,69 @@ class ResourceManager:
             return json.loads(result.stdout)
         except json.JSONDecodeError:
             return None
+
+    def _rvc_processes(self) -> list[dict[str, Any]]:
+        """列出仍在运行的 RVC 转换进程（后端崩溃/重启后遗留的孤儿进程）。
+
+        只按脚本文件名识别本仓库专用的 convert_video_to_my_voice.py，
+        不匹配用户手动运行的其它 RVC 工具；非 Windows 直接返回空。
+        """
+        if sys.platform != "win32":
+            return []
+        command = (
+            "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue "
+            "| Where-Object { $_.Name -like 'python*' -and $_.CommandLine -and "
+            "$_.CommandLine -like '*convert_video_to_my_voice.py*' } "
+            "| Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", command],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                creationflags=_creation_flags(),
+                timeout=15,
+            )
+        except OSError:
+            return []
+        if result.returncode != 0 or not (result.stdout or "").strip():
+            return []
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return []
+        items = payload if isinstance(payload, list) else [payload]
+        return [item for item in items if isinstance(item, dict) and item.get("ProcessId")]
+
+    async def kill_orphan_rvc(self, job_id: str) -> None:
+        """强制结束上一链路异常残留的 RVC 转换进程，为新链路腾出显存。
+
+        单链互斥（pipeline_lock）只在后端进程内有效：后端若在 RVC 阶段被
+        强杀/崩溃，RVC 子进程会变成孤儿继续占显存，重启后的新任务只检查
+        ComfyUI 健康状态，可能直接再起 ComfyUI 造成双占。本方法在
+        ensure_comfy（启动/复用 ComfyUI）与 run_rvc（启动转换）前各调用
+        一次；正常运行期间没有残留进程，扫描是空操作。
+        """
+        processes = await asyncio.to_thread(self._rvc_processes)
+        for process in processes:
+            try:
+                pid = int(process["ProcessId"])
+            except (TypeError, ValueError):
+                continue
+            store.add_log(job_id, f"检测到残留的音色转换进程（PID {pid}），正在强制结束以释放显存。")
+            try:
+                await asyncio.to_thread(
+                    subprocess.run,
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    errors="replace",
+                    creationflags=_creation_flags(),
+                    timeout=15,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
 
     async def stop_comfy(self, job_id: str) -> None:
         store.set_milestone(job_id, "handoff", status="running", currentNode="正在卸载模型并关闭 ComfyUI")
@@ -793,6 +859,9 @@ async def media_metadata(path: Path) -> dict[str, Any]:
 
 
 async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
+    # 启动转换前也先清孤儿 RVC：后端崩溃后直接「重新音色转换」时，上次的
+    # 转换进程可能还在跑，避免同一时刻出现两个 RVC。
+    await resources.kill_orphan_rvc(job_id)
     if await comfy_health():
         raise PipelineError("为了保护显存，RVC 没有启动", "检测到 ComfyUI 仍在运行。必须先完全关闭 ComfyUI。")
     for path in (RVC_PYTHON, RVC_SCRIPT, RVC_MODEL):
@@ -1562,64 +1631,6 @@ async def run_upscale_job(job_id: str) -> None:
                 summary, detail = error.summary, error.detail
             else:
                 summary, detail = "二采放大执行失败", repr(error)
-            store.add_log(job_id, f"错误：{summary}")
-            failed_state = store.get(job_id) or {}
-            running = next(
-                (item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"),
-                None,
-            )
-            if running:
-                store.set_milestone(job_id, running, status="error")
-            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())
-            try:
-                if await comfy_health():
-                    await resources.stop_comfy(job_id)
-            except Exception as stop_error:
-                store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
-
-
-async def retry_enhance(job_id: str) -> None:
-    """Resume a failed job from its preserved original video."""
-    async with pipeline_lock:
-        state = store.get(job_id)
-        if not state or not state.get("originalOutput"):
-            raise PipelineError("没有可用于高清转换的原版成片")
-        if is_job_cancelled(job_id):
-            await finish_cancelled(job_id)
-            return
-        original = Path(state["originalOutput"])
-        if not original.is_file():
-            raise PipelineError("原版成片文件不存在", str(original))
-
-        store.update(
-            job_id,
-            status="running",
-            stage="starting",
-            errorSummary=None,
-            errorDetail=None,
-            enhancedReady=False,
-            finalReady=False,
-            enhancedOutput=None,
-            finalOutput=None,
-            output=None,
-            startedAt=now_iso(),
-            finishedAt=None,
-        )
-        for milestone in ("upscale", "hd", "handoff", "stems", "voice", "mux"):
-            store.set_milestone(job_id, milestone, status="pending", progress=None, currentNode=None)
-        store.add_log(job_id, "从已保留的原版成片重新开始 1080P 高清转换。")
-
-        try:
-            await resources.ensure_comfy(job_id)
-            await _run_enhance_and_voice(job_id, original)
-        except Exception as error:
-            if is_job_cancelled(job_id):
-                await finish_cancelled(job_id)
-                return
-            if isinstance(error, PipelineError):
-                summary, detail = error.summary, error.detail
-            else:
-                summary, detail = "高清转换重试失败", repr(error)
             store.add_log(job_id, f"错误：{summary}")
             failed_state = store.get(job_id) or {}
             running = next(
