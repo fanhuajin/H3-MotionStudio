@@ -694,8 +694,9 @@ async def run_lyrics_job(job_id: str) -> None:
             final = out_dir / f"{job_id}_歌词字幕.mp4"
             await burn_subtitles(source, final, ass_text, JY_SHOU_SHU_FONT)
             raise_if_cancelled(job_id)
-            # 顺带保留 SRT（导入剪映精修用），不对外展示
-            (out_dir / f"{job_id}_歌词字幕.srt").write_text(_cues_to_srt(cues), encoding="utf-8-sig")
+            # 顺带保留 SRT（导入剪映精修用），只放任务目录、不与成片同目录：
+            # 本地播放器会自动加载成片旁边的同名 srt，叠加出第二行字幕
+            (job_dir / f"{job_id}_歌词字幕.srt").write_text(_cues_to_srt(cues), encoding="utf-8-sig")
 
             store.set_milestone(job_id, "align", status="completed", progress=100, currentNode=None)
             store.set_milestone(job_id, "render", status="completed", progress=100, currentNode=None)
