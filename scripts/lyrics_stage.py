@@ -13,6 +13,7 @@ Progress markers on stdout: [1/4]..[4/4] 供后端映射里程碑。
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -29,12 +30,45 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _enable_cuda_dlls() -> None:
+    """把 pip 安装的 nvidia cuBLAS/cuDNN DLL 目录加入加载路径（Windows）。
+
+    faster-whisper/CTranslate2 的 CUDA 版本需要 cublas64_12.dll / cudnn64_*.dll，
+    它们随 pip 包装在 site-packages\\nvidia\\*\\bin 下。必须在 import
+    faster_whisper / ctranslate2 **之前**调用，否则 DLL 解析失败并缓存，
+    之后补注入无效（报 "Library cublas64_12.dll is not found ..."）。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import sysconfig
+
+        pure = Path(sysconfig.get_paths().get("purelib", ""))
+        if not pure.is_dir():
+            return
+        nvidia_root = pure / "nvidia"
+        if not nvidia_root.is_dir():
+            return
+        for bin_dir in sorted(nvidia_root.glob("*/bin")):
+            try:
+                os.add_dll_directory(str(bin_dir))
+            except (OSError, ValueError):
+                pass
+        # PATH 兜底：个别加载器只按 PATH 找依赖库
+        os.environ["PATH"] = os.pathsep.join(
+            [str(b) for b in sorted(nvidia_root.glob("*/bin"))]
+        ) + os.pathsep + os.environ.get("PATH", "")
+    except Exception:
+        pass
+
+
 def _transcribe(
     device: str, model_dir: str, vocal_wav: Path, prompt_text: str | None, info_holder: list
 ) -> list[dict]:
     """跑一次完整识别，返回序列化后的语音段列表（可空）。"""
     from faster_whisper import WhisperModel
 
+    _enable_cuda_dlls()
     model = WhisperModel(
         model_dir, device=device, compute_type="int8",
         cpu_threads=4 if device == "cpu" else 0,  # CPU 少线程更稳（14 线程易空转）
@@ -116,6 +150,9 @@ def main() -> None:
         "抑制带伴奏演唱的错字/幻觉，明显提升歌词文本与官方歌词的吻合度",
     )
     args = parser.parse_args()
+
+    # CUDA DLL 注入必须在任何 faster_whisper/ctranslate2 import 之前
+    _enable_cuda_dlls()
 
     video = args.video.resolve()
     out = args.out_json.resolve()
