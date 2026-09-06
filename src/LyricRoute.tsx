@@ -100,6 +100,55 @@ function kindLabel(kind?: string) {
   return "歌曲生成";
 }
 
+/** 把编辑后的歌词行序列映射回网易云原行下标（LCS 最长公共子序列配对，
+ *  用户增删/改行后仍能保住未改动行的官方时间戳；无法配对的返回 null）。 */
+function pairBackToSource(editedLines: string[], sourceLines: string[]): (number | null)[] {
+  const m = editedLines.length;
+  const n = sourceLines.length;
+  const mapping: (number | null)[] = new Array(m).fill(null);
+  if (!m || !n) return mapping;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i -= 1) {
+    for (let j = n - 1; j >= 0; j -= 1) {
+      dp[i][j] = editedLines[i] === sourceLines[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  let i = 0;
+  let j = 0;
+  while (i < m && j < n) {
+    if (editedLines[i] === sourceLines[j]) {
+      mapping[i] = j;
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      i += 1;
+    } else {
+      j += 1;
+    }
+  }
+  // 编辑/插入的行：尝试「唯一未占用的同文本行」精确匹配（避免改过的行丢时间）
+  const claimed = new Set<number>();
+  mapping.forEach((v) => { if (v != null) claimed.add(v); });
+  const byText = new Map<string, number[]>();
+  sourceLines.forEach((text, idx) => {
+    if (claimed.has(idx)) return;
+    const bucket = byText.get(text) || [];
+    bucket.push(idx);
+    byText.set(text, bucket);
+  });
+  for (let k = 0; k < m; k += 1) {
+    if (mapping[k] != null) continue;
+    const bucket = byText.get(editedLines[k]);
+    if (bucket && bucket.length === 1 && !claimed.has(bucket[0])) {
+      mapping[k] = bucket[0];
+      claimed.add(bucket[0]);
+    }
+  }
+  return mapping;
+}
+
 function MilestoneIcon({ status }: { status: MilestoneStatus }) {
   if (status === "completed") return <Check weight="bold" />;
   if (status === "running") return <Play weight="fill" />;
@@ -158,6 +207,9 @@ export function LyricRoute() {
   const [origText, setOrigText] = useState("");
   const [zhText, setZhText] = useState("");
   const [lyricNote, setLyricNote] = useState("");
+  // 网易云行级官方时间戳（用户编辑歌词后按行序列配对找回，提交时随行上传，
+  // 供后端在视频非整首歌时按「官方 − 实测」整体偏移把每行落到演唱位置）
+  const [sourceRows, setSourceRows] = useState<{ time: number; orig: string }[]>([]);
 
   const [job, setJob] = useState<JobState | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -279,6 +331,7 @@ export function LyricRoute() {
       const lines = payload.lines || [];
       setOrigText(lines.map((line) => line.orig).join("\n"));
       setZhText(lines.map((line) => line.zh || "").join("\n"));
+      setSourceRows(lines.map((line) => ({ time: line.time, orig: line.orig })));
       setLyricNote(
         `已载入 ${lines.length} 行歌词${payload.langLabel ? ` · ${payload.langLabel}` : ""}${payload.hasZh ? " · 含中文翻译（可编辑，删掉某行翻译则只显示原词）" : " · 无官方中文翻译，可在右列粘贴自己的翻译"}`,
       );
@@ -295,16 +348,29 @@ export function LyricRoute() {
     setQuery("");
     setOrigText("");
     setZhText("");
+    setSourceRows([]);
     setLyricNote("");
   };
 
   const buildLines = () => {
     const origLines = origText.split("\n").map((line) => line.trim());
     const zhLines = zhText.split("\n").map((line) => line.trim());
-    return origLines
-      .filter(Boolean)
-      .map((orig, index) => ({ orig, zh: zhLines[index]?.trim() || "" }))
-      .slice(0, 400);
+    const sourceOrigs = sourceRows.map((row) => row.orig.trim());
+    // 行级配对在过滤空行之前做（保留原下标），官方时间戳随行带走
+    const paired = pairBackToSource(origLines, sourceOrigs);
+    const rows: { orig: string; zh: string; time?: number }[] = [];
+    origLines.forEach((orig, index) => {
+      if (!orig) return;
+      const sourceIndex = paired[index];
+      const time = sourceIndex != null ? sourceRows[sourceIndex].time : 0;
+      const row: { orig: string; zh: string; time?: number } = {
+        orig,
+        zh: zhLines[index]?.trim() || "",
+      };
+      if (time > 0) row.time = time;
+      rows.push(row);
+    });
+    return rows.slice(0, 400);
   };
 
   const submit = async () => {

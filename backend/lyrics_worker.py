@@ -188,89 +188,250 @@ def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, _norm(a), _norm(b)).ratio()
 
 
+# 对齐常量（只调这里，别散落在算法里）：
+_ALIGN_MIN_SCORE = 0.50  # 文本窗口相似度门槛（命中才作锚点）
+_ALIGN_HEAD_TOL = 3.0  # 按整体偏移落到片头前 3s 内的行按 0 处理（半句起唱容差）
+_ALIGN_OFFSET_MAX_JITTER = 8.0  # 「官方时间 − 实测时间」抖动超过该值视为拼接/变速视频
+_ALIGN_MERGE_GAP = 4.0  # 同一次演唱可能被识别分数波动切成几段窗口，合并间隔上限
+
+
+def _pick_occurrences(
+    target: str, tokens: list[tuple[str, float, float, int]]
+) -> list[tuple[float, float]]:
+    """在全部识别词里找 target 的高分演唱窗口。
+
+    不依赖行号顺序：每行歌词的正文可能在视频的任何位置（源视频常常是
+    歌曲中段的剪辑/拼接）。返回 [(出现起点秒, 最高相似度)]，同一句文本
+    多次出现会得到多个窗口（供副歌等重复歌词按轮次分配）。
+
+    窗口被限制在单个 whisper 语音段内、且不允许跨越 >1s 的词间隙，否则
+    会从相邻句子尾部捡到零散同字（的/心/难…）拼出假高分窗口；短行还要
+    求公共子序列长度达标（两字行只要撞上一个常用字就有 0.5 分，必须挡掉）。
+    """
+    if not target:
+        return []
+    zh_style = " " not in target  # 中日韩逐字比较；拉丁按词比较
+    tlen = len(target)
+    cap = min(30, max(tlen + 4, 8))  # 窗口 token 数上限
+    min_len = max(1, tlen // 3)  # 短于该长度的窗口相似度不可能 ≥ 门槛，直接跳过
+    min_common = 2 if tlen <= 3 else max(2, int(round(tlen * 0.4)))  # 公共子序列下限
+    occurrences: list[tuple[float, float]] = []  # (起点, 分数)
+    token_count = len(tokens)
+    for j in range(token_count):
+        best_score = 0.0
+        window = ""
+        seg_of_j = tokens[j][3]
+        for k in range(j, min(j + cap, token_count)):
+            if tokens[k][3] != seg_of_j:
+                break  # 不跨语音段
+            if k > j and tokens[k][1] - tokens[k - 1][2] > 1.0:
+                break  # 词间大空隙 = 句子边界
+            piece = tokens[k][0]
+            if not piece:
+                continue
+            if zh_style:
+                window += piece
+            else:
+                window = (" " if window else "") + piece
+            if len(window) < min_len:
+                continue
+            matcher = SequenceMatcher(None, target, window)
+            score = matcher.ratio()
+            common = sum(block.size for block in matcher.get_matching_blocks())
+            if score >= _ALIGN_MIN_SCORE and common >= min_common and score > best_score:
+                best_score = score
+        if best_score >= _ALIGN_MIN_SCORE:
+            occurrences.append((tokens[j][1], best_score))
+    # 相邻候选（同一句唱词被多个起点覆盖）合并成一次「出现」，取窗口内最高分
+    occurrences.sort(key=lambda item: item[0])
+    merged: list[tuple[float, float]] = []
+    for start, score in occurrences:
+        if merged and start - merged[-1][0] <= _ALIGN_MERGE_GAP:
+            if score > merged[-1][1]:
+                merged[-1] = (merged[-1][0], score)
+        else:
+            merged.append((start, score))
+    return merged
+
+
 def align_line_times(
     asr: dict[str, Any], lyric_lines: list[dict[str, Any]]
-) -> tuple[list[float], int]:
-    """逐行匹配 ASR 词时间戳；返回（每行 clip 起始秒, 高置信命中数）。
+) -> tuple[list[float | None], int, float]:
+    """把每行歌词锚到实测演唱时间（视频时间轴）。
 
-    官方时间（line.time，秒）存在时把候选窗口限定在 [official-3.2, official+3.2]
-    内（翻唱可整体提前/拖后但不会差几秒），避免把歌词锚到错乱位置；行间
-    未命中的用相邻锚点按官方时间线性插值兜底。
+    返回（每行起始秒，可为 None=该行不在演唱范围内、实测锚定行数、末词起点）。
+    源视频常是整首歌的中段剪辑/拼接（开口处不在 0:00），因此旧版「按行号
+    顺序 + 单向游标 + 官方 ±3.2s 窗」会系统性失败。v2 策略：
+
+    1) 自由文本锚定：每行（正文相同的行合并计算）在全部识别词里找相似度
+       ≥0.5 的窗口；同一句文本多次出现会得到多个候选轮次；
+    2) 重复歌词（副歌）分配轮次：多句正文相同、官方时间又都在的行，用
+       「官方时间 − 实测时间」的整体偏移就近匹配到各次演唱（剪辑视频偏移
+       恒定；抖动过大的拼接视频退回按行序分配）；
+    3) 锚点之间的行插值：有官方时间按官方比例（演唱节奏不变），否则按行序；
+    4) 首锚点之前的行按「锚点官方 − 本行官方」外推：推回片头说明唱了（半句
+       起唱放宽到片头），推不回来即该行没被唱到 → 剔除；末锚点之后的行不
+       猜测（文本没被识别确认就不显示），避免在演唱收尾处堆假字幕。
     """
     duration = float(asr.get("duration") or 0)
-    tokens: list[tuple[str, float]] = []
-    for seg in asr.get("segments") or []:
+    tokens: list[tuple[str, float, float, int]] = []
+    for seg_index, seg in enumerate(asr.get("segments") or []):
         words = seg.get("words") or []
         if words:
-            for word, start, _end in words:
-                tokens.append((str(word), float(start)))
+            for word, start, end in words:
+                piece = _norm(str(word))
+                if piece:
+                    tokens.append((piece, float(start), float(end or start), seg_index))
         else:
-            tokens.append((str(seg.get("text") or ""), float(seg.get("start") or 0)))
+            piece = _norm(str(seg.get("text") or ""))
+            if piece:
+                tokens.append((piece, float(seg.get("start") or 0), float(seg.get("end") or 0), seg_index))
     tokens.sort(key=lambda item: item[1])
+    last_vocal = tokens[-1][1] if tokens else duration
+    official = [float(line.get("time") or 0.0) for line in lyric_lines]
+    texts = [_norm(str(line.get("orig") or "")) for line in lyric_lines]
 
-    anchors: list[tuple[int, float]] = []  # (line_index, clip_time)
-    cursor = 0
-    matched = 0
-    for index, line in enumerate(lyric_lines):
-        target = _norm(line["orig"])
+    # ---- 1) 候选锚点（正文相同的行只算一次） ----
+    occurrences_by_text: dict[str, list[tuple[float, float]]] = {}
+    for target in set(texts):
+        if target:
+            occurrences_by_text[target] = _pick_occurrences(target, tokens)
+
+    # ---- 2) 锚点分配 ----
+    # 正文唯一的行：直接锚到它分数最高的出现位置
+    unique_candidates: list[tuple[float, int, int]] = []  # (score, line_idx, occurrence_idx)
+    repeat_groups: dict[str, list[int]] = {}
+    for index, target in enumerate(texts):
         if not target:
             continue
-        official = float(line.get("time") or 0.0)
-        best: tuple[float, int, int] | None = None
-        for j in range(cursor, min(cursor + 90, len(tokens))):
-            token_time = tokens[j][1]
-            if official > 0 and (token_time < official - 3.2 or token_time > official + 3.2):
-                continue  # 超出官方时间窗的词不参与该行候选
-            for k in range(j, min(j + 8, len(tokens))):
-                window = " ".join(t for t, _ in tokens[j : k + 1])
-                score = _ratio(target, window)
-                if best is None or score > best[0]:
-                    best = (score, j, k)
-        if best and best[0] >= 0.50:
-            start_time = tokens[best[1]][1]
-            if not anchors or start_time > anchors[-1][1] - 0.8:
-                anchors.append((index, start_time))
-                cursor = best[1] + 1
-                matched += 1
+        if texts.count(target) > 1:
+            repeat_groups.setdefault(target, []).append(index)
+        else:
+            occ = occurrences_by_text.get(target) or []
+            if occ:
+                best = max(range(len(occ)), key=lambda r: occ[r][1])
+                unique_candidates.append((occ[best][1], index, best))
 
-    official = [float(line.get("time") or 0.0) for line in lyric_lines]
-    if not anchors and not any(t > 0.0 for t in official):
-        # 完全无官方时间也无实测锚点：按行数等距铺开（尽力而为并提示）
-        count = max(1, len(lyric_lines))
-        span = max(0.0, duration - 0.8)
-        return [max(0.0, 0.25 + span * index / count) for index in range(count)], matched, (
-            tokens[-1][1] if tokens else duration
-        )
-    times: list[float] = []
-    for index, line in enumerate(lyric_lines):
-        t = float(line.get("time") or 0.0)
-        prev_anchor = [a for a in anchors if a[0] <= index]
-        next_anchor = [a for a in anchors if a[0] >= index]
-        if prev_anchor and prev_anchor[-1][0] == index:
-            times.append(prev_anchor[-1][1])
+    # 唯一文本锚点间的整体偏移（官方时间 − 实测时间）：剪辑视频的起始处不在
+    # 0:00，但偏移恒定。个别假锚点会给出离谱偏移，取「最密集的偏移簇」。
+    def _offset_consensus(deltas: list[float]) -> float | None:
+        if not deltas:
+            return None
+        ordered = sorted(deltas)
+        best_cluster: list[float] = []
+        for index, base in enumerate(ordered):
+            end = index
+            while end + 1 < len(ordered) and ordered[end + 1] - base <= _ALIGN_OFFSET_MAX_JITTER:
+                end += 1
+            cluster = ordered[index : end + 1]
+            if len(cluster) > len(best_cluster):
+                best_cluster = cluster
+        if not best_cluster:
+            return None
+        return best_cluster[len(best_cluster) // 2]
+
+    unique_deltas = [
+        official[index] - occurrences_by_text[texts[index]][occ_index][0]
+        for score, index, occ_index in unique_candidates
+        if official[index] > 0
+    ]
+    offset = _offset_consensus(unique_deltas)
+
+    anchors: list[tuple[int, float, float]] = []  # (line_idx, start, score)
+    seen_lines: set[int] = set()
+
+    def _accept(line_idx: int, start: float, score: float) -> None:
+        if line_idx in seen_lines:
+            return
+        anchors.append((line_idx, start, score))
+        seen_lines.add(line_idx)
+
+    # 唯一文本：按分数从高到低接受（同一位置一般不会撞车）
+    for score, index, occ_index in sorted(unique_candidates, key=lambda item: (-item[0], item[1])):
+        occ = occurrences_by_text[texts[index]]
+        _accept(index, occ[occ_index][0], score)
+
+    # 重复歌词（副歌等）轮次分配：正文相同、官方时间又都在的行，把各次演唱
+    # 按「官方时间 − (实测 + 偏移)」就近分配给对应轮次；高分的出现先分。
+    for target, members in repeat_groups.items():
+        members.sort()
+        occ = sorted(occurrences_by_text.get(target) or [], key=lambda item: item[0])
+        if not occ:
             continue
-        if prev_anchor and next_anchor:
-            (ia, ta), (ib, tb) = prev_anchor[-1], next_anchor[0]
-            oa, ob = official[ia], official[ib]
-            if ob > oa and t > oa:
-                ratio = (t - oa) / (ob - oa)
-                times.append(ta + ratio * (tb - ta))
-                continue
-        if prev_anchor:
-            times.append(prev_anchor[-1][1] + (t - official[prev_anchor[-1][0]]))
+        remaining = list(members)
+        if offset is not None and all(official[m] > 0 for m in members):
+            for start, score in sorted(occ, key=lambda item: -item[1]):
+                if not remaining:
+                    break
+                best_m = min(remaining, key=lambda m: abs(official[m] - (start + offset)))
+                remaining.remove(best_m)
+                _accept(best_m, start, score)
+        else:
+            # 无偏移可用：按行序对应演唱轮次（完整版翻唱顺序即如此）
+            for (start, score), member in zip(occ, members):
+                _accept(member, start, score)
+    # 保证锚点不挤在同一个小窗口里（不同文本撞车时保留高分者）
+    anchors.sort(key=lambda item: (item[1], -item[2]))
+    cleaned: list[tuple[int, float]] = []
+    for idx, start, score in anchors:
+        if cleaned and start - cleaned[-1][1] < 0.35:
             continue
-        if next_anchor:
-            times.append(next_anchor[0][1] - (official[next_anchor[0][0]] - t))
+        cleaned.append((idx, start))
+    anchors = cleaned
+    matched = len(anchors)
+
+    # ---- 3) 每行时间：锚点 / 官方整体偏移映射 / 锚点间兜底插值 ----
+    anchor_by_index = dict(anchors)
+    anchor_indices = sorted(anchor_by_index)
+
+    # 锚点行的「官方时间 − 实测时间」整体偏移：所有未锚定但带官方时间的行
+    # 直接按该偏移落到时间轴；落点 < 0 = 该行在视频开口之前（没唱到）→ 剔除，
+    # 不再按行号硬挤。
+    deltas = [official[i] - anchor_by_index[i] for i in anchor_indices if official[i] > 0]
+    delta = _offset_consensus(deltas)
+
+    times: list[float | None] = []
+    for index in range(len(lyric_lines)):
+        if index in anchor_by_index:
+            times.append(anchor_by_index[index])
             continue
-        times.append(max(0.0, min(duration - 0.2, t)))
-    # 单调保护 + 夹到片长内
-    last = -1.0
-    clipped: list[float] = []
-    for t in times:
-        t = max(last + 0.05, min(duration - 0.15, t)) if duration else max(last + 0.05, t)
-        clipped.append(t)
-        last = t
-    return clipped, matched, (tokens[-1][1] if tokens else duration)
+        if official[index] > 0 and delta is not None:
+            t = official[index] - delta
+            if -_ALIGN_HEAD_TOL <= t < 0:
+                times.append(0.0)  # 半句起唱：从片头显示
+            elif t >= 0:
+                times.append(t)
+            else:
+                times.append(None)
+            continue
+        # 无官方时间 / 无整体偏移：只在两侧锚点之间按比例兜底，锚点外不猜
+        prev = [a for a in anchor_indices if a < index]
+        nxt = [a for a in anchor_indices if a > index]
+        if prev and nxt:
+            ia, ib = prev[-1], nxt[0]
+            ta, tb = anchor_by_index[ia], anchor_by_index[ib]
+            if tb - ta >= 0.6:
+                oa, ob, oi = official[ia], official[ib], official[index]
+                if ob > oa >= 0 and 0 < oi < ob:
+                    ratio = max(0.0, min(1.0, (oi - oa) / (ob - oa)))
+                else:
+                    ratio = (index - ia) / (ib - ia)
+                times.append(max(ta + 0.12, min(tb - 0.12, ta + ratio * (tb - ta))))
+            elif tb > ta:
+                times.append(ta + (tb - ta) * (index - ia) / (ib - ia))
+            else:
+                times.append(None)
+        else:
+            times.append(None)
+
+    # 完全无锚点：退化为等距铺开（尽力而为，调用方会给出提示）
+    if not anchors:
+        if duration > 0:
+            span = max(0.0, duration - 0.8)
+            times = [max(0.0, 0.25 + span * i / max(1, len(times))) for i in range(len(times))]
+        else:
+            times = [None] * len(times)
+    return times, matched, last_vocal
 
 
 # ---------------------------------------------------------------------------
@@ -469,8 +630,8 @@ async def run_lyrics_job(job_id: str) -> None:
             store.add_log(job_id, "正在把歌词逐句匹配到实测时间……")
             times, matched, last_vocal = await asyncio.to_thread(align_line_times, payload, lines)
             if matched == 0:
-                store.add_log(job_id, "警告：识别文本与歌词匹配度低，已按官方歌词时间插值（建议试听后反馈修正）。")
-            store.add_log(job_id, f"对齐完成：{len(times)} 行（高置信实测 {matched} 行）。")
+                store.add_log(job_id, "警告：识别文本与歌词匹配度过低，字幕时间只能按等距预估（建议试听校对后重跑）。")
+            store.add_log(job_id, f"对齐完成：{len(times)} 行（实测锚定 {matched} 行，其余按锚点插值/外推）。")
             raise_if_cancelled(job_id)
 
             # 组装 cue：丢弃越界行与「识别不到演唱」的尾部行；结束时间取下一句起点
@@ -486,7 +647,7 @@ async def run_lyrics_job(job_id: str) -> None:
                 kept.append((line, start))
             skipped = len(lines) - len(kept)
             if skipped:
-                store.add_log(job_id, f"自动截除超出视频时长的歌词 {skipped} 行（保留 {len(kept)} 行）。")
+                store.add_log(job_id, f"剔除视频中未唱到的歌词 {skipped} 行（保留 {len(kept)} 行，字幕只跟随实际演唱出现）。")
             cues = [
                 {
                     "start": start,
