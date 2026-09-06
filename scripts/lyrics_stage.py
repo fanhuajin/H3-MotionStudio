@@ -77,7 +77,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("video", type=Path)
     parser.add_argument("out_json", type=Path)
-    parser.add_argument("--model", default=r"D:\tmp\fw-small")
+    parser.add_argument("--model", default=r"D:\tmp\fw-turbo")
+    parser.add_argument(
+        "--prompt-file",
+        default=None,
+        help="官方歌词提示文件：内容会作为 initial_prompt 注入识别器（UTF-8 文本），"
+        "抑制带伴奏演唱的错字/幻觉，明显提升歌词文本与官方歌词的吻合度",
+    )
     args = parser.parse_args()
 
     video = args.video.resolve()
@@ -100,10 +106,20 @@ def main() -> None:
         from faster_whisper import WhisperModel  # imported late: CPU-compat only needed
 
         log("[3/4] 语音识别（自动检测语种，实测逐词时间）")
+        prompt_text: str | None = None
+        if args.prompt_file:
+            prompt_path = Path(args.prompt_file).resolve()
+            if prompt_path.is_file():
+                prompt_text = prompt_path.read_text(encoding="utf-8").strip()
+                if prompt_text:
+                    log(f"[3/4] 已注入官方歌词提示（{len(prompt_text)} 字符）")
+            else:
+                log(f"[3/4] 警告：提示文件不存在 {prompt_path}")
         model = WhisperModel(str(args.model), device="cpu", compute_type="int8")
         segments, info = model.transcribe(
             str(vocal_wav), language=None, word_timestamps=True,
             vad_filter=False, condition_on_previous_text=False,
+            initial_prompt=prompt_text,
         )
         segs = []
         for seg in segments:

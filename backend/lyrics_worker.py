@@ -45,6 +45,15 @@ _NETEASE_HEADERS = {
 }
 _NETEASE = "https://music.163.com/api"
 
+# 网易云 LRC 常混入的制作人员/版权行（如「和声 : 萧贺硕」「OP : 华纳…」），
+# 不是歌词正文，抓取时直接滤掉，避免被当成歌词行对齐/烧录出来。
+_METADATA_PREFIX = (
+    "作词", "作曲", "编曲", "词曲", "制作人", "和声", "录音", "混音", "母带",
+    "监制", "吉他", "贝斯", "键盘", "钢琴", "鼓手", "架子鼓", "弦乐",
+    "小提琴", "中提琴", "大提琴", "低音提琴", "配唱", "原唱", "翻唱",
+    "发行", "出品", "OP", "SP", "by:",
+)
+
 # ---------------------------------------------------------------------------
 # 语种识别（歌词正文 / whisper 结果都可用）
 # ---------------------------------------------------------------------------
@@ -89,7 +98,9 @@ def _parse_lrc(raw: str) -> list[tuple[float, str]]:
         if not m:
             continue
         text = m.group(3).strip()
-        if not text or text.startswith(("作词", "作曲", "编曲", "by:")):
+        if not text:
+            continue
+        if text.startswith(_METADATA_PREFIX):
             continue
         t = int(m.group(1)) * 60 + float(m.group(2))
         lines.append((t, text))
@@ -198,27 +209,33 @@ def _ratio(a: str, b: str) -> float:
 
 
 # 对齐常量（只调这里，别散落在算法里）：
-_ALIGN_MIN_SCORE = 0.50  # 文本窗口相似度门槛（命中才作锚点）
-_ALIGN_HEAD_TOL = 3.0  # 按整体偏移落到片头前 3s 内的行按 0 处理（半句起唱容差）
+_ALIGN_MIN_SCORE = 0.50  # 文本窗口相似度门槛（命中才作候选）
+_ALIGN_HEAD_TOL = 0.6  # 按整体偏移落到片头前 0.6s 内的行按 0 处理（半句起唱容差；
+# 太大（旧值 3s）会把「紧挨着片段之前的一句」也闪出来）
 _ALIGN_OFFSET_MAX_JITTER = 8.0  # 「官方时间 − 实测时间」抖动超过该值视为拼接/变速视频
 _ALIGN_MERGE_GAP = 4.0  # 同一次演唱可能被识别分数波动切成几段窗口，合并间隔上限
-_ALIGN_UNANCHORED_SEG_MIN = 0.45  # 未锚定行必须与某条 whisper 语音段文本相似 ≥ 此值
-# 才允许按整体偏移投放（防止本片段没唱到的歌句被偏移映射误投进来）
 _ALIGN_REPEAT_TEXT_GAP = 12.0  # 同一句正文两条字幕的最短间隔：短于它视为重复错配只留先出现者
+_ALIGN_STRONG_SCORE = 0.72  # 锚点门槛：相似度 ≥ 此值，或整句被窗口完整包含（common=行长）
+# 才配做锚点。演唱句在语音段里通常是「整句完整出现」（分数 ≈0.8~1.0），
+# 而跨句杂凑窗口（如「会…我」「就…让…」「我…走」隔字命中）分数只有 ~0.5-0.67，作废不投。
 
 
 def _pick_occurrences(
     target: str, tokens: list[tuple[str, float, float, int]]
-) -> list[tuple[float, float]]:
+) -> list[tuple[float, float, int]]:
     """在全部识别词里找 target 的高分演唱窗口。
 
     不依赖行号顺序：每行歌词的正文可能在视频的任何位置（源视频常常是
-    歌曲中段的剪辑/拼接）。返回 [(出现起点秒, 最高相似度)]，同一句文本
-    多次出现会得到多个窗口（供副歌等重复歌词按轮次分配）。
+    歌曲中段的剪辑/拼接）。返回 [(出现起点秒, 最高相似度, 公共子序列长度)]，
+    同一句文本多次出现会得到多个窗口（供副歌等重复歌词按轮次分配）。
 
     窗口被限制在单个 whisper 语音段内、且不允许跨越 >1s 的词间隙，否则
     会从相邻句子尾部捡到零散同字（的/心/难…）拼出假高分窗口；短行还要
     求公共子序列长度达标（两字行只要撞上一个常用字就有 0.5 分，必须挡掉）。
+
+    起点选择：对同一窗口起点取相似度最高（同分取最短）的窗口，保证起点
+    贴住演唱真正开始的词——否则前一短语中间的某个词一路扩展到整句也能
+    得满分，出现起点会被整体前移（如把「我也不懂」锚到前一句的「眼」字）。
     """
     if not target:
         return []
@@ -227,10 +244,13 @@ def _pick_occurrences(
     cap = min(30, max(tlen + 4, 8))  # 窗口 token 数上限
     min_len = max(1, tlen // 3)  # 短于该长度的窗口相似度不可能 ≥ 门槛，直接跳过
     min_common = 2 if tlen <= 3 else max(2, int(round(tlen * 0.4)))  # 公共子序列下限
-    occurrences: list[tuple[float, float]] = []  # (起点, 分数)
+    occurrences: list[tuple[float, float, int]] = []  # (起点, 分数, 公共子序列长度)
     token_count = len(tokens)
     for j in range(token_count):
         best_score = 0.0
+        best_common = 0
+        best_win_len = 1 << 30
+        best_start = tokens[j][1]
         window = ""
         seg_of_j = tokens[j][3]
         for k in range(j, min(j + cap, token_count)):
@@ -250,19 +270,25 @@ def _pick_occurrences(
             matcher = SequenceMatcher(None, target, window)
             score = matcher.ratio()
             common = sum(block.size for block in matcher.get_matching_blocks())
-            if score >= _ALIGN_MIN_SCORE and common >= min_common and score > best_score:
-                best_score = score
+            if score >= _ALIGN_MIN_SCORE and common >= min_common:
+                win_len = k - j + 1
+                if score > best_score or (score == best_score and win_len < best_win_len):
+                    best_score = score
+                    best_common = common
+                    best_win_len = win_len
+                    best_start = tokens[j][1]
         if best_score >= _ALIGN_MIN_SCORE:
-            occurrences.append((tokens[j][1], best_score))
-    # 相邻候选（同一句唱词被多个起点覆盖）合并成一次「出现」，取窗口内最高分
-    occurrences.sort(key=lambda item: item[0])
-    merged: list[tuple[float, float]] = []
-    for start, score in occurrences:
+            occurrences.append((best_start, best_score, best_common))
+    # 相邻候选（同一句唱词被多个起点覆盖）合并成一次「出现」：取最高分那次
+    # 自己的起点与公共子序列（分数相同保留先出现者）
+    occurrences.sort(key=lambda item: (item[0], -item[1]))
+    merged: list[tuple[float, float, int]] = []
+    for start, score, common in occurrences:
         if merged and start - merged[-1][0] <= _ALIGN_MERGE_GAP:
-            if score > merged[-1][1]:
-                merged[-1] = (merged[-1][0], score)
+            if score > merged[-1][1] or (score == merged[-1][1] and common > merged[-1][2]):
+                merged[-1] = (start, score, common)
         else:
-            merged.append((start, score))
+            merged.append((start, score, common))
     return merged
 
 
@@ -305,14 +331,18 @@ def align_line_times(
     texts = [_norm(str(line.get("orig") or "")) for line in lyric_lines]
 
     # ---- 1) 候选锚点（正文相同的行只算一次） ----
-    occurrences_by_text: dict[str, list[tuple[float, float]]] = {}
+    occurrences_by_text: dict[str, list[tuple[float, float, int]]] = {}
     for target in set(texts):
         if target:
             occurrences_by_text[target] = _pick_occurrences(target, tokens)
 
+    def _strong(occ: tuple[float, float, int], target: str) -> bool:
+        """只有「整句被完整包含」或高相似度的窗口才可能是真实演唱（见常量注释）。"""
+        return occ[1] >= _ALIGN_STRONG_SCORE or occ[2] >= len(target)
+
     # ---- 2) 锚点分配 ----
-    # 正文唯一的行：直接锚到它分数最高的出现位置
-    unique_candidates: list[tuple[float, int, int]] = []  # (score, line_idx, occurrence_idx)
+    # 正文唯一的行：直接锚到它分数最高的强出现位置
+    unique_candidates: list[tuple[float, int, tuple[float, float, int]]] = []  # (score, line_idx, 出现)
     repeat_groups: dict[str, list[int]] = {}
     for index, target in enumerate(texts):
         if not target:
@@ -320,10 +350,10 @@ def align_line_times(
         if texts.count(target) > 1:
             repeat_groups.setdefault(target, []).append(index)
         else:
-            occ = occurrences_by_text.get(target) or []
+            occ = [o for o in (occurrences_by_text.get(target) or []) if _strong(o, target)]
             if occ:
                 best = max(range(len(occ)), key=lambda r: occ[r][1])
-                unique_candidates.append((occ[best][1], index, best))
+                unique_candidates.append((occ[best][1], index, occ[best]))
 
     # 唯一文本锚点间的整体偏移（官方时间 − 实测时间）：剪辑视频的起始处不在
     # 0:00，但偏移恒定。个别假锚点会给出离谱偏移，取「最密集的偏移簇」。
@@ -344,8 +374,8 @@ def align_line_times(
         return best_cluster[len(best_cluster) // 2]
 
     unique_deltas = [
-        official[index] - occurrences_by_text[texts[index]][occ_index][0]
-        for score, index, occ_index in unique_candidates
+        official[index] - occ[0]
+        for score, index, occ in unique_candidates
         if official[index] > 0
     ]
     offset = _offset_consensus(unique_deltas)
@@ -360,20 +390,22 @@ def align_line_times(
         seen_lines.add(line_idx)
 
     # 唯一文本：按分数从高到低接受（同一位置一般不会撞车）
-    for score, index, occ_index in sorted(unique_candidates, key=lambda item: (-item[0], item[1])):
-        occ = occurrences_by_text[texts[index]]
-        _accept(index, occ[occ_index][0], score)
+    for score, index, occ in sorted(unique_candidates, key=lambda item: (-item[0], item[1])):
+        _accept(index, occ[0], score)
 
     # 重复歌词（副歌等）轮次分配：正文相同、官方时间又都在的行，把各次演唱
     # 按「官方时间 − (实测 + 偏移)」就近分配给对应轮次；高分的出现先分。
     for target, members in repeat_groups.items():
         members.sort()
-        occ = sorted(occurrences_by_text.get(target) or [], key=lambda item: item[0])
+        occ = sorted(
+            (o for o in (occurrences_by_text.get(target) or []) if _strong(o, target)),
+            key=lambda item: item[0],
+        )
         if not occ:
             continue
         remaining = list(members)
         if offset is not None and all(official[m] > 0 for m in members):
-            for start, score in sorted(occ, key=lambda item: -item[1]):
+            for start, score, _common in sorted(occ, key=lambda item: -item[1]):
                 if not remaining:
                     break
                 best_m = min(remaining, key=lambda m: abs(official[m] - (start + offset)))
@@ -381,7 +413,7 @@ def align_line_times(
                 _accept(best_m, start, score)
         else:
             # 无偏移可用：按行序对应演唱轮次（完整版翻唱顺序即如此）
-            for (start, score), member in zip(occ, members):
+            for (start, score, _common), member in zip(occ, members):
                 _accept(member, start, score)
     # 保证锚点不挤在同一个小窗口里（不同文本撞车时保留高分者）
     anchors.sort(key=lambda item: (item[1], -item[2]))
@@ -540,8 +572,14 @@ def _milestone_state(job_id: str, milestone_id: str) -> None:
     store.set_milestone(job_id, milestone_id, status="running")
 
 
-async def _run_stage_script(job_id: str, video: Path, out_json: Path) -> dict[str, Any]:
-    """执行 RVC venv 阶段脚本；实时回传日志并推进里程碑。"""
+async def _run_stage_script(
+    job_id: str, video: Path, out_json: Path, prompt_text: str | None = None
+) -> dict[str, Any]:
+    """执行 RVC venv 阶段脚本；实时回传日志并推进里程碑。
+
+    prompt_text：网易云官方歌词（含歌名/歌手）拼接文本，作为 initial_prompt
+    注入 whisper，抑制演唱错字/幻觉、提高与歌词库文本的吻合度。
+    """
     if not LYRICS_ASR_PY.is_file():
         raise PipelineError("语音识别环境不完整", f"缺少：{LYRICS_ASR_PY}")
     if not LYRICS_ASR_MODEL.is_dir():
@@ -549,6 +587,10 @@ async def _run_stage_script(job_id: str, video: Path, out_json: Path) -> dict[st
             "缺少语音识别模型",
             f"预期模型目录：{LYRICS_ASR_MODEL}\n（faster-whisper base，可从 hf-mirror.com/Systran/faster-whisper-base 下载后解压使用）",
         )
+    prompt_file: Path | None = None
+    if prompt_text:
+        prompt_file = out_json.parent / "asr_prompt.txt"
+        prompt_file.write_text(prompt_text, encoding="utf-8")
     _milestone_state(job_id, "stems")
     store.add_log(job_id, "正在分离人声并识别（Demucs + faster-whisper，全程不占用 ComfyUI）……")
     command = [
@@ -559,6 +601,8 @@ async def _run_stage_script(job_id: str, video: Path, out_json: Path) -> dict[st
         "--model",
         str(LYRICS_ASR_MODEL),
     ]
+    if prompt_file is not None:
+        command += ["--prompt-file", str(prompt_file)]
     process = await asyncio.create_subprocess_exec(
         *command,
         cwd=str(PROJECT_ROOT),
@@ -628,7 +672,15 @@ async def run_lyrics_job(job_id: str) -> None:
 
             store.set_milestone(job_id, "read", status="running", currentNode="读取音轨", progress=40)
             asr_json = job_dir / "asr.json"
-            payload = await _run_stage_script(job_id, source, asr_json)
+            song_name = str(state.get("songName") or "")
+            prompt_text = " ".join(
+                str(line.get("orig") or "").strip()
+                for line in lines
+                if str(line.get("orig") or "").strip()
+            )
+            prompt_text = (f"《{song_name}》歌词：" if song_name else "歌词：") + prompt_text
+            # initial_prompt 只作用于首个解码窗口，截断到约 900 字符即可
+            payload = await _run_stage_script(job_id, source, asr_json, prompt_text[:900] or None)
             raise_if_cancelled(job_id)
             store.set_milestone(job_id, "read", status="completed", progress=100, currentNode=None)
 
@@ -652,22 +704,22 @@ async def run_lyrics_job(job_id: str) -> None:
             # 因此先全量收集、再按实际时间排序后做 |Δ|<0.45s 的重复时刻去重，
             # 不能在按行序遍历时用单向游标（会把时间早于上一行的真唱行全删掉）。
             duration = float(payload.get("duration") or meta.get("duration") or 0)
-            seg_texts = [_norm(str(seg.get("text") or "")) for seg in (payload.get("segments") or [])]
-            seg_texts = [text for text in seg_texts if text]
+            anchor_start_times = [
+                start for index, start in enumerate(times)
+                if index in anchored_idx and start is not None
+            ]
             candidates: list[tuple[int, dict[str, Any], float]] = []
             for index, (line, start) in enumerate(zip(lines, times)):
                 if start is None or start < -0.05 or start >= duration - 0.2:
                     continue
                 if start > last_vocal + 1.0:
                     continue  # 该行在音频里没有被唱到（识别词已结束）
-                if index not in anchored_idx:
-                    # 未锚定行靠整体偏移投放：文本必须确实近似出现在某条语音段里，
-                    # 否则（whisper 没唱/听错导致的其它歌句）禁止显示，避免假字幕
-                    target = _norm(str(line.get("orig") or ""))
-                    if target and not any(
-                        SequenceMatcher(None, target, seg_text).ratio() >= _ALIGN_UNANCHORED_SEG_MIN
-                        for seg_text in seg_texts
-                    ):
+                if index not in anchored_idx and anchor_start_times:
+                    # 未锚定行的时间是「官方时间 − 整体偏移」的映射值：只有当锚点存在时，
+                    # 落在「锚点区间内」的映射才有意义（官方时间相邻的行在片段里连续演唱，
+                    # 映射即真实位置；区间外说明该行属于片段前/后的段落，没被唱到）。
+                    # 片头容差按 0.5s 起算，避免「紧挨片段之前的一句」在 0:00 闪出假字幕。
+                    if start < 0.5 or start > max(anchor_start_times) + 1.0:
                         continue
                 candidates.append((index, line, start))
             candidates.sort(key=lambda item: item[2])
