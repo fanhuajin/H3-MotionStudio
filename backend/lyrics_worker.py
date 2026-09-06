@@ -216,6 +216,12 @@ _ALIGN_OFFSET_MAX_JITTER = 8.0  # 「官方时间 − 实测时间」抖动超�
 _ALIGN_MERGE_GAP = 4.0  # 同一次演唱可能被识别分数波动切成几段窗口，合并间隔上限
 _ALIGN_REPEAT_TEXT_GAP = 12.0  # 同一句正文两条字幕的最短间隔：短于它视为重复错配只留先出现者
 _ALIGN_STRONG_SCORE = 0.72  # 锚点门槛：相似度 ≥ 此值，或整句被窗口完整包含（common=行长）
+# 假锚点剔除：真锚点共享「官方 − 实测」整体偏移（线性片段恒定）。共享后缀的跨句
+# 窗口（如把「你不等了…说好的幸福呢」的后半捡给「怎么了你累了…说好的幸福呢」）
+# 分数可达 0.72+ 混过强锚点门槛，但其自身偏移会偏离共识簇一大截 → 作废按未命中。
+_ALIGN_OFFSET_MAX_DEVIATION = 6.0
+_ALIGN_PREFIX_PULL_RANGE = 4.0  # 满分窗口向前找连续前缀的最大回溯范围（秒）
+_ALIGN_PREFIX_PULL_LINK = 1.6  # 前缀链末端距窗口起点 ≤ 此值才认定同一次演唱
 # 才配做锚点。演唱句在语音段里通常是「整句完整出现」（分数 ≈0.8~1.0），
 # 而跨句杂凑窗口（如「会…我」「就…让…」「我…走」隔字命中）分数只有 ~0.5-0.67，作废不投。
 
@@ -289,7 +295,33 @@ def _pick_occurrences(
                 merged[-1] = (start, score, common)
         else:
             merged.append((start, score, common))
-    return merged
+    # 前缀拉回：识别词流里混入重复/幻觉词时，满分整句窗口的起点会整体后移
+    # （如「那…些…爱…过」被坍缩重复词隔断，完整窗口只剩 2.5s 之后的部分）。
+    # 若窗口起点之前存在 ≥3 字、与该行开头逐字连续的前缀，把起点拉回最早一处，
+    # 保证字幕贴住演唱真正开始的词而不是晚半句。
+    pulled: list[tuple[float, float, int]] = []
+    for start, score, common in merged:
+        if not (score >= 0.95 or common >= len(target)):
+            pulled.append((start, score, common))
+            continue
+        best: float | None = None
+        for k, (piece, t0, _end, _seg) in enumerate(tokens):
+            if t0 >= start - 0.35 or t0 < start - _ALIGN_PREFIX_PULL_RANGE:
+                continue
+            pos = 0
+            idx = k
+            last_end = t0
+            while pos < len(target) and idx < len(tokens):
+                part = tokens[idx][0]
+                if not target.startswith(part, pos):
+                    break
+                pos += len(part)
+                last_end = tokens[idx][2]
+                idx += 1
+            if pos >= min(3, len(target)) and last_end >= start - _ALIGN_PREFIX_PULL_LINK:
+                best = t0 if best is None or t0 < best else best
+        pulled.append((max(0.0, best), score, common) if best is not None else (start, score, common))
+    return pulled
 
 
 def align_line_times(
@@ -422,6 +454,21 @@ def align_line_times(
         if cleaned and start - cleaned[-1][1] < 0.35:
             continue
         cleaned.append((idx, start))
+
+    # 假锚点剔除：真锚点共享「官方 − 实测」整体偏移（线性片段恒定）；共享后缀的
+    # 跨句强窗口（如把「你不等了…说好的幸福呢」捡给「怎么了你累了…说好的幸福呢」）
+    # 偏移会偏离共识簇一大截 → 作废，按未命中行走区间映射/剔除。
+    deviation_deltas = sorted(official[idx] - start for idx, start in cleaned if official[idx] > 0)
+    if len(deviation_deltas) >= 3:
+        consensus = _offset_consensus(deviation_deltas)
+        if consensus is not None:
+            near_count = sum(1 for d in deviation_deltas if abs(d - consensus) <= _ALIGN_OFFSET_MAX_JITTER)
+            if near_count >= 2:
+                cleaned = [
+                    (idx, start) for idx, start in cleaned
+                    if official[idx] <= 0
+                    or abs((official[idx] - start) - consensus) <= _ALIGN_OFFSET_MAX_DEVIATION
+                ]
     anchors = cleaned
     matched = len(anchors)
 
@@ -686,16 +733,29 @@ async def run_lyrics_job(job_id: str) -> None:
 
             lang = str(payload.get("language") or "?")
             store.update(job_id, lyricAsrLang=lang)
+            segment_count = len(payload.get("segments") or [])
             store.add_log(
                 job_id,
-                f"识别语种：{lang}（概率 {payload.get('language_probability', 0)}）· 音频 {payload.get('duration')}s · {len(payload.get('segments') or [])} 个语音段",
+                f"识别语种：{lang}（概率 {payload.get('language_probability', 0)}）· 音频 {payload.get('duration')}s · {segment_count} 个语音段",
             )
+            if segment_count == 0:
+                # 兜底防线：阶段脚本已带空段重试，仍为空说明源视频确实没有可识别的
+                # 演唱人声——直接失败并提示，绝不静默产出「等距铺开」的假字幕。
+                raise PipelineError(
+                    "未识别到演唱人声",
+                    "多次识别均返回空结果：视频可能没有清晰人声演唱（如纯伴奏/压混过低）。"
+                    "请换人声更清晰的演唱视频后重新提交。",
+                )
 
             _milestone_state(job_id, "align")
             store.add_log(job_id, "正在把歌词逐句匹配到实测时间……")
             times, matched, last_vocal, anchored_idx = await asyncio.to_thread(align_line_times, payload, lines)
             if matched == 0:
-                store.add_log(job_id, "警告：识别文本与歌词匹配度过低，字幕时间只能按等距预估（建议试听校对后重跑）。")
+                raise PipelineError(
+                    "歌词与演唱无法对上",
+                    "识别到了语音，但没有一行歌词能匹配上演唱文本：多半是选错了歌/歌词行与视频不一致，"
+                    "或人声太糊。请核对歌曲与歌词后重新提交；仍失败可换人声更清晰的视频。",
+                )
             store.add_log(job_id, f"对齐完成：{len(times)} 行（实测锚定 {matched} 行，其余按锚点插值/外推）。")
             raise_if_cancelled(job_id)
 

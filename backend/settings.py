@@ -61,10 +61,12 @@ RVC_INDEX = RVC_ROOT / "assets" / "indices" / "kikiV1.index"
 # 自动识别语种并实测每句演唱时间，官方歌词只取文本（韩/日/中/英均可）。
 # 2026-09-06 升级史：base 对带伴奏演唱错字/幻觉整句 → small；随后识别时注入
 # 官方歌词 initial_prompt（见 lyrics_stage.py --prompt-file）后 small 已基本可用，
-# 最终定稿 large-v3-turbo（128 维 mel，需同目录 preprocessor_config.json 与
-# vocabulary.txt，后者与其它多语种版同词表、从 fw-small 复制）。
+# 又试定稿 large-v3-turbo —— 但 turbo（~1.6B）在 CPU int8 上长时间满载推理会
+# 间歇性整段空转（本机实测 4 次里 3 次空 + 1 次片尾幻觉，模型越大 CPU 越不稳），
+# 而 small 连跑多次稳定出字。故默认回 fw-small（CPU 稳定、20s 音频约 15-30s）；
+# turbo 留给日后 GPU 推理（装 cuBLAS/cuDNN 后设 H3_WHISPER_MODEL 即可切换）。
 LYRICS_ASR_PY = RVC_PYTHON
-LYRICS_ASR_MODEL = Path(os.getenv("H3_WHISPER_MODEL", r"D:\tmp\fw-turbo"))
+LYRICS_ASR_MODEL = Path(os.getenv("H3_WHISPER_MODEL", r"D:\tmp\fw-small"))
 # 剪映手书（内部名 JYgangbi）：剪映缓存字体；直出版默认 白字细描边·字号≈剪映字号10。
 JY_SHOU_SHU_FONT = Path(
     os.getenv(
