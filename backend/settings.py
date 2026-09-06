@@ -48,9 +48,13 @@ DIFFUSION_MODELS_DIR = COMFY_ROOT / "models" / "diffusion_models"
 RVC_ROOT = COMFY_HOME / "RVC"
 RVC_PYTHON = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 RVC_SCRIPT = RVC_ROOT / "convert_video_to_my_voice.py"
-RVC_MODEL = RVC_ROOT / "assets" / "weights" / "ranran.pth"
-# ranran 无专属 index：该路径为可选候选（存在才启用索引，缺失则以无索引模式运行）
-RVC_INDEX = RVC_ROOT / "assets" / "indices" / "ranran.index"
+# H3 唱歌链路默认音色。2026-09-06 两轮 A/B（11 模型全量对比 + kikiV1/SANHEYIV1 正面 PK）
+# 定稿：原 ranran（无 index、频谱 1k-3k 仅 ~10%，输出"闷/呜 u"）弃用，改 kikiV1——
+# 40k 标注与推理一致、音高保真 100%/相关性 0.995、频谱明亮（1k-3k ~20%）、社区"常用"款，
+# 索引 kikiV1.index 与模型同源（上游 挑选/!kikiV1 发布目录）。ranran 素材仍在 weights 不删除。
+RVC_MODEL = RVC_ROOT / "assets" / "weights" / "kikiV1.pth"
+# kikiV1 官方索引（ASCII 文件名，faiss 可正常读取）；文件被删则自动以无索引模式运行。
+RVC_INDEX = RVC_ROOT / "assets" / "indices" / "kikiV1.index"
 
 # 歌词字幕路由（多语言）：用 RVC 环境的 torchaudio HDEMUCS 分离人声，再用
 # faster-whisper（本地模型目录，缺省 D:\tmp\fw-base，可用 H3_WHISPER_MODEL 覆盖）
