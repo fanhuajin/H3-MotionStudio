@@ -48,14 +48,13 @@ DIFFUSION_MODELS_DIR = COMFY_ROOT / "models" / "diffusion_models"
 RVC_ROOT = COMFY_HOME / "RVC"
 RVC_PYTHON = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 RVC_SCRIPT = RVC_ROOT / "convert_video_to_my_voice.py"
-# H3 唱歌链路默认音色。2026-09-06 两轮 A/B（11 模型全量对比 + kikiV1/SANHEYIV1 正面 PK）
-# 定稿：原 ranran（无 index、频谱 1k-3k 仅 ~10%，输出"闷/呜 u"）弃用，改 kikiV1——
-# 40k 标注与推理一致、音高保真 100%/相关性 0.995、频谱明亮（1k-3k ~20%）、社区"常用"款，
-# 索引 kikiV1.index 与模型同源（上游 挑选/!kikiV1 发布目录）。ranran 无专属索引，
-# 已按音色库整理规则从 assets/weights 移除（保留该行历史说明，勿再放入无索引模型）。
-RVC_MODEL = RVC_ROOT / "assets" / "weights" / "kikiV1.pth"
-# kikiV1 官方索引（ASCII 文件名，faiss 可正常读取）；文件被删则自动以无索引模式运行。
-RVC_INDEX = RVC_ROOT / "assets" / "indices" / "kikiV1.index"
+# H3 唱歌链路默认音色（定稿：sasablue_v2，自训练，专属索引齐全）。
+# 历程：ranran（无 index、频谱 1k-3k 仅 ~10% 闷/呜）弃用 → 旧默认款经两轮 A/B 定稿 →
+# 换用 sasablue_v2（同曲 4 款客观对比亮度最贴近原声、音准 98.9%；旧默认款仍保留在
+# weights 可选；ranran 无专属索引已移出，仅作历史说明）。
+RVC_MODEL = RVC_ROOT / "assets" / "weights" / "sasablue_v2.pth"
+# sasablue_v2 专属索引（ASCII 文件名，faiss 可正常读取）；文件被删则自动以无索引模式运行。
+RVC_INDEX = RVC_ROOT / "assets" / "indices" / "sasablue_v2.index"
 
 # 歌词字幕路由（多语言）：用 RVC 环境的 torchaudio HDEMUCS 分离人声，再用
 # faster-whisper（本地模型目录，缺省 D:\tmp\fw-turbo，可用 H3_WHISPER_MODEL 覆盖）
