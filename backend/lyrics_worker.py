@@ -202,6 +202,9 @@ _ALIGN_MIN_SCORE = 0.50  # 文本窗口相似度门槛（命中才作锚点）
 _ALIGN_HEAD_TOL = 3.0  # 按整体偏移落到片头前 3s 内的行按 0 处理（半句起唱容差）
 _ALIGN_OFFSET_MAX_JITTER = 8.0  # 「官方时间 − 实测时间」抖动超过该值视为拼接/变速视频
 _ALIGN_MERGE_GAP = 4.0  # 同一次演唱可能被识别分数波动切成几段窗口，合并间隔上限
+_ALIGN_UNANCHORED_SEG_MIN = 0.45  # 未锚定行必须与某条 whisper 语音段文本相似 ≥ 此值
+# 才允许按整体偏移投放（防止本片段没唱到的歌句被偏移映射误投进来）
+_ALIGN_REPEAT_TEXT_GAP = 12.0  # 同一句正文两条字幕的最短间隔：短于它视为重复错配只留先出现者
 
 
 def _pick_occurrences(
@@ -268,7 +271,8 @@ def align_line_times(
 ) -> tuple[list[float | None], int, float]:
     """把每行歌词锚到实测演唱时间（视频时间轴）。
 
-    返回（每行起始秒，可为 None=该行不在演唱范围内、实测锚定行数、末词起点）。
+    返回（每行起始秒，可为 None=该行不在演唱范围内、实测锚定行数、末词起点、
+    锚定行下标集合）。
     源视频常是整首歌的中段剪辑/拼接（开口处不在 0:00），因此旧版「按行号
     顺序 + 单向游标 + 官方 ±3.2s 窗」会系统性失败。v2 策略：
 
@@ -440,7 +444,7 @@ def align_line_times(
             times = [max(0.0, 0.25 + span * i / max(1, len(times))) for i in range(len(times))]
         else:
             times = [None] * len(times)
-    return times, matched, last_vocal
+    return times, matched, last_vocal, set(anchor_by_index)
 
 
 # ---------------------------------------------------------------------------
@@ -637,7 +641,7 @@ async def run_lyrics_job(job_id: str) -> None:
 
             _milestone_state(job_id, "align")
             store.add_log(job_id, "正在把歌词逐句匹配到实测时间……")
-            times, matched, last_vocal = await asyncio.to_thread(align_line_times, payload, lines)
+            times, matched, last_vocal, anchored_idx = await asyncio.to_thread(align_line_times, payload, lines)
             if matched == 0:
                 store.add_log(job_id, "警告：识别文本与歌词匹配度过低，字幕时间只能按等距预估（建议试听校对后重跑）。")
             store.add_log(job_id, f"对齐完成：{len(times)} 行（实测锚定 {matched} 行，其余按锚点插值/外推）。")
@@ -648,19 +652,35 @@ async def run_lyrics_job(job_id: str) -> None:
             # 因此先全量收集、再按实际时间排序后做 |Δ|<0.45s 的重复时刻去重，
             # 不能在按行序遍历时用单向游标（会把时间早于上一行的真唱行全删掉）。
             duration = float(payload.get("duration") or meta.get("duration") or 0)
-            candidates: list[tuple[dict[str, Any], float]] = []
-            for line, start in zip(lines, times):
+            seg_texts = [_norm(str(seg.get("text") or "")) for seg in (payload.get("segments") or [])]
+            seg_texts = [text for text in seg_texts if text]
+            candidates: list[tuple[int, dict[str, Any], float]] = []
+            for index, (line, start) in enumerate(zip(lines, times)):
                 if start is None or start < -0.05 or start >= duration - 0.2:
                     continue
                 if start > last_vocal + 1.0:
                     continue  # 该行在音频里没有被唱到（识别词已结束）
-                candidates.append((line, start))
-            candidates.sort(key=lambda item: item[1])
-            kept: list[tuple[dict[str, Any], float]] = []
-            for line, start in candidates:
-                if kept and abs(start - kept[-1][1]) < 0.45:
+                if index not in anchored_idx:
+                    # 未锚定行靠整体偏移投放：文本必须确实近似出现在某条语音段里，
+                    # 否则（whisper 没唱/听错导致的其它歌句）禁止显示，避免假字幕
+                    target = _norm(str(line.get("orig") or ""))
+                    if target and not any(
+                        SequenceMatcher(None, target, seg_text).ratio() >= _ALIGN_UNANCHORED_SEG_MIN
+                        for seg_text in seg_texts
+                    ):
+                        continue
+                candidates.append((index, line, start))
+            candidates.sort(key=lambda item: item[2])
+            kept: list[tuple[int, dict[str, Any], float]] = []
+            kept_texts: dict[str, float] = {}
+            for index, line, start in candidates:
+                if kept and abs(start - kept[-1][2]) < 0.45:
                     continue  # 同刻重复（尾部截断/重复句错配）只留最先出现的一条
-                kept.append((line, start))
+                text_key = _norm(str(line.get("orig") or ""))
+                if text_key and kept_texts.get(text_key, -1e9) > start - _ALIGN_REPEAT_TEXT_GAP:
+                    continue  # 同一句正文在过短间隔内重复出现 = 重复句错配，只留先出现者
+                kept.append((index, line, start))
+                kept_texts[text_key] = start
             skipped = len(lines) - len(kept)
             if skipped:
                 store.add_log(job_id, f"剔除视频中未唱到的歌词 {skipped} 行（保留 {len(kept)} 行，字幕只跟随实际演唱出现）。")
@@ -671,7 +691,7 @@ async def run_lyrics_job(job_id: str) -> None:
                     "orig": str(line.get("orig") or ""),
                     "zh": str(line.get("zh") or ""),
                 }
-                for line, start in kept
+                for _index, line, start in kept
             ]
             for index, cue in enumerate(cues):
                 start = cue["start"]

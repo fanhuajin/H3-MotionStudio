@@ -57,10 +57,11 @@ RVC_MODEL = RVC_ROOT / "assets" / "weights" / "kikiV1.pth"
 RVC_INDEX = RVC_ROOT / "assets" / "indices" / "kikiV1.index"
 
 # 歌词字幕路由（多语言）：用 RVC 环境的 torchaudio HDEMUCS 分离人声，再用
-# faster-whisper（本地模型目录，缺省 D:\tmp\fw-base，可用 H3_WHISPER_MODEL 覆盖）
+# faster-whisper（本地模型目录，缺省 D:\tmp\fw-small，可用 H3_WHISPER_MODEL 覆盖）
 # 自动识别语种并实测每句演唱时间，官方歌词只取文本（韩/日/中/英均可）。
+# 2026-09-06：base 对带伴奏演唱错字过多（幻觉整句），歌词锚定错位，升级 small。
 LYRICS_ASR_PY = RVC_PYTHON
-LYRICS_ASR_MODEL = Path(os.getenv("H3_WHISPER_MODEL", r"D:\tmp\fw-base"))
+LYRICS_ASR_MODEL = Path(os.getenv("H3_WHISPER_MODEL", r"D:\tmp\fw-small"))
 # 剪映手书（内部名 JYgangbi）：剪映缓存字体；直出版默认 白字细描边·字号≈剪映字号10。
 JY_SHOU_SHU_FONT = Path(
     os.getenv(

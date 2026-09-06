@@ -77,7 +77,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("video", type=Path)
     parser.add_argument("out_json", type=Path)
-    parser.add_argument("--model", default=r"D:\tmp\fw-base")
+    parser.add_argument("--model", default=r"D:\tmp\fw-small")
     args = parser.parse_args()
 
     video = args.video.resolve()
