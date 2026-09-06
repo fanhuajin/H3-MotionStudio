@@ -24,6 +24,11 @@ from typing import Any
 
 import httpx
 
+try:
+    import zhconv
+except ImportError:  # 可选依赖：未安装时繁体不转换，仅影响繁体歌词/识别文本的锚定率
+    zhconv = None  # type: ignore[assignment]
+
 from .settings import (
     DATA_DIR,
     JY_SHOU_SHU_FONT,
@@ -176,7 +181,11 @@ async def netease_lyric(song_id: int) -> dict[str, Any]:
 
 
 def _norm(text: str) -> str:
-    """归一化：小写、去标点；中日韩去空格逐字比较，拉丁按词比较。"""
+    """归一化：小写、去标点；繁体先统一转简体（网易云歌词多为简体，
+    而 whisper 中文输出常为繁体，不转换会让整行相似度跌破阈值）；
+    中日韩去空格逐字比较，拉丁按词比较。"""
+    if zhconv is not None and text:
+        text = zhconv.convert(text, "zh-cn")
     text = text.lower()
     text = re.sub(r"[^\w\u3040-\u30ff\uac00-\ud7af\u4e00-\u9fff ]", "", text)
     if detect_lang(text) in ("zh", "ko", "ja"):
@@ -634,16 +643,23 @@ async def run_lyrics_job(job_id: str) -> None:
             store.add_log(job_id, f"对齐完成：{len(times)} 行（实测锚定 {matched} 行，其余按锚点插值/外推）。")
             raise_if_cancelled(job_id)
 
-            # 组装 cue：丢弃越界行与「识别不到演唱」的尾部行；结束时间取下一句起点
+            # 组装 cue：丢弃越界行与「识别不到演唱」的尾部行；结束时间取下一句起点。
+            # 注意：片段视频的官方歌词顺序 ≠ 实际演唱顺序（时间可能回退），
+            # 因此先全量收集、再按实际时间排序后做 |Δ|<0.45s 的重复时刻去重，
+            # 不能在按行序遍历时用单向游标（会把时间早于上一行的真唱行全删掉）。
             duration = float(payload.get("duration") or meta.get("duration") or 0)
-            kept: list[tuple[dict[str, Any], float]] = []
+            candidates: list[tuple[dict[str, Any], float]] = []
             for line, start in zip(lines, times):
                 if start is None or start < -0.05 or start >= duration - 0.2:
                     continue
                 if start > last_vocal + 1.0:
                     continue  # 该行在音频里没有被唱到（识别词已结束）
-                if kept and start - kept[-1][1] < 0.45:
-                    continue  # 尾部截断产生的重复时刻只留一条
+                candidates.append((line, start))
+            candidates.sort(key=lambda item: item[1])
+            kept: list[tuple[dict[str, Any], float]] = []
+            for line, start in candidates:
+                if kept and abs(start - kept[-1][1]) < 0.45:
+                    continue  # 同刻重复（尾部截断/重复句错配）只留最先出现的一条
                 kept.append((line, start))
             skipped = len(lines) - len(kept)
             if skipped:
@@ -657,7 +673,6 @@ async def run_lyrics_job(job_id: str) -> None:
                 }
                 for line, start in kept
             ]
-            cues.sort(key=lambda cue: cue["start"])
             for index, cue in enumerate(cues):
                 start = cue["start"]
                 if index + 1 < len(cues):
