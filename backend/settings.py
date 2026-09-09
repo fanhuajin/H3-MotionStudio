@@ -68,6 +68,15 @@ RVC_INDEX = RVC_ROOT / "assets" / "indices" / "kikiV1.index"
 # 无需换模型。显式设 H3_WHISPER_MODEL 可覆盖（turbo 需自行评估稳定性）。
 LYRICS_ASR_PY = RVC_PYTHON
 LYRICS_ASR_MODEL = Path(os.getenv("H3_WHISPER_MODEL", r"D:\tmp\fw-small"))
+# 中文歌词最终时间轴采用 FunASR 官方 fa-zh 时间戳预测模型：输入 Demucs 人声与
+# 已确认歌词文本，直接输出逐字时间；Whisper 只负责识别片段实际唱到的歌词范围。
+LYRICS_ALIGN_PY = Path(
+    os.getenv("H3_LYRICS_ALIGN_PY", r"D:\Comfyui\FunASR\.venv\Scripts\python.exe")
+)
+LYRICS_ALIGN_MODEL = Path(
+    os.getenv("H3_LYRICS_ALIGN_MODEL", r"D:\tmp\funasr-fa-zh")
+)
+LYRICS_ALIGN_SCRIPT = PROJECT_ROOT / "scripts" / "lyrics_force_align.py"
 # 剪映手书（内部名 JYgangbi）：剪映缓存字体；直出版默认 白字细描边·字号≈剪映字号10。
 JY_SHOU_SHU_FONT = Path(
     os.getenv(
@@ -192,4 +201,3 @@ def required_paths() -> dict[str, Path]:
     if MIGRATE_REFERENCE.is_file():
         paths["动作迁移人物图"] = MIGRATE_REFERENCE
     return paths
-

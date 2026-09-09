@@ -187,6 +187,11 @@ def main() -> None:
     parser.add_argument("out_json", type=Path)
     parser.add_argument("--model", default=r"D:\tmp\fw-small")
     parser.add_argument(
+        "--vocals-out",
+        default=None,
+        help="可选：持久化保存 Demucs 分离后的人声 WAV，供后续强制对齐复用",
+    )
+    parser.add_argument(
         "--prompt-file",
         default=None,
         help="官方歌词提示文件：内容会作为 initial_prompt 注入识别器（UTF-8 文本），"
@@ -211,7 +216,12 @@ def main() -> None:
         duration = float(sf.info(wav).duration)
         log(f"[2/4] Demucs 人声分离（{duration:.1f}s）")
         vocal, rate = separate_vocals(wav)
-        vocal_wav = tmp / "vocals.wav"
+        vocal_wav = (
+            Path(args.vocals_out).resolve()
+            if args.vocals_out
+            else tmp / "vocals.wav"
+        )
+        vocal_wav.parent.mkdir(parents=True, exist_ok=True)
         sf.write(vocal_wav, vocal.T, rate, subtype="PCM_16")
 
         from faster_whisper import WhisperModel  # imported late: CPU-compat only needed

@@ -3,8 +3,9 @@
 数据流：
 1) 网易云搜索/取词（lrc 原文 + tlyric 中文翻译），自动识别歌词语种；
 2) scripts/lyrics_stage.py（RVC venv python）demucs 分离人声 +
-   faster-whisper 自动语种识别，输出逐词时间戳 JSON；
-3) 把每行歌词匹配到词级时间戳（difflib 文本相似 + 官方时间线性插值兜底）；
+   faster-whisper 自动语种识别，确定视频实际唱到的歌词范围；
+3) 中文行用 FunASR fa-zh（已知歌词 + 分离后人声）逐字强制对齐；
+   其他语种保留 whisper 词时间戳匹配；
 4) 用剪映手书（JYgangbi）烧录字幕，字号 ≈ 剪映字号 10（按画布高度换算）。
 """
 from __future__ import annotations
@@ -32,6 +33,9 @@ except ImportError:  # 可选依赖：未安装时繁体不转换，仅影响繁
 from .settings import (
     DATA_DIR,
     JY_SHOU_SHU_FONT,
+    LYRICS_ALIGN_MODEL,
+    LYRICS_ALIGN_PY,
+    LYRICS_ALIGN_SCRIPT,
     LYRICS_ASR_MODEL,
     LYRICS_ASR_PY,
     PROJECT_ROOT,
@@ -700,7 +704,11 @@ def _milestone_state(job_id: str, milestone_id: str) -> None:
 
 
 async def _run_stage_script(
-    job_id: str, video: Path, out_json: Path, prompt_text: str | None = None
+    job_id: str,
+    video: Path,
+    out_json: Path,
+    vocals_out: Path,
+    prompt_text: str | None = None,
 ) -> dict[str, Any]:
     """执行 RVC venv 阶段脚本；实时回传日志并推进里程碑。
 
@@ -727,6 +735,8 @@ async def _run_stage_script(
         str(out_json),
         "--model",
         str(LYRICS_ASR_MODEL),
+        "--vocals-out",
+        str(vocals_out),
     ]
     if prompt_file is not None:
         command += ["--prompt-file", str(prompt_file)]
@@ -765,6 +775,85 @@ async def _run_stage_script(
     return payload
 
 
+async def _run_forced_alignment(
+    job_id: str,
+    vocals: Path,
+    kept: list[tuple[int, dict[str, Any], float]],
+    job_dir: Path,
+) -> dict[str, Any]:
+    """中文最终校时：FunASR fa-zh 直接对齐“已确认歌词 + 分离后人声”。"""
+    missing = [
+        str(path)
+        for path, kind in (
+            (LYRICS_ALIGN_PY, "file"),
+            (LYRICS_ALIGN_SCRIPT, "file"),
+            (LYRICS_ALIGN_MODEL, "dir"),
+        )
+        if (kind == "file" and not path.is_file()) or (kind == "dir" and not path.is_dir())
+    ]
+    if missing:
+        raise PipelineError(
+            "中文歌词强制对齐环境不完整",
+            "缺少：\n" + "\n".join(missing),
+        )
+    input_path = job_dir / "force_align_lines.json"
+    output_path = job_dir / "force_align.json"
+    selected = [
+        {"index": index, "orig": str(line.get("orig") or "")}
+        for index, line, _start in kept
+    ]
+    input_path.write_text(
+        json.dumps(selected, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    command = [
+        str(LYRICS_ALIGN_PY),
+        str(LYRICS_ALIGN_SCRIPT),
+        str(vocals),
+        str(input_path),
+        str(output_path),
+        "--model",
+        str(LYRICS_ALIGN_MODEL),
+    ]
+    store.add_log(
+        job_id,
+        "正在用 FunASR fa-zh 官方强制对齐模型逐字校时（已确认歌词 + 分离后人声）……",
+    )
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(PROJECT_ROOT),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+    )
+    assert process.stdout is not None
+    logs: list[str] = []
+    while True:
+        raw = await process.stdout.readline()
+        if not raw:
+            break
+        line = raw.decode("utf-8", errors="replace").rstrip()
+        if line:
+            logs.append(line)
+            store.add_log(job_id, f"强制对齐：{line}")
+    return_code = await process.wait()
+    if return_code != 0:
+        raise PipelineError(
+            "中文歌词强制对齐失败",
+            "\n".join(logs[-60:]) or f"退出码 {return_code}",
+        )
+    try:
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise PipelineError("中文歌词强制对齐结果缺失或不可读", str(output_path)) from None
+    aligned = payload.get("lines") or []
+    if len(aligned) != len(kept):
+        raise PipelineError(
+            "中文歌词强制对齐结果不完整",
+            f"提交 {len(kept)} 行，模型仅返回 {len(aligned)} 行",
+        )
+    return payload
+
+
 async def run_lyrics_job(job_id: str) -> None:
     async with pipeline_lock:
         state = store.get(job_id)
@@ -799,6 +888,7 @@ async def run_lyrics_job(job_id: str) -> None:
 
             store.set_milestone(job_id, "read", status="running", currentNode="读取音轨", progress=40)
             asr_json = job_dir / "asr.json"
+            vocals_wav = job_dir / "vocals.wav"
             song_name = str(state.get("songName") or "")
             prompt_text = " ".join(
                 str(line.get("orig") or "").strip()
@@ -807,7 +897,9 @@ async def run_lyrics_job(job_id: str) -> None:
             )
             prompt_text = (f"《{song_name}》歌词：" if song_name else "歌词：") + prompt_text
             # initial_prompt 只作用于首个解码窗口，截断到约 900 字符即可
-            payload = await _run_stage_script(job_id, source, asr_json, prompt_text[:900] or None)
+            payload = await _run_stage_script(
+                job_id, source, asr_json, vocals_wav, prompt_text[:900] or None
+            )
             raise_if_cancelled(job_id)
             store.set_milestone(job_id, "read", status="completed", progress=100, currentNode=None)
 
@@ -876,6 +968,39 @@ async def run_lyrics_job(job_id: str) -> None:
             skipped = len(lines) - len(kept)
             if skipped:
                 store.add_log(job_id, f"剔除视频中未唱到的歌词 {skipped} 行（保留 {len(kept)} 行，字幕只跟随实际演唱出现）。")
+            if not kept:
+                raise PipelineError(
+                    "歌词与演唱无法对上",
+                    "识别结果中没有落在视频演唱范围内的歌词行，请核对歌曲与歌词。",
+                )
+
+            forced_ends: dict[int, float] = {}
+            if str(state.get("lyricLang") or "") == "zh":
+                forced = await _run_forced_alignment(job_id, vocals_wav, kept, job_dir)
+                forced_by_index = {
+                    int(item["index"]): (float(item["start"]), float(item["end"]))
+                    for item in (forced.get("lines") or [])
+                }
+                kept = [
+                    (index, line, forced_by_index[index][0])
+                    for index, line, _rough_start in kept
+                ]
+                forced_ends = {
+                    index: bounds[1] for index, bounds in forced_by_index.items()
+                }
+                anchored_idx.update(forced_by_index)
+                store.update(job_id, lyricAlignEngine="funasr-fa-zh")
+                store.add_log(
+                    job_id,
+                    f"中文强制对齐完成：{len(kept)} 行，最终时间轴不再使用歌词库时间或手工插值。",
+                )
+            else:
+                store.update(job_id, lyricAlignEngine="whisper-word-timestamps")
+                store.add_log(
+                    job_id,
+                    "当前歌词不是中文，继续使用多语言 whisper 词级时间戳对齐。",
+                )
+            raise_if_cancelled(job_id)
             # 字幕起点整体提前 _CUE_LEAD_SECONDS（whisper 词起点在带伴奏上偏晚；
             # 提前后相邻行至少保留 ~0.2s 间隙，避免快速句闪屏）。
             # 实测锚点直接使用 whisper 词起点；未锚定行保留官方时间+整体偏移的
@@ -888,6 +1013,7 @@ async def run_lyrics_job(job_id: str) -> None:
                     "orig": str(line.get("orig") or ""),
                     "zh": str(line.get("zh") or ""),
                     "_mapped": index not in anchored_idx,
+                    "_forced_end": forced_ends.get(index),
                 }
                 for index, line, start in kept
             ]
@@ -932,7 +1058,12 @@ async def run_lyrics_job(job_id: str) -> None:
                 if index + 1 < len(cues) and cues[index + 1]["start"] - start < 0.2:
                     # 提前量/吸附把相邻行挤到 <0.2s：把后一行起点拉回，避免 0.0x 秒闪行
                     cues[index + 1]["start"] = boundary = start + 0.2
+                forced_end = cue.pop("_forced_end", None)
                 end = min(boundary - 0.05, start + 8.0)
+                if forced_end is not None:
+                    # fa-zh 给出最后一个歌词字的结束时间；留 0.15s 视觉余量，
+                    # 同时绝不越过下一句，避免字幕拖挂或提前串句。
+                    end = min(end, float(forced_end) + 0.15)
                 if pauses:
                     for s, e in pauses:
                         if (
