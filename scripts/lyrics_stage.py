@@ -62,14 +62,16 @@ def _enable_cuda_dlls() -> None:
         pass
 
 
-def _vocal_onsets(vocal: np.ndarray, rate: int) -> list[float]:
-    """从人声干声里检测「句子/短语起唱点」（秒，升序）。
+def _vocal_activity(vocal: np.ndarray, rate: int) -> tuple[list[float], list[list[float]]]:
+    """人声干声能量分析：返回（起唱点秒列表, 停顿区间 [[s,e],...]）。
 
     whisper 词级时间戳在带伴奏/DJ 混音上普遍滞后或抖动（实测 0.3-1s），
-    但字幕需要贴住真实发声起点。这里用能量上升沿找演唱短语起点：
+    但字幕需要贴住真实发声：起唱点用于把推算行吸到真实发声处；停顿区间
+    （低能量 ≥0.45s）用于让字幕在唱完的停顿处及时消失、并剔除落在长停顿
+    中间的推算行。
     - 40ms 能量包络，噪声底取 5% 分位，阈值 = max(底×2.5, 峰值×0.10)；
-    - 上升沿要求前一帧低于阈值（有停顿/换气），句内连续发声的小起伏不算；
-    - 相邻 <0.25s 的起点合并（同一次起唱只留最先的一处）。
+    - 起唱点：上升沿（前一帧低于阈值），相邻 <0.25s 合并；
+    - 停顿：连续低于阈值 ≥0.45s 的区段。
     """
     if vocal.ndim == 2:
         # separate_vocals 返回 [声道, 采样]
@@ -88,7 +90,19 @@ def _vocal_onsets(vocal: np.ndarray, rate: int) -> list[float]:
                 continue
             onsets.append(round(t, 3))
             prev_time = t
-    return onsets
+    pauses: list[list[float]] = []
+    gap_start: int | None = None
+    min_gap = int(0.45 * rate)
+    n = len(above)
+    for i in range(n + 1):
+        is_low = i < n and not above[i]
+        if is_low and gap_start is None:
+            gap_start = i
+        elif not is_low and gap_start is not None:
+            if i - gap_start >= min_gap:
+                pauses.append([round(gap_start / rate, 3), round(i / rate, 3)])
+            gap_start = None
+    return onsets, pauses
 
 
 def _transcribe(
@@ -251,15 +265,16 @@ def main() -> None:
             if last_error:
                 log("ERR " + last_error)
             sys.exit(2)
-        onsets = _vocal_onsets(vocal, rate)
+        onsets, pauses = _vocal_activity(vocal, rate)
         payload = {
             "duration": round(duration, 3),
             "language": str(getattr(info_holder[0], "language", "") or "") if info_holder else "",
             "language_probability": round(float(getattr(info_holder[0], "language_probability", 0) or 0), 3) if info_holder else 0.0,
             "segments": segs,
-            # 干声能量上升沿检测的「起唱点」（秒，升序）：worker 用它把字幕起点
-            # 吸附到真实发声处，抵消 whisper 词时间戳在伴奏/DJ 混音上的滞后抖动。
+            # 干声能量分析（worker 用它贴住真实发声、在停顿处及时收字幕）：
+            # onsets = 起唱点秒（升序）；pauses = 低能量停顿区间 [[s,e],...]
             "onsets": onsets,
+            "pauses": pauses,
         }
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

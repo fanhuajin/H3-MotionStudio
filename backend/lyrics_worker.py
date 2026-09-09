@@ -227,9 +227,10 @@ _ALIGN_PREFIX_PULL_LINK = 1.6  # 前缀链末端距窗口起点 ≤ 此值才认
 _CUE_LEAD_SECONDS = 0.25
 # 起唱点吸附：字幕起点再吸附到干声能量检测到的「真实起唱点」（asr.json onsets），
 # 逐行抵消 whisper 词时间戳的滞后抖动（固定提前量只能平均、不能逐行）。
-# 吸附窗口 = [起点 − 0.9s, 起点 + 0.25s]，取窗口内最早起唱点；找不到就不动。
+# 吸附窗口 = [起点 − 0.9s, 起点 + 1.5s]：向后放宽到 1.5s 是为了让落在间奏停顿
+# 前的推算行顺到停顿后的真实起唱（DJ 版常在原歌词时刻插入鼓点停顿）。
 _CUE_SNAP_BEFORE = 0.9
-_CUE_SNAP_AFTER = 0.25
+_CUE_SNAP_FORWARD = 1.5
 _CUE_SNAP_MIN_GAP = 0.35  # 相邻字幕吸附后的最小间隔，防吸到上一句的尾巴
 # 才配做锚点。演唱句在语音段里通常是「整句完整出现」（分数 ≈0.8~1.0），
 # 而跨句杂凑窗口（如「会…我」「就…让…」「我…走」隔字命中）分数只有 ~0.5-0.67，作废不投。
@@ -821,7 +822,26 @@ async def run_lyrics_job(job_id: str) -> None:
             ]
             cues.sort(key=lambda cue: cue["start"])
             onsets = sorted(float(o) for o in (payload.get("onsets") or []) if float(o) >= 0)
+            # 停顿区间：干声能量停顿 + whisper 词流空隙（相邻词起点差 ≥0.9s 且
+            # 前词疑似已唱完 → 该段确实没在唱；DJ 混音残响常让能量法失效，词流法兜底）
+            pauses = [
+                [float(s), float(e)]
+                for s, e in (payload.get("pauses") or [])
+                if float(e) - float(s) >= 0.45
+            ]
+            word_starts = sorted(
+                float(w[1])
+                for seg in (payload.get("segments") or [])
+                for w in (seg.get("words") or [])
+            )
+            word_pauses: list[list[float]] = []
+            for prev, cur in zip(word_starts, word_starts[1:]):
+                if cur - prev >= 0.9:
+                    word_pauses.append([prev + 0.35, cur - 0.25])
+            pauses += word_pauses
             if onsets:
+                # 无锚点行吸附到起唱点（向后放宽到 1.5s：推算行若落在间奏停顿前，
+                # 会顺到停顿后的真实起唱；向前 0.9s 拉回覆盖 whisper 滞后）
                 prev_snap = -1.0
                 for cue in cues:
                     if not cue["_mapped"]:
@@ -831,7 +851,7 @@ async def run_lyrics_job(job_id: str) -> None:
                     snap = next(
                         (
                             o for o in onsets
-                            if start - _CUE_SNAP_BEFORE <= o <= start + _CUE_SNAP_AFTER
+                            if start - _CUE_SNAP_BEFORE <= o <= start + _CUE_SNAP_FORWARD
                             and o >= prev_snap + _CUE_SNAP_MIN_GAP
                         ),
                         None,
@@ -842,20 +862,40 @@ async def run_lyrics_job(job_id: str) -> None:
                     else:
                         prev_snap = max(prev_snap, start)
                 cues.sort(key=lambda cue: cue["start"])
+            # 推算行仍落在 ≥0.8s 停顿中间（前后都有 ≥0.2s 静默）→ 该处实际没唱，
+            # 剔除不显示（避免间奏里冒字幕）
+            if pauses and any(cue["_mapped"] for cue in cues):
+                kept_cues: list[dict[str, Any]] = []
+                for cue in cues:
+                    start = cue["start"]
+                    if cue["_mapped"] and any(
+                        s + 0.2 <= start <= e - 0.2 and e - s >= 0.8
+                        for s, e in pauses
+                    ):
+                        continue
+                    kept_cues.append(cue)
+                cues = kept_cues
             for cue in cues:
                 cue.pop("_mapped", None)
+            # 结束时间：默认到下一句起点；若本句唱完进入停顿（下一句前最后一段
+            # ≥0.45s 低能量区），字幕在停顿开始时消失，不悬挂在间奏上。
             for index, cue in enumerate(cues):
                 start = cue["start"]
-                if index + 1 < len(cues):
-                    next_start = cues[index + 1]["start"]
-                    if next_start - start < 0.2:
-                        # 提前量/吸附把相邻行挤到 <0.2s：把后一行起点拉回，避免 0.0x 秒闪行
-                        cues[index + 1]["start"] = next_start = start + 0.2
-                    cue["end"] = min(next_start - 0.05, start + 8.0)
-                    if cue["end"] < start + 0.8:
-                        cue["end"] = min(start + 0.8, next_start - 0.05)
-                else:
-                    cue["end"] = min(duration - 0.1, start + 8.0)
+                boundary = cues[index + 1]["start"] if index + 1 < len(cues) else duration
+                if index + 1 < len(cues) and cues[index + 1]["start"] - start < 0.2:
+                    # 提前量/吸附把相邻行挤到 <0.2s：把后一行起点拉回，避免 0.0x 秒闪行
+                    cues[index + 1]["start"] = boundary = start + 0.2
+                end = min(boundary - 0.05, start + 8.0)
+                if pauses:
+                    for s, e in pauses:
+                        if (
+                            s >= start + 0.5
+                            and e >= boundary - 0.5  # 紧贴本句边界的收尾停顿
+                        ):
+                            end = min(end, s - 0.05)
+                if end < start + 0.8:
+                    end = min(start + 0.8, boundary - 0.05)
+                cue["end"] = max(start + 0.3, min(end, boundary - 0.05, duration - 0.05))
 
             width = int(meta.get("width") or 1440)
             height = int(meta.get("height") or 1080)
