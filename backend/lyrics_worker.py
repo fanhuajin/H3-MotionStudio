@@ -215,25 +215,21 @@ _ALIGN_HEAD_TOL = 0.6  # 按整体偏移落到片头前 0.6s 内的行按 0 处�
 _ALIGN_OFFSET_MAX_JITTER = 8.0  # 「官方时间 − 实测时间」抖动超过该值视为拼接/变速视频
 _ALIGN_MERGE_GAP = 4.0  # 同一次演唱可能被识别分数波动切成几段窗口，合并间隔上限
 _ALIGN_REPEAT_TEXT_GAP = 12.0  # 同一句正文两条字幕的最短间隔：短于它视为重复错配只留先出现者
-_ALIGN_STRONG_SCORE = 0.72  # 锚点门槛：相似度 ≥ 此值，或整句被窗口完整包含（common=行长）
+_ALIGN_STRONG_SCORE = 0.72  # 重复歌词/偏移共识用的锚点门槛：相似度 ≥ 此值，或整句被完整包含
+_ALIGN_UNIQUE_SCORE = 0.55  # 唯一正文行可独立采用的弱锚点门槛
+_ALIGN_CONTEXT_SCORE = 0.50  # 已有强上下文时，允许错字更多的重复歌词行参与锚定
+_ALIGN_CONTEXT_MAX_DEVIATION = 4.0  # 弱锚点与强锚点整体偏移的最大差值
 # 假锚点剔除：真锚点共享「官方 − 实测」整体偏移（线性片段恒定）。共享后缀的跨句
 # 窗口（如把「你不等了…说好的幸福呢」的后半捡给「怎么了你累了…说好的幸福呢」）
 # 分数可达 0.72+ 混过强锚点门槛，但其自身偏移会偏离共识簇一大截 → 作废按未命中。
 _ALIGN_OFFSET_MAX_DEVIATION = 6.0
 _ALIGN_PREFIX_PULL_RANGE = 4.0  # 满分窗口向前找连续前缀的最大回溯范围（秒）
 _ALIGN_PREFIX_PULL_LINK = 1.6  # 前缀链末端距窗口起点 ≤ 此值才认定同一次演唱
+_ALIGN_CORRUPT_HEAD_LOOKBACK = 0.9  # 句首被识别错时，从高分正文窗口向前找真实句首
+_ALIGN_CORRUPT_HEAD_SCORE_DROP = 0.10  # 回看窗口相对最佳匹配最多允许损失的分数
 # 字幕起点整体提前量（秒）：whisper 词级时间戳在带伴奏/DJ 混音上普遍滞后于真实
 # 发声起点 ~0.3-1s（实测能量 onset 对比），K 歌字幕惯例是略早于发声而非滞后。
 _CUE_LEAD_SECONDS = 0.25
-# 起唱点吸附：字幕起点再吸附到干声能量检测到的「真实起唱点」（asr.json onsets），
-# 逐行抵消 whisper 词时间戳的滞后抖动（固定提前量只能平均、不能逐行）。
-# 吸附窗口 = [起点 − 0.9s, 起点 + 1.5s]：向后放宽到 1.5s 是为了让落在间奏停顿
-# 前的推算行顺到停顿后的真实起唱（DJ 版常在原歌词时刻插入鼓点停顿）。
-_CUE_SNAP_BEFORE = 0.9
-_CUE_SNAP_FORWARD = 1.5
-_CUE_SNAP_MIN_GAP = 0.35  # 相邻字幕吸附后的最小间隔，防吸到上一句的尾巴
-# 才配做锚点。演唱句在语音段里通常是「整句完整出现」（分数 ≈0.8~1.0），
-# 而跨句杂凑窗口（如「会…我」「就…让…」「我…走」隔字命中）分数只有 ~0.5-0.67，作废不投。
 
 
 def _pick_occurrences(
@@ -298,13 +294,30 @@ def _pick_occurrences(
     # 相邻候选（同一句唱词被多个起点覆盖）合并成一次「出现」：取最高分那次
     # 自己的起点与公共子序列（分数相同保留先出现者）
     occurrences.sort(key=lambda item: (item[0], -item[1]))
-    merged: list[tuple[float, float, int]] = []
-    for start, score, common in occurrences:
-        if merged and start - merged[-1][0] <= _ALIGN_MERGE_GAP:
-            if score > merged[-1][1] or (score == merged[-1][1] and common > merged[-1][2]):
-                merged[-1] = (start, score, common)
+    clusters: list[list[tuple[float, float, int]]] = []
+    for item in occurrences:
+        if not clusters or item[0] - clusters[-1][-1][0] > _ALIGN_MERGE_GAP:
+            clusters.append([item])
         else:
-            merged.append((start, score, common))
+            clusters[-1].append(item)
+    merged: list[tuple[float, float, int]] = []
+    for cluster in clusters:
+        best = max(cluster, key=lambda item: (item[1], item[2], -item[0]))
+        start, score, common = best
+        # whisper 常把错听的句首丢掉，只让正确的后半句拿到最高分。高分但不满分时，
+        # 若紧邻前方窗口保留了同样多的正确字，就用它的更早起点（例如「活该我」
+        # 被听成「我不赖我」时，从 19.96s 拉回真正开口的 19.22s）。弱匹配不做
+        # 这一步，避免把上一句尾词误当作本句开头。
+        if _ALIGN_STRONG_SCORE <= score < 0.95:
+            near = [
+                item for item in cluster
+                if start - _ALIGN_CORRUPT_HEAD_LOOKBACK <= item[0] <= start
+                and item[1] >= score - _ALIGN_CORRUPT_HEAD_SCORE_DROP
+                and item[2] >= common
+            ]
+            if near:
+                start = min(item[0] for item in near)
+        merged.append((start, score, common))
     # 前缀拉回：识别词流里混入重复/幻觉词时，满分整句窗口的起点会整体后移
     # （如「那…些…爱…过」被坍缩重复词隔断，完整窗口只剩 2.5s 之后的部分）。
     # 若窗口起点之前存在 ≥3 字、与该行开头逐字连续的前缀，把起点拉回最早一处，
@@ -336,10 +349,10 @@ def _pick_occurrences(
 
 def align_line_times(
     asr: dict[str, Any], lyric_lines: list[dict[str, Any]]
-) -> tuple[list[float | None], int, float]:
+) -> tuple[list[float | None], int, float, set[int]]:
     """把每行歌词锚到实测演唱时间（视频时间轴）。
 
-    返回（每行起始秒，可为 None=该行不在演唱范围内、实测锚定行数、末词起点、
+    返回（每行起始秒，可为 None=该行不在演唱范围内、实测锚定行数、末词结束、
     锚定行下标集合）。
     源视频常是整首歌的中段剪辑/拼接（开口处不在 0:00），因此旧版「按行号
     顺序 + 单向游标 + 官方 ±3.2s 窗」会系统性失败。v2 策略：
@@ -361,14 +374,18 @@ def align_line_times(
         if words:
             for word, start, end in words:
                 piece = _norm(str(word))
-                if piece:
-                    tokens.append((piece, float(start), float(end or start), seg_index))
+                start_f = float(start)
+                end_f = float(end or start)
+                # faster-whisper 在片尾偶尔复读整段提示词，并把几十个词全标成同一个
+                # 0 时长时间点。它们不是音频证据，保留会制造一批满分假锚点。
+                if piece and end_f - start_f > 0.01:
+                    tokens.append((piece, start_f, end_f, seg_index))
         else:
             piece = _norm(str(seg.get("text") or ""))
             if piece:
                 tokens.append((piece, float(seg.get("start") or 0), float(seg.get("end") or 0), seg_index))
     tokens.sort(key=lambda item: item[1])
-    last_vocal = tokens[-1][1] if tokens else duration
+    last_vocal = max((token[2] for token in tokens), default=duration)
     official = [float(line.get("time") or 0.0) for line in lyric_lines]
     texts = [_norm(str(line.get("orig") or "")) for line in lyric_lines]
 
@@ -382,6 +399,13 @@ def align_line_times(
         """只有「整句被完整包含」或高相似度的窗口才可能是真实演唱（见常量注释）。"""
         return occ[1] >= _ALIGN_STRONG_SCORE or occ[2] >= len(target)
 
+    def _strong_for_unique(occ: tuple[float, float, int], target: str) -> bool:
+        """唯一正文行的锚点门槛放宽到 0.55：识别错字多时（如「只是我太执着在意
+        拥有你给的温柔」被听成「这是我太承受在依律有命给的没有」）整行相似度只有
+        ~0.5-0.6，够不到 0.72，但词位置时间是对的——这种弱匹配允许做锚点；
+        假锚点由「偏移偏离共识簇 >6s 剔除」兜底（见下）。重复歌词不享受放宽。"""
+        return occ[1] >= _ALIGN_UNIQUE_SCORE or occ[2] >= len(target)
+
     # ---- 2) 锚点分配 ----
     # 正文唯一的行：直接锚到它分数最高的强出现位置
     unique_candidates: list[tuple[float, int, tuple[float, float, int]]] = []  # (score, line_idx, 出现)
@@ -392,13 +416,14 @@ def align_line_times(
         if texts.count(target) > 1:
             repeat_groups.setdefault(target, []).append(index)
         else:
-            occ = [o for o in (occurrences_by_text.get(target) or []) if _strong(o, target)]
+            occ = [o for o in (occurrences_by_text.get(target) or []) if _strong_for_unique(o, target)]
             if occ:
                 best = max(range(len(occ)), key=lambda r: occ[r][1])
                 unique_candidates.append((occ[best][1], index, occ[best]))
 
     # 唯一文本锚点间的整体偏移（官方时间 − 实测时间）：剪辑视频的起始处不在
     # 0:00，但偏移恒定。个别假锚点会给出离谱偏移，取「最密集的偏移簇」。
+    # 偏移只由强锚点（≥0.72 或整句包含）估计，弱锚点不参与，防错字窗口带偏。
     def _offset_consensus(deltas: list[float]) -> float | None:
         if not deltas:
             return None
@@ -418,7 +443,7 @@ def align_line_times(
     unique_deltas = [
         official[index] - occ[0]
         for score, index, occ in unique_candidates
-        if official[index] > 0
+        if official[index] > 0 and (_strong(occ, texts[index]) or score >= _ALIGN_STRONG_SCORE)
     ]
     offset = _offset_consensus(unique_deltas)
 
@@ -435,8 +460,8 @@ def align_line_times(
     for score, index, occ in sorted(unique_candidates, key=lambda item: (-item[0], item[1])):
         _accept(index, occ[0], score)
 
-    # 重复歌词（副歌等）轮次分配：正文相同、官方时间又都在的行，把各次演唱
-    # 按「官方时间 − (实测 + 偏移)」就近分配给对应轮次；高分的出现先分。
+    # 重复歌词（副歌等）先只用强匹配分配轮次。它们会建立可靠的整体偏移，
+    # 下一轮再允许夹在这些强锚点上下文里的弱匹配进入。
     for target, members in repeat_groups.items():
         members.sort()
         occ = sorted(
@@ -457,6 +482,51 @@ def align_line_times(
             # 无偏移可用：按行序对应演唱轮次（完整版翻唱顺序即如此）
             for (start, score, _common), member in zip(occ, members):
                 _accept(member, start, score)
+
+    # 小模型对带伴奏演唱常会把一整句听错一半，尤其中文同音字；这些行的分数只有
+    # 0.50~0.70。只要已有至少两个强锚点证明了该视频片段对应的官方时间区间，就把
+    # 弱候选按同一偏移分配给重复歌词的正确轮次。这样既能救回连续唱到的错字行，
+    # 又不会仅凭一个常用字把其它副歌轮次硬塞进来。
+    preliminary_deltas = [
+        official[idx] - start
+        for idx, start, score in anchors
+        if official[idx] > 0 and score >= _ALIGN_STRONG_SCORE
+    ]
+    context_offset = _offset_consensus(preliminary_deltas) if len(preliminary_deltas) >= 2 else offset
+    if context_offset is not None:
+        for target, members in repeat_groups.items():
+            remaining = [member for member in members if member not in seen_lines]
+            if not remaining:
+                continue
+            used_starts = [
+                start for idx, start, _score in anchors if idx in members
+            ]
+            weak_occ = [
+                occurrence for occurrence in (occurrences_by_text.get(target) or [])
+                if occurrence[1] >= _ALIGN_CONTEXT_SCORE
+                and all(abs(occurrence[0] - used) >= 0.35 for used in used_starts)
+            ]
+            for start, score, _common in sorted(weak_occ, key=lambda item: (-item[1], item[0])):
+                if not remaining:
+                    break
+                member = min(
+                    remaining,
+                    key=lambda item: abs((official[item] - start) - context_offset),
+                )
+                deviation = abs((official[member] - start) - context_offset)
+                lower = [anchor_start for idx, anchor_start, _score in anchors if idx < member]
+                upper = [anchor_start for idx, anchor_start, _score in anchors if idx > member]
+                ordered = (
+                    (not lower or start > max(lower) + 0.2)
+                    and (not upper or start < min(upper) - 0.2)
+                )
+                if (
+                    official[member] > 0
+                    and deviation <= _ALIGN_CONTEXT_MAX_DEVIATION
+                    and ordered
+                ):
+                    remaining.remove(member)
+                    _accept(member, start, score)
     # 保证锚点不挤在同一个小窗口里（不同文本撞车时保留高分者）
     anchors.sort(key=lambda item: (item[1], -item[2]))
     cleaned: list[tuple[int, float]] = []
@@ -808,8 +878,9 @@ async def run_lyrics_job(job_id: str) -> None:
                 store.add_log(job_id, f"剔除视频中未唱到的歌词 {skipped} 行（保留 {len(kept)} 行，字幕只跟随实际演唱出现）。")
             # 字幕起点整体提前 _CUE_LEAD_SECONDS（whisper 词起点在带伴奏上偏晚；
             # 提前后相邻行至少保留 ~0.2s 间隙，避免快速句闪屏）。
-            # 无实测锚点的行（时间来自官方歌词+偏移推算，误差最大）再吸附到干声
-            # 起唱点（真实发声）修正；锚点行本身是 whisper 词起点，不再吸附。
+            # 实测锚点直接使用 whisper 词起点；未锚定行保留官方时间+整体偏移的
+            # 推算值。不能把句首吸附到普通能量上升沿：一行演唱里会有许多音节
+            # 上升沿，它们不是逐句起唱点，曾导致第 2/3 句各自随机晚 0.7~1.0 秒。
             cues = [
                 {
                     "start": max(0.0, start - _CUE_LEAD_SECONDS),
@@ -821,7 +892,6 @@ async def run_lyrics_job(job_id: str) -> None:
                 for index, line, start in kept
             ]
             cues.sort(key=lambda cue: cue["start"])
-            onsets = sorted(float(o) for o in (payload.get("onsets") or []) if float(o) >= 0)
             # 停顿区间：干声能量停顿 + whisper 词流空隙（相邻词起点差 ≥0.9s 且
             # 前词疑似已唱完 → 该段确实没在唱；DJ 混音残响常让能量法失效，词流法兜底）
             pauses = [
@@ -839,29 +909,6 @@ async def run_lyrics_job(job_id: str) -> None:
                 if cur - prev >= 0.9:
                     word_pauses.append([prev + 0.35, cur - 0.25])
             pauses += word_pauses
-            if onsets:
-                # 无锚点行吸附到起唱点（向后放宽到 1.5s：推算行若落在间奏停顿前，
-                # 会顺到停顿后的真实起唱；向前 0.9s 拉回覆盖 whisper 滞后）
-                prev_snap = -1.0
-                for cue in cues:
-                    if not cue["_mapped"]:
-                        prev_snap = max(prev_snap, cue["start"])
-                        continue
-                    start = cue["start"]
-                    snap = next(
-                        (
-                            o for o in onsets
-                            if start - _CUE_SNAP_BEFORE <= o <= start + _CUE_SNAP_FORWARD
-                            and o >= prev_snap + _CUE_SNAP_MIN_GAP
-                        ),
-                        None,
-                    )
-                    if snap is not None:
-                        cue["start"] = snap
-                        prev_snap = snap
-                    else:
-                        prev_snap = max(prev_snap, start)
-                cues.sort(key=lambda cue: cue["start"])
             # 推算行仍落在 ≥0.8s 停顿中间（前后都有 ≥0.2s 静默）→ 该处实际没唱，
             # 剔除不显示（避免间奏里冒字幕）
             if pauses and any(cue["_mapped"] for cue in cues):
