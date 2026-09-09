@@ -13,6 +13,7 @@ import {
   Info,
   MagnifyingGlassPlus,
   MusicNotes,
+  Palette,
   PersonSimpleRun,
   Play,
   SpinnerGap,
@@ -25,6 +26,7 @@ import {
 import { DouyinRoute } from "./DouyinRoute";
 import { LyricRoute } from "./LyricRoute";
 import { MigrateRoute } from "./MigrateRoute";
+import { PortraitRoute } from "./PortraitRoute";
 import { QueuePanel } from "./QueuePanel";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
@@ -414,6 +416,17 @@ function MotionStudioRoute() {
     writeDraft({ imageName: nextFile.name, imageSize: nextFile.size });
     setLocalError(null);
   }, []);
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem("h3-motionstudio:portrait-handoff");
+    if (!raw) return;
+    sessionStorage.removeItem("h3-motionstudio:portrait-handoff");
+    try {
+      const handoff = JSON.parse(raw);
+      if (handoff.mode !== "4:3" || !handoff.url) return;
+      fetch(handoff.url).then((response) => response.blob()).then((blob) => chooseImage(new File([blob], handoff.name || "唱歌人物图.png", { type: blob.type || "image/png" }))).catch(() => setLocalError("人物定妆图自动带入失败，请手动选择生成图片。"));
+    } catch { setLocalError("人物定妆图自动带入失败，请手动选择生成图片。"); }
+  }, [chooseImage]);
 
   const chooseFile = useCallback(async (nextFile: File | null) => {
     if (!nextFile) return;
@@ -858,6 +871,7 @@ export function App() {
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
   const isLyricsRoute = path === "/lyrics";
+  const isPortraitRoute = path === "/portrait";
 
   return (
     <div className="desktop-app-shell">
@@ -897,10 +911,15 @@ export function App() {
           ) : (
             <>
               <p className="sidebar-section-label">创作与管理</p>
-              <a className={!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
+              <a className={!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute && !isPortraitRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
                 <MusicNotes weight="fill" />
                 <span>歌曲生成</span>
-                {!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute && <i />}
+                {!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute && !isPortraitRoute && <i />}
+              </a>
+              <a className={isPortraitRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/portrait">
+                <Palette />
+                <span>人物定妆</span>
+                {isPortraitRoute && <i />}
               </a>
               <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
                 <PersonSimpleRun />
@@ -933,7 +952,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isLyricsRoute ? <LyricRoute /> : <MotionStudioRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isPortraitRoute ? <PortraitRoute /> : isMigrateRoute ? <MigrateRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isLyricsRoute ? <LyricRoute /> : <MotionStudioRoute />}
       </div>
     </div>
   );

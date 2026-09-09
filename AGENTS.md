@@ -10,6 +10,9 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 ## Product decisions
 
+- 人物定妆是 `/portrait` 路由：4:3 固定对应唱歌胸像近景并送入歌曲生成，9:16 固定对应跳舞人物并送入动作迁移；造型来源由用户每次选择视频取帧、上传参考图或不使用参考图。必须先分析背景/服装等方案并取得明确确认，关键输入变化后确认自动失效，禁止未确认直接生成。
+- 人物定妆唯一身份原型固定为 `E:\AI_Assets\PortraitIdentity\本人固定参考.png`（源文件 `1526e64b-274a-497b-8451-5baa5f554de6.png`）；`4x3唱歌构图参考.png`（源 `ca8aec93-96d5-4df7-9960-f881ae51c811.png`）和 `9x16跳舞构图参考.png`（源 `87b12a2a-c696-4d98-b3f2-42758170bd7b.png`）仅定义构图范例，不是身份图、也不强制作为每次造型输入。
+- 人物定妆生成结果写入 `E:\AI_Exports\PortraitStudio\4x3` 或 `E:\AI_Exports\PortraitStudio\9x16`；OpenAI 凭据只从进程环境读取，严禁写入前端、数据库或仓库。
 - The selected visual source is `design/reference-ui.png`.
 - The global shell and all route styling must follow `design/douzy-shell-reference.png`: fixed left navigation, deep indigo canvas, cyan active accents, low-contrast violet borders, restrained density, and generous empty space.
 - The H3 generation workspace remains the `/` route; Douyin download is a separate `/douyin` route inside the same shell.

@@ -50,6 +50,7 @@ from .pipeline import (
     run_pipeline,
     run_upscale_job,
 )
+from . import portrait_studio
 from .settings import (
     COMFY_INPUT,
     COMFY_OUTPUT,
@@ -1179,6 +1180,96 @@ async def douyin_job_media(job_id: str, download: bool = Query(False)):
 
 
 VIDEO_UPLOAD_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
+IMAGE_UPLOAD_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+async def _portrait_upload(file: UploadFile | None, label: str) -> Path | None:
+    if file is None or not file.filename:
+        return None
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in IMAGE_UPLOAD_SUFFIXES:
+        raise HTTPException(400, f"{label}仅支持 PNG、JPG 或 WebP。")
+    folder = DATA_DIR / "portrait-studio" / "uploads"
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{uuid.uuid4().hex}{suffix}"
+    file.file.seek(0)
+    with target.open("wb") as output:
+        shutil.copyfileobj(file.file, output)
+    return target
+
+
+@app.get("/api/portrait/config")
+async def portrait_config():
+    return {"configured": portrait_studio.configured(), "identityReady": portrait_studio.IDENTITY_PATH.is_file(), "identityUrl": "/api/portrait/identity", "guide4x3Url": "/api/portrait/guides/4x3", "guide9x16Url": "/api/portrait/guides/9x16", "analysisModel": portrait_studio.ANALYSIS_MODEL, "imageModel": portrait_studio.IMAGE_MODEL, "outputRoot": str(portrait_studio.OUTPUT_ROOT)}
+
+
+@app.get("/api/portrait/identity")
+async def portrait_identity():
+    if not portrait_studio.IDENTITY_PATH.is_file():
+        raise HTTPException(404, "固定人物原型图不存在")
+    return FileResponse(portrait_studio.IDENTITY_PATH, media_type="image/png")
+
+
+@app.get("/api/portrait/guides/{mode}")
+async def portrait_guide(mode: str):
+    path = portrait_studio.GUIDE_PATHS.get(mode)
+    if not path or not path.is_file():
+        raise HTTPException(404, "构图范例不存在")
+    return FileResponse(path, media_type="image/png")
+
+
+@app.post("/api/portrait/analyze")
+async def portrait_analyze(mode: str = Form(...), notes: str = Form(""), style_image: UploadFile | None = File(None), identity_image: UploadFile | None = File(None)):
+    if mode not in {"4:3", "9:16"}:
+        raise HTTPException(400, "请选择 4:3 唱歌或 9:16 跳舞。")
+    style_path = await _portrait_upload(style_image, "造型参考图")
+    identity_path = await _portrait_upload(identity_image, "人物原型图") or portrait_studio.IDENTITY_PATH
+    if not identity_path.is_file():
+        raise HTTPException(400, "人物原型图不存在，请上传一张。")
+    try:
+        return {"analysis": await portrait_studio.analyze(mode, style_path, identity_path, notes)}
+    except (RuntimeError, httpx.HTTPError, json.JSONDecodeError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/portrait/generate")
+async def portrait_generate(mode: str = Form(...), plan: str = Form(...), notes: str = Form(""), confirmed: str = Form("0"), style_image: UploadFile | None = File(None), identity_image: UploadFile | None = File(None)):
+    if confirmed not in {"1", "true", "on"}:
+        raise HTTPException(400, "请先明确确认背景、服装与完整方案。")
+    if mode not in {"4:3", "9:16"}:
+        raise HTTPException(400, "作品类型无效。")
+    style_path = await _portrait_upload(style_image, "造型参考图")
+    identity_path = await _portrait_upload(identity_image, "人物原型图") or portrait_studio.IDENTITY_PATH
+    if not identity_path.is_file():
+        raise HTTPException(400, "人物原型图不存在，请上传一张。")
+    try:
+        target = await portrait_studio.generate(mode, style_path, identity_path, plan, notes)
+    except (RuntimeError, httpx.HTTPError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"name": target.name, "url": f"/api/portrait/images/{target.name}", "path": str(target), "mode": mode}
+
+
+@app.get("/api/portrait/images/{name}")
+async def portrait_image(name: str):
+    if Path(name).name != name:
+        raise HTTPException(404, "图片不存在")
+    for folder in (portrait_studio.OUTPUT_ROOT / "4x3", portrait_studio.OUTPUT_ROOT / "9x16"):
+        target = folder / name
+        if target.is_file():
+            return FileResponse(target, media_type="image/png")
+    raise HTTPException(404, "图片不存在")
+
+
+@app.get("/api/portrait/history")
+async def portrait_history():
+    rows = []
+    for mode, folder_name in (("4:3", "4x3"), ("9:16", "9x16")):
+        folder = portrait_studio.OUTPUT_ROOT / folder_name
+        if folder.is_dir():
+            for path in folder.glob("*.png"):
+                rows.append({"name": path.name, "mode": mode, "url": f"/api/portrait/images/{path.name}", "createdAt": path.stat().st_mtime})
+    rows.sort(key=lambda item: item["createdAt"], reverse=True)
+    return {"images": rows[:24]}
 
 
 @app.post("/api/uploads/preview")
@@ -1239,6 +1330,10 @@ if dist_dir.is_dir():
 
     @app.get("/lyrics", include_in_schema=False)
     async def lyrics_frontend():
+        return FileResponse(dist_dir / "index.html")
+
+    @app.get("/portrait", include_in_schema=False)
+    async def portrait_frontend():
         return FileResponse(dist_dir / "index.html")
 
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")
