@@ -62,6 +62,35 @@ def _enable_cuda_dlls() -> None:
         pass
 
 
+def _vocal_onsets(vocal: np.ndarray, rate: int) -> list[float]:
+    """从人声干声里检测「句子/短语起唱点」（秒，升序）。
+
+    whisper 词级时间戳在带伴奏/DJ 混音上普遍滞后或抖动（实测 0.3-1s），
+    但字幕需要贴住真实发声起点。这里用能量上升沿找演唱短语起点：
+    - 40ms 能量包络，噪声底取 5% 分位，阈值 = max(底×2.5, 峰值×0.10)；
+    - 上升沿要求前一帧低于阈值（有停顿/换气），句内连续发声的小起伏不算；
+    - 相邻 <0.25s 的起点合并（同一次起唱只留最先的一处）。
+    """
+    if vocal.ndim == 2:
+        # separate_vocals 返回 [声道, 采样]
+        vocal = vocal.mean(axis=0 if vocal.shape[0] < vocal.shape[1] else 1)
+    win = max(1, int(rate * 0.04))
+    env = np.sqrt(np.convolve(vocal ** 2, np.ones(win) / win, mode="same"))
+    noise = float(np.percentile(env, 5))
+    threshold = max(noise * 2.5, float(env.max()) * 0.10)
+    above = env >= threshold
+    onsets: list[float] = []
+    prev_time = -1.0
+    for i in range(1, len(above)):
+        if above[i] and not above[i - 1]:
+            t = i / rate
+            if prev_time >= 0 and t - prev_time < 0.25:
+                continue
+            onsets.append(round(t, 3))
+            prev_time = t
+    return onsets
+
+
 def _transcribe(
     device: str, model_dir: str, vocal_wav: Path, prompt_text: str | None, info_holder: list
 ) -> list[dict]:
@@ -222,11 +251,15 @@ def main() -> None:
             if last_error:
                 log("ERR " + last_error)
             sys.exit(2)
+        onsets = _vocal_onsets(vocal, rate)
         payload = {
             "duration": round(duration, 3),
             "language": str(getattr(info_holder[0], "language", "") or "") if info_holder else "",
             "language_probability": round(float(getattr(info_holder[0], "language_probability", 0) or 0), 3) if info_holder else 0.0,
             "segments": segs,
+            # 干声能量上升沿检测的「起唱点」（秒，升序）：worker 用它把字幕起点
+            # 吸附到真实发声处，抵消 whisper 词时间戳在伴奏/DJ 混音上的滞后抖动。
+            "onsets": onsets,
         }
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

@@ -225,6 +225,12 @@ _ALIGN_PREFIX_PULL_LINK = 1.6  # 前缀链末端距窗口起点 ≤ 此值才认
 # 字幕起点整体提前量（秒）：whisper 词级时间戳在带伴奏/DJ 混音上普遍滞后于真实
 # 发声起点 ~0.3-1s（实测能量 onset 对比），K 歌字幕惯例是略早于发声而非滞后。
 _CUE_LEAD_SECONDS = 0.25
+# 起唱点吸附：字幕起点再吸附到干声能量检测到的「真实起唱点」（asr.json onsets），
+# 逐行抵消 whisper 词时间戳的滞后抖动（固定提前量只能平均、不能逐行）。
+# 吸附窗口 = [起点 − 0.9s, 起点 + 0.25s]，取窗口内最早起唱点；找不到就不动。
+_CUE_SNAP_BEFORE = 0.9
+_CUE_SNAP_AFTER = 0.25
+_CUE_SNAP_MIN_GAP = 0.35  # 相邻字幕吸附后的最小间隔，防吸到上一句的尾巴
 # 才配做锚点。演唱句在语音段里通常是「整句完整出现」（分数 ≈0.8~1.0），
 # 而跨句杂凑窗口（如「会…我」「就…让…」「我…走」隔字命中）分数只有 ~0.5-0.67，作废不投。
 
@@ -800,23 +806,50 @@ async def run_lyrics_job(job_id: str) -> None:
             if skipped:
                 store.add_log(job_id, f"剔除视频中未唱到的歌词 {skipped} 行（保留 {len(kept)} 行，字幕只跟随实际演唱出现）。")
             # 字幕起点整体提前 _CUE_LEAD_SECONDS（whisper 词起点在带伴奏上偏晚；
-            # 提前后相邻行至少保留 ~0.2s 间隙，避免快速句闪屏）
+            # 提前后相邻行至少保留 ~0.2s 间隙，避免快速句闪屏）。
+            # 无实测锚点的行（时间来自官方歌词+偏移推算，误差最大）再吸附到干声
+            # 起唱点（真实发声）修正；锚点行本身是 whisper 词起点，不再吸附。
             cues = [
                 {
                     "start": max(0.0, start - _CUE_LEAD_SECONDS),
                     "end": duration - 0.05,
                     "orig": str(line.get("orig") or ""),
                     "zh": str(line.get("zh") or ""),
+                    "_mapped": index not in anchored_idx,
                 }
-                for _index, line, start in kept
+                for index, line, start in kept
             ]
             cues.sort(key=lambda cue: cue["start"])
+            onsets = sorted(float(o) for o in (payload.get("onsets") or []) if float(o) >= 0)
+            if onsets:
+                prev_snap = -1.0
+                for cue in cues:
+                    if not cue["_mapped"]:
+                        prev_snap = max(prev_snap, cue["start"])
+                        continue
+                    start = cue["start"]
+                    snap = next(
+                        (
+                            o for o in onsets
+                            if start - _CUE_SNAP_BEFORE <= o <= start + _CUE_SNAP_AFTER
+                            and o >= prev_snap + _CUE_SNAP_MIN_GAP
+                        ),
+                        None,
+                    )
+                    if snap is not None:
+                        cue["start"] = snap
+                        prev_snap = snap
+                    else:
+                        prev_snap = max(prev_snap, start)
+                cues.sort(key=lambda cue: cue["start"])
+            for cue in cues:
+                cue.pop("_mapped", None)
             for index, cue in enumerate(cues):
                 start = cue["start"]
                 if index + 1 < len(cues):
                     next_start = cues[index + 1]["start"]
                     if next_start - start < 0.2:
-                        # 提前量把相邻行挤到 <0.2s：把后一行起点拉回，避免 0.0x 秒闪行
+                        # 提前量/吸附把相邻行挤到 <0.2s：把后一行起点拉回，避免 0.0x 秒闪行
                         cues[index + 1]["start"] = next_start = start + 0.2
                     cue["end"] = min(next_start - 0.05, start + 8.0)
                     if cue["end"] < start + 0.8:
