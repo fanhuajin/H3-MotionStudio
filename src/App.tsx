@@ -13,7 +13,6 @@ import {
   Info,
   MagnifyingGlassPlus,
   MusicNotes,
-  Palette,
   PersonSimpleRun,
   Play,
   SpinnerGap,
@@ -26,7 +25,6 @@ import {
 import { DouyinRoute } from "./DouyinRoute";
 import { LyricRoute } from "./LyricRoute";
 import { MigrateRoute } from "./MigrateRoute";
-import { PortraitRoute } from "./PortraitRoute";
 import { QueuePanel } from "./QueuePanel";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
@@ -871,7 +869,6 @@ export function App() {
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
   const isLyricsRoute = path === "/lyrics";
-  const isPortraitRoute = path === "/portrait";
 
   return (
     <div className="desktop-app-shell">
@@ -911,15 +908,10 @@ export function App() {
           ) : (
             <>
               <p className="sidebar-section-label">创作与管理</p>
-              <a className={!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute && !isPortraitRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
+              <a className={!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
                 <MusicNotes weight="fill" />
                 <span>歌曲生成</span>
-                {!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute && !isPortraitRoute && <i />}
-              </a>
-              <a className={isPortraitRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/portrait">
-                <Palette />
-                <span>人物定妆</span>
-                {isPortraitRoute && <i />}
+                {!isMigrateRoute && !isUpscaleRoute && !isLyricsRoute && <i />}
               </a>
               <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
                 <PersonSimpleRun />
@@ -952,7 +944,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isPortraitRoute ? <PortraitRoute /> : isMigrateRoute ? <MigrateRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isLyricsRoute ? <LyricRoute /> : <MotionStudioRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isLyricsRoute ? <LyricRoute /> : <MotionStudioRoute />}
       </div>
     </div>
   );
