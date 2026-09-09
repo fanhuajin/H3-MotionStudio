@@ -222,6 +222,9 @@ _ALIGN_STRONG_SCORE = 0.72  # 锚点门槛：相似度 ≥ 此值，或整句被
 _ALIGN_OFFSET_MAX_DEVIATION = 6.0
 _ALIGN_PREFIX_PULL_RANGE = 4.0  # 满分窗口向前找连续前缀的最大回溯范围（秒）
 _ALIGN_PREFIX_PULL_LINK = 1.6  # 前缀链末端距窗口起点 ≤ 此值才认定同一次演唱
+# 字幕起点整体提前量（秒）：whisper 词级时间戳在带伴奏/DJ 混音上普遍滞后于真实
+# 发声起点 ~0.3-1s（实测能量 onset 对比），K 歌字幕惯例是略早于发声而非滞后。
+_CUE_LEAD_SECONDS = 0.25
 # 才配做锚点。演唱句在语音段里通常是「整句完整出现」（分数 ≈0.8~1.0），
 # 而跨句杂凑窗口（如「会…我」「就…让…」「我…走」隔字命中）分数只有 ~0.5-0.67，作废不投。
 
@@ -796,19 +799,25 @@ async def run_lyrics_job(job_id: str) -> None:
             skipped = len(lines) - len(kept)
             if skipped:
                 store.add_log(job_id, f"剔除视频中未唱到的歌词 {skipped} 行（保留 {len(kept)} 行，字幕只跟随实际演唱出现）。")
+            # 字幕起点整体提前 _CUE_LEAD_SECONDS（whisper 词起点在带伴奏上偏晚；
+            # 提前后相邻行至少保留 ~0.2s 间隙，避免快速句闪屏）
             cues = [
                 {
-                    "start": start,
+                    "start": max(0.0, start - _CUE_LEAD_SECONDS),
                     "end": duration - 0.05,
                     "orig": str(line.get("orig") or ""),
                     "zh": str(line.get("zh") or ""),
                 }
                 for _index, line, start in kept
             ]
+            cues.sort(key=lambda cue: cue["start"])
             for index, cue in enumerate(cues):
                 start = cue["start"]
                 if index + 1 < len(cues):
                     next_start = cues[index + 1]["start"]
+                    if next_start - start < 0.2:
+                        # 提前量把相邻行挤到 <0.2s：把后一行起点拉回，避免 0.0x 秒闪行
+                        cues[index + 1]["start"] = next_start = start + 0.2
                     cue["end"] = min(next_start - 0.05, start + 8.0)
                     if cue["end"] < start + 0.8:
                         cue["end"] = min(start + 0.8, next_start - 0.05)
