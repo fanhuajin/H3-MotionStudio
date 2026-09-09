@@ -48,13 +48,11 @@ DIFFUSION_MODELS_DIR = COMFY_ROOT / "models" / "diffusion_models"
 RVC_ROOT = COMFY_HOME / "RVC"
 RVC_PYTHON = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 RVC_SCRIPT = RVC_ROOT / "convert_video_to_my_voice.py"
-# H3 唱歌链路默认音色（定稿：kikiV1，A/B 验证款，专属索引齐全）。
-# 历程：ranran（无 index、频谱 1k-3k 仅 ~10% 闷/呜）弃用 → kikiV1 经两轮 A/B 定稿默认；
-# 期间曾临时试用 sasablue_v2（自训练）为默认，现已切回 kikiV1——
-# sasablue_v2 / haoshengyin 仍保留在 weights 可选（ranran 无专属索引，仅备查）。
-RVC_MODEL = RVC_ROOT / "assets" / "weights" / "kikiV1.pth"
-# kikiV1 官方索引（ASCII 文件名，faiss 可正常读取）；文件被删则自动以无索引模式运行。
-RVC_INDEX = RVC_ROOT / "assets" / "indices" / "kikiV1.index"
+# H3 唱歌链路默认音色：用 E:\BBDown 素材训练的 yueshao_v1（v2 / 40k / RMVPE）。
+# 旧 kikiV1、sasablue_v2、haoshengyin 与 ranran 模型仍保留在 weights 中备查。
+RVC_MODEL = RVC_ROOT / "assets" / "weights" / "yueshao_v1.pth"
+# yueshao_v1 专属检索索引；文件缺失时转换脚本会退化为无索引模式。
+RVC_INDEX = RVC_ROOT / "assets" / "indices" / "yueshao_v1.index"
 
 # 歌词字幕路由（多语言）：用 RVC 环境的 torchaudio HDEMUCS 分离人声，再用
 # faster-whisper（本地模型目录，缺省 D:\tmp\fw-turbo，可用 H3_WHISPER_MODEL 覆盖）
