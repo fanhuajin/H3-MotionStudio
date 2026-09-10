@@ -4,6 +4,7 @@
   "additionalProperties": false,
   "properties": {
     "song_name": { "type": "string" },
+    "song_mood": { "type": "string" },
     "style_source": { "type": "string", "enum": ["video", "redesign"] },
     "style_note": { "type": "string" },
     "title": { "type": "string" },
@@ -19,6 +20,7 @@
   },
   "required": [
     "song_name",
+    "song_mood",
     "style_source",
     "style_note",
     "title",

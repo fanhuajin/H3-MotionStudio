@@ -274,6 +274,30 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertIn("本次必须优先满足的修改要求", prompt)
             self.assertTrue(prompt.startswith(base))
 
+    def test_batch_ai_image_prompt_carries_the_song(self) -> None:
+        """歌曲必须真的进入出图提示词，否则「图一给造型、歌曲给情绪」落不了地。"""
+        # 1) 《歌曲名》是源文件里的字面占位符，必须被真实歌名替换
+        redesign = batch_ai.compose_prompt("singing", "redesign", "爱如潮水")
+        self.assertIn("《爱如潮水》", redesign)
+        self.assertNotIn(batch_ai.SONG_PLACEHOLDER, redesign)
+
+        # 2) 沿用源视频造型时：歌名 + 情绪进入提示词，并且把分工写清
+        prompt = batch_ai.compose_image_prompt(
+            "singing",
+            "video",
+            song_name="爱如潮水",
+            song_mood="抒情慢板，克制的失恋感",
+        )
+        self.assertIn("【本次歌曲】《爱如潮水》", prompt)
+        self.assertIn("抒情慢板，克制的失恋感", prompt)
+        self.assertIn("图一决定人物的发型、发色、服装、配饰、场景、环境与灯光", prompt)
+        self.assertIn("不要因为歌曲而改动图一已经给出的造型要素", prompt)
+
+        # 3) 跳舞没有歌曲，不能凭空塞一个歌曲块
+        self.assertNotIn("【本次歌曲】", batch_ai.compose_image_prompt("dance"))
+        # 4) 没识别出歌名时也不能留一个空歌曲块
+        self.assertNotIn("【本次歌曲】", batch_ai.compose_image_prompt("singing", "video", song_name=""))
+
     def test_batch_reuse_previous_analysis_only_for_image_mode(self) -> None:
         """「只调图片」不得重跑模型：否则文案和动作/运镜会被一起改写。"""
         from backend.batch_worker import reuse_previous_analysis

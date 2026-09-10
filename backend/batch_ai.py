@@ -23,6 +23,9 @@ from .settings import env_value
 PROMPT_DIR = Path(__file__).with_name("prompts")
 ANALYSIS_SCHEMA = Path(__file__).with_name("batch_ai_schema.json")
 
+# `歌曲生成人物.txt` 里的字面占位符；出图前必须替换成真实歌名。
+SONG_PLACEHOLDER = "《歌曲名》"
+
 LUNA_MODEL = os.getenv("H3_BATCH_LUNA_MODEL", "gpt-5.6-luna")
 # 文本分析固定走官方端点：`gpt-5.6-luna` 在本账号的计划内额度里可用，而图片余额为空。
 # 故意不读 OPENAI_BASE_URL，避免用户为中转站设置它时把文本分析一起带走（中转站没有 luna）。
@@ -69,26 +72,55 @@ def _data_url(path: Path) -> str:
     return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
 
-def compose_prompt(kind: str, style_source: str = "video") -> str:
-    """取本地 Krea2 双图编辑要用的提示词正文（图像-1 造型场景 / 图像-2 身份）。"""
+def compose_prompt(kind: str, style_source: str = "video", song_name: str = "") -> str:
+    """取本地 Krea2 双图编辑要用的提示词正文（图像-1 造型场景 / 图像-2 身份）。
+
+    `歌曲生成人物.txt` 里写的是字面占位符「歌曲是《歌曲名》。」，此前全链路没有
+    任何地方替换它 —— 等于走「按歌重设计」路径时模型根本不知道是哪首歌。
+    """
     key = "dance_compose" if kind == "dance" else (
         "singing_portrait" if style_source == "redesign" else "singing_compose"
     )
     path = PROMPT_PATHS[key]
     if not path.is_file():
         raise RuntimeError(f"缺少造型提示词文件：{path}")
-    return path.read_text(encoding="utf-8").strip()
+    text = path.read_text(encoding="utf-8").strip()
+    if song_name:
+        text = text.replace(SONG_PLACEHOLDER, f"《{song_name}》")
+    return text
 
 
 def compose_image_prompt(
-    kind: str, style_source: str = "video", feedback: str = "", mode: str = "both"
+    kind: str,
+    style_source: str = "video",
+    feedback: str = "",
+    mode: str = "both",
+    song_name: str = "",
+    song_mood: str = "",
 ) -> str:
-    """出图提示词 = 造型提示词 + 用户的审核修改意见。
+    """出图提示词 = 造型提示词 + 歌曲信息 + 用户的审核修改意见。
 
-    修改意见必须进入出图提示词，否则用户在审核区写「头顶再贴边一些」只会改动文案、
-    图片毫无变化 —— 这正是「调整图片」按钮失效的原因。
+    - 歌曲必须真的进入出图提示词：否则「图一给造型、歌曲给情绪」这条约定落不了地，
+      出图跟歌完全无关。
+    - 修改意见必须进入出图提示词，否则用户在审核区写「头顶再贴边一些」只会改动文案、
+      图片毫无变化 —— 这正是「调整图片」按钮失效的原因。
     """
-    prompt = compose_prompt(kind, style_source)
+    prompt = compose_prompt(kind, style_source, song_name)
+    title = f"《{song_name}》" if song_name else ""
+    if kind == "singing" and title:
+        song_block = f"\n\n【本次歌曲】{title}"
+        if song_mood:
+            song_block += f"\n歌曲情绪与氛围：{song_mood}"
+        if style_source == "redesign":
+            song_block += "\n请按上面这首歌的情绪与氛围，重新设计人物的造型、服装、场景、灯光与色调。"
+        else:
+            song_block += (
+                "\n\n【造型与情绪的分工】图一决定人物的发型、发色、服装、配饰、场景、环境与灯光，"
+                "必须严格沿用，不要自行更换发色、发型或服装风格；"
+                "歌曲信息只用来决定人物的情绪表达、眼神与妆容气质、整体色调倾向和画面氛围，"
+                "不要因为歌曲而改动图一已经给出的造型要素。"
+            )
+        prompt += song_block
     text = (feedback or "").strip()
     if text and mode in {"image", "both"}:
         prompt = (
@@ -174,6 +206,8 @@ style_note 用一句中文说明判断理由，这句话会直接显示给用户
 
 二、发布文案
 - song_name：识别出的歌曲名（跳舞视频返回空字符串）；无法确定时返回空字符串
+- song_mood：一句话概括这首歌的情绪、调性与氛围（例如「抒情慢板，克制的失恋感，偏冷的蓝调」）；
+  这句会直接进入出图提示词，用来决定人物的情绪表达与画面色调。无法确定时返回空字符串
 - title：原创、可直接发布的中文标题，参考原文风格但不要照抄
 - introduction：一到两句简短简介
 - tags：5~8 个不带 # 的中文标签
@@ -262,6 +296,7 @@ def fallback_result(*, kind: str, description: str, tags: list[str]) -> dict[str
     clean_tags = [str(tag).strip().lstrip("#") for tag in tags if str(tag).strip()][:8]
     return {
         "song_name": "",
+        "song_mood": "",
         "style_source": "video",
         "style_note": "模型分析不可用，已按源视频造型继续。",
         "title": headline[:40],
