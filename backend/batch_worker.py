@@ -269,7 +269,10 @@ async def _run_codex(
     for image in images or []:
         if image.is_file():
             args += ["--image", str(image)]
-    args.append(prompt)
+    # `--image <FILE>...` is variadic in current Codex builds and can consume a
+    # trailing positional prompt as another image. `-` terminates option
+    # parsing and reads the full prompt from stdin instead.
+    args.append("-")
     env = os.environ.copy()
     # 强制沿用已缓存的 ChatGPT/Codex 登录，避免误用页面进程里的 API 凭据计费。
     env.pop("OPENAI_API_KEY", None)
@@ -286,7 +289,9 @@ async def _run_codex(
         _CODEX_PROCESSES[process_key] = process
     try:
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(prompt.encode("utf-8")), timeout=timeout
+            )
         except asyncio.TimeoutError:
             process.kill()
             await process.wait()

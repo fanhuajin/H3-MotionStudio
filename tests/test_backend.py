@@ -54,6 +54,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
         self.assertIn('"--sandbox",\n        "workspace-write",', source)
         self.assertNotIn('"--approve-for-me"', source)
+        self.assertIn('args.append("-")', source)
+        self.assertIn('process.communicate(prompt.encode("utf-8"))', source)
 
     def test_batch_cover_outputs_have_platform_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
