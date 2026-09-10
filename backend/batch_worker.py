@@ -78,19 +78,45 @@ def unique_urls(values: list[str]) -> list[str]:
     return result
 
 
-def url_key(url: str) -> str:
-    """链接指纹：忽略大小写、结尾斜杠、查询串与锚点。
+# 链接判重时忽略的**跟踪参数**（只丢这些；不认识的参数一律保留，避免把作品号丢掉）。
+_TRACKING_QUERY_PREFIXES = ("utm_", "share_", "track_")
+_TRACKING_QUERY_NAMES = {
+    "_d", "a_bogus", "aid", "checksum", "enter_from", "extra_params", "fp", "from",
+    "from_source", "from_ssr", "from_tab_name", "gd_label", "iid", "is_from_webapp",
+    "log_id", "mid", "mstoken", "previous_page", "region", "schema_type", "sender_device",
+    "share_token", "show_tab", "showtab", "timestamp", "titletype", "tt_from", "u_code",
+    "verifyfp", "video_share_track_ver", "web_id", "with_sec_did", "x-bogus",
+}
 
-    抖音同一条视频常有多种写法（`v.douyin.com/xxx` 与 `v.douyin.com/xxx/`、
-    `www.douyin.com/video/123?vid=456`……），只按原字符串比对会把同一条作品
-    当成两条来做，白烧一遍算力。作品号在路径里，查询串只是分享跟踪参数，丢掉安全。
+
+def url_key(url: str) -> str:
+    """链接指纹：忽略大小写、结尾斜杠与**跟踪参数**，但保留作品号等有意义的参数。
+
+    坑（2026-09-11 用户实测「点击准备任务没有效果」）：抖音「喜欢列表」的链接是
+    `www.douyin.com/user/self?from_tab_name=main&modal_id=<作品号>&showTab=like` ——
+    作品号在 **query** 里。早先的实现把整段 query 丢掉，导致所有这类链接都变成
+    `www.douyin.com/user/self`，两条不同视频被误判成重复链接过滤掉，点了没有任何新增。
+    现在只丢已知跟踪参数，`modal_id` / `vid` / `item_id` 之类全部保留。
     """
     text = str(url or "").strip().lower()
     if not text:
         return ""
-    for separator in ("#", "?"):
-        text = text.split(separator, 1)[0]
-    return text.rstrip("/")
+    text = text.split("#", 1)[0]
+    base, separator, query = text.partition("?")
+    base = base.rstrip("/")
+    if not separator or not query:
+        return base
+    kept: list[str] = []
+    for chunk in query.split("&"):
+        if not chunk:
+            continue
+        name, _, value = chunk.partition("=")
+        if not name or name in _TRACKING_QUERY_NAMES or name.startswith(_TRACKING_QUERY_PREFIXES):
+            continue
+        kept.append(f"{name}={value}")
+    if not kept:
+        return base
+    return f"{base}?{'&'.join(sorted(kept))}"
 
 
 def item_key(kind: str, url: str) -> str:
