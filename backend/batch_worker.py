@@ -269,10 +269,10 @@ async def _run_codex(
     for image in images or []:
         if image.is_file():
             args += ["--image", str(image)]
-    # `--image <FILE>...` is variadic in current Codex builds and can consume a
-    # trailing positional prompt as another image. `-` terminates option
-    # parsing and reads the full prompt from stdin instead.
-    args.append("-")
+    # `--image <FILE>...` is variadic in current Codex builds and consumes a
+    # trailing `-` as another image. `-- -` ends option parsing first, then
+    # asks Codex to read the full prompt from stdin.
+    args.extend(["--", "-"])
     env = os.environ.copy()
     # 强制沿用已缓存的 ChatGPT/Codex 登录，避免误用页面进程里的 API 凭据计费。
     env.pop("OPENAI_API_KEY", None)
