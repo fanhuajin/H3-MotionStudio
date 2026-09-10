@@ -276,6 +276,8 @@ class BatchCreateRequest(BaseModel):
     # 分组默认比例（页面上的选择）。每条视频仍可单独改：歌曲默认 4:3、跳舞默认 9:16。
     singingRatio: str | None = None
     danceRatio: str | None = None
+    # 加入队列后是否立即开跑（页面就是这种：点「加入队列」直接开始准备）
+    autoStart: bool = False
 
 
 class BatchItemRatioRequest(BaseModel):
@@ -289,6 +291,7 @@ class BatchAppendRequest(BaseModel):
     danceUrls: list[str] = Field(default_factory=list)
     singingRatio: str | None = None
     danceRatio: str | None = None
+    autoStart: bool = False
 
 
 class BatchAdjustRequest(BaseModel):
@@ -397,10 +400,16 @@ async def create_batch(request: BatchCreateRequest):
         raise HTTPException(400, str(error)) from error
     state = new_batch_state(singing, dance, singing_ratio, dance_ratio)
     batch_store.create(state)
-    # 只入队，不自动开跑：用户要自己点「启动」才走流程（2026-09-10 要求）
+    if request.autoStart:
+        # 点「加入队列」直接开跑：预热 ComfyUI 后按队列逐条准备（下载 → 出图/文案 → 等确认）
+        spawn(_prewarm_comfy())
+        return _resume_batch(
+            state["id"], f"已加入队列 {len(state['items'])} 条，正在下载并生成人物图与发布文案。"
+        )
+    # 只入队（API 用）：等用户点「开跑」
     return batch_store.update(
         state["id"],
-        notice=f"已把 {len(state['items'])} 条任务加入队列，点「启动」后开始处理。",
+        notice=f"已把 {len(state['items'])} 条任务加入队列，点「开跑」后开始处理。",
     )
 
 
@@ -454,6 +463,11 @@ async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest
         note += f"（跳过 {duplicates} 条已经在队列里的重复链接）"
     if not added:
         return batch_store.update(batch_id, notice=note)
+    state = batch_store.get(batch_id) or state
+    if request.autoStart and state.get("status") != "paused" and not state.get("pauseRequested"):
+        # 点「加入队列」直接开跑：预热 ComfyUI 后按队列顺序准备（下载 → 出图/文案 → 等确认）
+        spawn(_prewarm_comfy())
+        return _resume_batch(batch_id, f"{note} 正在下载并生成人物图与发布文案。")
     # 没启动过 / 暂停中的批次只入队，不因为「加任务」就把流程跑起来
     return _wake_batch(batch_id, note)
 

@@ -398,7 +398,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotEqual(box["state"]["status"], "failed")
 
     def test_queue_only_runs_after_explicit_start(self) -> None:
-        """先把任务排进队列、点「启动」才跑流程（2026-09-10 用户要求）。"""
+        """页面入口是「加入队列并开始」：带 autoStart 直接跑，不带则只排队（API 用法）。"""
         import asyncio
 
         from backend import app as app_module
@@ -445,14 +445,14 @@ class WorkflowPreparationTests(unittest.TestCase):
         ), patch.object(app_module, "new_batch_state", lambda *a, **k: dict(state)), patch.object(
             app_module, "spawn", lambda coro: (spawned.append(coro), coro.close())
         ):
-            # 新建批次：只入队、状态仍是 queued、没有起 runner
+            # 不带 autoStart（API 用法）：只入队、状态仍是 queued、没有起 runner
             created = asyncio.run(
                 app_module.create_batch(
                     app_module.BatchCreateRequest(singingUrls=["https://v.douyin.com/a"])
                 )
             )
             self.assertEqual(created["status"], "queued")
-            self.assertIn("点「启动」后开始处理", created["notice"])
+            self.assertIn("点「开跑」后开始处理", created["notice"])
             self.assertEqual(spawned, [])
 
             # 追加任务同样不自动开跑
@@ -474,13 +474,33 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertEqual(stub.state["status"], "queued")
             self.assertEqual(spawned, [])
 
-            # 点「开跑」才真的跑，并且顺手把 ComfyUI 拉起来预热
+            # 点「加入队列并开始」→ 入库 + 立即开跑（预热 ComfyUI + runner）
             stub.state["items"][1]["status"] = "pending"
-            started = asyncio.run(app_module.start_batch("b1"))
+            started = asyncio.run(
+                app_module.append_batch_items_endpoint(
+                    "b1",
+                    app_module.BatchAppendRequest(
+                        singingUrls=["https://v.douyin.com/fresh"], autoStart=True
+                    ),
+                )
+            )
             self.assertEqual(started["status"], "running")
             self.assertEqual(len(spawned), 2)   # run_batch + ComfyUI 预热
-            self.assertIn("已开跑", started["notice"])
-            # 逐条启动的入口已经收掉：唯一开关就是「开跑」
+            self.assertIn("下载并生成人物图与发布文案", started["notice"])
+
+            # 暂停中的批次：即使 autoStart 也只入队，不违背用户的暂停
+            stub.state["status"] = "paused"
+            paused = asyncio.run(
+                app_module.append_batch_items_endpoint(
+                    "b1",
+                    app_module.BatchAppendRequest(
+                        singingUrls=["https://v.douyin.com/whilepaused"], autoStart=True
+                    ),
+                )
+            )
+            self.assertEqual(paused["status"], "paused")
+            self.assertEqual(len(spawned), 2)
+            # 逐条启动的入口已经收掉：入口只有「加入队列并开始」
             self.assertNotIn(
                 "/api/batches/{batch_id}/items/{item_id}/start",
                 {getattr(route, "path", "") for route in app_module.app.routes},

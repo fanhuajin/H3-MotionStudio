@@ -11,7 +11,6 @@ import {
   Pause,
   PersonSimpleRun,
   Play,
-  Plus,
   SpinnerGap,
   Trash,
   UploadSimple,
@@ -96,6 +95,7 @@ interface BatchState {
   deletedCount?: number;
   currentItemId?: string | null;
   notice?: string;
+  pauseRequested?: boolean;
   items: BatchItem[];
 }
 
@@ -119,11 +119,6 @@ function itemRatio(item: BatchItem): CanvasRatio {
   return item.ratio === "4:3" || item.ratio === "9:16" ? item.ratio : DEFAULT_RATIO[item.kind];
 }
 
-interface StagedTask {
-  kind: BatchItem["kind"];
-  url: string;
-}
-
 function readInputDraft() {
   const read = (key: string) => {
     try {
@@ -133,18 +128,12 @@ function readInputDraft() {
     }
   };
   const parsed = { ...read(LEGACY_INPUT_KEY), ...read(INPUT_KEY) };
-  const staged = Array.isArray(parsed.staged) ? parsed.staged : [];
   return {
     singing: String(parsed.singing || ""),
     dance: String(parsed.dance || ""),
     // 开关：关掉的一类既不展示输入框，也不会被提交执行；默认两类都开着。
     singingOn: parsed.singingOn !== false,
     danceOn: parsed.danceOn !== false,
-    // 「准备任务」阶段攒下来的待加入清单（只入队、不开跑）
-    staged: staged
-      .map((row) => row as Partial<StagedTask>)
-      .filter((row) => (row.kind === "singing" || row.kind === "dance") && typeof row.url === "string" && row.url)
-      .map((row) => ({ kind: row.kind as BatchItem["kind"], url: String(row.url) })),
   };
 }
 
@@ -154,8 +143,8 @@ function splitUrls(value: string) {
 
 function batchStatusLabel(status: string) {
   return ({
-    queued: "等待开跑",
-    pending: "等待开跑",
+    queued: "等待开始",
+    pending: "排队中",
     running: "正在处理",
     revising: "正在调整",
     awaiting_review: "等待确认",
@@ -185,8 +174,6 @@ export function BatchRoute() {
   const [dance, setDance] = useState(initial.dance);
   const [singingOn, setSingingOn] = useState(initial.singingOn);
   const [danceOn, setDanceOn] = useState(initial.danceOn);
-  // 「准备任务」阶段攒下来的清单：先核对、再一次性加入队列
-  const [staged, setStaged] = useState<StagedTask[]>(initial.staged);
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState("");
@@ -221,8 +208,8 @@ export function BatchRoute() {
   }, [loadLatest]);
 
   useEffect(() => {
-    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn, staged }));
-  }, [singing, dance, singingOn, danceOn, staged]);
+    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn }));
+  }, [singing, dance, singingOn, danceOn]);
 
   useEffect(() => {
     if (!batch?.id) return;
@@ -250,60 +237,33 @@ export function BatchRoute() {
     }
   }, [batch?.currentItemId, batch?.items, selectedId]);
 
-  // ① 准备任务：把当前粘贴的链接整理进「待加入清单」（只在本页，还没进队列）
-  const stageTasks = () => {
-    setError("");
-    const picked: StagedTask[] = [
-      ...(singingOn ? splitUrls(singing).map((url) => ({ kind: "singing" as const, url })) : []),
-      ...(danceOn ? splitUrls(dance).map((url) => ({ kind: "dance" as const, url })) : []),
-    ];
-    if (!picked.length) {
-      setError("请先打开要制作的那一类（歌曲 / 跳舞）并填写链接");
-      return;
-    }
-    setStaged((current) => {
-      const seen = new Set(current.map((row) => `${row.kind}:${row.url}`));
-      const next = [...current];
-      for (const row of picked) {
-        const key = `${row.kind}:${row.url}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        next.push(row);
-      }
-      return next;
-    });
-    // 已整理的链接从输入框移走，方便继续粘下一批（清单里还能逐条删）
-    if (singingOn) setSinging("");
-    if (danceOn) setDance("");
-  };
-
-  const unstage = (position: number) => {
-    setStaged((current) => current.filter((_, index) => index !== position));
-  };
-
-  // ② 加入队列：把待加入清单交给后端排队，**不会开跑**（要用户点「开跑」）
-  const enqueue = async () => {
+  // 「准备任务」：把填好的链接交给后端，并立即开始准备
+  // （下载抖音视频 → 生成人物图与发布文案 → 停在等确认）。
+  // 暂停中的批次尊重暂停，只入队不偷跑。
+  const prepare = async () => {
     setBusyAction("start");
     setError("");
     try {
-      const singingUrls = staged.filter((row) => row.kind === "singing").map((row) => row.url);
-      const danceUrls = staged.filter((row) => row.kind === "dance").map((row) => row.url);
+      const singingUrls = singingOn ? splitUrls(singing) : [];
+      const danceUrls = danceOn ? splitUrls(dance) : [];
       if (!singingUrls.length && !danceUrls.length) {
-        throw new Error("待加入清单是空的：先点「准备任务」把填好的链接整理进来");
+        throw new Error("请先打开要制作的那一类（歌曲 / 跳舞）并填写链接");
       }
       // 已经有一个批次（不管在跑、暂停、等审核还是刚做完）就往里追加，随时能加；
       // 只有「已取消」的批次需要新开一个。
       const append = Boolean(batch && batch.status !== "cancelled");
+      const autoStart = !(batch && (batch.status === "paused" || batch.pauseRequested));
       const response = await fetch(append ? `/api/batches/${batch!.id}/items` : "/api/batches", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ singingUrls, danceUrls }),
+        body: JSON.stringify({ singingUrls, danceUrls, autoStart }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
       const state = await response.json();
       setBatch(state);
       if (!append) setSelectedId(state.currentItemId);
-      setStaged([]);
+      // 输入框内容保留：重复链接后端会自动过滤（notice 里写明跳过了几条），
+      // 想接着补链接或核对粘贴内容都不用重新粘一遍。
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -403,14 +363,6 @@ export function BatchRoute() {
   };
 
   const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
-  // 已有批次（取消的除外）时「加入队列」是追加到队尾；两种都不会自动开跑。
-  const canAppend = Boolean(batch && batch.status !== "cancelled");
-  // 队列里有待处理条目、且没在跑也没暂停 → 显示「开跑」（整个队列的唯一启动开关）
-  const canRunQueue = Boolean(
-    batch
-    && !["cancelled", "running", "paused"].includes(batch.status)
-    && (batch.items || []).some((item) => ["pending", "revising", "confirmed"].includes(item.status)),
-  );
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
 
   return (
@@ -432,7 +384,7 @@ export function BatchRoute() {
       <section className="batch-input-card">
         <div className="batch-prepare-head">
           <span>准备任务</span>
-          <small>① 填好链接 →「准备任务」整理进待加入清单 → ②「加入队列」→ ③ 队列里点「开跑」才开始跑</small>
+          <small>点「准备任务」后立即开始：下载抖音视频 → 生成人物图与发布文案 → 停下来等你确认；确认后点「加入队列」直接开跑 ComfyUI 出片</small>
         </div>
         <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
           <label className={singingOn ? "" : "off"}>
@@ -480,42 +432,17 @@ export function BatchRoute() {
             )}
           </label>
         </div>
-        <div className="batch-staged">
-          <div className="batch-staged-head">
-            <span>待加入清单</span>
-            <small>{staged.length ? `${staged.length} 条 · 还没进队列，可逐条删除` : "还没有内容：上面填好链接后点「准备任务」"}</small>
-          </div>
-          {staged.length > 0 && (
-            <ul className="batch-staged-list">
-              {staged.map((row, position) => (
-                <li key={`${row.kind}:${row.url}:${position}`}>
-                  <i>{row.kind === "singing" ? "歌曲" : "跳舞"}</i>
-                  <span title={row.url}>{row.url}</span>
-                  <button type="button" onClick={() => unstage(position)} aria-label="从待加入清单里移除"><X weight="bold" /></button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
         <div className="batch-input-actions">
-          <p><ListChecks /> 重复链接会自动跳过；加入队列后不会自己跑，要等你在队列里点「开跑」。</p>
+          <p><ListChecks /> 重复链接会自动跳过；备好料就停下来等你确认，点「加入队列」才真正出片。</p>
           <div className="batch-input-buttons">
             <button
-              className="batch-secondary"
-              disabled={!canStart || !loaded || Boolean(busyAction)}
-              onClick={stageTasks}
-              title="把上面填好的链接整理进待加入清单（先核对再入队）"
-            >
-              <ListChecks />准备任务（{splitUrls(singing).length + splitUrls(dance).length} 条）
-            </button>
-            <button
               className="batch-primary"
-              disabled={!staged.length || !loaded || busyAction === "start"}
-              onClick={enqueue}
-              title={canAppend ? "追加到当前批次队尾（不会自动开跑）" : "新建队列（不会自动开跑）"}
+              disabled={!canStart || !loaded || busyAction === "start"}
+              onClick={prepare}
+              title="加入队列并立即开始准备：下载抖音视频 → 生成人物图与发布文案 → 等你确认"
             >
-              {busyAction === "start" ? <SpinnerGap className="spin" /> : <Plus weight="bold" />}
-              加入队列（{staged.length} 条）
+              {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
+              准备任务（{splitUrls(singing).length + splitUrls(dance).length} 条）
             </button>
           </div>
         </div>
@@ -529,9 +456,7 @@ export function BatchRoute() {
             <div className="batch-section-head">
               <div><span>制作队列</span><small>{batch.notice}</small></div>
               <div className="batch-head-actions">
-                {canRunQueue ? (
-                  <button className="start" onClick={() => call("start")} disabled={Boolean(busyAction)} title="按队列顺序开始处理（同时把 ComfyUI 拉起来预热）"><Play weight="fill" />开跑</button>
-                ) : batch.status === "paused" ? (
+                {batch.status === "paused" ? (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 ) : !["completed", "awaiting_review", "cancelled"].includes(batch.status) ? (
                   <button onClick={() => call("pause")} disabled={Boolean(busyAction)}><Pause />暂停</button>
@@ -593,7 +518,7 @@ export function BatchRoute() {
 
                 {selected.status === "pending" && (
                   <p className="field-note">
-                    这一条还在排队：回到队列上方点「开跑」才会按顺序开始（下载抖音视频 → 生成人物图素材与发布文案 → 停下来等你确认）。
+                    这一条还在排队：批次处于暂停，点队列上方的「继续」后才会开始（下载抖音视频 → 生成人物图素材与发布文案 → 停下来等你确认）。
                   </p>
                 )}
 
@@ -683,7 +608,7 @@ export function BatchRoute() {
                           onClick={() => itemCall("confirm")}
                           title={hasImage ? undefined : "请先添加上这一条的候选人物图"}
                         >
-                          <Check weight="bold" />确认并开始生成视频
+                          <Check weight="bold" />加入队列并出片
                         </button>
                       </div>
                     </div>
