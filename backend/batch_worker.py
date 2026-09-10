@@ -383,27 +383,32 @@ async def _prepare_review_work(
     warning = ""
 
     # 1) 模型分析：造型来源判断 + 发布文案 + 动作/运镜（或迁移提示词）。
-    #    失败不抛错，降级到源作品信息继续，避免单个条目把整批卡死。
-    batch_store.set_item_milestone(
-        batch_id, item_id, "prepare", status="running", progress=20, currentNode="正在分析画面与撰写文案"
-    )
-    try:
-        result = await batch_ai.analyze(
-            kind=item["kind"],
-            duration=duration,
-            contact_sheet=contact_sheet,
-            description=meta_desc,
-            tags=meta_tags,
-            feedback=feedback,
-            mode=mode,
-            previous=item.get("ai") or {},
+    #    「只调图片」不重跑模型；失败不抛错，降级到源作品信息继续，避免单个条目把整批卡死。
+    previous_ai = dict(item.get("ai") or {})
+    result = reuse_previous_analysis(mode, previous_ai)
+    if result is not None:
+        batch_store.add_item_log(batch_id, item_id, "只调整图片：沿用上一版的文案与动作/运镜。")
+    else:
+        batch_store.set_item_milestone(
+            batch_id, item_id, "prepare", status="running", progress=20, currentNode="正在分析画面与撰写文案"
         )
-    except asyncio.CancelledError:
-        raise
-    except Exception as error:
-        result = batch_ai.fallback_result(kind=item["kind"], description=meta_desc, tags=meta_tags)
-        warning = f"模型分析不可用，已降级为源作品信息：{error}"
-        batch_store.add_item_log(batch_id, item_id, warning)
+        try:
+            result = await batch_ai.analyze(
+                kind=item["kind"],
+                duration=duration,
+                contact_sheet=contact_sheet,
+                description=meta_desc,
+                tags=meta_tags,
+                feedback=feedback,
+                mode=mode,
+                previous=previous_ai,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            result = batch_ai.fallback_result(kind=item["kind"], description=meta_desc, tags=meta_tags)
+            warning = f"模型分析不可用，已降级为源作品信息：{error}"
+            batch_store.add_item_log(batch_id, item_id, warning)
 
     # 2) 候选人物图：中转站图片接口优先 → 本地 Krea2（可选，画质不达标）→ 源视频取帧兜底。
     revision = int(item.get("revision") or 0)
@@ -541,6 +546,17 @@ def _image_provider() -> str:
     """
     value = env_value("H3_BATCH_IMAGE_PROVIDER", "auto").strip().lower()
     return value if value in IMAGE_PROVIDERS else "auto"
+
+
+def reuse_previous_analysis(mode: str, previous: dict[str, Any]) -> dict[str, Any] | None:
+    """「只调图片」时复用上一版的分析结果，不重新调用模型。
+
+    否则文案与动作/运镜会被一起改写 —— 实测把「保留头顶留白」这类构图措辞
+    串进了运镜时间轴。三种调整范围必须严格各管各的。
+    """
+    if mode == "image" and previous and previous.get("reference_image_path"):
+        return dict(previous)
+    return None
 
 
 def default_action_plan(duration: float) -> tuple[str, str]:

@@ -274,6 +274,20 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertIn("本次必须优先满足的修改要求", prompt)
             self.assertTrue(prompt.startswith(base))
 
+    def test_batch_reuse_previous_analysis_only_for_image_mode(self) -> None:
+        """「只调图片」不得重跑模型：否则文案和动作/运镜会被一起改写。"""
+        from backend.batch_worker import reuse_previous_analysis
+
+        previous = {"reference_image_path": "candidate_r1.png", "title": "旧标题", "camera_prompt": "旧运镜"}
+        reused = reuse_previous_analysis("image", previous)
+        self.assertEqual(reused, previous)
+        self.assertIsNot(reused, previous)          # 必须是副本，不能原地改到旧状态
+        self.assertIsNone(reuse_previous_analysis("copy", previous))
+        self.assertIsNone(reuse_previous_analysis("both", previous))
+        self.assertIsNone(reuse_previous_analysis("image", {}))
+        # 没有出图结果时（例如上一步降级过）也不该复用
+        self.assertIsNone(reuse_previous_analysis("image", {"title": "只有文案"}))
+
     def test_batch_ai_fallback_and_action_plan_keep_item_runnable(self) -> None:
         """模型降级时条目仍可继续：文案退到源作品信息，动作/运镜按时长铺满。"""
         result = batch_ai.fallback_result(
