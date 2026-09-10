@@ -11,6 +11,7 @@ import {
   Pause,
   PersonSimpleRun,
   Play,
+  Plus,
   SpinnerGap,
   Trash,
   UploadSimple,
@@ -178,6 +179,9 @@ export function BatchRoute() {
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const [imageToken, setImageToken] = useState(0);
+  // 先把上次的队列读回来再允许提交：否则刚打开页面就点「加入队列」会新开一个批次，
+  // 看到的现象就是「我排好的队列不见了」。
+  const [loaded, setLoaded] = useState(false);
 
   const visibleItems = useMemo(() => batch?.items.filter((item) => item.status !== "deleted") || [], [batch]);
   const selected = useMemo(
@@ -188,10 +192,14 @@ export function BatchRoute() {
   );
 
   const loadLatest = useCallback(async () => {
-    const response = await fetch("/api/batches/latest", { cache: "no-store" });
-    if (response.status === 204) return;
-    if (!response.ok) throw new Error(await responseMessage(response, "无法读取上次批次"));
-    setBatch(await response.json());
+    try {
+      const response = await fetch("/api/batches/latest", { cache: "no-store" });
+      if (response.status === 204) return;
+      if (!response.ok) throw new Error(await responseMessage(response, "无法读取上次批次"));
+      setBatch(await response.json());
+    } finally {
+      setLoaded(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -352,8 +360,16 @@ export function BatchRoute() {
   };
 
   const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
-  // 已有批次（取消的除外）时按钮变成「加入当前批次」：随时能加，不必等当前批次跑完。
+  // 已有批次（取消的除外）时按钮变成「加入队列」：只排队，流程等用户点「启动」。
   const canAppend = Boolean(batch && batch.status !== "cancelled");
+  // 队列里有待处理任务、且没有在跑也没暂停 → 显示「启动」
+  const canStartRun = Boolean(
+    batch
+    && batch.status !== "cancelled"
+    && batch.status !== "running"
+    && batch.status !== "paused"
+    && (batch.items || []).some((item) => ["pending", "revising", "confirmed"].includes(item.status)),
+  );
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
 
   return (
@@ -420,10 +436,10 @@ export function BatchRoute() {
           </label>
         </div>
         <div className="batch-input-actions">
-          <p><ListChecks /> 随时都能加：批次在跑、暂停或等审核时，粘好链接点「加入当前批次」即排到队尾。</p>
-          <button className="batch-primary" disabled={!canStart || busyAction === "start"} onClick={start} title={canAppend ? "追加到当前批次队尾" : undefined}>
-            {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
-            {canAppend ? `加入当前批次（${splitUrls(singing).length + splitUrls(dance).length} 条）` : "开始批量处理"}
+          <p><ListChecks /> 只入队、不自动开跑：粘好链接点「加入队列」，确认无误后再点「启动」。</p>
+          <button className="batch-primary" disabled={!canStart || !loaded || busyAction === "start"} onClick={start} title={canAppend ? "追加到当前批次队尾（不会自动开跑）" : undefined}>
+            {busyAction === "start" ? <SpinnerGap className="spin" /> : <Plus weight="bold" />}
+            加入队列（{splitUrls(singing).length + splitUrls(dance).length} 条）
           </button>
         </div>
       </section>
@@ -436,7 +452,9 @@ export function BatchRoute() {
             <div className="batch-section-head">
               <div><span>制作队列</span><small>{batch.notice}</small></div>
               <div className="batch-head-actions">
-                {batch.status === "paused" ? (
+                {canStartRun ? (
+                  <button className="start" onClick={() => call("start")} disabled={Boolean(busyAction)}><Play weight="fill" />启动</button>
+                ) : batch.status === "paused" ? (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 ) : !["completed", "awaiting_review", "cancelled"].includes(batch.status) ? (
                   <button onClick={() => call("pause")} disabled={Boolean(busyAction)}><Pause />暂停</button>

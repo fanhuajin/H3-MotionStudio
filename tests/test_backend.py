@@ -213,8 +213,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("/api/batches/{batch_id}/items", paths)           # 随时追加
         self.assertIn("/api/batches/{batch_id}/items/{item_id}", paths)  # 删除单条
 
-    def test_append_endpoint_resumes_and_respects_pause(self) -> None:
-        """追加接口的收尾逻辑：跑完/失败的批次加任务后自动继续；暂停中的只入队不偷跑。"""
+    def test_append_endpoint_queues_without_auto_start(self) -> None:
+        """追加只排队：跑完 / 暂停的批次都不会因为「加任务」被自动跑起来。"""
         import asyncio
 
         from backend import app as app_module
@@ -248,12 +248,12 @@ class WorkflowPreparationTests(unittest.TestCase):
                     "b1", app_module.BatchAppendRequest(singingUrls=["https://v.douyin.com/song2"])
                 )
             )
-            self.assertEqual(result["status"], "running")     # 已完成的批次被唤醒继续处理
+            self.assertEqual(result["status"], "completed")   # 只入队，等用户点「启动」
             self.assertIn("已加入 1 条", result["notice"])
             self.assertEqual(len(stub.state["items"]), 2)
-            self.assertEqual(len(spawned), 1)
+            self.assertEqual(spawned, [])
 
-            # 暂停中的批次：加进去但不自动继续，免得违背用户的暂停意图
+            # 暂停中的批次：加进去但保持暂停，也不唤醒 runner
             stub.state["status"] = "paused"
             result = asyncio.run(
                 app_module.append_batch_items_endpoint(
@@ -263,6 +263,7 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertEqual(result["status"], "paused")
             self.assertIn("暂停", result["notice"])
             self.assertEqual(len(stub.state["items"]), 3)
+            self.assertEqual(spawned, [])
 
             # 取消的批次不能复活
             stub.state["status"] = "cancelled"
@@ -396,6 +397,96 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(by_index[2]["status"], "awaiting_review")   # 后面的条目照常跑
         self.assertNotEqual(box["state"]["status"], "failed")
 
+    def test_queue_only_runs_after_explicit_start(self) -> None:
+        """先把任务排进队列、点「启动」才跑流程（2026-09-10 用户要求）。"""
+        import asyncio
+
+        from backend import app as app_module
+        from backend import batch_worker
+
+        state = new_batch_state(["https://v.douyin.com/a"], [])
+
+        class StubStore:
+            def __init__(self, payload: dict) -> None:
+                self.state = payload
+                self.active_state = None
+
+            def get(self, _batch_id):
+                return self.state
+
+            def create(self, payload: dict) -> dict:
+                self.state = payload
+                return payload
+
+            def update(self, _batch_id, **changes):
+                self.state.update(changes)
+                return self.state
+
+            def mutate(self, _batch_id, mutator):
+                mutator(self.state)
+                return self.state
+
+            def mutate_item(self, _batch_id, item_id, mutator):
+                for item in self.state["items"]:
+                    if item["id"] == item_id:
+                        mutator(item)
+                return self.state
+
+            def active(self):
+                return self.active_state
+
+            def latest(self):
+                return self.state
+
+        stub = StubStore(state)
+        spawned: list = []
+        with patch.object(batch_worker, "batch_store", stub), patch.object(
+            app_module, "batch_store", stub
+        ), patch.object(app_module, "new_batch_state", lambda *a, **k: dict(state)), patch.object(
+            app_module, "spawn", lambda coro: (spawned.append(coro), coro.close())
+        ):
+            # 新建批次：只入队、状态仍是 queued、没有起 runner
+            created = asyncio.run(
+                app_module.create_batch(
+                    app_module.BatchCreateRequest(singingUrls=["https://v.douyin.com/a"])
+                )
+            )
+            self.assertEqual(created["status"], "queued")
+            self.assertIn("点「启动」后开始处理", created["notice"])
+            self.assertEqual(spawned, [])
+
+            # 追加任务同样不自动开跑
+            stub.state["status"] = "queued"
+            asyncio.run(
+                app_module.append_batch_items_endpoint(
+                    "b1", app_module.BatchAppendRequest(singingUrls=["https://v.douyin.com/b"])
+                )
+            )
+            self.assertEqual(stub.state["status"], "queued")
+            self.assertEqual(spawned, [])
+            self.assertEqual(len(stub.state["items"]), 2)
+
+            # 删除/跳过也不会把没启动的批次跑起来
+            stub.state["status"] = "queued"
+            stub.state["items"][0]["status"] = "pending"
+            batch_worker.batch_store = stub
+            asyncio.run(app_module.delete_batch_item("b1", stub.state["items"][0]["id"]))
+            self.assertEqual(stub.state["status"], "queued")
+            self.assertEqual(spawned, [])
+
+            # 点「启动」才真的跑
+            stub.state["items"][1]["status"] = "pending"
+            started = asyncio.run(app_module.start_batch("b1"))
+            self.assertEqual(started["status"], "running")
+            self.assertEqual(len(spawned), 1)
+
+            # 队列里没有待处理任务时不给启动
+            stub.state["status"] = "completed"
+            for item in stub.state["items"]:
+                item["status"] = "completed"
+            with self.assertRaises(app_module.HTTPException):
+                asyncio.run(app_module.start_batch("b1"))
+
     def test_comfy_stop_endpoint_and_jobless_shutdown(self) -> None:
         """手动关闭 ComfyUI：接口在，且交接用的关闭逻辑能在没有 job 的情况下调用。"""
         import inspect
@@ -411,6 +502,57 @@ class WorkflowPreparationTests(unittest.TestCase):
             inspect.signature(ResourceManager.stop_comfy).parameters["job_id"].default,
             inspect.Parameter.empty,
         )
+
+    def test_batch_queue_survives_restart(self) -> None:
+        """队列必须落盘：重开页面/重启服务后，排好队还没启动的任务一条都不能丢。"""
+        from backend import batch_store as batch_store_module
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            db = Path(folder) / "queue.db"
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = db
+                first = BatchStore()
+                queued = new_batch_state(["https://v.douyin.com/a"], ["https://v.douyin.com/b"])
+                queued["notice"] = "已加入队列，等启动"
+                first.create(queued)
+            finally:
+                batch_store_module.DB_PATH = original
+
+            try:
+                batch_store_module.DB_PATH = db
+                # 新实例＝重启后的后端：队列与每条的比例都还在
+                second = BatchStore()
+                restored = second.get(queued["id"])
+                self.assertIsNotNone(restored)
+                self.assertEqual(restored["status"], "queued")
+                self.assertEqual(
+                    [item["url"] for item in restored["items"]],
+                    ["https://v.douyin.com/a", "https://v.douyin.com/b"],
+                )
+                self.assertEqual([item["ratio"] for item in restored["items"]], ["4:3", "9:16"])
+                self.assertEqual(second.latest()["id"], queued["id"])
+
+                # 重启扫描：只排队、没启动过的批次保持原样（等用户点「启动」），不会被标成暂停
+                second.interrupt_active()
+                after = second.get(queued["id"])
+                self.assertEqual(after["status"], "queued")
+                self.assertFalse(after.get("pauseRequested"))
+
+                # 已经跑起来被打断的批次：保留进度并提示重试，数据不丢
+                running = new_batch_state(["https://v.douyin.com/c"], [])
+                running["status"] = "running"
+                running["startedAt"] = "2026-09-10T00:00:00+00:00"
+                running["runnerActive"] = True
+                running["items"][0]["status"] = "running"
+                second.create(running)
+                second.interrupt_active()
+                interrupted = second.get(running["id"])
+                self.assertIn(interrupted["status"], {"failed", "paused"})
+                self.assertEqual(len(interrupted["items"]), 1)
+            finally:
+                batch_store_module.DB_PATH = original
 
     def test_batch_preflight_no_longer_drives_the_codex_cli(self) -> None:
         """预审必须直连模型 + 本地出图；不能再起 codex exec agent 会话烧订阅额度。"""

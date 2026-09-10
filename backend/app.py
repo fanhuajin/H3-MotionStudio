@@ -324,6 +324,34 @@ def _resume_batch(batch_id: str, notice: str) -> dict[str, Any]:
     return state
 
 
+def _pending_items(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in state.get("items") or []
+        if item.get("status") in {"pending", "revising", "confirmed"}
+    ]
+
+
+def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
+    """按需唤醒 runner：**没点过「启动」的批次不会被顺手跑起来**。
+
+    用户 2026-09-10：「可以先将任务加入队列吗，等我点击启动了再去跑流程」。
+    所以「加入队列 / 删除 / 跳过」这类操作只改状态和提示：
+    - `running`：用户已经启动过，runner 还活着，会自己捡起新条目；
+    - `paused`：用户主动暂停，不偷偷继续；
+    - 其它（queued / awaiting_review / completed / failed）：一律等用户点「启动」。
+    """
+    state = batch_store.get(batch_id) or {}
+    status = state.get("status")
+    if status == "running":
+        return batch_store.update(batch_id, notice=notice)
+    if status == "paused" or state.get("pauseRequested"):
+        return batch_store.update(
+            batch_id, notice=f"{notice} 批次处于暂停，点「继续」后开始处理。"
+        )
+    return batch_store.update(batch_id, notice=f"{notice} 点「启动」后开始处理。")
+
+
 @app.get("/api/batches/latest")
 async def latest_batch():
     state = batch_store.latest()
@@ -354,13 +382,29 @@ async def create_batch(request: BatchCreateRequest):
         raise HTTPException(400, str(error)) from error
     state = new_batch_state(singing, dance, singing_ratio, dance_ratio)
     batch_store.create(state)
-    spawn(run_batch(state["id"]))
-    return state
+    # 只入队，不自动开跑：用户要自己点「启动」才走流程（2026-09-10 要求）
+    return batch_store.update(
+        state["id"],
+        notice=f"已把 {len(state['items'])} 条任务加入队列，点「启动」后开始处理。",
+    )
 
 
 @app.get("/api/batches/{batch_id}")
 async def get_batch(batch_id: str):
     return _batch_or_404(batch_id)
+
+
+@app.post("/api/batches/{batch_id}/start")
+async def start_batch(batch_id: str):
+    """点「启动」：开始跑队列里还没处理的任务（逐条预审 → 等你确认出片）。"""
+    state = _batch_or_404(batch_id)
+    if state.get("status") == "cancelled":
+        raise HTTPException(409, "批次已取消，请新建一个批次")
+    if state.get("status") == "running" and state.get("runnerActive"):
+        raise HTTPException(409, "批次已经在运行")
+    if not _pending_items(state):
+        raise HTTPException(409, "队列里没有待处理的任务")
+    return _resume_batch(batch_id, "已启动，正在按队列逐条处理。")
 
 
 @app.post("/api/batches/{batch_id}/items")
@@ -386,16 +430,13 @@ async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest
         raise HTTPException(400, str(error)) from error
     added = int(result.get("added") or 0)
     duplicates = int(result.get("duplicates") or 0)
-    note = f"已加入 {added} 条新任务，正在排队处理。"
+    note = f"已加入 {added} 条新任务，已排到队尾。"
     if duplicates:
         note += f"（跳过 {duplicates} 条已经在队列里的重复链接）"
     if not added:
         return batch_store.update(batch_id, notice=note)
-    if state.get("status") == "paused" or state.get("pauseRequested"):
-        return batch_store.update(
-            batch_id, notice=f"已加入 {added} 条新任务；批次处于暂停，点「继续」后开始处理。"
-        )
-    return _resume_batch(batch_id, note)
+    # 没启动过 / 暂停中的批次只入队，不因为「加任务」就把流程跑起来
+    return _wake_batch(batch_id, note)
 
 
 @app.post("/api/batches/{batch_id}/pause")
@@ -556,7 +597,7 @@ async def skip_batch_item(batch_id: str, item_id: str):
                 if milestone.get("status") in {"pending", "running"}:
                     milestone["status"] = "skipped"
         batch_store.mutate_item(batch_id, item_id, mark_skipped)
-    return _resume_batch(batch_id, "当前条目已跳过，继续处理下一条。")
+    return _wake_batch(batch_id, "当前条目已跳过。")
 
 
 @app.delete("/api/batches/{batch_id}/items/{item_id}")
@@ -582,7 +623,7 @@ async def delete_batch_item(batch_id: str, item_id: str):
                 if milestone.get("status") in {"pending", "running"}:
                     milestone["status"] = "skipped"
         batch_store.mutate_item(batch_id, item_id, mark_deleted)
-    return _resume_batch(batch_id, "条目已删除，继续处理队列。")
+    return _wake_batch(batch_id, "条目已删除。")
 
 
 @app.get("/api/batches/{batch_id}/items/{item_id}/image")

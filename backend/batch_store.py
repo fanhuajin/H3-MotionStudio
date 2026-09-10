@@ -163,6 +163,9 @@ class BatchStore:
         active = self.active()
         if not active or active.get("status") in {"awaiting_review", "failed"}:
             return
+        if active.get("status") == "queued" and not active.get("startedAt"):
+            # 只排了队、还没点「启动」的批次：没有任何东西被打断，保持原样等用户启动
+            return
         current_id = active.get("currentItemId")
         current = next(
             (item for item in active.get("items") or [] if item.get("id") == current_id),
