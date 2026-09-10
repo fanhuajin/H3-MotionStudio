@@ -13,7 +13,6 @@ BATCH_OUTPUT_ROOT = Path(
     os.getenv("H3_BATCH_OUTPUT", r"E:\AI_Exports\H3-MotionStudio\发布成品")
 )
 BATCH_SELF_URL = os.getenv("H3_SELF_URL", "http://127.0.0.1:8111").rstrip("/")
-BATCH_CODEX_MODEL = os.getenv("H3_BATCH_CODEX_MODEL", "gpt-5.6-terra")
 
 COMFY_HOME = Path(os.getenv("H3_COMFY_HOME", r"D:\Comfyui")).resolve()
 COMFY_ROOT = COMFY_HOME / "ComfyUI"
@@ -24,6 +23,31 @@ COMFY_MAIN = COMFY_ROOT / "main.py"
 COMFY_URL = os.getenv("H3_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 COMFY_WS = COMFY_URL.replace("http://", "ws://").replace("https://", "wss://")
 
+# Windows 用户级环境变量的一次性缓存：后端常由 .bat / 计划任务 / npm 启动，
+# 这些方式不继承用户级变量，不补读会让凭据配置静默失效。
+_USER_ENV_CACHE: dict[str, str] = {}
+
+
+def env_value(name: str, default: str = "") -> str:
+    """读环境变量：进程环境优先，缺失时补读一次 Windows 用户级环境变量。
+
+    凭据始终只来自环境，不写入前端、数据库或仓库。
+    """
+    value = (os.environ.get(name) or "").strip()
+    if value:
+        return value
+    if os.name == "nt" and name not in _USER_ENV_CACHE:
+        _USER_ENV_CACHE[name] = ""
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as handle:
+                _USER_ENV_CACHE[name] = str(winreg.QueryValueEx(handle, name)[0] or "").strip()
+        except OSError:
+            pass
+    return _USER_ENV_CACHE.get(name) or default
+
+
 WORKFLOW_DIR = COMFY_ROOT / "user" / "default" / "workflows" / "video"
 SINGING_WORKFLOW = WORKFLOW_DIR / "视频-单图唱歌-自动拼接40秒内-4x3-运镜版.json"
 UPSCALE_WORKFLOW = WORKFLOW_DIR / "视频-成片输入-独立二采-RealESRGAN4x转1080P-8GB高清加强版.json"
@@ -33,6 +57,16 @@ MIGRATE_WORKFLOW = WORKFLOW_DIR / "视频-长视频替换-4x3加速版-ProPainte
 FIXED_REFERENCE = COMFY_INPUT / "25181125-唱歌优化-指定背景-1440x1080-v3.png"
 # 动作迁移的默认人物参考图（未上传人物图时使用；迁移工作流内置参考图）
 MIGRATE_REFERENCE = COMFY_INPUT / "singing_portrait_4x3_1440x1080.png"
+
+# 批量预审的候选人物图：本地 ComfyUI Krea2「双图片编辑」（图像-1 场景造型 / 图像-2 身份）。
+# 该节点常驻身份编辑 LoRA（Krea2-编辑identity_edit_v1_2），出图 ≈78s（RTX 3070 Ti 8GB + --lowvram）。
+IMAGE_WORKFLOW_DIR = COMFY_ROOT / "user" / "default" / "workflows" / "image"
+PORTRAIT_WORKFLOW = IMAGE_WORKFLOW_DIR / "图片-krea2-双图片编辑.json"
+# ResolutionSelector 的画布档位：唱歌固定 4:3 横版、跳舞固定 9:16 竖版。
+PORTRAIT_RATIO_PARAMS = {
+    "4:3": {"aspect_ratio": "4:3 (Standard)", "megapixels": 1.0},
+    "9:16": {"aspect_ratio": "9:16 (Portrait Widescreen)", "megapixels": 1.0},
+}
 
 # 高清档超分模型：
 # - 9:16 迁移链路：512×896 → 1080×1920 仅需 ~2.1×，曾考虑用 x2plus（耗时约 1/4）

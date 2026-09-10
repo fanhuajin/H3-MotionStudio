@@ -3,27 +3,33 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "reference_image_path": { "type": "string" },
     "song_name": { "type": "string" },
+    "style_source": { "type": "string", "enum": ["video", "redesign"] },
+    "style_note": { "type": "string" },
     "title": { "type": "string" },
     "introduction": { "type": "string" },
     "tags": { "type": "array", "items": { "type": "string" }, "maxItems": 12 },
     "cover_headline": { "type": "string" },
+    "remove_subtitles": { "type": "boolean" },
     "content_prompt": { "type": "string" },
     "video_prompt": { "type": "string" },
     "image_prompt": { "type": "string" },
-    "remove_subtitles": { "type": "boolean" }
+    "action_prompt": { "type": "string" },
+    "camera_prompt": { "type": "string" }
   },
   "required": [
-    "reference_image_path",
     "song_name",
+    "style_source",
+    "style_note",
     "title",
     "introduction",
     "tags",
     "cover_headline",
+    "remove_subtitles",
     "content_prompt",
     "video_prompt",
     "image_prompt",
-    "remove_subtitles"
+    "action_prompt",
+    "camera_prompt"
   ]
 }

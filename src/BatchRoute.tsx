@@ -31,6 +31,8 @@ interface BatchStep {
 interface BatchAI {
   reference_image_path: string;
   song_name?: string;
+  style_source?: "video" | "redesign";
+  style_note?: string;
   title: string;
   introduction: string;
   tags: string[];
@@ -297,11 +299,26 @@ export function BatchRoute() {
           <aside className="batch-queue">
             <div className="batch-section-head">
               <div><span>制作队列</span><small>{batch.notice}</small></div>
-              {batch.status === "paused" ? (
-                <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
-              ) : !["completed", "awaiting_review"].includes(batch.status) ? (
-                <button onClick={() => call("pause")} disabled={Boolean(busyAction)}><Pause />暂停</button>
-              ) : null}
+              <div className="batch-head-actions">
+                {batch.status === "paused" ? (
+                  <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
+                ) : !["completed", "awaiting_review", "cancelled"].includes(batch.status) ? (
+                  <button onClick={() => call("pause")} disabled={Boolean(busyAction)}><Pause />暂停</button>
+                ) : null}
+                {!["completed", "cancelled"].includes(batch.status) && (
+                  <button
+                    className="danger"
+                    disabled={Boolean(busyAction)}
+                    onClick={() => {
+                      if (window.confirm("取消整批制作？未完成的条目会被标记为已跳过，已生成的候选结果会保留。")) {
+                        void call("cancel");
+                      }
+                    }}
+                  >
+                    <X />取消整批
+                  </button>
+                )}
+              </div>
             </div>
             <div className="batch-item-list">
               {visibleItems.map((item) => (
@@ -346,6 +363,12 @@ export function BatchRoute() {
                         <small>确认前不会启动 ComfyUI</small>
                       </div>
                       {selected.ai.song_name && <p className="batch-song-name">识别歌曲：{selected.ai.song_name}</p>}
+                      {selected.ai.style_note && (
+                        <p className="batch-style-note">
+                          <i>{selected.ai.style_source === "redesign" ? "已按歌曲重做造型" : "已沿用源视频造型"}</i>
+                          {selected.ai.style_note}
+                        </p>
+                      )}
                       <label><span>标题</span><p>{selected.ai.title}</p></label>
                       <label><span>简介</span><p>{selected.ai.introduction}</p></label>
                       <label><span>标签</span><div className="batch-tags">{selected.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>

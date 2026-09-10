@@ -24,7 +24,7 @@ logger = logging.getLogger("uvicorn.error")
 
 from . import input_preview
 from .batch_store import batch_store
-from .batch_worker import cancel_codex_for_item, new_batch_state, request_review_adjustment, run_batch
+from .batch_worker import cancel_item_work, new_batch_state, request_review_adjustment, run_batch
 from .douyin_mirror import all_jobs as mirror_jobs
 from .douyin_mirror import get_job as mirror_get_job
 from .douyin_mirror import upsert_jobs as mirror_upsert
@@ -350,6 +350,56 @@ async def resume_batch(batch_id: str):
     return _resume_batch(batch_id, "批次已继续运行。")
 
 
+@app.post("/api/batches/{batch_id}/cancel")
+async def cancel_batch(batch_id: str):
+    """整批取消：停掉在跑的预审/子任务，未完成的条目全部标记跳过，让用户能开新批次。
+
+    没有这个接口时，failed 批次会被 `batch_store.active()` 一直挡住新建，
+    用户只能逐条删除才能继续。
+    """
+    state = _batch_or_404(batch_id)
+    if state.get("status") in {"completed", "cancelled"}:
+        raise HTTPException(409, "批次已经结束")
+    current_id = state.get("currentItemId")
+    if current_id:
+        cancel_item_work(batch_id, str(current_id))
+    for item in state.get("items") or []:
+        child = item.get("childJob") or {}
+        child_id = child.get("id")
+        if child_id and child.get("status") in {"queued", "running", "cancelling"}:
+            try:
+                await cancel_job(str(child_id))
+            except HTTPException as error:
+                if error.status_code not in {404, 409}:
+                    raise
+
+    def stop_everything(row: dict[str, Any]) -> None:
+        for item in row.get("items") or []:
+            if item.get("status") in {"completed", "skipped", "deleted"}:
+                continue
+            item.update(
+                status="skipped",
+                stage="skipped",
+                finishedAt=now_iso(),
+                childJob=None,
+            )
+            for milestone in item.get("milestones") or []:
+                if milestone.get("status") in {"pending", "running"}:
+                    milestone["status"] = "skipped"
+
+    batch_store.mutate(batch_id, stop_everything)
+    return batch_store.update(
+        batch_id,
+        status="cancelled",
+        stage="cancelled",
+        pauseRequested=False,
+        runnerActive=False,
+        currentItemId=None,
+        finishedAt=now_iso(),
+        notice="批次已取消，可以开始新的批次。",
+    )
+
+
 @app.post("/api/batches/{batch_id}/items/{item_id}/confirm")
 async def confirm_batch_item(batch_id: str, item_id: str):
     item = _batch_item_or_404(batch_id, item_id)
@@ -410,7 +460,7 @@ async def skip_batch_item(batch_id: str, item_id: str):
     if item.get("status") in {"completed", "skipped", "deleted"}:
         raise HTTPException(409, "当前条目已经结束")
     batch_store.mutate_item(batch_id, item_id, lambda row: row.update(skipRequested=True))
-    cancel_codex_for_item(batch_id, item_id)
+    cancel_item_work(batch_id, item_id)
     if item.get("status") not in {"running", "revising"}:
         def mark_skipped(row: dict[str, Any]) -> None:
             row.update(status="skipped", stage="skipped", finishedAt=now_iso(), childJob=None)
@@ -430,7 +480,7 @@ async def delete_batch_item(batch_id: str, item_id: str):
     child_id = child.get("id")
     child_status = child.get("status")
     batch_store.mutate_item(batch_id, item_id, lambda row: row.update(deleteRequested=True))
-    cancel_codex_for_item(batch_id, item_id)
+    cancel_item_work(batch_id, item_id)
     if child_id and child_status in {"queued", "running", "cancelling"}:
         try:
             await cancel_job(str(child_id))

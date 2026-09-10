@@ -6,6 +6,16 @@ from pathlib import Path
 from typing import Any
 
 
+# ComfyUI 会把 control_after_generate 作为 seed / noise_seed 的附属下拉一起写进
+# widgets_values，但节点 inputs 里没有这一项；图转 API prompt 时必须按名字识别并跳过。
+CONTROL_AFTER_GENERATE_WIDGETS = {"seed", "noise_seed"}
+CONTROL_AFTER_GENERATE_VALUES = {"fixed", "increment", "decrement", "randomize"}
+
+# inputs 为空数组的节点（rgthree 的 Seed / Label / Note 等）只能按声明顺序做位置映射，
+# 但只对这类标量 widget 生效，避免把 IMAGE / LATENT 之类的连线输入误当 widget 填值。
+SCALAR_WIDGET_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"}
+
+
 def load_workflow(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -305,6 +315,29 @@ def graph_to_api_prompt(workflow: dict[str, Any], object_info: dict[str, Any]) -
         widgets = node.get("widgets_values")
         widget_index = 0
 
+        def take_widget(widget_name: str) -> tuple[Any, bool]:
+            """按位置取下一条 widget 值，并跳过 ComfyUI 的 control_after_generate 幽灵 widget。"""
+            nonlocal widget_index
+            if isinstance(widgets, dict):
+                if widget_name in widgets:
+                    return widgets[widget_name], True
+                return None, False
+            if not isinstance(widgets, list):
+                return widgets, widgets is not None
+            present = widget_index < len(widgets)
+            value = widgets[widget_index] if present else None
+            widget_index += 1
+            # seed / noise_seed 后面紧跟一个 control_after_generate 下拉（fixed/increment/
+            # decrement/randomize）。它写进 widgets_values，却不出现在节点的 inputs 里；
+            # 不跳过它，从此往后的每个 widget 值都会错位一格（steps 会拿到 "randomize"）。
+            if (
+                widget_name in CONTROL_AFTER_GENERATE_WIDGETS
+                and widget_index < len(widgets)
+                and str(widgets[widget_index]) in CONTROL_AFTER_GENERATE_VALUES
+            ):
+                widget_index += 1
+            return value, present
+
         for input_spec in node.get("inputs") or []:
             name = input_spec.get("name")
             widget = input_spec.get("widget")
@@ -312,19 +345,7 @@ def graph_to_api_prompt(workflow: dict[str, Any], object_info: dict[str, Any]) -
             has_widget_value = False
 
             if widget is not None:
-                widget_name = widget.get("name") or name
-                if isinstance(widgets, dict):
-                    if widget_name in widgets:
-                        widget_value = widgets[widget_name]
-                        has_widget_value = True
-                elif isinstance(widgets, list):
-                    if widget_index < len(widgets):
-                        widget_value = widgets[widget_index]
-                        has_widget_value = True
-                    widget_index += 1
-                else:
-                    widget_value = widgets
-                    has_widget_value = widgets is not None
+                widget_value, has_widget_value = take_widget(widget.get("name") or name)
 
             if name not in accepted:
                 continue
@@ -334,6 +355,27 @@ def graph_to_api_prompt(workflow: dict[str, Any], object_info: dict[str, Any]) -
                 inputs[name] = links[str(link_id)]
             elif has_widget_value and widget_value is not None:
                 inputs[name] = widget_value
+
+        if not (node.get("inputs") or []) and node.get("outputs") and isinstance(widgets, list):
+            # rgthree 的 Seed (rgthree) 等节点在 UI JSON 里 inputs 是空数组，上面的循环一次
+            # 都不执行，widget 值会全部丢失（服务端报 required_input_missing: seed）。
+            # 有输出的这类节点按 object_info 的声明顺序补一次位置映射。
+            order = list((definition.get("required") or {}).keys()) + list(
+                (definition.get("optional") or {}).keys()
+            )
+            for position, input_name in enumerate(order):
+                if position >= len(widgets) or input_name in inputs or input_name not in accepted:
+                    continue
+                spec = (definition.get("required") or {}).get(input_name) or (
+                    definition.get("optional") or {}
+                ).get(input_name)
+                if not isinstance(spec, list) or not spec:
+                    continue
+                if not (isinstance(spec[0], list) or spec[0] in SCALAR_WIDGET_TYPES):
+                    continue
+                if widgets[position] is None:
+                    continue
+                inputs[input_name] = widgets[position]
 
         prompt[node_id] = {
             "class_type": class_type,

@@ -7,7 +7,15 @@ from unittest.mock import patch
 from PIL import Image
 
 from backend.app import douyin_job_payload
-from backend.batch_worker import new_batch_state, render_covers, unique_urls
+from backend import batch_ai, batch_image, settings
+from backend.batch_portrait import prepare_portrait_workflow
+from backend.batch_worker import (
+    _image_provider,
+    default_action_plan,
+    new_batch_state,
+    render_covers,
+    unique_urls,
+)
 from backend.douyin_preview import _convert_download_sync
 from backend.douyin_service import (
     DOUYIN_URL,
@@ -50,12 +58,132 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertTrue(all(next(step for step in item["milestones"] if step["id"] == "video")["status"] == "pending" for item in state["items"]))
         self.assertEqual(unique_urls([singing, "", singing]), [singing])
 
-    def test_batch_codex_uses_workspace_sandbox_without_conflicting_approval_flag(self) -> None:
+    def test_batch_preflight_no_longer_drives_the_codex_cli(self) -> None:
+        """预审必须直连模型 + 本地出图；不能再起 codex exec agent 会话烧订阅额度。"""
         source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
-        self.assertIn('"--sandbox",\n        "workspace-write",', source)
-        self.assertNotIn('"--approve-for-me"', source)
-        self.assertIn('args.extend(["--", "-"])', source)
-        self.assertIn('process.communicate(prompt.encode("utf-8"))', source)
+        self.assertNotIn("codex", source.lower())
+        self.assertIn("batch_ai.analyze(", source)
+        self.assertIn("batch_portrait.generate_portrait(", source)
+
+    def test_batch_portrait_workflow_wires_scene_identity_prompt_and_ratio(self) -> None:
+        """Krea2 双图编辑：图像-1 造型场景、图像-2 身份、提示词、画布档位、输出前缀。"""
+        workflow = {
+            "nodes": [
+                {"id": 12, "type": "LoadImage", "title": "加载图像-1", "widgets_values": ["old1", "image"]},
+                {"id": 11, "type": "LoadImage", "title": "加载图像-2", "widgets_values": ["old2", "image"]},
+                {"id": 5, "type": "PrimitiveStringMultiline", "title": "提示词", "widgets_values": ["old"]},
+                {"id": 7, "type": "ResolutionSelector", "widgets_values": ["16:9 (Widescreen)", 0.8, 32]},
+                {"id": 17, "type": "SaveImage", "widgets_values": ["old_prefix"]},
+            ],
+            "links": [],
+        }
+        prepare_portrait_workflow(
+            workflow,
+            scene_image="scene.png",
+            identity_image="identity.png",
+            prompt="合成提示词",
+            ratio="9:16",
+            prefix="batch_abc",
+        )
+        nodes = {node["id"]: node for node in workflow["nodes"]}
+        self.assertEqual(nodes[12]["widgets_values"][0], "scene.png")
+        self.assertEqual(nodes[11]["widgets_values"][0], "identity.png")
+        self.assertEqual(nodes[5]["widgets_values"][0], "合成提示词")
+        self.assertEqual(nodes[7]["widgets_values"][0], "9:16 (Portrait Widescreen)")
+        self.assertEqual(nodes[17]["widgets_values"][0], "batch_abc")
+
+        with self.assertRaises(RuntimeError):
+            prepare_portrait_workflow(
+                workflow,
+                scene_image="a",
+                identity_image="b",
+                prompt="c",
+                ratio="1:1",
+                prefix="d",
+            )
+
+    def test_batch_prompts_come_from_the_repo_not_the_desktop(self) -> None:
+        """造型提示词已收进仓库，不能再依赖桌面的绝对路径。"""
+        source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
+        self.assertNotIn("Desktop", source)
+        compose = batch_ai.compose_prompt("singing", "video")
+        self.assertGreater(len(compose), 500)
+        self.assertIn("图二", compose)
+        self.assertNotEqual(compose, batch_ai.compose_prompt("singing", "redesign"))
+
+    def test_batch_ai_reads_key_from_process_env(self) -> None:
+        """凭据只从环境读取；进程环境有值时直接用，不去碰仓库或数据库。"""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-from-env"}):
+            batch_ai._CACHED_KEY = None
+            self.assertTrue(batch_ai.configured())
+            self.assertEqual(batch_ai._headers()["Authorization"], "Bearer sk-from-env")
+
+    def test_batch_image_requires_explicit_relay_config(self) -> None:
+        """出图必须显式配中转站：官方账号没有 gpt-image 余额，不能默认打到官方接口。"""
+        relay_names = ("H3_BATCH_IMAGE_BASE_URL", "H3_BATCH_IMAGE_API_KEY", "H3_BATCH_IMAGE_MODEL")
+        saved = {name: os.environ.pop(name, None) for name in relay_names}
+        try:
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-official"}, clear=False):
+                settings._USER_ENV_CACHE.clear()
+                self.assertFalse(batch_image.configured())
+                self.assertEqual(batch_image.base_url(), "https://api.openai.com/v1")
+            with patch.dict(
+                os.environ,
+                {
+                    "H3_BATCH_IMAGE_BASE_URL": "https://relay.example/v1",
+                    "H3_BATCH_IMAGE_API_KEY": "sk-relay",
+                    "H3_BATCH_IMAGE_MODEL": "gpt-image-2.5-sunburst",
+                },
+                clear=False,
+            ):
+                settings._USER_ENV_CACHE.clear()
+                self.assertTrue(batch_image.configured())
+                self.assertEqual(batch_image.base_url(), "https://relay.example/v1")
+                self.assertEqual(batch_image.model(), "gpt-image-2.5-sunburst")
+            self.assertEqual(batch_image.IMAGE_SIZES["4:3"], "1536x1024")
+            self.assertEqual(batch_image.IMAGE_SIZES["9:16"], "1024x1536")
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            settings._USER_ENV_CACHE.clear()
+
+    def test_batch_image_provider_selection(self) -> None:
+        """auto 只在配了中转站时走 api，其余回落抽帧；本地 Krea2 必须显式指定。"""
+        with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "local"}, clear=False):
+            self.assertEqual(_image_provider(), "local")
+        with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "没这个值"}, clear=False):
+            self.assertEqual(_image_provider(), "auto")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("H3_BATCH_IMAGE_PROVIDER", None)
+            settings._USER_ENV_CACHE.clear()
+            self.assertEqual(_image_provider(), "auto")
+
+    def test_batch_ai_fallback_and_action_plan_keep_item_runnable(self) -> None:
+        """模型降级时条目仍可继续：文案退到源作品信息，动作/运镜按时长铺满。"""
+        result = batch_ai.fallback_result(
+            kind="singing",
+            description="粉色限定 #爱如潮水remix",
+            tags=["爱如潮水", "#翻唱"],
+        )
+        self.assertEqual(result["style_source"], "video")
+        self.assertEqual(result["title"], "粉色限定")
+        self.assertEqual(result["tags"], ["爱如潮水", "翻唱"])
+        self.assertIsInstance(result["remove_subtitles"], bool)
+        self.assertTrue(
+            all(
+                isinstance(result[key], str)
+                for key in ("title", "introduction", "cover_headline", "action_prompt", "camera_prompt")
+            )
+        )
+
+        action, camera = default_action_plan(20.6)
+        self.assertTrue(action.startswith("0–10.3秒："))
+        self.assertIn("20.6秒", action)
+        self.assertIn("：", camera)
+        self.assertNotIn("秒：", camera.split("：")[0])
 
     def test_batch_cover_outputs_have_platform_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -539,6 +667,102 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(prompt["2"]["inputs"]["expression"], "a // 32")
         # 常规节点（PrimitiveInt 无 autogrow 时）行为不受影响
         self.assertEqual(prompt["1"]["inputs"]["value"], 32)
+
+    def test_graph_to_api_prompt_skips_control_after_generate_widget(self) -> None:
+        """KSampler 的 seed 后跟一个 control_after_generate 幽灵 widget，不能让后续 widget 错位。"""
+        workflow = {
+            "nodes": [
+                {
+                    "id": 18,
+                    "type": "Seed",
+                    "mode": 0,
+                    "inputs": [],
+                    "outputs": [{"name": "随机种", "type": "INT", "links": [31]}],
+                    "widgets_values": [-1],
+                },
+                {
+                    "id": 22,
+                    "type": "KSampler",
+                    "mode": 0,
+                    "inputs": [
+                        {"name": "model", "type": "MODEL", "link": 27},
+                        {"name": "positive", "type": "CONDITIONING", "link": 28},
+                        {"name": "negative", "type": "CONDITIONING", "link": 29},
+                        {"name": "latent_image", "type": "LATENT", "link": 30},
+                        {"name": "seed", "type": "INT", "widget": {"name": "seed"}, "link": 31},
+                        {"name": "steps", "type": "INT", "widget": {"name": "steps"}, "link": None},
+                        {"name": "cfg", "type": "FLOAT", "widget": {"name": "cfg"}, "link": None},
+                        {"name": "sampler_name", "type": "COMBO", "widget": {"name": "sampler_name"}, "link": None},
+                        {"name": "scheduler", "type": "COMBO", "widget": {"name": "scheduler"}, "link": None},
+                        {"name": "denoise", "type": "FLOAT", "widget": {"name": "denoise"}, "link": None},
+                    ],
+                    "outputs": [{"name": "LATENT", "type": "LATENT", "links": [25]}],
+                    "widgets_values": [1088049369132323, "randomize", 10, 1, "euler", "simple", 1],
+                },
+            ],
+            "links": [[27, 1, 0, 22, 0, "MODEL"], [31, 18, 0, 22, 4, "INT"]],
+        }
+        object_info = {
+            "Seed": {"input": {"required": {"seed": ["INT", {}]}}, "output": {}},
+            "KSampler": {
+                "input": {
+                    "required": {
+                        "model": ["MODEL", {}],
+                        "positive": ["CONDITIONING", {}],
+                        "negative": ["CONDITIONING", {}],
+                        "latent_image": ["LATENT", {}],
+                        "seed": ["INT", {}],
+                        "steps": ["INT", {}],
+                        "cfg": ["FLOAT", {}],
+                        "sampler_name": [["euler", "dpmpp_2m"], {}],
+                        "scheduler": [["simple", "karras"], {}],
+                        "denoise": ["FLOAT", {}],
+                    }
+                },
+                "output": {},
+            },
+        }
+        prompt = graph_to_api_prompt(workflow, object_info)
+        # widgets_values[1] 是幽灵 widget，steps 必须拿到 10 而不是 "randomize"
+        self.assertEqual(prompt["22"]["inputs"]["steps"], 10)
+        self.assertEqual(prompt["22"]["inputs"]["cfg"], 1)
+        self.assertEqual(prompt["22"]["inputs"]["sampler_name"], "euler")
+        self.assertEqual(prompt["22"]["inputs"]["scheduler"], "simple")
+        self.assertEqual(prompt["22"]["inputs"]["denoise"], 1)
+        # seed 有连线时仍以连线为准
+        self.assertEqual(prompt["22"]["inputs"]["seed"], ["18", 0])
+
+    def test_graph_to_api_prompt_fills_widgets_for_nodes_without_inputs(self) -> None:
+        """inputs 为空数组的节点（rgthree Seed）必须按声明顺序补 widget，否则服务端缺 seed。"""
+        workflow = {
+            "nodes": [
+                {
+                    "id": 18,
+                    "type": "Seed (rgthree)",
+                    "mode": 0,
+                    "inputs": [],
+                    "outputs": [{"name": "随机种", "type": "INT", "links": [31]}],
+                    "widgets_values": [-1, "", "", "okay"],
+                },
+                {
+                    "id": 20,
+                    "type": "MarkdownNote",
+                    "mode": 0,
+                    "inputs": [],
+                    "outputs": [],
+                    "widgets_values": ["说明文字"],
+                },
+            ],
+            "links": [],
+        }
+        object_info = {
+            "Seed (rgthree)": {"input": {"required": {"seed": ["INT", {}]}}, "output": {}},
+            "MarkdownNote": {"input": {"required": {"text": ["STRING", {}]}}, "output": {}},
+        }
+        prompt = graph_to_api_prompt(workflow, object_info)
+        self.assertEqual(prompt["18"]["inputs"]["seed"], -1)
+        # 没有输出的注释节点保持原样，不额外塞 widget
+        self.assertEqual(prompt["20"]["inputs"], {})
 
     def test_wan_chunk_feedforward_injection_rewires_model_chain(self) -> None:
         prompt = {

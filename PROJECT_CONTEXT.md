@@ -39,12 +39,12 @@ H3 MotionStudio（H3 影动高清工作台）是一个运行在 Windows 本机�
 | `/rvc` | 独立音色转换 | `yueshao_v1` | 上传视频或选择最近原版/最终成片 → RVC 最终成片 |
 | `/lyrics` | 歌词字幕 | 多语言；中文最终走 FunASR 强制对齐 | 上传/选择成片 + 网易云歌词编辑 → 剪映手书风格烧录成片 |
 | `/douyin` | 抖音下载 | 下载器按需启动 | 抖音链接 → 本地 H.264/AAC MP4 |
+| `/batch` | 批量制作 | 页面粘贴链接后逐条跑 | 抖音链接列表 → 每条一个发布成品文件夹 |
 | `/portrait` | 人物定妆 | 当前从侧边栏隐藏并关闭前端路由 | API、组件和素材保留，方便后续恢复 |
 
 所有页面共用 `App.tsx` 中的固定左侧导航、系统资源监控、任务队列入口和深靛色视觉壳。当前 `/migrate` 页面已实际打开验证，导航和任务恢复状态可见。
 
-## 4. 六条任务链
-
+## 4. 七条任务链
 ### 4.1 歌曲生成 `/`
 
 1. 接收一张人物参考图和一段带歌声视频，限制约 40 秒。
@@ -96,6 +96,23 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 - 服务空闲 60 秒自动停止；`data/douyin-jobs.json` 镜像保证服务离线时已完成任务仍可见。
 - 默认落盘 `D:\EV`，环境变量 `H3_DOUYIN_OUTPUT` 可覆盖；后端会以同一路径设置子进程 `DOUYIN_PATH`。
 - 下载成功后原地转换为浏览器可播放的 H.264/AAC MP4，并原子替换，不保留 HEVC 原文件或重复源文件。
+
+### 4.7 批量制作 `/batch`
+
+页面分别向「歌曲视频」「跳舞视频」两个多行输入区粘贴抖音链接（表格导入/导出只是可选的批次备份方式，不是启动前提），批次严格逐条串行，复用全局 `pipeline_lock`。
+
+每个条目的 6 个里程碑（歌曲 7 个）：
+
+1. **download**：抖音下载 → 浏览器兼容化 → 从 `D:\EV\download_manifest.jsonl` 取原作品 desc/tags；结束后立刻 `douyin_service.stop()` 给 ComfyUI 让内存。
+2. **prepare（预审，可降级）**：本地 ffmpeg 抽 6 帧联系表 + 抽一帧全分辨率「场景帧」→ 直连 `gpt-5.6-luna` 一次调用拿到造型来源判断、标题/简介/标签/封面标题，以及唱歌的动作/运镜时间轴（跳舞则是迁移提示词）→ 本地 ComfyUI Krea2「双图片编辑」出候选人物图（图像-1 = 场景帧、图像-2 = 固定身份图；唱歌 `4:3`、跳舞 `9:16`）。模型失败退回源作品文案、出图失败退回源视频取帧，只标 warning 不阻断整批。
+3. **review**：停在审核点。审核区提供自由填写的修改意见与「只调图片 / 只调文案 / 两者都调」，调整后仍停在审核点；只有用户点「确认并继续生成视频」才放行。
+4. **video**：唱歌提交 `POST /api/jobs`（4:3、RVC 开、二采开，动作/运镜取自预审结果）；跳舞提交 `POST /api/jobs/migrate`（9:16、动作迁移、按需去字幕、二采开）。
+5. **lyrics（仅歌曲）**：按识别出的歌名搜网易云 → 取词 → `POST /api/jobs/lyrics`；失败只标 warning，不覆盖无字幕成片。
+6. **deliver**：复制成片到 `E:\AI_Exports\H3-MotionStudio\发布成品\{序号}_{歌名}_{aweme_id}\`，写一份 `发布文案.txt`，本地渲染 B 站 4:3 与抖音 3:4 封面。
+
+预审不驱动 Codex CLI（`codex exec` 每条要起完整 agent 会话、吃订阅额度、单条十几分钟且会挂死）。文本分析走 `gpt-5.6-luna` 直连 API；候选人物图由 `H3_BATCH_IMAGE_PROVIDER` 决定：`api` 走用户自备的国内中转站（默认 `auto` 在配好中转站后自动使用）、`local` 走本地 ComfyUI Krea2 双图编辑（8GB 卡上单图 74.6 秒且画质不达标，仅备用）、`frame` 直接用源视频取帧。官方 API 的 `gpt-image-*` 全报 `credit_balance_exhausted`，所以出图不能走官方图片接口。造型提示词收在 `backend/prompts/`（`H3_BATCH_*_PROMPT` 可覆盖）。
+
+批次状态存在 SQLite `batches` 表，页面链接草稿与审核意见存 localStorage；`POST /api/batches/{id}/cancel` 用于整批取消（否则 failed 批次会被 `active()` 一直挡住新建）。跳过/删除单条通过 `cancel_item_work` 取消正在跑的预审子任务。
 
 ## 5. 任务状态与实时进度
 
@@ -210,6 +227,12 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 | `H3_LYRICS_ALIGN_MODEL` | `D:\tmp\funasr-fa-zh` |
 | `H3_SUBTITLE_DETECT=0` | 关闭自动字幕定位，回退固定底部遮罩 |
 | `H3_FFMPEG_BIN_DIR` | 指定 ffmpeg 依赖 DLL 目录 |
+| `H3_BATCH_IMAGE_PROVIDER` | 候选人物图来源：`auto`（默认）/ `api` / `local` / `frame` |
+| `H3_BATCH_IMAGE_BASE_URL` | 中转站图片接口地址（配了它才认为出图可用，不走 `OPENAI_BASE_URL`）|
+| `H3_BATCH_IMAGE_API_KEY` | 中转站 key；缺省回落到 `OPENAI_API_KEY` |
+| `H3_BATCH_IMAGE_MODEL` | 中转站出图模型，默认 `gpt-image-2` |
+| `H3_BATCH_TEXT_BASE_URL` / `H3_BATCH_TEXT_API_KEY` | 预审文本分析端点与凭据（默认官方 `https://api.openai.com/v1`）|
+| `H3_BATCH_LUNA_MODEL` | 预审文本模型，默认 `gpt-5.6-luna` |
 
 人物定妆 API 的身份图和输出目录另见 `backend/portrait_studio.py`：默认身份图在 `E:\AI_Assets\PortraitIdentity\本人固定参考.png`，输出在 `E:\AI_Exports\PortraitStudio\4x3` 或 `9x16`。OpenAI 凭据只能从进程环境读取。
 

@@ -84,23 +84,29 @@ async def comfy_health() -> dict[str, Any] | None:
         return None
 
 
+def _log_maybe(job_id: str | None, message: str) -> None:
+    """批量预审等非 jobs 表任务没有 job 记录，允许在无 job_id 时静默跳过日志。"""
+    if job_id:
+        store.add_log(job_id, message)
+
+
 class ResourceManager:
     def __init__(self) -> None:
         self.comfy_process: subprocess.Popen | None = None
         self.comfy_log_handle = None
 
-    async def ensure_comfy(self, job_id: str) -> None:
+    async def ensure_comfy(self, job_id: str | None = None) -> None:
         # 启动/复用 ComfyUI 前先清掉异常残留的 RVC（上次后端在转换阶段被强杀等），
         # 防止新任务在旧 RVC 仍占显存时又拉起 ComfyUI 造成双占。
         await self.kill_orphan_rvc(job_id)
         if await comfy_health():
-            store.add_log(job_id, "ComfyUI 已在运行，继续使用当前服务。")
+            _log_maybe(job_id, "ComfyUI 已在运行，继续使用当前服务。")
             return
 
         if not COMFY_PYTHON.is_file() or not COMFY_MAIN.is_file():
             raise PipelineError("无法启动 ComfyUI", f"缺少运行文件：{COMFY_PYTHON} 或 {COMFY_MAIN}")
 
-        store.add_log(job_id, "正在启动 ComfyUI，并等待模型服务就绪……")
+        _log_maybe(job_id, "正在启动 ComfyUI，并等待模型服务就绪……")
         COMFY_LOG.parent.mkdir(parents=True, exist_ok=True)
         self.comfy_log_handle = COMFY_LOG.open("a", encoding="utf-8")
         self.comfy_process = subprocess.Popen(
@@ -124,7 +130,7 @@ class ResourceManager:
             if self.comfy_process.poll() is not None:
                 raise PipelineError("ComfyUI 启动失败", f"进程退出码：{self.comfy_process.returncode}\n日志：{COMFY_LOG}")
             if await comfy_health():
-                store.add_log(job_id, "ComfyUI 已启动。")
+                _log_maybe(job_id, "ComfyUI 已启动。")
                 return
             await asyncio.sleep(1.5)
         raise PipelineError("ComfyUI 启动超时", f"240 秒内没有响应。日志：{COMFY_LOG}")
@@ -187,7 +193,7 @@ class ResourceManager:
         items = payload if isinstance(payload, list) else [payload]
         return [item for item in items if isinstance(item, dict) and item.get("ProcessId")]
 
-    async def kill_orphan_rvc(self, job_id: str) -> None:
+    async def kill_orphan_rvc(self, job_id: str | None = None) -> None:
         """强制结束上一链路异常残留的 RVC 转换进程，为新链路腾出显存。
 
         单链互斥（pipeline_lock）只在后端进程内有效：后端若在 RVC 阶段被
@@ -202,7 +208,7 @@ class ResourceManager:
                 pid = int(process["ProcessId"])
             except (TypeError, ValueError):
                 continue
-            store.add_log(job_id, f"检测到残留的音色转换进程（PID {pid}），正在强制结束以释放显存。")
+            _log_maybe(job_id, f"检测到残留的音色转换进程（PID {pid}），正在强制结束以释放显存。")
             try:
                 await asyncio.to_thread(
                     subprocess.run,
