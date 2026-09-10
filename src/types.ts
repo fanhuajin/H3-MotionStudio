@@ -35,6 +35,9 @@ export interface JobState {
   sourceFps?: number | null;
   /** 二采放大任务参数（kind === "upscale"） */
   multiplier?: string | null;
+  /** 唱歌/迁移链路内嵌的二采放大分批进度（8 帧/批） */
+  upscaleBatch?: number | null;
+  upscaleBatches?: number | null;
   /** 歌词字幕任务参数（kind === "lyrics"） */
   songName?: string | null;
   lyricLang?: string | null;
@@ -64,6 +67,8 @@ export interface JobState {
   cameraPrompt: string;
   /** RVC 音色转换开关（歌曲生成；false = 跳过转换，成片保留原声） */
   useRvc?: boolean;
+  /** 二采放大 4× 开关（歌曲生成/动作迁移，默认开启；false = 成片保持生成分辨率） */
+  useUpscale?: boolean;
   currentNodeId?: string | null;
   currentNodeTitle?: string | null;
   progress?: number | null;

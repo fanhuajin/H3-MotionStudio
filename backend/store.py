@@ -24,14 +24,19 @@ def format_elapsed(started_at: str, finished_at: str) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def initial_milestones(use_rvc: bool = True) -> list[dict[str, Any]]:
-    # 歌曲生成：原版成片 →（关闭 ComfyUI）→ RVC 音色 → 输出；二采放大已移至独立路由。
-    # use_rvc=False 时跳过整个 RVC 流程（不关闭 ComfyUI、不转音色），只保留生成段里程碑。
+def initial_milestones(use_rvc: bool = True, use_upscale: bool = True) -> list[dict[str, Any]]:
+    # 歌曲生成：H3 分段 → 拼接 →（二采放大 4×）→ 关闭 ComfyUI → RVC 音色 → 输出。
+    # use_rvc=False 时跳过整个 RVC 流程（不关闭 ComfyUI、不转音色），只保留生成段与二采段；
+    # use_upscale=False 时跳过二采放大，成片保持 H3 原始分辨率。
     milestones = [
         {"id": "input", "label": "读取视频与音频", "subtitle": "加载输入视频，分离音频轨道", "status": "pending"},
         {"id": "h3", "label": "H3 分段生成", "subtitle": "按时长生成连续唱歌片段", "status": "pending"},
         {"id": "stitch", "label": "防闪拼接", "subtitle": "平滑衔接并裁切到输入时长", "status": "pending"},
     ]
+    if use_upscale:
+        milestones.append(
+            {"id": "upscale", "label": "二采放大 4×", "subtitle": "RealESRGAN 逐帧超分并收 1080p 档", "status": "pending"}
+        )
     if use_rvc:
         milestones += [
             {"id": "handoff", "label": "关闭 ComfyUI", "subtitle": "释放内存和显存，切换到 RVC", "status": "pending"},
@@ -62,11 +67,16 @@ def lyrics_milestones() -> list[dict[str, Any]]:
     ]
 
 
-def migrate_milestones(remove_subtitles: bool, mode: str, ratio: str = "4:3") -> list[dict[str, Any]]:
-    """动作迁移路由的里程碑模板（不含 RVC：输出保留原音频；不做二采放大）。
+def migrate_milestones(
+    remove_subtitles: bool,
+    mode: str,
+    ratio: str = "4:3",
+    use_upscale: bool = True,
+) -> list[dict[str, Any]]:
+    """动作迁移路由的里程碑模板（不含 RVC：输出保留原音频）。
 
-    链路：可选「去字幕-ProPainter」→ SCAIL-2 长视频分段 动作迁移/人物替换。
-    需要高清时用独立的「二采放大」路由处理。id 与 pipeline 内阶段一一对应。
+    链路：可选「去字幕-ProPainter」→ SCAIL-2 长视频分段 动作迁移/人物替换
+    → 可选「二采放大 4×」（默认开启，收 1080p 档）。id 与 pipeline 内阶段一一对应。
     """
     del ratio  # 比例只影响画布参数，里程碑不再区分倍数
     transfer = "人物替换" if mode == "replacement" else "动作迁移"
@@ -93,6 +103,10 @@ def migrate_milestones(remove_subtitles: bool, mode: str, ratio: str = "4:3") ->
         },
         {"id": "save", "label": "拼接输出成片", "subtitle": "逐段衔接并封装输出视频", "status": "pending"},
     ]
+    if use_upscale:
+        milestones.append(
+            {"id": "upscale", "label": "二采放大 4×", "subtitle": "RealESRGAN 逐帧超分并收 1080p 档", "status": "pending"}
+        )
     return milestones
 
 

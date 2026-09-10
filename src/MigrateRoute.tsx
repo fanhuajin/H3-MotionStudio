@@ -45,6 +45,7 @@ interface MigrateDraft {
   ratio?: CanvasRatio;
   mode?: MigrateMode;
   removeSubtitles?: boolean;
+  useUpscale?: boolean;
   hd1080?: boolean;
   contentPrompt?: string;
   videoPrompt?: string;
@@ -219,7 +220,7 @@ function ratioNote(ratio: CanvasRatio, mode: MigrateMode) {
   return `${canvas} 成片 · ${mode === "animation" ? "动作迁移" : "人物替换"}`;
 }
 
-function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, ratio: CanvasRatio): Milestone[] {
+function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, ratio: CanvasRatio, useUpscale: boolean): Milestone[] {
   const transfer = mode === "replacement" ? "人物替换" : "动作迁移";
   const list: Milestone[] = [];
   if (removeSubtitles) {
@@ -244,6 +245,9 @@ function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, r
     },
     { id: "save", label: "拼接输出成片", subtitle: "逐段衔接并封装输出视频", status: "pending" },
   );
+  if (useUpscale) {
+    list.push({ id: "upscale", label: "二采放大 4×", subtitle: "RealESRGAN 逐帧超分并收 1080p 档", status: "pending" });
+  }
   return list;
 }
 
@@ -296,6 +300,7 @@ export function MigrateRoute() {
   const [ratio, setRatio] = useState<CanvasRatio>(draft?.ratio || "9:16");
   const [mode, setMode] = useState<MigrateMode>(draft?.mode || "animation");
   const [removeSubtitles, setRemoveSubtitles] = useState<boolean>(draft?.removeSubtitles ?? false);
+  const [useUpscale, setUseUpscale] = useState<boolean>(draft?.useUpscale ?? true);
   const [contentPrompt, setContentPrompt] = useState(draft?.contentPrompt ?? "a person singing");
   const [videoPrompt, setVideoPrompt] = useState(draft?.videoPrompt ?? "person");
   const [imagePrompt, setImagePrompt] = useState(draft?.imagePrompt ?? "person");
@@ -320,7 +325,7 @@ export function MigrateRoute() {
   const liveJob = job && (job.status === "queued" || job.status === "running") ? job : null;
   const milestones = liveJob?.milestones?.length
     ? liveJob.milestones
-    : migrateMilestoneSkeleton(removeSubtitles, mode, ratio);
+    : migrateMilestoneSkeleton(removeSubtitles, mode, ratio, useUpscale);
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
   const jobActive = Boolean(liveJob);
   const tickNow = useNowTick(jobActive);
@@ -339,6 +344,7 @@ export function MigrateRoute() {
       ratio,
       mode,
       removeSubtitles,
+      useUpscale,
       contentPrompt,
       videoPrompt,
       imagePrompt,
@@ -347,7 +353,7 @@ export function MigrateRoute() {
       imageName: imageFile?.name ?? null,
       imageSize: imageFile?.size ?? null,
     });
-  }, [ratio, mode, removeSubtitles, contentPrompt, videoPrompt, imagePrompt, file, imageFile]);
+  }, [ratio, mode, removeSubtitles, useUpscale, contentPrompt, videoPrompt, imagePrompt, file, imageFile]);
 
   const connectJob = useCallback((jobId: string) => {
     socketRef.current?.close();
@@ -590,6 +596,7 @@ export function MigrateRoute() {
     if (imageFile) form.append("reference_image", imageFile);
     form.append("ratio", ratio);
     form.append("remove_subtitles", removeSubtitles ? "1" : "0");
+    form.append("use_upscale", useUpscale ? "1" : "0");
     form.append("mode", mode);
     form.append("content_prompt", contentPrompt);
     form.append("video_prompt", videoPrompt);
@@ -614,13 +621,11 @@ export function MigrateRoute() {
   }, [job?.output?.completedAt]);
 
   const finalUrl = job?.finalReady ? `/api/jobs/${job.id}/media/final` : null;
-  const draftUrl = job?.draftReady ? `/api/jobs/${job.id}/media/draft` : null;
-  const cleanUrl = job?.cleanReady ? `/api/jobs/${job.id}/media/clean` : null;
   const originalUrl = job?.id ? `/api/jobs/${job.id}/input/video/preview` : null;
-  const showResult = job && (job.finalReady || job.draftReady || job.cleanReady);
+  const showResult = Boolean(job && (job.finalReady || job.draftReady));
   const resultCaption = job?.finalReady
-    ? "迁移成片已完成"
-    : job?.draftReady ? "迁移草稿已生成" : "中间产物已保留";
+    ? (job.useUpscale === false ? "最终成片已完成" : "最终成片已完成 · 4× 高清")
+    : "原版视频已保留";
 
   return (
     <div className="migrate-route">
@@ -628,7 +633,7 @@ export function MigrateRoute() {
         <div>
           <p className="route-eyebrow"><span /> H3 · ACTION MIGRATION</p>
           <h1>让参考人物，<em>动起来。</em></h1>
-          <p className="route-description">上传一段动作视频与人物参考图，按所选画布把动作迁移/替换到参考人物身上，可选去字幕；需要高清时用「二采放大」单独处理。</p>
+          <p className="route-description">上传一段动作视频与人物参考图，按所选画布把动作迁移/替换到参考人物身上，可选去字幕，默认再做 4× 二采收 1080p 高清成片。</p>
         </div>
         <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
       </header>
@@ -749,8 +754,14 @@ export function MigrateRoute() {
                 title="去除底部字幕"
                 description="视频底部有字幕/水印条时开启：先用 ProPainter 固定底部修复，再把干净视频用于迁移"
               />
+              <ToggleRow
+                checked={useUpscale}
+                onChange={setUseUpscale}
+                title="二采放大 4×（默认开启）"
+                description="迁移成片再做 RealESRGAN 4× 超分并收 1080p 档，结果即最终成片；关闭则迁移成片即最终成片"
+              />
             </div>
-            <p className="field-note">当前设置：{ratioNote(ratio, mode)}{removeSubtitles ? " · 先去除字幕" : ""}。输出保留原视频音频与帧率；需要高清时用「二采放大」单独处理。</p>
+            <p className="field-note">当前设置：{ratioNote(ratio, mode)}{removeSubtitles ? " · 先去除字幕" : ""}{useUpscale ? " · 二采 4× 收 1080p" : " · 不做二采放大"}。输出保留原视频音频与帧率。</p>
           </div>
 
           {!config.environmentReady && config.missingRequirements.length > 0 && (
@@ -766,7 +777,7 @@ export function MigrateRoute() {
 
           <button className="primary-action" onClick={submit} disabled={isBusy || !config.environmentReady}>
             {isBusy ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
-            {isBusy ? "正在执行单链路任务" : `开始${ratio === "9:16" ? "竖版" : "横版"}${removeSubtitles ? "去字幕+" : ""}${mode === "replacement" ? "人物替换" : "动作迁移"}`}
+            {isBusy ? "正在执行单链路任务" : `开始${ratio === "9:16" ? "竖版" : "横版"}${removeSubtitles ? "去字幕+" : ""}${mode === "replacement" ? "人物替换" : "动作迁移"}${useUpscale ? "+二采4×" : ""}`}
           </button>
         </section>
 
@@ -805,6 +816,16 @@ export function MigrateRoute() {
                   : <>预计 {liveJob.cleanBatches} 段去字幕</>}
               </span>
             )}
+            {liveJob?.upscaleBatches != null && liveJob?.stage === "upscaling" && (
+              <span
+                className={`job-segments ${liveJob.upscaleBatch ? "live" : ""}`}
+                title={`二采放大分批执行：共 ${liveJob.upscaleBatches} 段（每段 8 帧超采样，8GB 显存安全分批）`}
+              >
+                {liveJob.upscaleBatch
+                  ? <>二采 {liveJob.upscaleBatch}/{liveJob.upscaleBatches}<i><b style={{ width: `${Math.min(100, (liveJob.upscaleBatch / liveJob.upscaleBatches) * 100)}%` }} /></i></>
+                  : <>预计 {liveJob.upscaleBatches} 段二采放大</>}
+              </span>
+            )}
             {jobActive && totalElapsedMs != null && (
               <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
             )}
@@ -818,34 +839,33 @@ export function MigrateRoute() {
             ))}
           </div>
 
-          {showResult && (
+          {showResult && job && (
             <section className="result-panel">
               <div className="result-heading"><h3>生成结果</h3><span><Check weight="bold" /> {resultCaption}</span></div>
               <div className="result-grid">
                 <div className="result-video">
-                  {finalUrl || draftUrl || cleanUrl ? (
-                    <video src={`${finalUrl || draftUrl || cleanUrl}#t=0.001`} controls preload="auto" />
+                  {finalUrl || originalUrl ? (
+                    <video src={`${finalUrl || originalUrl}#t=0.001`} controls preload="auto" />
                   ) : <div className="result-empty"><Info /> 成片文件暂不可用</div>}
                 </div>
                 <div className="result-details">
                   <div className="result-title">
                     <FilmSlate />
                     <div>
-                      <strong>{job.finalReady ? "迁移成片" : job.draftReady ? "迁移草稿" : "中间产物"}</strong>
-                      <span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ratioLabel(ratio)}</span>
+                      <strong>{job.finalReady ? "最终成片" : "原版视频"}{job.finalReady && job.useUpscale !== false ? " · 4× 高清" : ""}</strong>
+                      <span>{job.finalReady && job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ratioLabel(ratio)}</span>
                     </div>
                   </div>
                   <dl>
-                    <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
-                    <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>
+                    <div><dt>时长</dt><dd>{formatDuration((job.finalReady ? job.output?.duration : null) || job.sourceDuration)}</dd></div>
+                    <div><dt>文件大小</dt><dd>{formatBytes(job.finalReady ? job.output?.size : null)}</dd></div>
                     <div><dt>完成时间</dt><dd>{completionTime}</dd></div>
                     {totalElapsedMs != null && (
                       <div className="total-elapsed"><dt>任务总耗时</dt><dd>{formatElapsedMs(totalElapsedMs)}</dd></div>
                     )}
                   </dl>
-                  {finalUrl && <a className="result-button primary" href={`${finalUrl}?download=1`}><DownloadSimple /> 下载成片</a>}
-                  {cleanUrl && <a className="result-button" href={cleanUrl} target="_blank" rel="noreferrer"><Eye /> 查看去字幕视频</a>}
-                  {originalUrl && <a className="result-button" href={originalUrl} target="_blank" rel="noreferrer"><Eye /> 查看原始视频</a>}
+                  {finalUrl && <a className="result-button primary" href={`${finalUrl}?download=1`}><DownloadSimple /> 下载最终成片</a>}
+                  {originalUrl && <a className="result-button" href={originalUrl} target="_blank" rel="noreferrer"><Eye /> 查看原版</a>}
                 </div>
               </div>
             </section>

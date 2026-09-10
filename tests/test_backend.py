@@ -300,17 +300,118 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(node_by_id(default, 329)["widgets_values"][0], "wan2.1_14B_SCAIL_2_fp8_scaled.safetensors")
 
     def test_migrate_milestones_follow_options(self) -> None:
+        # 二采放大开关默认开启：迁移链路末尾追加 upscale 里程碑
         self.assertEqual(
             [m["id"] for m in migrate_milestones(False, "animation", "4:3")],
-            ["prep", "sam", "migrate", "save"],
+            ["prep", "sam", "migrate", "save", "upscale"],
         )
         ids = [m["id"] for m in migrate_milestones(True, "replacement", "9:16")]
         self.assertEqual(ids[:4], ["read", "mask", "paint", "clean_save"])
-        # 二采放大已移至独立路由：动作迁移不再包含 upscale/hd 里程碑
-        self.assertNotIn("upscale", ids)
+        self.assertEqual(ids[-1], "upscale")
         self.assertNotIn("hd", ids)
+        # 关闭二采开关时回到纯迁移链路（无 upscale）
+        without = [m["id"] for m in migrate_milestones(True, "replacement", "9:16", False)]
+        self.assertEqual(without, ["read", "mask", "paint", "clean_save", "prep", "sam", "migrate", "save"])
         replacement = next(m for m in migrate_milestones(False, "replacement", "4:3") if m["id"] == "migrate")
         self.assertIn("替换", replacement["label"])
+
+    def test_singing_milestones_follow_upscale_and_rvc_switches(self) -> None:
+        from backend.store import initial_milestones
+        self.assertEqual(
+            [m["id"] for m in initial_milestones(True, True)],
+            ["input", "h3", "stitch", "upscale", "handoff", "stems", "voice", "mux"],
+        )
+        # 二采在 RVC 之前；关闭二采只剩生成段 + RVC
+        self.assertEqual(
+            [m["id"] for m in initial_milestones(True, False)],
+            ["input", "h3", "stitch", "handoff", "stems", "voice", "mux"],
+        )
+        # 关闭 RVC 时保留二采段，收尾即高清成片
+        self.assertEqual(
+            [m["id"] for m in initial_milestones(False, True)],
+            ["input", "h3", "stitch", "upscale"],
+        )
+
+    def test_media_entries_only_expose_original_and_final(self) -> None:
+        from backend.app import OUTPUT_MEDIA_FIELDS, MEDIA_FIELD_BY_KEY
+        self.assertEqual([key for key, *_ in OUTPUT_MEDIA_FIELDS], ["final", "original"])
+        # source_key 解析仍兼容历史中间产物的键
+        self.assertEqual(MEDIA_FIELD_BY_KEY["draft"], "draftOutput")
+        self.assertEqual(MEDIA_FIELD_BY_KEY["final"], "finalOutput")
+
+    def test_upscale_pass_reuses_in_place_input_and_writes_batch_fields(self) -> None:
+        """唱歌/迁移链路内嵌二采：源已在 ComfyUI input 目录时不得重复 link（否则会删源）。"""
+        import asyncio
+        from backend import pipeline as P
+
+        P.COMFY_INPUT.mkdir(parents=True, exist_ok=True)
+        job_id = "unittestupscalepass"
+        source = P.COMFY_INPUT / f"motionstudio_{job_id}_upscale_src.mp4"
+        source.write_bytes(b"stub")
+
+        class StubStore:
+            def __init__(self) -> None:
+                self.state: dict = {"id": job_id}
+
+            def update(self, _job_id, **changes):
+                self.state.update(changes)
+                return self.state
+
+            def get(self, _job_id):
+                return self.state
+
+            def add_log(self, _job_id, message):
+                self.logs.append(message)
+
+            logs: list = []
+
+        captured: dict = {}
+        stub = StubStore()
+        originals = (P.store, P.media_metadata, P.probe_media_frames, P.run_comfy_workflow)
+
+        async def fake_metadata(_path):
+            return {"width": 640, "height": 480, "frames": 160}
+
+        async def fake_frames(_path):
+            return 160
+
+        async def fake_run(_job_id, kind, workflow, _node, **kwargs):
+            captured["kind"] = kind
+            captured["video"] = node_by_id(workflow, 2)["widgets_values"]["video"]
+            captured["scale"] = tuple(node_by_id(workflow, 5)["widgets_values"][1:3])
+            captured["model"] = node_by_id(workflow, 3)["widgets_values"][0]
+            captured["kwargs"] = kwargs
+            return Path("stub-output.mp4")
+
+        try:
+            P.store = stub
+            P.media_metadata = fake_metadata
+            P.probe_media_frames = fake_frames
+            P.run_comfy_workflow = fake_run
+            result = asyncio.run(
+                P.run_upscale_pass(
+                    job_id,
+                    source,
+                    input_tag="upscale_src",
+                    batch_fields=("upscaleBatch", "upscaleBatches"),
+                )
+            )
+            source_survived = source.is_file()
+        finally:
+            P.store, P.media_metadata, P.probe_media_frames, P.run_comfy_workflow = originals
+            source.unlink(missing_ok=True)
+
+        self.assertTrue(source_survived, "内嵌二采不能删掉已在 input 目录里的源成片")
+        self.assertEqual(result, Path("stub-output.mp4"))
+        self.assertEqual(captured["kind"], "upscale")
+        self.assertEqual(captured["video"], source.name)
+        self.assertEqual(captured["scale"], (1440, 1080))  # 640×480 → 4:3 1080p 档
+        self.assertEqual(captured["model"], "RealESRGAN_x4plus.pth")
+        self.assertEqual(captured["kwargs"].get("batch_fields"), ("upscaleBatch", "upscaleBatches"))
+        # 160 帧 / 每批 8 帧 = 20 批，进度写 upscaleBatch/upscaleBatches（不碰 H3 分段字段）
+        self.assertEqual(stub.state.get("upscaleBatches"), 20)
+        self.assertNotIn("currentSegment", stub.state)
+        self.assertNotIn("estimatedSegments", stub.state)
 
     def test_upscale_milestones_and_target_1080p(self) -> None:
         from backend.app import _upscale_target

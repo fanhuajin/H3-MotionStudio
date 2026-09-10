@@ -502,6 +502,7 @@ async def run_comfy_workflow(
     preferred_output_node: str,
     wan_chunk: bool = False,
     h3_canvas: str | None = None,
+    batch_fields: tuple[str, str] | None = None,
 ) -> Path:
     info = await object_info()
     prompt = graph_to_api_prompt(workflow, info)
@@ -520,6 +521,7 @@ async def run_comfy_workflow(
                 "H3AutoLyricsFromAudio5StyleSafeCamera 缺少 canvas_ratio 可选输入。"
                 "请先重启 ComfyUI（或关闭正在运行的 ComfyUI 进程，由本工具按需启动）后再提交 9:16 任务。",
             )
+    batch_state_fields = batch_fields or ("currentSegment", "estimatedSegments")
     titles = workflow_titles(workflow)
     types = workflow_types(workflow)
     client_id = f"motionstudio-{job_id}-{kind}-{uuid.uuid4().hex[:8]}"
@@ -596,13 +598,17 @@ async def run_comfy_workflow(
                     seen_prompt_ids.append(message_prompt_id)
                     # VHS meta-batch 每批（8 帧/批）会以一个新 prompt 执行：新 prompt
                     # 出现即下一批开始，用它推进「放大 X/N」徽章（不超预估总段数）。
+                    # 独立二采任务写 currentSegment/estimatedSegments；唱歌/迁移链路内嵌
+                    # 的二采写 upscaleBatch/upscaleBatches，避免覆盖 H3/迁移分段徽章。
                     job_state = store.get(job_id) or {}
-                    estimated = job_state.get("estimatedSegments")
+                    estimated = job_state.get(batch_state_fields[1])
                     if estimated:
                         store.update(
                             job_id,
-                            currentSegment=min(len(seen_prompt_ids), int(estimated)),
-                            estimatedSegments=int(estimated),
+                            **{
+                                batch_state_fields[0]: min(len(seen_prompt_ids), int(estimated)),
+                                batch_state_fields[1]: int(estimated),
+                            },
                         )
 
             if event == "executing":
@@ -935,10 +941,11 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
     return expected.resolve()
 
 
-async def _run_voice(job_id: str, original: Path) -> None:
-    """歌曲生成收尾（RVC 开关开启）：二采放大已移至独立路由，这里原版成片直接进 RVC。"""
+async def _run_voice(job_id: str, enhanced_path: Path) -> None:
+    """歌曲生成收尾（RVC 开关开启）：先关闭 ComfyUI，再对成片做人声转换。"""
     await resources.stop_comfy(job_id)
-    final = await run_rvc(job_id, original)
+    final = await run_rvc(job_id, enhanced_path)
+    final = await asyncio.to_thread(mark_final_version, final)
     store.update(
         job_id,
         status="completed",
@@ -953,11 +960,12 @@ async def _run_voice(job_id: str, original: Path) -> None:
     )
 
 
-async def _complete_without_rvc(job_id: str, original: Path) -> None:
-    """RVC 开关关闭时的歌曲生成收尾：跳过音色转换，原版成片即最终输出。
+async def _complete_without_rvc(job_id: str, output: Path) -> None:
+    """RVC 开关关闭时的歌曲生成收尾：跳过音色转换，成片即最终输出。
 
-    不走 RVC 流程（不关闭 ComfyUI、不转音色），ComfyUI 生成完成后任务直接结束；
-    若历史状态里残留 RVC 里程碑（中断恢复等），统一标为跳过，避免卡在运行中。
+    不走 RVC 流程（不关闭 ComfyUI、不转音色），ComfyUI 生成（含可选二采放大）
+    完成后任务直接结束；若历史状态里残留 RVC 里程碑（中断恢复等），统一标为
+    跳过，避免卡在运行中。
     """
     for milestone_id in ("handoff", "stems", "voice", "mux"):
         store.set_milestone(job_id, milestone_id, status="skipped", currentNode=None, progress=None)
@@ -965,17 +973,17 @@ async def _complete_without_rvc(job_id: str, original: Path) -> None:
         job_id,
         status="completed",
         stage="completed",
-        finalOutput=str(original),
+        finalOutput=str(output),
         finalReady=True,
         currentNodeId=None,
         currentNodeTitle=None,
         progress=100,
         progressValue=None,
         progressMax=None,
-        output=await media_metadata(original),
+        output=await media_metadata(output),
         finishedAt=now_iso(),
     )
-    store.add_log(job_id, "RVC 音色转换开关已关闭：跳过转换流程，原版成片即最终输出（保留原声）。")
+    store.add_log(job_id, "RVC 音色转换开关已关闭：跳过转换流程，成片即最终输出（保留原声）。")
 
 
 async def run_pipeline(job_id: str) -> None:
@@ -1016,10 +1024,22 @@ async def run_pipeline(job_id: str) -> None:
             store.add_log(job_id, f"原版成片已保存：{original.name}")
 
             state = store.get(job_id) or state
-            if state.get("useRvc", True):
-                await _run_voice(job_id, original)
+            # 二采放大开关（默认开启）：在关闭 ComfyUI 之前先做 4× 超分收 1080p，
+            # RVC 与最终成片都以高清成片为输入。
+            output = original
+            if state.get("useUpscale", True):
+                store.add_log(job_id, "二采放大开关已开启：先做 RealESRGAN 4× 并收 1080p 档，再进入音色转换。")
+                upscaled = await run_upscale_pass(job_id, original, output_tag="高清")
+                store.update(job_id, enhancedOutput=str(upscaled), enhancedReady=True)
+                store.add_log(job_id, f"高清成片已保存：{upscaled.name}")
+                output = upscaled
             else:
-                await _complete_without_rvc(job_id, original)
+                store.add_log(job_id, "二采放大开关未开启：成片保持 H3 原始分辨率。")
+
+            if state.get("useRvc", True):
+                await _run_voice(job_id, output)
+            else:
+                await _complete_without_rvc(job_id, output)
         except Exception as error:
             if is_job_cancelled(job_id):
                 await finish_cancelled(job_id)
@@ -1501,8 +1521,18 @@ async def run_migrate_pipeline(job_id: str) -> None:
             )
             store.update(job_id, draftOutput=str(draft), draftReady=True)
             store.add_log(job_id, f"迁移成片已保存：{draft.name}")
-            # 二采放大已移至独立路由：迁移成片即最终输出
+
+            # 二采放大开关（默认开启）：迁移成片再做 RealESRGAN 4× 并收 1080p 档，
+            # 结果即该任务的最终成片；关闭时迁移成片就是最终成片。
             final = draft
+            if state.get("useUpscale", True):
+                store.add_log(job_id, "二采放大开关已开启：迁移成片再做 RealESRGAN 4× 并收 1080p 档。")
+                upscaled = await run_upscale_pass(job_id, draft, output_tag="迁移高清")
+                final = await asyncio.to_thread(mark_final_version, upscaled)
+                store.update(job_id, enhancedOutput=str(final), enhancedReady=True)
+                store.add_log(job_id, f"最终成片已保存并标记：{final.name}")
+            else:
+                store.add_log(job_id, "二采放大开关未开启：迁移成片即最终成片。")
 
             store.update(
                 job_id,
@@ -1543,21 +1573,94 @@ async def run_migrate_pipeline(job_id: str) -> None:
                 store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
 
 
-def mark_upscale_final(path: Path) -> Path:
-    """给二采放大成品一个明确的「最终版」文件名标识。
+def upscale_target_size(width: int, height: int) -> tuple[int, int]:
+    """按源宽高比就近选择 1080p 标准档（4:3/16:9 横屏，3:4/9:16 竖屏）。"""
+    aspect = width / max(1, height)
+    if aspect >= 1:
+        candidates = ((4 / 3, 1440, 1080), (16 / 9, 1920, 1080))
+    else:
+        candidates = ((3 / 4, 1080, 1440), (9 / 16, 1080, 1920))
+    return min(candidates, key=lambda item: abs(aspect - item[0]))[1:]
+
+
+def mark_final_version(path: Path, marker: str = "") -> Path:
+    """给成品一个明确的「最终版」文件名标识。
 
     ComfyUI 工作流会同时留下 `*_00001.png`、无音频的 `*_00001.mp4`
     与带原音频的 `*_00001-audio.mp4`，从输出目录取片时容易拿错。
-    任务收尾时把带音频的成品改名为 `{job_id}_upscale_最终版.mp4`；
-    改名失败（如文件被占用）时退回原路径，不阻断任务。
+    收尾时把带音频的成品改名为 `{job_id}_{marker}_最终版.mp4`
+    （marker 为空即 `{job_id}_最终版.mp4`）；改名失败（如文件被占用）
+    时退回原路径，不阻断任务。
     """
-    job_id = path.stem.split("_upscale_")[0]
-    marked = path.with_name(f"{job_id}_upscale_最终版.mp4")
+    job_id = path.stem.split("_")[0]
+    name = f"{job_id}_{marker}_最终版.mp4" if marker else f"{job_id}_最终版.mp4"
+    marked = path.with_name(name)
     try:
         os.replace(path, marked)
         return marked
     except OSError:
         return path
+
+
+def mark_upscale_final(path: Path) -> Path:
+    """独立二采放大成品的最终版命名（`{job_id}_upscale_最终版.mp4`）。"""
+    return mark_final_version(path, "upscale")
+
+
+async def run_upscale_pass(
+    job_id: str,
+    source: Path,
+    *,
+    input_tag: str = "upscale",
+    output_tag: str = "upscale",
+    stage: str = "upscaling",
+    scale: tuple[int, int] | None = None,
+    batch_fields: tuple[str, str] = ("upscaleBatch", "upscaleBatches"),
+) -> Path:
+    """在已启动的 ComfyUI 内把成片做 RealESRGAN 4× 并收 1080p 档。
+
+    唱歌链路（RVC 之前）与动作迁移链路（收尾）内嵌使用；调用方负责保证
+    ComfyUI 已经起来（`resources.ensure_comfy`）以及在 RVC 前关闭它。
+    分批进度写 `batch_fields`（默认 upscaleBatch/upscaleBatches），不占用
+    H3/迁移分段徽章的 currentSegment/estimatedSegments。
+    """
+    source = Path(source)
+    if not source.is_file():
+        raise PipelineError("找不到需要二采放大的成片", str(source))
+    metadata = await media_metadata(source)
+    width = int(metadata.get("width") or 1440)
+    height = int(metadata.get("height") or 1080)
+    target = scale or upscale_target_size(width, height)
+    frames = int(metadata.get("frames") or 0) or await probe_media_frames(source) or 0
+    batches = max(1, (frames + UPSCALE_BATCH_FRAMES - 1) // UPSCALE_BATCH_FRAMES) if frames else None
+
+    # 源文件可能已经就在 ComfyUI input 目录里（独立二采任务在提交时就落盘），
+    # 这时不能重复 link（先 unlink 再 link 同一路径会把源删掉）。
+    destination = COMFY_INPUT / f"motionstudio_{job_id}_{input_tag}{source.suffix.lower()}"
+    if source.resolve() != destination.resolve():
+        linked = await asyncio.to_thread(link_into_input_as, source, job_id, input_tag)
+    else:
+        linked = source
+    store.update(
+        job_id,
+        stage=stage,
+        **{batch_fields[0]: 1 if batches else None, batch_fields[1]: batches},
+    )
+    store.add_log(
+        job_id,
+        f"二采放大 4×（RealESRGAN_x4plus）：{width}×{height} → {target[0]}×{target[1]}"
+        + (f" · 预计 {batches} 批（每批 {UPSCALE_BATCH_FRAMES} 帧，8GB 显存保护）" if batches else ""),
+    )
+    workflow = prepare_upscale_workflow(
+        linked.name,
+        f"video/H3_MotionStudio/{job_id}_{output_tag}",
+        UPSCALE_WORKFLOW,
+        scale=target,
+        upscale_model=UPSCALE_MODEL_X4,
+    )
+    result = await run_comfy_workflow(job_id, "upscale", workflow, "8", batch_fields=batch_fields)
+    store.update(job_id, **{batch_fields[0]: None})
+    return result
 
 
 async def run_upscale_job(job_id: str) -> None:
@@ -1581,30 +1684,22 @@ async def run_upscale_job(job_id: str) -> None:
         try:
             await resources.ensure_comfy(job_id)
             state = store.get(job_id) or state
-            source_name = state["sourceInputName"]
-            model = state.get("upscaleModel") or UPSCALE_MODEL_X4
+            source = Path(state.get("sourcePath") or "")
             scale = (int(state["targetWidth"]), int(state["targetHeight"]))
-            store.update(job_id, stage="upscaling")
             store.add_log(
                 job_id,
-                f"二采放大：{state.get('multiplier') or '4x'}（固定 4×） · {model} → 输出 {scale[0]}×{scale[1]}",
+                f"二采放大：{state.get('multiplier') or '4x'}（固定 4×） · {state.get('upscaleModel') or UPSCALE_MODEL_X4}",
             )
-            estimated_segments = state.get("estimatedSegments")
-            if estimated_segments:
-                store.update(job_id, currentSegment=1, estimatedSegments=int(estimated_segments))
-                store.add_log(
-                    job_id,
-                    f"放大分批：共 {estimated_segments} 段（每段 {UPSCALE_BATCH_FRAMES} 帧，8GB 显存保护）。",
-                )
-            upscale = prepare_upscale_workflow(
-                source_name,
-                f"video/H3_MotionStudio/{job_id}_upscale",
-                UPSCALE_WORKFLOW,
+            final = await run_upscale_pass(
+                job_id,
+                source,
+                input_tag="upscale_src",
+                output_tag="upscale",
                 scale=scale,
-                upscale_model=model,
+                batch_fields=("currentSegment", "estimatedSegments"),
             )
-            final = await run_comfy_workflow(job_id, "upscale", upscale, "8")
             final = await asyncio.to_thread(mark_upscale_final, final)
+            estimated_segments = (store.get(job_id) or {}).get("estimatedSegments")
             store.update(job_id, finalOutput=str(final), finalReady=True)
             store.add_log(job_id, f"最终成片已保存并标记：{final.name}")
             store.update(
@@ -1649,7 +1744,7 @@ async def run_upscale_job(job_id: str) -> None:
 async def retry_voice(job_id: str) -> None:
     async with pipeline_lock:
         state = store.get(job_id)
-        # 歌曲生成已无二采：优先高清成片（历史任务），否则直接用原版成片
+        # 歌曲生成：优先用（二采开关产出的）高清成片做音色转换，历史任务退回原版成片
         source = Path(state.get("enhancedOutput") or state.get("originalOutput") or "") if state else Path()
         if not source.is_file():
             raise PipelineError("没有可用于音色转换的成片")
@@ -1674,6 +1769,7 @@ async def retry_voice(job_id: str) -> None:
             store.set_milestone(job_id, "handoff", status="completed", progress=100)
         try:
             final = await run_rvc(job_id, source)
+            final = await asyncio.to_thread(mark_final_version, final)
             store.update(
                 job_id,
                 status="completed",

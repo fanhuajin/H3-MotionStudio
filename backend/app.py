@@ -49,6 +49,7 @@ from .pipeline import (
     run_migrate_pipeline,
     run_pipeline,
     run_upscale_job,
+    upscale_target_size,
 )
 from . import portrait_studio
 from .settings import (
@@ -81,14 +82,22 @@ def spawn(coroutine) -> None:
     task.add_done_callback(running_tasks.discard)
 
 
-# 任务成片字段映射（media key → (state 字段, 就绪标记, 显示名)）
+# 成片入口（media key → (state 字段, 就绪标记, 显示名)）：只暴露「最终成片」与
+# 「原版成片」两个入口；去字幕视频/迁移成片/高清成片等中间产物继续写状态与磁盘，
+# 但不再出现在结果区与最近任务列表里。
 OUTPUT_MEDIA_FIELDS = (
     ("final", "finalOutput", "finalReady", "最终成片"),
     ("original", "originalOutput", "originalReady", "原版成片"),
-    ("draft", "draftOutput", "draftReady", "迁移成片"),
-    ("clean", "cleanOutput", "cleanReady", "去字幕视频"),
-    ("enhanced", "enhancedOutput", "enhancedReady", "高清成片"),
 )
+
+# 「从最近任务选」的 source_key 解析（含中间产物键：兼容历史任务与旧链接）
+MEDIA_FIELD_BY_KEY = {
+    "final": "finalOutput",
+    "original": "originalOutput",
+    "draft": "draftOutput",
+    "clean": "cleanOutput",
+    "enhanced": "enhancedOutput",
+}
 
 
 def _job_media_entries(state: dict[str, Any]) -> list[dict[str, str]]:
@@ -108,13 +117,8 @@ def _job_media_entries(state: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _upscale_target(width: int, height: int) -> tuple[int, int]:
-    """按源宽高比就近选择 1080p 标准档（4:3/16:9 横屏，3:4/9:16 竖屏）。"""
-    aspect = width / max(1, height)
-    if aspect >= 1:
-        candidates = ((4 / 3, 1440, 1080), (16 / 9, 1920, 1080))
-    else:
-        candidates = ((3 / 4, 1080, 1440), (9 / 16, 1080, 1920))
-    return min(candidates, key=lambda item: abs(aspect - item[0]))[1:]
+    """按源宽高比就近选择 1080p 标准档（实现见 pipeline.upscale_target_size）。"""
+    return upscale_target_size(width, height)
 
 
 def transcode_source_to_30fps(source: Path, target: Path) -> None:
@@ -309,6 +313,7 @@ async def create_job(
     duration: float | None = Form(None),
     ratio: str = Form(DEFAULT_SINGING_CANVAS),
     use_rvc: str = Form("1"),
+    use_upscale: str = Form("1"),
 ):
     active = store.active()
     if active:
@@ -321,6 +326,8 @@ async def create_job(
 
     # RVC 音色转换开关（默认开启）：关闭后跳过整个 RVC 流程，成片保留原声
     use_rvc_on = use_rvc in {"1", "true", "on", "yes"}
+    # 二采放大开关（默认开启）：在关闭 ComfyUI 之前先做 4× 超分收 1080p，RVC 用高清成片
+    use_upscale_on = use_upscale in {"1", "true", "on", "yes"}
 
     if duration and duration > MAX_DURATION_SECONDS + 0.25:
         raise HTTPException(400, f"视频不能超过 {int(MAX_DURATION_SECONDS)} 秒")
@@ -381,13 +388,14 @@ async def create_job(
         "actionPrompt": action_prompt,
         "cameraPrompt": camera_prompt,
         "useRvc": use_rvc_on,
+        "useUpscale": use_upscale_on,
         "currentNodeId": None,
         "currentNodeTitle": "等待启动 ComfyUI",
         "progress": 0,
         "progressValue": None,
         "progressMax": None,
-        "milestones": initial_milestones(use_rvc_on),
-        "logs": [{"time": created_at, "message": f"已接收人物图片与演唱视频：{reference_image.filename or reference_input_name} / {video.filename or input_name} · 画布 {ratio}" + ("" if use_rvc_on else " · RVC 音色转换已关闭，成片将保留原声")}],
+        "milestones": initial_milestones(use_rvc_on, use_upscale_on),
+        "logs": [{"time": created_at, "message": f"已接收人物图片与演唱视频：{reference_image.filename or reference_input_name} / {video.filename or input_name} · 画布 {ratio}" + ("" if use_rvc_on else " · RVC 音色转换已关闭，成片将保留原声") + ("" if use_upscale_on else " · 二采放大已关闭，成片保持原始分辨率")}],
         "errorSummary": None,
         "errorDetail": None,
         "originalReady": False,
@@ -414,6 +422,7 @@ async def create_migrate_job(
     content_prompt: str = Form(""),
     video_prompt: str = Form(""),
     image_prompt: str = Form(""),
+    use_upscale: str = Form("1"),
 ):
     active = store.active()
     if active:
@@ -426,6 +435,8 @@ async def create_migrate_job(
     if mode not in {"animation", "replacement"}:
         raise HTTPException(400, "迁移模式只能是 animation（动作迁移）或 replacement（人物替换）")
     clean_on = remove_subtitles in {"1", "true", "on", "yes"}
+    # 二采放大开关（默认开启）：迁移成片再做 4× 超分收 1080p 档，结果即最终成片
+    upscale_on = use_upscale in {"1", "true", "on", "yes"}
 
     extension = Path(video.filename or "input.mp4").suffix.lower()
     if extension not in VIDEO_UPLOAD_SUFFIXES:
@@ -490,6 +501,7 @@ async def create_migrate_job(
         "canvas": ratio,
         "migrateMode": mode,
         "removeSubtitles": clean_on,
+        "useUpscale": upscale_on,
         "contentPrompt": content_prompt,
         "videoPrompt": video_prompt,
         "imagePrompt": image_prompt,
@@ -516,12 +528,13 @@ async def create_migrate_job(
         "progress": 0,
         "progressValue": None,
         "progressMax": None,
-        "milestones": migrate_milestones(clean_on, mode, ratio),
+        "milestones": migrate_milestones(clean_on, mode, ratio, upscale_on),
         "logs": [{
             "time": created_at,
             "message": (
                 f"已接收动作视频{('与人物参考图' if reference_image and reference_image.filename else '（将使用内置默认人物图）')}："
                 f"{video.filename or input_name} · 画布 {ratio}"
+                + ("" if upscale_on else " · 二采放大已关闭，迁移成片即最终成片")
             ),
         }] + ([{
             "time": now_iso(),
@@ -579,7 +592,7 @@ async def create_upscale_job(
         source_name_text = video.filename
     else:
         source_state = store.get(source_job_id)
-        field = dict((key, field) for key, field, _flag, _label in OUTPUT_MEDIA_FIELDS).get(source_key)
+        field = MEDIA_FIELD_BY_KEY.get(source_key)
         source_path = Path(source_state.get(field) or "") if source_state and field else Path()
         if not source_state or not source_path.is_file():
             raise HTTPException(400, "所选任务的成片不存在，请重新选择")
@@ -733,7 +746,7 @@ async def create_lyrics_job(
         source_name_text = video.filename
     else:
         source_state = store.get(source_job_id)
-        field = dict((key, field) for key, field, _flag, _label in OUTPUT_MEDIA_FIELDS).get(source_key)
+        field = MEDIA_FIELD_BY_KEY.get(source_key)
         source_path = Path(source_state.get(field) or "") if source_state and field else Path()
         if not source_state or not source_path.is_file():
             raise HTTPException(400, "所选任务的成片不存在，请重新选择")

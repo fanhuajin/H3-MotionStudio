@@ -36,6 +36,7 @@ const EMPTY_MILESTONES: Milestone[] = [
   { id: "input", label: "读取视频与音频", subtitle: "加载输入视频，分离音频轨道", status: "pending" },
   { id: "h3", label: "H3 分段生成", subtitle: "按时长生成连续唱歌片段", status: "pending" },
   { id: "stitch", label: "防闪拼接", subtitle: "平滑衔接并裁切到输入时长", status: "pending" },
+  { id: "upscale", label: "二采放大 4×", subtitle: "RealESRGAN 逐帧超分并收 1080p 档", status: "pending" },
   { id: "handoff", label: "关闭 ComfyUI", subtitle: "释放内存和显存，切换到 RVC", status: "pending" },
   { id: "stems", label: "分离人声与伴奏", subtitle: "Demucs 提取演唱人声", status: "pending" },
   { id: "voice", label: "转换为 yueshao_v1 音色", subtitle: "RVC 模型执行音色转换", status: "pending" },
@@ -44,6 +45,8 @@ const EMPTY_MILESTONES: Milestone[] = [
 
 // RVC 流程里程碑（音色转换开关关闭时不展示、后端也不执行）
 const RVC_MILESTONE_IDS = new Set(["handoff", "stems", "voice", "mux"]);
+// 二采放大里程碑（二采开关关闭时不展示、后端也不执行）
+const UPSCALE_MILESTONE_IDS = new Set(["upscale"]);
 
 const FALLBACK_CONFIG: AppConfig = {
   comfyuiConnected: false,
@@ -75,6 +78,7 @@ function canvasDimensionLabel(canvas?: string | null) {
 interface DraftState {
   ratio?: CanvasRatio;
   useRvc?: boolean;
+  useUpscale?: boolean;
   actionPrompt?: string;
   cameraPrompt?: string;
   videoName?: string | null;
@@ -171,7 +175,7 @@ const DEMO_MILESTONES: Milestone[] = EMPTY_MILESTONES.map((step, index) => ({
   ...step,
   status: "completed",
   progress: 100,
-  elapsed: ["00:05", "01:20", "00:15", "00:04", "00:38", "01:12", "00:06"][index],
+  elapsed: ["00:05", "01:20", "00:15", "01:05", "00:04", "00:38", "01:12", "00:06"][index],
 }));
 
 const DEMO_JOB: JobState = {
@@ -190,14 +194,16 @@ const DEMO_JOB: JobState = {
   actionPrompt: "主角自然深情地演唱，眼神专注，偶尔闭眼沉浸；副歌时情绪增强，微微抬头，右手轻抬并随节奏摆动；整体动作自然流畅。",
   cameraPrompt: "以稳定的推轨为主，开场中景缓慢推进至近景；副歌时轻微环绕 15°，保持主体居中；间奏切至侧面 3/4 角度，收尾回到正面特写。",
   useRvc: true,
+  useUpscale: true,
   milestones: DEMO_MILESTONES,
   logs: [
     { time: new Date().toISOString(), message: "ComfyUI 工作流已完成，显存已释放。" },
+    { time: new Date().toISOString(), message: "二采放大：RealESRGAN 4× 已完成，输出 1440×1080。" },
     { time: new Date().toISOString(), message: "RVC：yueshao_v1 音色转换完成。" },
     { time: new Date().toISOString(), message: "最终 MP4 已完成音频替换。" },
   ],
   originalReady: true,
-  enhancedReady: false,
+  enhancedReady: true,
   finalReady: true,
   output: { width: 640, height: 480, duration: 32.4, size: 9_600_000, completedAt: new Date().toISOString() },
 };
@@ -336,17 +342,20 @@ function MotionStudioRoute() {
   const [actionPrompt, setActionPrompt] = useState(() => readDraft()?.actionPrompt || "");
   const [cameraPrompt, setCameraPrompt] = useState(() => readDraft()?.cameraPrompt || "");
   const [useRvc, setUseRvc] = useState<boolean>(() => readDraft()?.useRvc ?? true);
+  const [useUpscale, setUseUpscale] = useState<boolean>(() => readDraft()?.useUpscale ?? true);
   const [job, setJob] = useState<JobState | null>(demoMode ? DEMO_JOB : null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
+  const hiddenMilestones = new Set<string>([
+    ...(useRvc ? [] : RVC_MILESTONE_IDS),
+    ...(useUpscale ? [] : UPSCALE_MILESTONE_IDS),
+  ]);
   const milestones = job?.milestones?.length
     ? job.milestones
-    : useRvc
-      ? EMPTY_MILESTONES
-      : EMPTY_MILESTONES.filter((step) => !RVC_MILESTONE_IDS.has(step.id));
+    : EMPTY_MILESTONES.filter((step) => !hiddenMilestones.has(step.id));
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
   const jobActive = Boolean(job && ["queued", "running"].includes(job.status));
   const tickNow = useNowTick(jobActive);
@@ -544,6 +553,7 @@ function MotionStudioRoute() {
       setActionPrompt(latest?.actionPrompt || draft?.actionPrompt || nextConfig.defaultAction || "");
       setCameraPrompt(latest?.cameraPrompt || draft?.cameraPrompt || nextConfig.defaultCamera || "");
       setUseRvc(latest?.useRvc ?? draft?.useRvc ?? true);
+      setUseUpscale(latest?.useUpscale ?? draft?.useUpscale ?? true);
       if (demoMode) {
         setJob(DEMO_JOB);
         setActionPrompt(DEMO_JOB.actionPrompt);
@@ -564,8 +574,8 @@ function MotionStudioRoute() {
 
   useEffect(() => {
     if (demoMode) return;
-    writeDraft({ ratio, actionPrompt, cameraPrompt, useRvc });
-  }, [ratio, actionPrompt, cameraPrompt, useRvc, demoMode]);
+    writeDraft({ ratio, actionPrompt, cameraPrompt, useRvc, useUpscale });
+  }, [ratio, actionPrompt, cameraPrompt, useRvc, useUpscale, demoMode]);
 
   const clearFile = () => {
     previewTokenRef.current += 1;
@@ -604,6 +614,7 @@ function MotionStudioRoute() {
     form.append("camera_prompt", cameraPrompt);
     form.append("ratio", ratio);
     form.append("use_rvc", useRvc ? "1" : "0");
+    form.append("use_upscale", useUpscale ? "1" : "0");
     if (duration != null) form.append("duration", String(duration));
     try {
       const response = await fetch("/api/jobs", { method: "POST", body: form });
@@ -643,7 +654,7 @@ function MotionStudioRoute() {
         <div>
           <p className="route-eyebrow"><span /> H3 · MOTION STUDIO</p>
           <h1>让演唱视频，<em>动起来。</em></h1>
-          <p className="route-description">人物参考、演唱视频、动作和运镜，一条链路完成唱歌成片与音色转换；需要高清时用「二采放大」单独处理。</p>
+          <p className="route-description">人物参考、演唱视频、动作和运镜，一条链路完成唱歌成片、4× 二采高清与音色转换；两个开关都默认开启。</p>
         </div>
         <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
       </header>
@@ -739,7 +750,24 @@ function MotionStudioRoute() {
           </div>
 
           <div className="field-block">
-            <div className="field-heading"><h2><span>5.</span> 音色转换 <em>（RVC，默认开启）</em></h2></div>
+            <div className="field-heading"><h2><span>5.</span> 二采放大 <em>（4× 高清，默认开启）</em></h2></div>
+            <ToggleRow
+              checked={useUpscale}
+              onChange={setUseUpscale}
+              title="二采放大 4×"
+              description={useUpscale
+                ? "开启：H3 原版成片先做 RealESRGAN 4× 超分并收 1080p 档，音色转换与最终成片都用高清成片。"
+                : "关闭：跳过二采放大，成片保持 H3 原始分辨率。"}
+            />
+            <p className="field-note">
+              {useUpscale
+                ? "二采放大在 ComfyUI 完全关闭之前完成（RVC 之前），最终成片为 1080p 标准档（4:3→1440×1080、9:16→1080×1920）。"
+                : "关闭后成片分辨率与 H3 生成画布一致，出片更快、显存占用更低。"}
+            </p>
+          </div>
+
+          <div className="field-block">
+            <div className="field-heading"><h2><span>6.</span> 音色转换 <em>（RVC，默认开启）</em></h2></div>
             <ToggleRow
               checked={useRvc}
               onChange={setUseRvc}
@@ -794,6 +822,16 @@ function MotionStudioRoute() {
                   : <>预计 {job.estimatedSegments} 个 H3 分段</>}
               </span>
             )}
+            {job?.status === "running" && job?.stage === "upscaling" && job.upscaleBatches != null && (
+              <span
+                className={`job-segments ${job.upscaleBatch ? "live" : ""}`}
+                title={`二采放大分批执行：共 ${job.upscaleBatches} 段（每段 8 帧超采样，8GB 显存安全分批）`}
+              >
+                {job.upscaleBatch
+                  ? <>二采 {job.upscaleBatch}/{job.upscaleBatches}<i><b style={{ width: `${Math.min(100, (job.upscaleBatch / job.upscaleBatches) * 100)}%` }} /></i></>
+                  : <>预计 {job.upscaleBatches} 段二采放大</>}
+              </span>
+            )}
             {jobActive && totalElapsedMs != null && (
               <span className="job-timer" title="任务已运行时间（含排队）"><Timer weight="fill" /> {formatElapsedMs(totalElapsedMs)}</span>
             )}
@@ -819,7 +857,7 @@ function MotionStudioRoute() {
               <div className="result-grid">
                 <div className="result-video"><video src={!demoMode && (resultUrl || originalUrl) ? `${resultUrl || originalUrl}#t=0.001` : undefined} controls preload="auto" poster={demoMode ? config.fixedReferenceUrl : undefined} /></div>
                 <div className="result-details">
-                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? (job.useRvc === false ? "最终成片 · 保留原声" : "最终成片 · yueshao_v1 音色") : "原版成片"}</strong><span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : canvasDimensionLabel((job.canvas as CanvasRatio | undefined) || ratio)}</span></div></div>
+                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? (job.useRvc === false ? "最终成片 · 保留原声" : "最终成片 · yueshao_v1 音色") : "原版成片"}{job.finalReady && job.useUpscale !== false ? " · 4× 高清" : ""}</strong><span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : canvasDimensionLabel((job.canvas as CanvasRatio | undefined) || ratio)}</span></div></div>
                   <dl>
                     <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>
