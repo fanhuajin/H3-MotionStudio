@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import math
 import os
@@ -8,6 +9,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -239,6 +241,8 @@ async def _run_codex(
     model: str = BATCH_CODEX_MODEL,
     timeout: float = 2400,
     process_key: str | None = None,
+    reasoning_effort: str = "high",
+    ignore_rules: bool = False,
 ) -> str:
     BATCH_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,7 +258,7 @@ async def _run_codex(
         "--sandbox",
         "workspace-write",
         "-c",
-        'model_reasoning_effort="high"',
+        f'model_reasoning_effort="{reasoning_effort}"',
         "-C",
         str(PROJECT_ROOT),
         "--add-dir",
@@ -264,6 +268,8 @@ async def _run_codex(
         "--output-last-message",
         str(output_path),
     ]
+    if ignore_rules:
+        args.append("--ignore-rules")
     if schema:
         args += ["--output-schema", str(schema)]
     for image in images or []:
@@ -296,6 +302,11 @@ async def _run_codex(
             process.kill()
             await process.wait()
             raise RuntimeError("Codex 处理超时，任务已保留，可点击重试") from None
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            raise
     finally:
         if process_key and _CODEX_PROCESSES.get(process_key) is process:
             _CODEX_PROCESSES.pop(process_key, None)
@@ -315,8 +326,86 @@ def _parse_json(text: str) -> dict[str, Any]:
     return json.loads(clean[start : end + 1])
 
 
+def _video_duration_seconds(source: Path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(source),
+        ],
+        capture_output=True,
+        timeout=60,
+        creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("无法读取视频时长，关键帧准备失败")
+    try:
+        return max(0.1, float(result.stdout.decode("utf-8", errors="replace").strip()))
+    except ValueError as error:
+        raise RuntimeError("视频时长信息无效") from error
+
+
+def build_contact_sheet(source: Path, target: Path) -> Path:
+    """Extract six full-span frames once so Codex need not inspect the video itself."""
+    duration = _video_duration_seconds(source)
+    timestamps = [duration * ratio for ratio in (0.06, 0.22, 0.38, 0.56, 0.73, 0.91)]
+    frames: list[tuple[Image.Image, float]] = []
+    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    for timestamp in timestamps:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-ss",
+                f"{timestamp:.3f}",
+                "-i",
+                str(source),
+                "-frames:v",
+                "1",
+                "-vf",
+                "scale='min(640,iw)':-2",
+                "-f",
+                "image2pipe",
+                "-vcodec",
+                "png",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=90,
+            creationflags=flags,
+        )
+        if result.returncode != 0 or not result.stdout:
+            continue
+        with Image.open(io.BytesIO(result.stdout)) as opened:
+            frames.append((opened.convert("RGB"), timestamp))
+    if len(frames) < 3:
+        raise RuntimeError("关键帧提取不足，无法可靠分析视频造型")
+    cell = (520, 390)
+    sheet = Image.new("RGB", (cell[0] * 3, cell[1] * 2), "#090716")
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.truetype(str(COVER_FONT), 24) if COVER_FONT.is_file() else ImageFont.load_default()
+    for index, (frame, timestamp) in enumerate(frames[:6]):
+        fitted = ImageOps.contain(frame, (cell[0] - 12, cell[1] - 12), method=Image.Resampling.LANCZOS)
+        x = index % 3 * cell[0] + (cell[0] - fitted.width) // 2
+        y = index // 3 * cell[1] + (cell[1] - fitted.height) // 2
+        sheet.paste(fitted, (x, y))
+        label = f"{timestamp:.1f}s"
+        box = draw.textbbox((0, 0), label, font=font)
+        draw.rectangle((x + 8, y + 8, x + 22 + box[2], y + 18 + box[3]), fill="#090716")
+        draw.text((x + 15, y + 11), label, font=font, fill="#74e6ed")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(target, format="JPEG", quality=91, optimize=True)
+    return target
+
+
 def _preflight_prompt(
-    item: dict[str, Any], target_image: Path, feedback: str = "", mode: str = "both"
+    item: dict[str, Any], target_image: Path, contact_sheet: Path, feedback: str = "", mode: str = "both"
 ) -> str:
     kind = item["kind"]
     meta = item.get("sourceMetadata") or {}
@@ -346,6 +435,7 @@ def _preflight_prompt(
 
         类型：{"歌曲视频" if kind == "singing" else "跳舞视频"}
         源视频：{item.get('sourcePath')}
+        已由本地程序按完整时长抽取的 6 帧联系表：{contact_sheet}
         固定身份图：{IDENTITY_PATH}
         必须完整读取的提示词文件：{prompt_files}
         原作品描述：{meta.get('desc') or ''}
@@ -353,7 +443,7 @@ def _preflight_prompt(
         {task_description}
 
         具体要求：
-        1. 检查视频完整时长、分辨率并跨全时段抽帧，选择清晰参考，不用网络替代素材。
+        1. 直接分析已附加的 6 帧联系表；它已覆盖视频从开头到结尾的代表时刻。不要再运行 ffmpeg 或重复读取整段视频，不用网络替代素材。
         2. 人物身份只能来自固定身份图。造型、服装、背景可以按视频或歌曲自动优化，不需要人工确认方案。
         3. {"需要生成或调整图片时必须使用 $imagegen；" if mode != 'copy' else "本次禁止调用图片生成；"}最终候选图片必须保存为这个精确路径：{target_image}
         4. 生成一套原创、可直接发布的中文标题、简短简介和 5 至 8 个相关标签；参考原文风格但不要照抄。cover_headline 控制在 4 至 12 个汉字。
@@ -381,6 +471,12 @@ async def _prepare_review(
     )
     work = DATA_DIR / "batches" / batch_id / item_id
     work.mkdir(parents=True, exist_ok=True)
+    contact_sheet = work / "source-contact-sheet.jpg"
+    if not contact_sheet.is_file():
+        batch_store.set_item_milestone(
+            batch_id, item_id, "prepare", status="running", progress=10, currentNode="正在抽取 6 个关键帧"
+        )
+        await asyncio.to_thread(build_contact_sheet, Path(item["sourcePath"]), contact_sheet)
     revision = int(item.get("revision") or 0)
     previous_image = Path((item.get("ai") or {}).get("reference_image_path") or "")
     target_image = (
@@ -389,17 +485,47 @@ async def _prepare_review(
         else work / f"candidate_r{revision}.png"
     )
     output = work / f"preflight_r{revision}.json"
-    images = [IDENTITY_PATH]
+    images = [IDENTITY_PATH, contact_sheet]
     if previous_image.is_file() and feedback:
         images.append(previous_image)
-    raw = await _run_codex(
-        prompt=_preflight_prompt(item, target_image, feedback, mode),
-        output_path=output,
-        schema=AI_SCHEMA,
-        images=images,
-        model="gpt-5.6-luna" if mode == "copy" else BATCH_CODEX_MODEL,
-        process_key=f"{batch_id}:{item_id}",
+    started = time.monotonic()
+    codex_task = asyncio.create_task(
+        _run_codex(
+            prompt=_preflight_prompt(item, target_image, contact_sheet, feedback, mode),
+            output_path=output,
+            schema=AI_SCHEMA,
+            images=images,
+            model="gpt-5.6-luna",
+            timeout=1200,
+            process_key=f"{batch_id}:{item_id}",
+            reasoning_effort="medium",
+            ignore_rules=True,
+        )
     )
+    try:
+        while not codex_task.done():
+            await asyncio.sleep(3)
+            if codex_task.done():
+                break
+            elapsed = max(0, round(time.monotonic() - started))
+            estimated = min(92, 14 + round(80 * (1 - math.exp(-elapsed / 105))))
+            minutes, seconds = divmod(elapsed, 60)
+            batch_store.set_item_milestone(
+                batch_id,
+                item_id,
+                "prepare",
+                status="running",
+                progress=estimated,
+                currentNode=f"预计进度 · 已用 {minutes:02d}:{seconds:02d}",
+            )
+        raw = await codex_task
+    finally:
+        if not codex_task.done():
+            codex_task.cancel()
+            try:
+                await codex_task
+            except asyncio.CancelledError:
+                pass
     if _item(batch_id, item_id).get("deleteRequested"):
         raise asyncio.CancelledError
     result = _parse_json(raw)
