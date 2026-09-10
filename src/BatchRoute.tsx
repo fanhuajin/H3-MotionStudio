@@ -118,10 +118,6 @@ function itemRatio(item: BatchItem): CanvasRatio {
   return item.ratio === "4:3" || item.ratio === "9:16" ? item.ratio : DEFAULT_RATIO[item.kind];
 }
 
-function asRatio(value: unknown, fallback: CanvasRatio): CanvasRatio {
-  return value === "4:3" || value === "9:16" ? value : fallback;
-}
-
 function readInputDraft() {
   const read = (key: string) => {
     try {
@@ -134,8 +130,6 @@ function readInputDraft() {
   return {
     singing: String(parsed.singing || ""),
     dance: String(parsed.dance || ""),
-    singingRatio: asRatio(parsed.singingRatio, DEFAULT_RATIO.singing),
-    danceRatio: asRatio(parsed.danceRatio, DEFAULT_RATIO.dance),
     // 开关：关掉的一类既不展示输入框，也不会被提交执行；默认两类都开着。
     singingOn: parsed.singingOn !== false,
     danceOn: parsed.danceOn !== false,
@@ -176,8 +170,6 @@ export function BatchRoute() {
   const initial = useMemo(readInputDraft, []);
   const [singing, setSinging] = useState(initial.singing);
   const [dance, setDance] = useState(initial.dance);
-  const [singingRatio, setSingingRatio] = useState<CanvasRatio>(initial.singingRatio);
-  const [danceRatio, setDanceRatio] = useState<CanvasRatio>(initial.danceRatio);
   const [singingOn, setSingingOn] = useState(initial.singingOn);
   const [danceOn, setDanceOn] = useState(initial.danceOn);
   const [batch, setBatch] = useState<BatchState | null>(null);
@@ -207,11 +199,8 @@ export function BatchRoute() {
   }, [loadLatest]);
 
   useEffect(() => {
-    localStorage.setItem(
-      INPUT_KEY,
-      JSON.stringify({ singing, dance, singingRatio, danceRatio, singingOn, danceOn }),
-    );
-  }, [singing, dance, singingRatio, danceRatio, singingOn, danceOn]);
+    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn }));
+  }, [singing, dance, singingOn, danceOn]);
 
   useEffect(() => {
     if (!batch?.id) return;
@@ -252,7 +241,7 @@ export function BatchRoute() {
       const response = await fetch("/api/batches", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ singingUrls, danceUrls, singingRatio, danceRatio }),
+        body: JSON.stringify({ singingUrls, danceUrls }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, "批次创建失败"));
       const state = await response.json();
@@ -394,23 +383,7 @@ export function BatchRoute() {
             {singingOn ? (
               <>
                 <textarea value={singing} onChange={(event) => setSinging(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-                <div className="batch-ratio-pick" role="radiogroup" aria-label="歌曲视频默认画布比例">
-                  <em>画布比例</em>
-                  {RATIOS.map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      role="radio"
-                      aria-checked={singingRatio === value}
-                      className={singingRatio === value ? "selected" : ""}
-                      onClick={(event) => { event.preventDefault(); setSingingRatio(value); }}
-                    >
-                      {RATIO_LABEL[value]}
-                    </button>
-                  ))}
-                  <i>{ratioDetail("singing", singingRatio)}</i>
-                </div>
-                <small>{splitUrls(singing).length} 条 · 每条都能在审核时单独改比例 · 生成无字幕版和歌词字幕版</small>
+                <small>{splitUrls(singing).length} 条 · 默认 4:3 横版（审核时每条都能改）· 生成无字幕版和歌词字幕版</small>
               </>
             ) : (
               <small>已关闭：这类链接不会展示，也不会加入批次。</small>
@@ -432,23 +405,7 @@ export function BatchRoute() {
             {danceOn ? (
               <>
                 <textarea value={dance} onChange={(event) => setDance(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-                <div className="batch-ratio-pick" role="radiogroup" aria-label="跳舞视频默认画布比例">
-                  <em>画布比例</em>
-                  {RATIOS.map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      role="radio"
-                      aria-checked={danceRatio === value}
-                      className={danceRatio === value ? "selected" : ""}
-                      onClick={(event) => { event.preventDefault(); setDanceRatio(value); }}
-                    >
-                      {RATIO_LABEL[value]}
-                    </button>
-                  ))}
-                  <i>{ratioDetail("dance", danceRatio)}</i>
-                </div>
-                <small>{splitUrls(dance).length} 条 · 每条都能在审核时单独改比例 · 动作迁移成片</small>
+                <small>{splitUrls(dance).length} 条 · 默认 9:16 竖版（审核时每条都能改）· 动作迁移成片</small>
               </>
             ) : (
               <small>已关闭：这类链接不会展示，也不会加入批次。</small>
