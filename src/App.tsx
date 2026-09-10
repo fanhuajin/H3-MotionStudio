@@ -18,7 +18,6 @@ import {
   PersonSimpleRun,
   Play,
   SpinnerGap,
-  Subtitles,
   Timer,
   UploadSimple,
   WarningCircle,
@@ -26,7 +25,6 @@ import {
 } from "@phosphor-icons/react";
 import { BatchRoute } from "./BatchRoute";
 import { DouyinRoute } from "./DouyinRoute";
-import { LyricRoute } from "./LyricRoute";
 import { MigrateRoute } from "./MigrateRoute";
 import { QueuePanel } from "./QueuePanel";
 import { RvcRoute } from "./RvcRoute";
@@ -910,7 +908,6 @@ export function App() {
   const isDouyinRoute = path === "/douyin";
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
-  const isLyricsRoute = path === "/lyrics";
   const isRvcRoute = path === "/rvc";
   const isBatchRoute = path === "/batch";
   const isWorkspaceRoute = path === "";
@@ -939,7 +936,7 @@ export function App() {
               <span>影动生成</span>
             </a>
           </div>
-          <p className="route-caption">批量 · 生成 · 迁移 · 放大 · 音色 · 歌词</p>
+          <p className="route-caption">批量 · 生成 · 迁移 · 放大 · 音色</p>
 
           {isDouyinRoute ? (
             <>
@@ -978,11 +975,6 @@ export function App() {
                 <span>音色转换</span>
                 {isRvcRoute && <i />}
               </a>
-              <a className={isLyricsRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/lyrics">
-                <Subtitles />
-                <span>歌词字幕</span>
-                {isLyricsRoute && <i />}
-              </a>
             </>
           )}
         </nav>
@@ -999,7 +991,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isBatchRoute ? <BatchRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isLyricsRoute ? <LyricRoute /> : <MotionStudioRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isBatchRoute ? <BatchRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : <MotionStudioRoute />}
       </div>
     </div>
   );

@@ -1888,8 +1888,4 @@ if dist_dir.is_dir():
     async def rvc_frontend():
         return FileResponse(dist_dir / "index.html")
 
-    @app.get("/lyrics", include_in_schema=False)
-    async def lyrics_frontend():
-        return FileResponse(dist_dir / "index.html")
-
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")
