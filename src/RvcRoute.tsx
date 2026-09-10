@@ -37,7 +37,7 @@ type RecentPayload = { jobs: RecentItem[] };
 
 // 默认音色名（仅骨架文案；真实模型由后端 backend/settings.py 的 RVC_MODEL 决定，
 // 任务结果里的 job.voiceModel 优先）。改音色时同步这里。
-const DEFAULT_VOICE_LABEL = "wanwansu_v1";
+const DEFAULT_VOICE_LABEL = "mogoo_v1";
 
 const SKELETON_MILESTONES: Milestone[] = [
   { id: "handoff", label: "关闭 ComfyUI", subtitle: "释放内存和显存，切换到 RVC", status: "pending" },

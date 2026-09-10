@@ -36,7 +36,7 @@ import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
 
 // 默认音色名（仅用于骨架里程碑/说明文案；真实模型由后端 backend/settings.py 的 RVC_MODEL 决定，
 // 任务结果里的 job.voiceModel 优先）。改音色时同步这里，避免界面文案与实际音色不符。
-const DEFAULT_VOICE_LABEL = "wanwansu_v1";
+const DEFAULT_VOICE_LABEL = "mogoo_v1";
 
 const EMPTY_MILESTONES: Milestone[] = [
   { id: "input", label: "读取视频与音频", subtitle: "加载输入视频，分离音频轨道", status: "pending" },
