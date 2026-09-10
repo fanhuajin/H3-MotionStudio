@@ -461,11 +461,15 @@ async def _prepare_review_work(
     if mode == "copy" and previous_image.is_file():
         image_path = previous_image
     elif provider == "manual":
-        batch_store.add_item_log(
-            batch_id,
-            item_id,
-            "已备好出图素材：复制提示词、下载图一与图二，在 GPT 聊天里生成后把图上传回来。",
-        )
+        if previous_image.is_file():
+            # 手动模式永远不自动出图：已有成图就保留，用户上传新图即为替换。
+            image_path = previous_image
+        else:
+            batch_store.add_item_log(
+                batch_id,
+                item_id,
+                "已备好出图素材：复制提示词、下载图一与图二，在 GPT 聊天里生成后把图上传回来。",
+            )
     elif provider == "frame":
         await asyncio.to_thread(shutil.copy2, scene_frame, fallback_image)
         image_path = fallback_image
@@ -518,7 +522,13 @@ async def _prepare_review_work(
             batch_store.add_item_log(batch_id, item_id, note)
 
         # 换脸锁定身份：编辑模型是重新合成脸，只靠提示词保不住五官。
-        if image_path == target_image and target_image.is_file():
+        # **默认关闭**：用户实测 ReActor 换脸「效果太差」（贴脸感明显、肤色与脖子对不上），
+        # 所以只在显式设置 H3_BATCH_FACE_SWAP=1 时才启用，不默认污染结果。
+        if (
+            env_value("H3_BATCH_FACE_SWAP", "0").strip() == "1"
+            and image_path == target_image
+            and target_image.is_file()
+        ):
             swapped = work / f"candidate_r{revision}_swapped.png"
             try:
                 batch_store.set_item_milestone(
