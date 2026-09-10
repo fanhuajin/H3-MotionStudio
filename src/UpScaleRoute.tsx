@@ -76,6 +76,11 @@ function kindLabel(kind?: string) {
   return "歌曲生成";
 }
 
+/** 二采放大固定 4×；旧任务（历史 2× 成片）仍按其原始倍数展示。 */
+function multiplierLabel(value?: string | null) {
+  return value === "2x" ? "2×" : "4×";
+}
+
 function MilestoneIcon({ status }: { status: MilestoneStatus }) {
   if (status === "completed") return <Check weight="bold" />;
   if (status === "running") return <Play weight="fill" />;
@@ -125,7 +130,6 @@ export function UpScaleRoute() {
   const [file, setFile] = useState<File | null>(null);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [recentPick, setRecentPick] = useState<{ jobId: string; key: string; label: string } | null>(null);
-  const [multiplier, setMultiplier] = useState<"2x" | "4x">("4x");
   const [job, setJob] = useState<JobState | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -225,7 +229,6 @@ export function UpScaleRoute() {
     setSubmitting(true);
     setLocalError(null);
     const form = new FormData();
-    form.append("multiplier", multiplier);
     if (mode === "upload" && file) form.append("video", file);
     if (mode === "recent" && recentPick) {
       form.append("source_job_id", recentPick.jobId);
@@ -251,8 +254,8 @@ export function UpScaleRoute() {
       <header className="route-hero">
         <div>
           <p className="route-eyebrow"><span /> H3 · UPSCALE</p>
-          <h1>二采放大，<em>自主选择。</em></h1>
-          <p className="route-description">对任意视频做 RealESRGAN 2× / 4× 放大，并统一收到 1080p 标准档（4:3→1440×1080、9:16→1080×1920、16:9→1920×1080）。</p>
+          <h1>二采放大，<em>统一 4×。</em></h1>
+          <p className="route-description">对任意视频做 RealESRGAN 4× 放大，并统一收到 1080p 标准档（4:3→1440×1080、9:16→1080×1920、16:9→1920×1080）。</p>
         </div>
         <span className={`connection ${job?.status === "running" ? "connected" : "idle"}`}>
           <span className="connection-dot" />
@@ -321,18 +324,6 @@ export function UpScaleRoute() {
             )}
           </div>
 
-          <div className="field-block">
-            <div className="field-heading"><h2><span>2.</span> 放大倍数</h2></div>
-            <div className="ratio-cards" role="radiogroup" aria-label="放大倍数">
-              <button type="button" role="radio" aria-checked={multiplier === "2x"} className={multiplier === "2x" ? "selected" : ""} onClick={() => setMultiplier("2x")}>
-                <strong>2×（推荐）</strong><span>更快 · 竖版目标 2.1× 已够用</span>
-              </button>
-              <button type="button" role="radio" aria-checked={multiplier === "4x"} className={multiplier === "4x" ? "selected" : ""} onClick={() => setMultiplier("4x")}>
-                <strong>4×</strong><span>细节最强 · 更慢</span>
-              </button>
-            </div>
-          </div>
-
           {(localError || job?.errorSummary) && (
             <div className="error-banner" role="alert">
               <WarningCircle weight="fill" />
@@ -343,8 +334,9 @@ export function UpScaleRoute() {
 
           <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
             {submitting || jobActive ? <SpinnerGap className="spin" /> : <MagnifyingGlassPlus weight="fill" />}
-            {submitting ? "正在创建任务…" : jobActive ? "放大任务运行中" : `开始 ${multiplier} 放大`}
+            {submitting ? "正在创建任务…" : jobActive ? "放大任务运行中" : "开始 4× 放大"}
           </button>
+          <p className="field-note">放大倍数固定 4×（RealESRGAN_x4plus），不再提供 2× 选项。</p>
         </section>
 
         <section className="execution-panel" aria-label="执行进度与结果">
@@ -396,7 +388,7 @@ export function UpScaleRoute() {
                   <div className="result-title">
                     <FilmSlate />
                     <div>
-                      <strong>最终成片 · {job.multiplier || "2×/4×"} 放大</strong>
+                      <strong>最终成片 · {multiplierLabel(job.multiplier)} 放大</strong>
                       <span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ""}</span>
                     </div>
                   </div>

@@ -28,8 +28,9 @@ FIXED_REFERENCE = COMFY_INPUT / "25181125-唱歌优化-指定背景-1440x1080-v3
 MIGRATE_REFERENCE = COMFY_INPUT / "singing_portrait_4x3_1440x1080.png"
 
 # 高清档超分模型：
-# - 9:16 迁移链路：512×896 → 1080×1920 仅需 ~2.1×，用 x2plus（约 1/4 耗时，画质几乎无差）
+# - 9:16 迁移链路：512×896 → 1080×1920 仅需 ~2.1×，曾考虑用 x2plus（耗时约 1/4）
 # - 4:3 迁移链路（512×384 → 1440×1080 需 ~2.8×）与唱歌链路（640×480 → 1440×1080）保持 x4plus
+# - 独立「二采放大」路由固定 4×：只使用 x4plus，X2 常量保留备查（不再被路由使用）
 UPSCALE_MODEL_X4 = "RealESRGAN_x4plus.pth"
 UPSCALE_MODEL_X2 = "RealESRGAN_x2plus.pth"
 

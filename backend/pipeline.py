@@ -44,7 +44,6 @@ from .settings import (
     SUBTITLE_DETECT,
     SUBTITLE_DETECT_SCRIPT,
     UPSCALE_BATCH_FRAMES,
-    UPSCALE_MODEL_X2,
     UPSCALE_MODEL_X4,
     UPSCALE_WORKFLOW,
     canvas_params,
@@ -1562,7 +1561,7 @@ def mark_upscale_final(path: Path) -> Path:
 
 
 async def run_upscale_job(job_id: str) -> None:
-    """独立「二采放大」任务：按所选倍数（2×/4×）RealESRGAN 放大并收 1080p 档。"""
+    """独立「二采放大」任务：固定 4× RealESRGAN 放大并收 1080p 档。"""
     async with pipeline_lock:
         state = store.get(job_id)
         if not state:
@@ -1588,7 +1587,7 @@ async def run_upscale_job(job_id: str) -> None:
             store.update(job_id, stage="upscaling")
             store.add_log(
                 job_id,
-                f"二采放大：{state.get('multiplier') or '?'} · {model} → 输出 {scale[0]}×{scale[1]}",
+                f"二采放大：{state.get('multiplier') or '4x'}（固定 4×） · {model} → 输出 {scale[0]}×{scale[1]}",
             )
             estimated_segments = state.get("estimatedSegments")
             if estimated_segments:

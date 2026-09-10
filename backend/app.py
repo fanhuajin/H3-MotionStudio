@@ -63,7 +63,6 @@ from .settings import (
     PROJECT_ROOT,
     SINGING_WORKFLOW,
     UPSCALE_BATCH_FRAMES,
-    UPSCALE_MODEL_X2,
     UPSCALE_MODEL_X4,
     canvas_params,
     required_paths,
@@ -553,14 +552,11 @@ async def create_upscale_job(
     video: UploadFile | None = File(None),
     source_job_id: str = Form(""),
     source_key: str = Form("final"),
-    multiplier: str = Form("4x"),
 ):
-    """独立二采放大：上传视频或引用最近任务成片，按 2×/4× 放大后收 1080p 档。"""
+    """独立二采放大：上传视频或引用最近任务成片，固定 4× 放大后收 1080p 档。"""
     active = store.active()
     if active:
         raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
-    if multiplier not in {"2x", "4x"}:
-        raise HTTPException(400, "放大倍数只能是 2x 或 4x")
     if video is None and not source_job_id:
         raise HTTPException(400, "请上传视频或选择最近任务成片")
 
@@ -595,7 +591,9 @@ async def create_upscale_job(
     width = int(metadata.get("width") or 1440)
     height = int(metadata.get("height") or 1080)
     scale = _upscale_target(width, height)
-    model = UPSCALE_MODEL_X2 if multiplier == "2x" else UPSCALE_MODEL_X4
+    # 二采放大固定 4×：不再提供 2× 选项，统一用 RealESRGAN_x4plus。
+    multiplier = "4x"
+    model = UPSCALE_MODEL_X4
     source_frames = int(metadata.get("frames") or 0) or None
     estimated_segments = (
         max(1, (source_frames + UPSCALE_BATCH_FRAMES - 1) // UPSCALE_BATCH_FRAMES)
@@ -631,7 +629,7 @@ async def create_upscale_job(
         "logs": [{
             "time": created_at,
             "message": (
-                f"已接收放大源：{source_name_text} · {width}×{height} · 倍数 {multiplier} → 输出 {scale[0]}×{scale[1]}"
+                f"已接收放大源：{source_name_text} · {width}×{height} · 倍数 {multiplier}（固定） → 输出 {scale[0]}×{scale[1]}"
                 + (f" · 预计 {estimated_segments} 段（每段 {UPSCALE_BATCH_FRAMES} 帧分批）" if estimated_segments else "")
             ),
         }],
