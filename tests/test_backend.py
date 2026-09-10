@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from pathlib import Path
 import os
 import tempfile
@@ -44,6 +45,23 @@ from backend.workflows import (
     prepare_singing_workflow,
     prepare_upscale_workflow,
 )
+
+
+@contextmanager
+def process_env_only():
+    """让环境读取只认进程环境。
+
+    真实环境里 `settings.env_value` 会回读 Windows 用户级变量（本机确实配了中转站），
+    不隔离的话「未配置中转站」这类测试会随开发机状态飘。
+    """
+
+    def fake(name: str, default: str = "") -> str:
+        return (os.environ.get(name) or "").strip() or default
+
+    with patch("backend.batch_image.env_value", fake), patch(
+        "backend.batch_worker.env_value", fake
+    ), patch("backend.batch_ai.env_value", fake):
+        yield
 
 
 class WorkflowPreparationTests(unittest.TestCase):
@@ -123,23 +141,22 @@ class WorkflowPreparationTests(unittest.TestCase):
         relay_names = ("H3_BATCH_IMAGE_BASE_URL", "H3_BATCH_IMAGE_API_KEY", "H3_BATCH_IMAGE_MODEL")
         saved = {name: os.environ.pop(name, None) for name in relay_names}
         try:
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-official"}, clear=False):
-                settings._USER_ENV_CACHE.clear()
-                self.assertFalse(batch_image.configured())
-                self.assertEqual(batch_image.base_url(), "https://api.openai.com/v1")
-            with patch.dict(
-                os.environ,
-                {
-                    "H3_BATCH_IMAGE_BASE_URL": "https://relay.example/v1",
-                    "H3_BATCH_IMAGE_API_KEY": "sk-relay",
-                    "H3_BATCH_IMAGE_MODEL": "gpt-image-2.5-sunburst",
-                },
-                clear=False,
-            ):
-                settings._USER_ENV_CACHE.clear()
-                self.assertTrue(batch_image.configured())
-                self.assertEqual(batch_image.base_url(), "https://relay.example/v1")
-                self.assertEqual(batch_image.model(), "gpt-image-2.5-sunburst")
+            with process_env_only():
+                with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-official"}, clear=False):
+                    self.assertFalse(batch_image.configured())
+                    self.assertEqual(batch_image.base_url(), "https://api.openai.com/v1")
+                with patch.dict(
+                    os.environ,
+                    {
+                        "H3_BATCH_IMAGE_BASE_URL": "https://relay.example/v1",
+                        "H3_BATCH_IMAGE_API_KEY": "sk-relay",
+                        "H3_BATCH_IMAGE_MODEL": "gpt-image-2.5-sunburst",
+                    },
+                    clear=False,
+                ):
+                    self.assertTrue(batch_image.configured())
+                    self.assertEqual(batch_image.base_url(), "https://relay.example/v1")
+                    self.assertEqual(batch_image.model(), "gpt-image-2.5-sunburst")
             self.assertEqual(batch_image.IMAGE_SIZES["4:3"], "1536x1152")
             self.assertEqual(batch_image.IMAGE_SIZES["9:16"], "1152x2048")
         finally:
@@ -166,22 +183,22 @@ class WorkflowPreparationTests(unittest.TestCase):
 
     def test_batch_image_request_plans_fall_back_to_singular_field(self) -> None:
         """官方多图编辑用 image[]，中转站文档只写 image：要能自动回退。"""
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("H3_BATCH_IMAGE_FIELD", None)
-            os.environ.pop("H3_BATCH_IMAGE_MODE", None)
-            settings._USER_ENV_CACHE.clear()
-            self.assertEqual(
-                batch_image.request_plans(),
-                [("multi", "image[]"), ("multi", "image"), ("composite", "image")],
-            )
-        with patch.dict(os.environ, {"H3_BATCH_IMAGE_FIELD": "image"}, clear=False):
-            self.assertEqual(batch_image.request_plans(), [("multi", "image"), ("composite", "image")])
-        with patch.dict(
-            os.environ,
-            {"H3_BATCH_IMAGE_MODE": "composite", "H3_BATCH_IMAGE_FIELD": ""},
-            clear=False,
-        ):
-            self.assertEqual(batch_image.request_plans(), [("composite", "image")])
+        with process_env_only():
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("H3_BATCH_IMAGE_FIELD", None)
+                os.environ.pop("H3_BATCH_IMAGE_MODE", None)
+                self.assertEqual(
+                    batch_image.request_plans(),
+                    [("multi", "image[]"), ("multi", "image"), ("composite", "image")],
+                )
+            with patch.dict(os.environ, {"H3_BATCH_IMAGE_FIELD": "image"}, clear=False):
+                self.assertEqual(batch_image.request_plans(), [("multi", "image"), ("composite", "image")])
+            with patch.dict(
+                os.environ,
+                {"H3_BATCH_IMAGE_MODE": "composite", "H3_BATCH_IMAGE_FIELD": ""},
+                clear=False,
+            ):
+                self.assertEqual(batch_image.request_plans(), [("composite", "image")])
 
     def test_batch_image_composite_stitches_two_references(self) -> None:
         """只接受单图的中转站走 composite：把两张参考图左右拼成一张，不叠文字。"""
@@ -214,12 +231,11 @@ class WorkflowPreparationTests(unittest.TestCase):
                 calls.append(files[0][0])
                 raise _httpx.ConnectError("All connection attempts failed")
 
-            with patch.dict(
+            with process_env_only(), patch.dict(
                 os.environ,
                 {"H3_BATCH_IMAGE_BASE_URL": "http://127.0.0.1:9/v1", "H3_BATCH_IMAGE_API_KEY": "sk-fake"},
                 clear=False,
             ), patch.object(batch_image, "_post", boom):
-                settings._USER_ENV_CACHE.clear()
                 with self.assertRaises(RuntimeError) as caught:
                     asyncio.run(
                         batch_image.generate_candidate_image(
@@ -234,18 +250,29 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertIn("连接失败", message)
             self.assertIn("composite", message)  # 提示可切单图拼合
             self.assertEqual(calls, ["image[]", "image", "image[]"])
-            settings._USER_ENV_CACHE.clear()
 
     def test_batch_image_provider_selection(self) -> None:
         """auto 只在配了中转站时走 api，其余回落抽帧；本地 Krea2 必须显式指定。"""
-        with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "local"}, clear=False):
-            self.assertEqual(_image_provider(), "local")
-        with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "没这个值"}, clear=False):
-            self.assertEqual(_image_provider(), "auto")
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("H3_BATCH_IMAGE_PROVIDER", None)
-            settings._USER_ENV_CACHE.clear()
-            self.assertEqual(_image_provider(), "auto")
+        with process_env_only():
+            with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "local"}, clear=False):
+                self.assertEqual(_image_provider(), "local")
+            with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "没这个值"}, clear=False):
+                self.assertEqual(_image_provider(), "auto")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("H3_BATCH_IMAGE_PROVIDER", None)
+                self.assertEqual(_image_provider(), "auto")
+
+    def test_batch_ai_image_prompt_carries_review_feedback(self) -> None:
+        """审核修改意见必须进入出图提示词，否则「调整图片」只会改文案、图不动。"""
+        base = batch_ai.compose_prompt("singing", "video")
+        self.assertEqual(batch_ai.compose_image_prompt("singing", "video", "", "both"), base)
+        # 只调文案时不应污染出图提示词（那条路径本来就不重新出图）
+        self.assertEqual(batch_ai.compose_image_prompt("singing", "video", "换背景", "copy"), base)
+        for mode in ("image", "both"):
+            prompt = batch_ai.compose_image_prompt("singing", "video", "头顶留白压到 2%", mode)
+            self.assertIn("头顶留白压到 2%", prompt)
+            self.assertIn("本次必须优先满足的修改要求", prompt)
+            self.assertTrue(prompt.startswith(base))
 
     def test_batch_ai_fallback_and_action_plan_keep_item_runnable(self) -> None:
         """模型降级时条目仍可继续：文案退到源作品信息，动作/运镜按时长铺满。"""

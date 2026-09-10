@@ -434,7 +434,7 @@ async def _prepare_review_work(
             )
 
         style_source = str(result.get("style_source") or "video")
-        prompt = batch_ai.compose_prompt(item["kind"], style_source)
+        prompt = batch_ai.compose_image_prompt(item["kind"], style_source, feedback, mode)
         scene = scene_frame
         if item["kind"] == "singing" and style_source == "redesign":
             # 源视频造型不适合出片：改按歌曲情绪重做造型。工作流固定要两张输入，

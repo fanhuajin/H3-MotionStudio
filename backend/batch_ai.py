@@ -80,6 +80,25 @@ def compose_prompt(kind: str, style_source: str = "video") -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def compose_image_prompt(
+    kind: str, style_source: str = "video", feedback: str = "", mode: str = "both"
+) -> str:
+    """出图提示词 = 造型提示词 + 用户的审核修改意见。
+
+    修改意见必须进入出图提示词，否则用户在审核区写「头顶再贴边一些」只会改动文案、
+    图片毫无变化 —— 这正是「调整图片」按钮失效的原因。
+    """
+    prompt = compose_prompt(kind, style_source)
+    text = (feedback or "").strip()
+    if text and mode in {"image", "both"}:
+        prompt = (
+            f"{prompt}\n\n"
+            "【本次必须优先满足的修改要求】在与其上所有要求不冲突的前提下，优先执行这一条：\n"
+            f"{text}"
+        )
+    return prompt
+
+
 ACTION_RULES = """\
 时间轴格式（必须严格遵守，产出会被直接粘贴进 ComfyUI 工作流）：
 - 每行一段，形如 `0–4秒：身体随节拍轻轻左右摇摆，目光自然看向镜头`
