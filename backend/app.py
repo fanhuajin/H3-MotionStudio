@@ -31,6 +31,7 @@ from .batch_worker import (
     new_batch_state,
     request_review_adjustment,
     run_batch,
+    stage_media,
 )
 from .douyin_mirror import all_jobs as mirror_jobs
 from .douyin_mirror import get_job as mirror_get_job
@@ -594,7 +595,17 @@ async def batch_item_stage(batch_id: str, item_id: str, key: str, download: bool
     elif key == "candidate":
         raw = str(ai.get("reference_image_path") or "")
     else:
-        raw = str((item.get("stageMedia") or {}).get(key) or "")
+        media = dict(item.get("stageMedia") or {})
+        if not media:
+            # 兼容旧状态：早期版本的条目没有 stageMedia，直接从子任务（视频/歌词）
+            # 的状态里现算一次，这样已经跑完的历史条目也能回看。
+            for job_id in (item.get("videoJobId"), item.get("lyricJobId")):
+                if not job_id:
+                    continue
+                child = store.get(str(job_id))
+                if child:
+                    media.update(stage_media(child))
+        raw = str(media.get(key) or "")
     path = Path(raw)
     if not raw or not path.is_file():
         raise HTTPException(404, "该阶段的产物还不存在")
