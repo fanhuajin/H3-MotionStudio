@@ -279,9 +279,17 @@ class WorkflowPreparationTests(unittest.TestCase):
         from backend import batch_worker
         from backend.batch_worker import DuplicateItem, duplicate_item_by_aweme, item_key, url_key
 
-        # 1) 链接指纹：大小写、结尾斜杠、分享查询串都不算新任务
-        self.assertEqual(url_key("HTTPS://V.Douyin.com/AbC/?vid=1#x"), url_key("https://v.douyin.com/AbC"))
+        # 1) 链接指纹：大小写、结尾斜杠、跟踪参数都不算新任务
+        self.assertEqual(url_key("HTTPS://V.Douyin.com/AbC/?from=share#x"), url_key("https://v.douyin.com/AbC"))
         self.assertEqual(item_key("singing", "https://v.douyin.com/a/"), item_key("singing", "https://v.douyin.com/a"))
+        # 作品号在 query 里（抖音「喜欢列表」链接）必须保留，否则不同视频会被误判成同一条
+        likes_a = "https://www.douyin.com/user/self?from_tab_name=main&modal_id=7663001746131065849&showTab=like"
+        likes_b = "https://www.douyin.com/user/self?from_tab_name=main&modal_id=7660090995610134771&showTab=like"
+        self.assertNotEqual(url_key(likes_a), url_key(likes_b))
+        self.assertEqual(
+            url_key(likes_a),
+            url_key("https://www.douyin.com/user/self?from_tab_name=other&modal_id=7663001746131065849"),
+        )
         # 同一段素材当歌曲和当跳舞是两件事，不能互相吃掉
         self.assertNotEqual(item_key("singing", "https://v.douyin.com/a"), item_key("dance", "https://v.douyin.com/a"))
 

@@ -178,6 +178,8 @@ export function BatchRoute() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState("");
+  // 中性提示（比如「这次没有新增任务」）：不是错误，但必须让人看见
+  const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [imageToken, setImageToken] = useState(0);
   // 先把上次的队列读回来再允许提交：否则刚打开页面就点「加入队列」会新开一个批次，
@@ -262,6 +264,12 @@ export function BatchRoute() {
       const state = await response.json();
       setBatch(state);
       if (!append) setSelectedId(state.currentItemId);
+      // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
+      if (append && (state.items?.length || 0) <= (batch?.items.length || 0)) {
+        setNotice("这些链接都已经在队列里了（重复链接自动跳过），这次没有新增任务。");
+      } else {
+        setNotice("");
+      }
       // 输入框内容保留：重复链接后端会自动过滤（notice 里写明跳过了几条），
       // 想接着补链接或核对粘贴内容都不用重新粘一遍。
     } catch (reason) {
@@ -449,6 +457,7 @@ export function BatchRoute() {
       </section>
 
       {error && <div className="batch-alert"><WarningCircle weight="fill" />{error}</div>}
+      {!error && notice && <div className="batch-alert info"><ListChecks weight="fill" />{notice}</div>}
 
       {batch && (
         <section className="batch-workspace">

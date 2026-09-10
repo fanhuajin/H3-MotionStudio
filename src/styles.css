@@ -1436,6 +1436,7 @@ body {
 .batch-secondary { min-height: 39px; padding: 0 15px; border: 1px solid #4a3f66; color: #ded8ec; background: #17112f; font-size: 12px; }
 .batch-alert { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0; padding: 11px 13px; border: 1px solid rgba(255, 108, 137, .34); border-radius: 8px; color: #ffc0cc; background: rgba(71, 18, 39, .38); font-size: 12px; line-height: 1.6; }
 .batch-alert svg { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px; }
+.batch-alert.info { border-color: rgba(255, 199, 108, .34); color: #ffdca6; background: rgba(71, 52, 18, .38); }
 .batch-workspace { display: grid; grid-template-columns: 294px minmax(0, 1fr); gap: 14px; align-items: start; }
 .batch-queue { position: sticky; top: 16px; overflow: hidden; }
 .batch-section-head { min-height: 66px; padding: 13px 14px; border-bottom: 1px solid var(--shell-line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }

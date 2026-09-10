@@ -351,13 +351,14 @@ async def _prewarm_comfy() -> None:
 
 
 def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
-    """按需唤醒 runner：**没点过「启动」的批次不会被顺手跑起来**。
+    """按需唤醒 runner：只有**用户主动开始**的批次才会继续跑。
 
-    用户 2026-09-10：「可以先将任务加入队列吗，等我点击启动了再去跑流程」。
-    所以「加入队列 / 删除 / 跳过」这类操作只改状态和提示：
-    - `running`：用户已经启动过，runner 还活着，会自己捡起新条目；
+    页面上的开始动作是输入区的「准备任务」（入队 + 立即开始）；API 侧可以不带
+    `autoStart` 只入队，那时这里只改状态和提示：
+    - `running`：runner 还活着，会自己捡起新条目；
     - `paused`：用户主动暂停，不偷偷继续；
-    - 其它（queued / awaiting_review / completed / failed）：一律等用户点「启动」。
+    - 其它（queued / awaiting_review / completed / failed）：等用户再点「准备任务」
+      （或 API 调 `/start`）。
     """
     state = batch_store.get(batch_id) or {}
     status = state.get("status")
@@ -367,7 +368,7 @@ def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
         return batch_store.update(
             batch_id, notice=f"{notice} 批次处于暂停，点「继续」后开始处理。"
         )
-    return batch_store.update(batch_id, notice=f"{notice} 点「启动」后开始处理。")
+    return batch_store.update(batch_id, notice=f"{notice} 点「准备任务」后开始处理。")
 
 
 @app.get("/api/batches/latest")
