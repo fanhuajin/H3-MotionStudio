@@ -66,14 +66,36 @@ def item_milestones(kind: str) -> list[dict[str, Any]]:
 
 
 def unique_urls(values: list[str]) -> list[str]:
+    """同一次提交里按**归一化链接**去重，保留用户粘贴时的原始写法。"""
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
         url = str(value or "").strip()
-        if url and url not in seen:
-            seen.add(url)
+        key = url_key(url)
+        if url and key not in seen:
+            seen.add(key)
             result.append(url)
     return result
+
+
+def url_key(url: str) -> str:
+    """链接指纹：忽略大小写、结尾斜杠、查询串与锚点。
+
+    抖音同一条视频常有多种写法（`v.douyin.com/xxx` 与 `v.douyin.com/xxx/`、
+    `www.douyin.com/video/123?vid=456`……），只按原字符串比对会把同一条作品
+    当成两条来做，白烧一遍算力。作品号在路径里，查询串只是分享跟踪参数，丢掉安全。
+    """
+    text = str(url or "").strip().lower()
+    if not text:
+        return ""
+    for separator in ("#", "?"):
+        text = text.split(separator, 1)[0]
+    return text.rstrip("/")
+
+
+def item_key(kind: str, url: str) -> str:
+    """批次内判重用的键：类型 + 链接指纹（同一段素材当歌曲和当跳舞是两件事，不能互相吃掉）。"""
+    return f"{kind}:{url_key(url)}"
 
 
 # 一个批次（含随时追加）最多多少条视频
@@ -168,8 +190,9 @@ def append_batch_items(
 ) -> dict[str, Any]:
     """给已有批次追加条目：批次随时能加，新条目排在队尾（编号接着往下排）。
 
-    用户 2026-09-10：「可以让我随时添加新的任务，删除单条任务」。重复粘贴的链接按
-    「类型 + 链接」比对**未删除**的已有条目后直接跳过，返回跳过的条数给页面提示，
+    用户 2026-09-10：「可以让我随时添加新的任务，删除单条任务」「重复的记得过滤掉」。
+    重复链接按「类型 + 链接指纹」（忽略大小写/结尾斜杠/查询串）比对已有条目后直接跳过，
+    只把明确不要了的（已删除 / 已跳过）排除在判重之外，返回跳过的条数给页面提示，
     避免同一条视频被做两遍。
     """
     state = batch_store.get(batch_id)
@@ -179,24 +202,26 @@ def append_batch_items(
         "singing": normalize_batch_ratio(singing_ratio, "singing"),
         "dance": normalize_batch_ratio(dance_ratio, "dance"),
     }
-    rows = [("singing", url) for url in unique_urls(singing_urls)] + [
-        ("dance", url) for url in unique_urls(dance_urls)
-    ]
+    singing_clean = unique_urls(singing_urls)
+    dance_clean = unique_urls(dance_urls)
+    rows = [("singing", url) for url in singing_clean] + [("dance", url) for url in dance_clean]
     if not rows:
         raise ValueError("请至少填写一条抖音链接")
+    # 同一次粘贴里就重复的（含写法不同）也要算进「已过滤的重复」，否则用户看不到它被吃掉了
+    raw_count = sum(1 for url in list(singing_urls) + list(dance_urls) if str(url or "").strip())
     created = now_iso()
-    result = {"added": 0, "duplicates": 0}
+    result = {"added": 0, "duplicates": max(0, raw_count - len(rows))}
 
     def apply(row: dict[str, Any]) -> None:
         items = list(row.get("items") or [])
         known = {
-            f"{item.get('kind')}:{item.get('url')}"
+            item_key(str(item.get("kind") or ""), str(item.get("url") or ""))
             for item in items
-            if item.get("status") != "deleted"
+            if item.get("status") not in {"deleted", "skipped"}
         }
         fresh: list[tuple[str, str]] = []
         for kind, url in rows:
-            key = f"{kind}:{url}"
+            key = item_key(kind, url)
             if key in known:
                 result["duplicates"] += 1
                 continue
@@ -287,6 +312,34 @@ def _manifest_metadata(aweme_id: str) -> dict[str, Any]:
     return {}
 
 
+class DuplicateItem(RuntimeError):
+    """同一个抖音作品已经在批次里：本条自动跳过，不重复烧一遍算力。"""
+
+
+def duplicate_item_by_aweme(
+    batch_id: str, item_id: str, aweme_id: str, kind: str = ""
+) -> dict[str, Any] | None:
+    """按作品号找批次里已经存在的同一条视频（同类型、未删除未跳过）。
+
+    链接指纹只能挡住写法不同的同一个链接；同一条作品用两种分享方式（短链 vs
+    `www.douyin.com/video/{id}`）粘进来时只有下载后拿到的 awemeId 才能识别，
+    所以下载完立刻再兜一次底。已删除/已跳过的条目不算重复——用户明确不要了。
+    """
+    if not aweme_id:
+        return None
+    state = batch_store.get(batch_id) or {}
+    for item in state.get("items") or []:
+        if item.get("id") == item_id:
+            continue
+        if item.get("status") in {"deleted", "skipped"}:
+            continue
+        if kind and str(item.get("kind") or "") != kind:
+            continue
+        if str(item.get("awemeId") or "") == str(aweme_id):
+            return item
+    return None
+
+
 async def _download(batch_id: str, item_id: str) -> Path:
     item = _item(batch_id, item_id)
     existing = Path(item.get("sourcePath") or "")
@@ -320,15 +373,25 @@ async def _download(batch_id: str, item_id: str) -> Path:
         result = douyin_service.result_for(job)
         if not result:
             raise RuntimeError("下载完成但没有找到视频文件")
-        source = await ensure_download_playable(Path(result["path"]), str(result["awemeId"]))
-        metadata = _manifest_metadata(str(result["awemeId"]))
+        aweme_id = str(result["awemeId"])
+        # 链接写法不同的同一条作品只有下载后才知道，这里再兜一次重复过滤
+        duplicate = duplicate_item_by_aweme(
+            batch_id, item_id, aweme_id, str(item.get("kind") or "")
+        )
+        if duplicate is not None:
+            raise DuplicateItem(
+                f"和第 {duplicate.get('index')} 条是同一个抖音作品"
+                f"（{duplicate.get('title') or duplicate.get('url')}），本条已自动跳过，不重复制作。"
+            )
+        source = await ensure_download_playable(Path(result["path"]), aweme_id)
+        metadata = _manifest_metadata(aweme_id)
         title = str(metadata.get("desc") or source.stem).splitlines()[0].strip() or source.stem
         _set_item(
             batch_id,
             item_id,
             sourcePath=str(source.resolve()),
             sourceName=source.name,
-            awemeId=str(result["awemeId"]),
+            awemeId=aweme_id,
             sourceMetadata=metadata,
             title=title[:80],
         )
@@ -1158,6 +1221,26 @@ async def run_batch(batch_id: str) -> None:
                 feedback = str(refreshed.get("revisionFeedback") or "")
                 mode = str(refreshed.get("revisionMode") or "both")
                 await _prepare_review(batch_id, item["id"], feedback=feedback, mode=mode)
+                continue
+            except DuplicateItem as duplicate:
+                # 同一条作品已经在批次里：直接标成「已跳过」，不当失败，也不拦住后面的条目
+                message = str(duplicate)
+                current = _item(batch_id, item["id"])
+                _set_item(
+                    batch_id,
+                    item["id"],
+                    status="skipped",
+                    stage="skipped",
+                    finishedAt=now_iso(),
+                    childJob=None,
+                    warning=message,
+                )
+                for milestone in current.get("milestones") or []:
+                    if milestone.get("status") in {"pending", "running"}:
+                        batch_store.set_item_milestone(
+                            batch_id, item["id"], milestone["id"], status="skipped"
+                        )
+                batch_store.add_item_log(batch_id, item["id"], message)
                 continue
             except asyncio.CancelledError:
                 current = _item(batch_id, item["id"])

@@ -273,6 +273,129 @@ class WorkflowPreparationTests(unittest.TestCase):
                     )
                 )
 
+    def test_duplicate_links_and_works_are_filtered_out(self) -> None:
+        """重复的必须过滤掉：链接写法不同也算同一条，短链/完整链接则靠作品号兜底。"""
+        from backend import batch_worker
+        from backend.batch_worker import DuplicateItem, duplicate_item_by_aweme, item_key, url_key
+
+        # 1) 链接指纹：大小写、结尾斜杠、分享查询串都不算新任务
+        self.assertEqual(url_key("HTTPS://V.Douyin.com/AbC/?vid=1#x"), url_key("https://v.douyin.com/AbC"))
+        self.assertEqual(item_key("singing", "https://v.douyin.com/a/"), item_key("singing", "https://v.douyin.com/a"))
+        # 同一段素材当歌曲和当跳舞是两件事，不能互相吃掉
+        self.assertNotEqual(item_key("singing", "https://v.douyin.com/a"), item_key("dance", "https://v.douyin.com/a"))
+
+        state = new_batch_state(["https://v.douyin.com/song"], [])
+
+        class StubStore:
+            def __init__(self, payload: dict) -> None:
+                self.state = payload
+
+            def get(self, _batch_id):
+                return self.state
+
+            def update(self, _batch_id, **changes):
+                self.state.update(changes)
+                return self.state
+
+            def mutate(self, _batch_id, mutator):
+                mutator(self.state)
+                return self.state
+
+        stub = StubStore(state)
+        with patch.object(batch_worker, "batch_store", stub):
+            # 写法不同但同一条 → 跳过
+            result = batch_worker.append_batch_items(
+                "b1", ["https://v.douyin.com/song/?from=share"], []
+            )
+            self.assertEqual((result["added"], result["duplicates"]), (0, 1))
+            self.assertEqual(len(stub.state["items"]), 1)
+            # 一次贴进来两条一样的 → 只留一条
+            result = batch_worker.append_batch_items(
+                "b1", ["https://v.douyin.com/new", "https://v.douyin.com/new/"], []
+            )
+            self.assertEqual((result["added"], result["duplicates"]), (1, 1))
+            self.assertEqual(len(stub.state["items"]), 2)
+
+            # 2) 作品号兜底：短链与 www.douyin.com/video/{id} 是同一个作品
+            kept, dup = stub.state["items"][0], stub.state["items"][1]
+            kept["awemeId"] = "7300000000000000000"
+            dup["awemeId"] = "7300000000000000000"
+            dup["kind"] = kept["kind"]
+            self.assertEqual(
+                duplicate_item_by_aweme("b1", dup["id"], "7300000000000000000", kept["kind"])["id"],
+                kept["id"],
+            )
+            # 不同类型（同一素材既做歌曲又做跳舞）不算重复
+            self.assertIsNone(
+                duplicate_item_by_aweme("b1", dup["id"], "7300000000000000000", "dance")
+            )
+            # 用户明确不要的（跳过/删除）不算重复，可以重新加回来
+            kept["status"] = "skipped"
+            self.assertIsNone(
+                duplicate_item_by_aweme("b1", dup["id"], "7300000000000000000", kept["kind"])
+            )
+            kept["status"] = "completed"
+            self.assertIsNotNone(
+                duplicate_item_by_aweme("b1", dup["id"], "7300000000000000000", kept["kind"])
+            )
+            self.assertIsNone(duplicate_item_by_aweme("b1", dup["id"], "", kept["kind"]))
+
+        # 3) 下载后才发现重复：标成「已跳过」，不当失败，也不拦住后面的条目
+        import asyncio
+
+        run_state = new_batch_state(["https://v.douyin.com/one"], ["https://v.douyin.com/two"])
+        box = {"state": run_state}
+        first_id = run_state["items"][0]["id"]
+
+        class RunStore:
+            def get(self, _batch_id):
+                return box["state"]
+
+            def update(self, _batch_id, **changes):
+                box["state"].update(changes)
+                return box["state"]
+
+            def mutate_item(self, _batch_id, item_id, mutator):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        mutator(item)
+                return box["state"]
+
+            def set_item_milestone(self, _batch_id, item_id, milestone_id, **changes):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        for milestone in item["milestones"]:
+                            if milestone["id"] == milestone_id:
+                                milestone.update(changes)
+                return box["state"]
+
+            def add_item_log(self, _batch_id, item_id, message):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        item.setdefault("logs", []).append({"time": "t", "message": message})
+                return box["state"]
+
+        async def fake_download(_batch_id, item_id):
+            if item_id == first_id:
+                raise DuplicateItem("和第 2 条是同一个抖音作品")
+            return Path("stub.mp4")
+
+        async def fake_prepare(_batch_id, item_id, **_kwargs):
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "awaiting_review"
+
+        with patch.object(batch_worker, "batch_store", RunStore()), patch.object(
+            batch_worker, "_download", fake_download
+        ), patch.object(batch_worker, "_prepare_review", fake_prepare):
+            asyncio.run(batch_worker.run_batch("b1"))
+
+        by_index = {item["index"]: item for item in box["state"]["items"]}
+        self.assertEqual(by_index[1]["status"], "skipped")
+        self.assertIn("同一个抖音作品", by_index[1]["warning"])
+        self.assertEqual(by_index[2]["status"], "awaiting_review")   # 后面的条目照常跑
+        self.assertNotEqual(box["state"]["status"], "failed")
+
     def test_batch_preflight_no_longer_drives_the_codex_cli(self) -> None:
         """预审必须直连模型 + 本地出图；不能再起 codex exec agent 会话烧订阅额度。"""
         source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
