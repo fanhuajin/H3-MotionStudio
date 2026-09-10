@@ -1456,7 +1456,7 @@ body {
 .batch-review-image { position: relative; min-height: 440px; overflow: hidden; display: grid; place-items: center; border: 1px solid #302746; border-radius: 8px; background: #070616; }
 .batch-review-image img { width: 100%; height: 100%; max-height: 600px; object-fit: contain; display: block; }
 .batch-review-label { position: absolute; z-index: 2; top: 10px; left: 10px; display: flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 6px; color: #dcf9fb; background: rgba(7, 7, 24, .82); backdrop-filter: blur(7px); font-size: 10px; }
-.batch-review-copy { min-width: 0; }
+.batch-review-copy { min-width: 0; display: flex; flex-direction: column; }
 .batch-review-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 11px; border-bottom: 1px solid var(--shell-line); }
 .batch-review-title span { color: var(--shell-accent); font-size: 14px; font-weight: 700; }
 .batch-review-title small { color: #7c7493; font-size: 10px; }
@@ -1466,7 +1466,8 @@ body {
 .batch-review-copy label p { margin: 0; color: #eeeaf7; font-size: 12px; line-height: 1.7; }
 .batch-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .batch-tags i, .batch-child-badges i { padding: 4px 7px; border-radius: 4px; color: #84e4ec; background: rgba(55, 216, 230, .08); font-size: 10px; font-style: normal; }
-.batch-review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 11px; }
+/* 确认按钮固定在审核区底部：上面文案多少都不影响它的位置（margin-top:auto 撑到底）。 */
+.batch-review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; padding-top: 14px; }
 .batch-progress-panel, .batch-child-panel, .batch-output-panel { margin-top: 14px; padding: 14px; border: 1px solid var(--shell-line); border-radius: 9px; background: #0a081f; }
 .batch-child-panel { border-color: rgba(55, 216, 230, .25); }
 .batch-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 11px; }
