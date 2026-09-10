@@ -939,7 +939,7 @@ export function App() {
               <span>影动生成</span>
             </a>
           </div>
-          <p className="route-caption">下载 · 生成 · 迁移 · 放大 · 音色 · 歌词</p>
+          <p className="route-caption">批量 · 生成 · 迁移 · 放大 · 音色 · 歌词</p>
 
           {isDouyinRoute ? (
             <>
@@ -953,6 +953,11 @@ export function App() {
           ) : (
             <>
               <p className="sidebar-section-label">创作与管理</p>
+              <a className={isBatchRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
+                <ListChecks />
+                <span>批量制作</span>
+                {isBatchRoute && <i />}
+              </a>
               <a className={isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
                 <MusicNotes weight="fill" />
                 <span>歌曲生成</span>
@@ -962,11 +967,6 @@ export function App() {
                 <PersonSimpleRun />
                 <span>动作迁移</span>
                 {isMigrateRoute && <i />}
-              </a>
-              <a className={isBatchRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
-                <ListChecks />
-                <span>批量制作</span>
-                {isBatchRoute && <i />}
               </a>
               <a className={isUpscaleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/upscale">
                 <MagnifyingGlassPlus />
