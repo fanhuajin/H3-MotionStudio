@@ -15,7 +15,6 @@ from backend.batch_worker import (
     _image_provider,
     default_action_plan,
     new_batch_state,
-    render_covers,
     unique_urls,
 )
 from backend.douyin_preview import _convert_download_sync
@@ -425,16 +424,14 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("：", camera)
         self.assertNotIn("秒：", camera.split("：")[0])
 
-    def test_batch_cover_outputs_have_platform_sizes(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            source = root / "candidate.png"
-            Image.new("RGB", (900, 1200), "#443377").save(source)
-            bilibili, douyin = render_covers(source, "测试封面标题", root / "output")
-            with Image.open(bilibili) as image:
-                self.assertEqual(image.size, (1440, 1080))
-            with Image.open(douyin) as image:
-                self.assertEqual(image.size, (1080, 1440))
+    def test_batch_deliver_no_longer_renders_covers(self) -> None:
+        """双封面改由用户自己在 GPT 聊天里出，交付阶段只留成片与发布文案。"""
+        source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
+        self.assertNotIn("render_covers", source)
+        self.assertNotIn("coverBilibili", source)
+        self.assertNotIn("coverDouyin", source)
+        # 交付仍然要写发布文案
+        self.assertIn("发布文案.txt", source)
 
     def test_elapsed_format_matches_ui(self) -> None:
         self.assertEqual(format_elapsed("2026-09-03T00:00:00+00:00", "2026-09-03T01:02:03+00:00"), "01:02:03")

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from . import batch_ai, batch_image, batch_portrait
 from .batch_store import batch_store
@@ -57,7 +57,7 @@ def item_milestones(kind: str) -> list[dict[str, Any]]:
             {"id": "lyrics", "label": "生成歌词字幕版", "subtitle": "保留无字幕版并烧录发布版", "status": "pending"}
         )
     rows.append(
-        {"id": "deliver", "label": "整理发布文件", "subtitle": "文案、双平台封面与最终视频", "status": "pending"}
+        {"id": "deliver", "label": "整理发布文件", "subtitle": "发布文案与最终视频", "status": "pending"}
     )
     return rows
 
@@ -819,93 +819,6 @@ async def _create_lyrics_job(batch_id: str, item_id: str, source_job: dict[str, 
     return await _watch_child(batch_id, item_id, child["id"], "lyrics")
 
 
-def _fit_font(draw: ImageDraw.ImageDraw, text: str, max_width: int, max_size: int, min_size: int = 28) -> ImageFont.FreeTypeFont:
-    for size in range(max_size, min_size - 1, -2):
-        font = ImageFont.truetype(str(COVER_FONT), size)
-        if draw.textbbox((0, 0), text, font=font)[2] <= max_width:
-            return font
-    return ImageFont.truetype(str(COVER_FONT), min_size)
-
-
-def _cover_background(source: Image.Image, size: tuple[int, int]) -> Image.Image:
-    background = ImageOps.fit(source.convert("RGB"), size, method=Image.Resampling.LANCZOS)
-    background = background.filter(ImageFilter.GaussianBlur(radius=max(size) / 70))
-    background = ImageEnhance.Brightness(background).enhance(0.46)
-    return background
-
-
-def _draw_wrapped(draw: ImageDraw.ImageDraw, text: str, box: tuple[int, int, int, int], font: ImageFont.FreeTypeFont, spacing: int) -> None:
-    x0, y0, x1, _y1 = box
-    lines: list[str] = []
-    current = ""
-    for char in text:
-        candidate = current + char
-        if current and draw.textbbox((0, 0), candidate, font=font)[2] > x1 - x0:
-            lines.append(current)
-            current = char
-        else:
-            current = candidate
-    if current:
-        lines.append(current)
-    stroke = max(2, font.size // 18)
-    for line in lines[:3]:
-        draw.text(
-            (x0, y0),
-            line,
-            font=font,
-            fill="#ffffff",
-            stroke_width=stroke,
-            stroke_fill="#17112f",
-        )
-        y0 += font.size + spacing
-
-
-def render_covers(source_path: Path, headline: str, out_dir: Path) -> tuple[Path, Path]:
-    if not COVER_FONT.is_file():
-        raise RuntimeError(f"封面字体不存在：{COVER_FONT}")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with Image.open(source_path) as opened:
-        source = opened.convert("RGB")
-
-        bilibili = _cover_background(source, (1440, 1080))
-        foreground = ImageOps.contain(source, (810, 1000), method=Image.Resampling.LANCZOS)
-        mask = Image.new("L", foreground.size, 255)
-        bilibili.paste(foreground, (1440 - foreground.width - 42, (1080 - foreground.height) // 2), mask)
-        overlay = Image.new("RGBA", bilibili.size, (0, 0, 0, 0))
-        gradient = Image.new("L", (760, 1080))
-        gd = ImageDraw.Draw(gradient)
-        for x in range(760):
-            gd.line((x, 0, x, 1080), fill=max(0, 230 - round(x / 760 * 210)))
-        overlay.paste((8, 6, 28, 245), (0, 0, 760, 1080), gradient)
-        bilibili = Image.alpha_composite(bilibili.convert("RGBA"), overlay)
-        draw = ImageDraw.Draw(bilibili)
-        title = headline.strip() or "今日作品"
-        font = _fit_font(draw, title[:18], 590, 92, 46)
-        _draw_wrapped(draw, title, (86, 390, 650, 760), font, 18)
-        small = ImageFont.truetype(str(COVER_FONT), 28)
-        draw.text((90, 840), "H3 MOTIONSTUDIO", font=small, fill="#62d8e9")
-        bili_path = out_dir / "B站封面_4比3.png"
-        bilibili.convert("RGB").save(bili_path, quality=96)
-
-        douyin = _cover_background(source, (1080, 1440)).convert("RGBA")
-        foreground = ImageOps.contain(source, (990, 1320), method=Image.Resampling.LANCZOS)
-        fg_x = (1080 - foreground.width) // 2
-        fg_y = max(20, (1440 - foreground.height) // 2 - 35)
-        douyin.paste(foreground, (fg_x, fg_y))
-        shade = Image.new("RGBA", douyin.size, (0, 0, 0, 0))
-        sd = ImageDraw.Draw(shade)
-        for y in range(760, 1440):
-            alpha = round((y - 760) / 680 * 205)
-            sd.line((0, y, 1080, y), fill=(8, 6, 28, alpha))
-        douyin = Image.alpha_composite(douyin, shade)
-        draw = ImageDraw.Draw(douyin)
-        font = _fit_font(draw, title[:18], 870, 88, 46)
-        _draw_wrapped(draw, title, (105, 1030, 975, 1370), font, 15)
-        douyin_path = out_dir / "抖音封面_3比4.png"
-        douyin.convert("RGB").save(douyin_path, quality=96)
-    return bili_path, douyin_path
-
-
 def _copy_file(source: Path, target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
@@ -946,14 +859,7 @@ async def _deliver(
     copy_path = folder / "发布文案.txt"
     copy_path.write_text(copy_text, encoding="utf-8-sig")
     outputs["copy"] = str(copy_path)
-    bili, douyin = await asyncio.to_thread(
-        render_covers,
-        Path(ai["reference_image_path"]),
-        str(ai.get("title") or "今日作品"),
-        folder,
-    )
-    outputs["coverBilibili"] = str(bili)
-    outputs["coverDouyin"] = str(douyin)
+    # 双封面由用户自己在 GPT 聊天里生成，这里不再渲染（2026-09-10 用户要求）。
     outputs["folder"] = str(folder.resolve())
     return outputs
 

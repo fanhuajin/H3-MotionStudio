@@ -602,7 +602,7 @@ async def batch_item_material(batch_id: str, item_id: str, key: str, download: b
 @app.get("/api/batches/{batch_id}/items/{item_id}/output/{key}")
 async def batch_item_output(batch_id: str, item_id: str, key: str, download: bool = Query(False)):
     item = _batch_item_or_404(batch_id, item_id)
-    if key not in {"videoNoLyrics", "videoWithLyrics", "videoFinal", "copy", "coverBilibili", "coverDouyin"}:
+    if key not in {"videoNoLyrics", "videoWithLyrics", "videoFinal", "copy"}:
         raise HTTPException(404, "输出文件不存在")
     raw = (item.get("outputs") or {}).get(key)
     if not raw:

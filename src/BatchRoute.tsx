@@ -469,14 +469,12 @@ export function BatchRoute() {
 
                 {selected.status === "completed" && selected.outputs && (
                   <section className="batch-output-panel">
-                    <div className="batch-panel-title"><span>发布文件已整理</span><small>{selected.warning || "文案、封面和成片均已保存"}</small></div>
+                    <div className="batch-panel-title"><span>发布文件已整理</span><small>{selected.warning || "文案和成片均已保存"}</small></div>
                     <div className="batch-output-grid">
                       {selected.outputs.videoWithLyrics && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoWithLyrics`} target="_blank">有字幕成片</a>}
                       {selected.outputs.videoNoLyrics && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoNoLyrics`} target="_blank">无字幕成片</a>}
                       {selected.outputs.videoFinal && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoFinal`} target="_blank">最终成片</a>}
                       <a href={`/api/batches/${batch.id}/items/${selected.id}/output/copy?download=true`}><Copy />发布文案</a>
-                      <a href={`/api/batches/${batch.id}/items/${selected.id}/output/coverBilibili`} target="_blank">B站 4:3 封面</a>
-                      <a href={`/api/batches/${batch.id}/items/${selected.id}/output/coverDouyin`} target="_blank">抖音 3:4 封面</a>
                     </div>
                     <button className="batch-primary" onClick={openFolder}><FolderOpen />打开文件夹</button>
                   </section>
