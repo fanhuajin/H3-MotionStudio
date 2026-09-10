@@ -1253,6 +1253,60 @@ body {
   .upscale-route { padding: 24px 14px 45px; }
 }
 
+/* ===== RVC 音色转换路由：与二采放大共用页面容器与面板样式 ===== */
+.rvc-route { max-width: 1280px; margin: 0 auto; padding: 42px 30px 34px; }
+.rvc-route .workspace {
+  min-height: 0;
+  grid-template-columns: minmax(360px, 42%) minmax(520px, 58%);
+  overflow: hidden;
+  border: 1px solid var(--shell-line);
+  border-radius: 12px;
+  background: var(--shell-panel);
+}
+.rvc-route .input-panel,
+.rvc-route .execution-panel { padding: 20px 21px 24px; background: #0c0922; }
+.rvc-route .input-panel { border-right-color: var(--shell-line); }
+.rvc-route .pipeline,
+.rvc-route .result-panel,
+.rvc-route .log-panel { border-color: var(--shell-line-strong); background: #0a081e; }
+.rvc-route .pipeline-card { border-color: #302646; background: #120e2b; }
+.rvc-route .primary-action { color: #071116; background: var(--shell-accent); box-shadow: none; }
+.rvc-route .primary-action:not(:disabled):hover { filter: brightness(1.05); }
+.rvc-route .result-button.primary { color: #071116; background: var(--shell-accent); }
+.rvc-route .field-note code {
+  padding: 1px 5px;
+  border: 1px solid #302646;
+  border-radius: 5px;
+  background: #0a081e;
+  color: #cfc8dd;
+  font-size: 11px;
+}
+
+.recent-choice-media { display: flex; flex-wrap: wrap; gap: 6px; }
+.media-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid #302647;
+  border-radius: 8px;
+  background: #0d0a23;
+  color: #9b91ab;
+  font-size: 10px;
+  cursor: pointer;
+}
+.media-chip svg { width: 12px; height: 12px; flex: 0 0 auto; }
+.media-chip:hover { color: #e1dbea; border-color: #4b3a69; }
+.media-chip.selected { color: #071116; background: var(--shell-accent); border-color: var(--shell-accent); }
+
+@media (max-width: 1180px) {
+  .rvc-route .workspace { grid-template-columns: 1fr; }
+  .rvc-route .input-panel { border-right: 0; border-bottom: 1px solid var(--shell-line); }
+}
+@media (max-width: 760px) {
+  .rvc-route { padding: 24px 14px 45px; }
+}
+
 /* ===== 歌词字幕路由 ===== */
 .lyric-search-row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
 .text-input {

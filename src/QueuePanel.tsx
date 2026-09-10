@@ -37,6 +37,9 @@ function kindLabel(job: AppJobSummary) {
     const mode = job.migrateMode === "replacement" ? "人物替换" : "动作迁移";
     return `${ratio} ${mode}`;
   }
+  if (job.kind === "upscale") return "二采放大";
+  if (job.kind === "rvc") return "音色转换";
+  if (job.kind === "lyrics") return "歌词字幕";
   return "影动生成";
 }
 

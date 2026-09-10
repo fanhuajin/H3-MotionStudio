@@ -55,6 +55,16 @@ def upscale_milestones() -> list[dict[str, Any]]:
     ]
 
 
+def rvc_milestones() -> list[dict[str, Any]]:
+    """独立 RVC 音色转换路由里程碑：关闭 ComfyUI → Demucs 分离 → 音色转换 → 重新封装。"""
+    return [
+        {"id": "handoff", "label": "关闭 ComfyUI", "subtitle": "释放内存和显存，切换到 RVC", "status": "pending"},
+        {"id": "stems", "label": "分离人声与伴奏", "subtitle": "Demucs 提取演唱人声", "status": "pending"},
+        {"id": "voice", "label": f"转换为 {RVC_MODEL.stem} 音色", "subtitle": "RVC 模型执行音色转换", "status": "pending"},
+        {"id": "mux", "label": "替换成片音频", "subtitle": "重新混音并封装最终 MP4", "status": "pending"},
+    ]
+
+
 def lyrics_milestones() -> list[dict[str, Any]]:
     """歌词字幕路由（多语言）：提取 → Demucs 分离人声 → 自动语种识别实测
     逐句时间 → 与歌词文本对齐 → 剪映手书风格烧录。不经过 ComfyUI/RVC。"""

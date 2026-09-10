@@ -1741,6 +1741,83 @@ async def run_upscale_job(job_id: str) -> None:
                 store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
 
 
+async def run_rvc_job(job_id: str) -> None:
+    """独立 RVC 音色转换任务：关闭 ComfyUI → Demucs 分离 → 音色转换 → 重新封装。
+
+    输入是任意带人声的成片（上传或引用最近任务成片），输出标记为最终版；
+    与其它任务共用 pipeline_lock（单任务互斥），不经过 ComfyUI 生成。
+    """
+    async with pipeline_lock:
+        state = store.get(job_id)
+        if not state:
+            return
+        if is_job_cancelled(job_id):
+            await finish_cancelled(job_id)
+            return
+        store.update(
+            job_id,
+            status="running",
+            stage="handoff",
+            errorSummary=None,
+            errorDetail=None,
+            startedAt=now_iso(),
+            finishedAt=None,
+        )
+        try:
+            source = Path(state.get("sourcePath") or "")
+            if not source.is_file():
+                raise PipelineError("找不到待转换的视频", str(source))
+            if not await asyncio.to_thread(media_has_audio, source):
+                raise PipelineError(
+                    "视频没有音轨，无法做音色转换",
+                    "RVC 需要分离演唱人声：请换一个带歌声/人声的视频，或先用歌曲生成路由产出成片。",
+                )
+            store.add_log(job_id, f"待转换成片：{source.name} · 目标音色 {RVC_MODEL.stem}")
+            # RVC 与 ComfyUI 不能同时占用显存：先彻底关闭 ComfyUI（handoff 里程碑由
+            # resources.stop_comfy 自行推进），再启动便携音色转换器。
+            await resources.stop_comfy(job_id)
+            store.set_milestone(job_id, "handoff", status="completed", progress=100, currentNode=None)
+            final = await run_rvc(job_id, source)
+            final = await asyncio.to_thread(mark_final_version, final)
+            store.update(
+                job_id,
+                status="completed",
+                stage="completed",
+                finalOutput=str(final),
+                finalReady=True,
+                currentNodeId=None,
+                currentNodeTitle=None,
+                progress=100,
+                progressValue=None,
+                progressMax=None,
+                output=await media_metadata(final),
+                finishedAt=now_iso(),
+            )
+            store.add_log(job_id, f"音色转换成片已保存并标记：{final.name}")
+        except Exception as error:
+            if is_job_cancelled(job_id):
+                await finish_cancelled(job_id)
+                return
+            if isinstance(error, PipelineError):
+                summary, detail = error.summary, error.detail
+            else:
+                summary, detail = "音色转换执行失败", repr(error)
+            store.add_log(job_id, f"错误：{summary}")
+            failed_state = store.get(job_id) or {}
+            running = next(
+                (item["id"] for item in failed_state.get("milestones", []) if item.get("status") == "running"),
+                None,
+            )
+            if running:
+                store.set_milestone(job_id, running, status="error")
+            store.update(job_id, status="failed", stage="failed", errorSummary=summary, errorDetail=detail, finishedAt=now_iso())
+            try:
+                if await comfy_health():
+                    await resources.stop_comfy(job_id)
+            except Exception as stop_error:
+                store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
+
+
 async def retry_voice(job_id: str) -> None:
     async with pipeline_lock:
         state = store.get(job_id)

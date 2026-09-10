@@ -413,6 +413,16 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("currentSegment", stub.state)
         self.assertNotIn("estimatedSegments", stub.state)
 
+    def test_rvc_route_milestones_and_endpoint(self) -> None:
+        """独立音色转换路由：里程碑与提交接口都在。"""
+        from backend.app import app
+        from backend.store import rvc_milestones
+        self.assertEqual(
+            [m["id"] for m in rvc_milestones()],
+            ["handoff", "stems", "voice", "mux"],
+        )
+        self.assertIn("/api/jobs/rvc", {getattr(route, "path", "") for route in app.routes})
+
     def test_upscale_milestones_and_target_1080p(self) -> None:
         from backend.app import _upscale_target
         from backend.store import upscale_milestones

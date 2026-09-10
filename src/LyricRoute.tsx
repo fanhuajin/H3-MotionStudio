@@ -97,6 +97,7 @@ function kindLabel(kind?: string) {
   if (kind === "lyrics") return "歌词字幕";
   if (kind === "migrate") return "动作迁移";
   if (kind === "upscale") return "二采放大";
+  if (kind === "rvc") return "音色转换";
   return "歌曲生成";
 }
 

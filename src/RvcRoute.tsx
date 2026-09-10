@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowsClockwise,
   CaretDown,
@@ -11,7 +11,7 @@ import {
   FilmSlate,
   Graph,
   Info,
-  MagnifyingGlassPlus,
+  MicrophoneStage,
   Play,
   SpinnerGap,
   UploadSimple,
@@ -22,21 +22,28 @@ import { QueuePanel } from "./QueuePanel";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { JobState, Milestone, MilestoneStatus } from "./types";
 
+type RecentMedia = { key: string; label: string; url: string };
+
 type RecentItem = {
   id: string;
   kind: string;
   status: string;
   title: string;
   createdAt?: string;
-  media: { key: string; label: string; url: string }[];
+  media: RecentMedia[];
 };
 
 type RecentPayload = { jobs: RecentItem[] };
 
 const SKELETON_MILESTONES: Milestone[] = [
-  { id: "upscale", label: "RealESRGAN 逐帧放大", subtitle: "8 帧分批超采样", status: "pending" },
-  { id: "hd", label: "收 1080p 档输出", subtitle: "缩放并封装输出视频", status: "pending" },
+  { id: "handoff", label: "关闭 ComfyUI", subtitle: "释放内存和显存，切换到 RVC", status: "pending" },
+  { id: "stems", label: "分离人声与伴奏", subtitle: "Demucs 提取演唱人声", status: "pending" },
+  { id: "voice", label: "转换 yueshao_v1 音色", subtitle: "RVC 模型执行音色转换", status: "pending" },
+  { id: "mux", label: "替换成片音频", subtitle: "重新混音并封装最终 MP4", status: "pending" },
 ];
+
+// RVC 子进程里程碑：用与歌曲生成一致的浅色行样式
+const RVC_ROW_IDS = new Set(["stems", "voice", "mux"]);
 
 function formatBytes(value?: number | null) {
   if (!value) return "--";
@@ -77,11 +84,6 @@ function kindLabel(kind?: string) {
   return "歌曲生成";
 }
 
-/** 二采放大固定 4×；旧任务（历史 2× 成片）仍按其原始倍数展示。 */
-function multiplierLabel(value?: string | null) {
-  return value === "2x" ? "2×" : "4×";
-}
-
 function MilestoneIcon({ status }: { status: MilestoneStatus }) {
   if (status === "completed") return <Check weight="bold" />;
   if (status === "running") return <Play weight="fill" />;
@@ -100,7 +102,7 @@ function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number;
       : step.elapsed || "--:--";
 
   return (
-    <div className={`pipeline-row state-${step.status} comfy-row`}>
+    <div className={`pipeline-row state-${step.status} ${RVC_ROW_IDS.has(step.id) ? "rvc-row" : "comfy-row"}`}>
       <div className="rail"><span className="rail-icon"><MilestoneIcon status={step.status} /></span></div>
       <div className="pipeline-card">
         <span className="step-number">{String(index + 1).padStart(2, "0")}</span>
@@ -123,7 +125,7 @@ function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number;
   );
 }
 
-export function UpScaleRoute() {
+export function RvcRoute() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -147,13 +149,19 @@ export function UpScaleRoute() {
       const response = await fetch("/api/jobs/recent", { cache: "no-store" });
       if (!response.ok) return;
       const payload = await response.json() as RecentPayload;
-      // 历史任务一律放大「最终成片」，不再让用户选原版/迁移等变体
-      const jobs = (payload.jobs || []).filter((item) => item.media.some((entry) => entry.key === "final"));
+      // 只列出带成片的任务；默认优先选「原版成片」（未被 RVC 转换过的原始人声）
+      const jobs = (payload.jobs || []).filter((item) => item.media.length > 0 && item.kind !== "rvc");
       setRecent(jobs);
       setRecentPick((current) => {
-        if (current && jobs.some((item) => item.id === current.jobId)) return current;
-        const first = jobs[0]?.media.find((entry) => entry.key === "final");
-        return first ? { jobId: jobs[0].id, key: "final", label: first.label } : null;
+        if (current && jobs.some((item) => item.id === current.jobId && item.media.some((entry) => entry.key === current.key))) {
+          return current;
+        }
+        for (const item of jobs) {
+          const preferred = item.media.find((entry) => entry.key === "original");
+          if (preferred) return { jobId: item.id, key: preferred.key, label: preferred.label };
+        }
+        const first = jobs[0]?.media[0];
+        return first ? { jobId: jobs[0].id, key: first.key, label: first.label } : null;
       });
     } catch {
       // 忽略：服务未就绪
@@ -176,7 +184,7 @@ export function UpScaleRoute() {
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      fetch("/api/jobs/latest?kind=upscale", { cache: "no-store" })
+      fetch("/api/jobs/latest?kind=rvc", { cache: "no-store" })
         .then((response) => response.status === 204 ? null : response.json()),
     ]).then(([latest]) => {
       if (cancelled) return;
@@ -219,12 +227,12 @@ export function UpScaleRoute() {
 
   const submit = async () => {
     if (mode === "upload" && !file) {
-      setLocalError("请先选择要放大的视频。");
+      setLocalError("请先选择要做音色转换的视频。");
       fileInputRef.current?.click();
       return;
     }
     if (mode === "recent" && !recentPick) {
-      setLocalError("暂无可放大的历史任务成片。");
+      setLocalError("暂无可转换的历史任务成片。");
       return;
     }
     setSubmitting(true);
@@ -236,7 +244,7 @@ export function UpScaleRoute() {
       form.append("source_key", recentPick.key);
     }
     try {
-      const response = await fetch("/api/jobs/upscale", { method: "POST", body: form });
+      const response = await fetch("/api/jobs/rvc", { method: "POST", body: form });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || "任务创建失败");
       setJob(payload);
@@ -248,24 +256,28 @@ export function UpScaleRoute() {
     }
   };
 
-  const completionTime = useMemoSafe(job);
+  const completionTime = job?.output?.completedAt
+    ? new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      }).format(new Date(job.output.completedAt))
+    : "--";
 
   return (
-    <div className="upscale-route">
+    <div className="rvc-route">
       <header className="route-hero">
         <div>
-          <p className="route-eyebrow"><span /> H3 · UPSCALE</p>
-          <h1>二采放大，<em>统一 4×。</em></h1>
-          <p className="route-description">对任意视频做 RealESRGAN 4× 放大，并统一收到 1080p 标准档（4:3→1440×1080、9:16→1080×1920、16:9→1920×1080）。</p>
+          <p className="route-eyebrow"><span /> H3 · RVC VOICE</p>
+          <h1>音色转换，<em>单独一步。</em></h1>
+          <p className="route-description">上传任意带人声的视频或挑选最近成片，先完全关闭 ComfyUI，再用 Demucs 分离人声并转换成默认音色 yueshao_v1，最后重新封装成最终成片。</p>
         </div>
         <span className={`connection ${job?.status === "running" ? "connected" : "idle"}`}>
           <span className="connection-dot" />
-          {job?.status === "running" ? "放大运行中" : "资源空闲，按需启动"}
+          {job?.status === "running" ? "音色转换运行中" : "资源空闲，按需启动"}
         </span>
       </header>
 
       <main className="workspace">
-        <section className="input-panel" aria-label="二采放大设置">
+        <section className="input-panel" aria-label="音色转换设置">
           <div className="field-block">
             <div className="field-heading"><h2><span>1.</span> 输入视频</h2></div>
             <div className="ratio-cards" role="radiogroup" aria-label="输入来源">
@@ -273,7 +285,7 @@ export function UpScaleRoute() {
                 <strong>上传本地视频</strong><span>MP4 / MOV / MKV / WebM</span>
               </button>
               <button type="button" role="radio" aria-checked={mode === "recent"} className={mode === "recent" ? "selected" : ""} onClick={() => setMode("recent")}>
-                <strong>从最近任务选</strong><span>直接放大该任务的最终成片</span>
+                <strong>从最近任务选</strong><span>原版成片 / 最终成片</span>
               </button>
             </div>
 
@@ -295,34 +307,43 @@ export function UpScaleRoute() {
             ) : (
               <div className="recent-pick">
                 {recent.length === 0 ? (
-                  <p className="queue-empty">暂无可放大的最终成片（先完成一单歌曲/迁移任务）</p>
+                  <p className="queue-empty">暂无可转换的历史成片（先完成一单歌曲/迁移任务）</p>
                 ) : (
-                  recent.slice(0, 6).map((item) => {
-                    const media = item.media.find((entry) => entry.key === "final");
-                    const selected = recentPick?.jobId === item.id;
-                    return (
-                      <button
-                        type="button"
-                        role="radio"
-                        aria-checked={selected}
-                        className={`recent-choice ${selected ? "selected" : ""}`}
-                        key={item.id}
-                        onClick={() => media && setRecentPick({ jobId: item.id, key: "final", label: media.label })}
-                      >
-                        <span className="recent-choice-head">
-                          <strong>{kindLabel(item.kind)} · {item.title}</strong>
-                          <em>{item.status === "completed" ? "已完成" : item.status}</em>
-                        </span>
-                        <span className="recent-choice-target"><MagnifyingGlassPlus weight="bold" /> 放大其{media?.label || "最终成片"}</span>
-                      </button>
-                    );
-                  })
+                  recent.slice(0, 6).map((item) => (
+                    <div className={`recent-choice ${recentPick?.jobId === item.id ? "selected" : ""}`} key={item.id}>
+                      <span className="recent-choice-head">
+                        <strong>{kindLabel(item.kind)} · {item.title}</strong>
+                        <em>{item.status === "completed" ? "已完成" : item.status}</em>
+                      </span>
+                      <span className="recent-choice-media">
+                        {item.media.map((entry) => {
+                          const selected = recentPick?.jobId === item.id && recentPick.key === entry.key;
+                          return (
+                            <button
+                              type="button"
+                              key={entry.key}
+                              className={`media-chip ${selected ? "selected" : ""}`}
+                              aria-pressed={selected}
+                              onClick={() => setRecentPick({ jobId: item.id, key: entry.key, label: entry.label })}
+                            >
+                              <MicrophoneStage weight="bold" /> {entry.label}
+                            </button>
+                          );
+                        })}
+                      </span>
+                    </div>
+                  ))
                 )}
               </div>
             )}
             {mode === "recent" && recentPick && (
-              <p className="field-note">将放大任务 {recentPick.jobId.slice(0, 8)} 的最终成片（{kindLabel(recent.find((item) => item.id === recentPick.jobId)?.kind)}）</p>
+              <p className="field-note">将转换任务 {recentPick.jobId.slice(0, 8)} 的{recentPick.label}（{kindLabel(recent.find((item) => item.id === recentPick.jobId)?.kind)}）</p>
             )}
+          </div>
+
+          <div className="field-block">
+            <div className="field-heading"><h2><span>2.</span> 目标音色</h2></div>
+            <p className="field-note">固定使用默认音色 <strong>yueshao_v1</strong>（v2 / 40k / RMVPE，检索索引 yueshao_v1.index）；执行前会先完全关闭 ComfyUI，避免与生成链路抢占显存。</p>
           </div>
 
           {(localError || job?.errorSummary) && (
@@ -334,10 +355,10 @@ export function UpScaleRoute() {
           )}
 
           <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
-            {submitting || jobActive ? <SpinnerGap className="spin" /> : <MagnifyingGlassPlus weight="fill" />}
-            {submitting ? "正在创建任务…" : jobActive ? "放大任务运行中" : "开始 4× 放大"}
+            {submitting || jobActive ? <SpinnerGap className="spin" /> : <MicrophoneStage weight="fill" />}
+            {submitting ? "正在创建任务…" : jobActive ? "音色转换运行中" : "开始音色转换"}
           </button>
-          <p className="field-note">放大倍数固定 4×（RealESRGAN_x4plus），不再提供 2× 选项。</p>
+          <p className="field-note">输出保留原视频画面与帧率，只替换人声音色；最终成片标记为 <code>最终版.mp4</code>。</p>
         </section>
 
         <section className="execution-panel" aria-label="执行进度与结果">
@@ -345,7 +366,7 @@ export function UpScaleRoute() {
             <Graph />
             <div>
               <h2>执行流程</h2>
-              <span>{jobActive ? "节点级运行状态" : "提交后展示实际进度"}</span>
+              <span>{jobActive ? "RVC 子进程阶段状态" : "提交后展示实际进度"}</span>
             </div>
             {job && (
               <span className="queue-anchor">
@@ -353,16 +374,6 @@ export function UpScaleRoute() {
                   任务 {job.id.slice(0, 8)}
                 </button>
                 <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} />
-              </span>
-            )}
-            {job?.status === "running" && job?.stage === "upscaling" && job.estimatedSegments != null && (
-              <span
-                className={`job-segments ${job.currentSegment ? "live" : ""}`}
-                title={`放大分批执行：共 ${job.estimatedSegments} 段（每段 8 帧超采样，8GB 显存安全分批）${job.sourceFps ? ` · 源视频 ${job.sourceFps}fps` : ""}`}
-              >
-                {job.currentSegment
-                  ? <>放大 {job.currentSegment}/{job.estimatedSegments}<i><b style={{ width: `${Math.min(100, (job.currentSegment / job.estimatedSegments) * 100)}%` }} /></i></>
-                  : <>预计 {job.estimatedSegments} 段放大</>}
               </span>
             )}
             {jobActive && totalElapsedMs != null && (
@@ -374,22 +385,28 @@ export function UpScaleRoute() {
             {milestones.map((step, index) => (
               <div className="pipeline-step" key={step.id}>
                 <PipelineRow step={step} index={index} liveNow={jobActive ? tickNow : null} />
+                {step.id === "handoff" && (
+                  <div className={`handoff-banner ${step.status === "completed" ? "ready" : ""}`}>
+                    <ArrowsClockwise weight="bold" />
+                    <span>{step.status === "completed" ? "资源已切换到 RVC 流程" : "ComfyUI 关闭后才会启动 RVC"}</span>
+                  </div>
+                )}
               </div>
             ))}
           </div>
 
           {job?.finalReady && (
             <section className="result-panel">
-              <div className="result-heading"><h3>放大结果</h3><span><Check weight="bold" /> 最终成片已完成</span></div>
+              <div className="result-heading"><h3>转换结果</h3><span><Check weight="bold" /> 最终成片已完成</span></div>
               <div className="result-grid">
                 <div className="result-video">
                   <video src={`/api/jobs/${job.id}/media/final#t=0.001`} controls preload="auto" />
                 </div>
                 <div className="result-details">
                   <div className="result-title">
-                    <FilmSlate />
+                    <MicrophoneStage />
                     <div>
-                      <strong>最终成片 · {multiplierLabel(job.multiplier)} 放大</strong>
+                      <strong>最终成片 · {job.voiceModel || "yueshao_v1"} 音色</strong>
                       <span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ""}</span>
                     </div>
                   </div>
@@ -400,7 +417,7 @@ export function UpScaleRoute() {
                     {totalElapsedMs != null && <div className="total-elapsed"><dt>任务总耗时</dt><dd>{formatElapsedMs(totalElapsedMs)}</dd></div>}
                   </dl>
                   <a className="result-button primary" href={`/api/jobs/${job.id}/media/final?download=1`}><DownloadSimple /> 下载最终成片</a>
-                  <a className="result-button" href={`/api/jobs/${job.id}/media/final`} target="_blank" rel="noreferrer"><Eye /> 在线查看</a>
+                  <a className="result-button" href={`/api/jobs/${job.id}/media/original`} target="_blank" rel="noreferrer"><Eye /> 查看原版</a>
                 </div>
               </div>
             </section>
@@ -414,7 +431,7 @@ export function UpScaleRoute() {
               <div className="log-content">
                 {job?.logs?.length ? job.logs.map((entry, index) => (
                   <div className="log-line" key={`${entry.time}-${index}`}><time>{formatClock(entry.time)}</time><span>{entry.message}</span></div>
-                )) : <div className="empty-log"><Info /> 运行时会显示当前 ComfyUI 节点与错误详情。</div>}
+                )) : <div className="empty-log"><Info /> 运行时会显示 RVC 各阶段输出与错误详情。</div>}
                 {job?.errorDetail && <pre>{job.errorDetail}</pre>}
               </div>
             )}
@@ -423,12 +440,4 @@ export function UpScaleRoute() {
       </main>
     </div>
   );
-}
-
-function useMemoSafe(job: JobState | null): string {
-  return useMemo(() => {
-    const value = job?.output?.completedAt;
-    if (!value) return "--";
-    return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
-  }, [job?.output?.completedAt]);
 }

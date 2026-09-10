@@ -18,7 +18,11 @@ const STAGE_TEXT: Record<string, string> = {
 };
 
 function jobBrief(kind?: string) {
-  return kind === "migrate" ? "动作迁移" : "影动生成";
+  if (kind === "migrate") return "动作迁移";
+  if (kind === "upscale") return "二采放大";
+  if (kind === "rvc") return "音色转换";
+  if (kind === "lyrics") return "歌词字幕";
+  return "影动生成";
 }
 
 function faviconSvg(color: string, symbol: "dot" | "check" | "cross" | "pulse"): string {

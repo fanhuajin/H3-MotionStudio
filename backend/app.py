@@ -48,6 +48,7 @@ from .pipeline import (
     retry_voice,
     run_migrate_pipeline,
     run_pipeline,
+    run_rvc_job,
     run_upscale_job,
     upscale_target_size,
 )
@@ -69,7 +70,15 @@ from .settings import (
     required_paths,
     singing_canvas_params,
 )
-from .store import initial_milestones, lyrics_milestones, migrate_milestones, now_iso, store, upscale_milestones
+from .store import (
+    initial_milestones,
+    lyrics_milestones,
+    migrate_milestones,
+    now_iso,
+    rvc_milestones,
+    store,
+    upscale_milestones,
+)
 from .workflows import load_workflow, node_by_id
 
 
@@ -663,6 +672,100 @@ async def create_upscale_job(
     }
     store.create(state)
     spawn(run_upscale_job(job_id))
+    return state
+
+
+# ---------------------------------------------------------------------------
+# 独立 RVC 音色转换：上传/引用成片 → 关闭 ComfyUI → Demucs 分离 → 音色转换 → 最终版
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/jobs/rvc")
+async def create_rvc_job(
+    video: UploadFile | None = File(None),
+    source_job_id: str = Form(""),
+    source_key: str = Form("original"),
+):
+    """独立 RVC 音色转换：上传视频或引用最近任务成片，转换为默认音色后输出最终版。"""
+    active = store.active()
+    if active:
+        raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
+    if video is None and not source_job_id:
+        raise HTTPException(400, "请上传视频或选择最近任务成片")
+
+    COMFY_INPUT.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex
+    target = COMFY_INPUT / f"motionstudio_{job_id}_rvc_src.mp4"
+
+    source_name_text = ""
+    if video is not None and video.filename:
+        extension = Path(video.filename).suffix.lower()
+        if extension not in VIDEO_UPLOAD_SUFFIXES:
+            raise HTTPException(400, "只支持 MP4、MOV、MKV 或 WebM 视频")
+        target = COMFY_INPUT / f"motionstudio_{job_id}_rvc_src{extension}"
+        try:
+            with target.open("wb") as destination:
+                while chunk := await video.read(1024 * 1024):
+                    destination.write(chunk)
+        finally:
+            await video.close()
+        source_name_text = video.filename
+    else:
+        source_state = store.get(source_job_id)
+        field = MEDIA_FIELD_BY_KEY.get(source_key)
+        source_path = Path(source_state.get(field) or "") if source_state and field else Path()
+        if not source_state or not source_path.is_file():
+            raise HTTPException(400, "所选任务的成片不存在，请重新选择")
+        target = COMFY_INPUT / f"motionstudio_{job_id}_rvc_src{source_path.suffix.lower() or '.mp4'}"
+        await asyncio.to_thread(shutil.copy2, source_path, target)
+        source_name_text = f"{source_state['id'][:8]} {source_key}"
+
+    metadata = await media_metadata(target)
+    created_at = now_iso()
+    state = {
+        "id": job_id,
+        "kind": "rvc",
+        "voiceModel": RVC_MODEL.stem,
+        "status": "queued",
+        "stage": "upload",
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "sourceName": source_name_text,
+        "sourceSize": target.stat().st_size,
+        "sourceDuration": metadata.get("duration"),
+        "sourceFps": metadata.get("fps"),
+        "sourceInputName": target.name,
+        "sourcePath": str(target.resolve()),
+        "currentNodeId": None,
+        "currentNodeTitle": "等待启动音色转换",
+        "progress": 0,
+        "progressValue": None,
+        "progressMax": None,
+        "milestones": rvc_milestones(),
+        "logs": [{
+            "time": created_at,
+            "message": (
+                f"已接收待转换成片：{source_name_text} · {metadata.get('width')}×{metadata.get('height')}"
+                f" · 目标音色 {RVC_MODEL.stem}（先关闭 ComfyUI 再执行 Demucs 分离与转换）"
+            ),
+        }],
+        "errorSummary": None,
+        "errorDetail": None,
+        "originalReady": True,
+        "cleanReady": False,
+        "draftReady": False,
+        "enhancedReady": False,
+        "finalReady": False,
+        "originalOutput": str(target.resolve()),
+        "cleanOutput": None,
+        "draftOutput": None,
+        "enhancedOutput": None,
+        "finalOutput": None,
+        "output": None,
+        "promptIds": {},
+    }
+    store.create(state)
+    spawn(run_rvc_job(job_id))
     return state
 
 
@@ -1337,6 +1440,10 @@ if dist_dir.is_dir():
 
     @app.get("/upscale", include_in_schema=False)
     async def upscale_frontend():
+        return FileResponse(dist_dir / "index.html")
+
+    @app.get("/rvc", include_in_schema=False)
+    async def rvc_frontend():
         return FileResponse(dist_dir / "index.html")
 
     @app.get("/lyrics", include_in_schema=False)
