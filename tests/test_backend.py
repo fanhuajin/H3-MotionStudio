@@ -340,6 +340,26 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertEqual(fallback["tags"], ["a", "b", "c", "d", "e"])
 
+    def test_batch_prepares_every_item_before_waiting_for_review(self) -> None:
+        """先整批备料再逐条审核：`awaiting_review` 不能被当成可跑任务，否则第一条就卡住整批。"""
+        from backend.batch_worker import _next_work
+
+        state = {
+            "items": [
+                {"id": "a", "status": "awaiting_review"},
+                {"id": "b", "status": "pending"},
+                {"id": "c", "status": "confirmed"},
+            ]
+        }
+        self.assertEqual(_next_work(state)["id"], "b")      # 还有没备料的 → 继续备料
+        state["items"][1]["status"] = "awaiting_review"
+        self.assertEqual(_next_work(state)["id"], "c")      # 备料跑完 → 才轮到出片
+        state["items"][2]["status"] = "completed"
+        self.assertIsNone(_next_work(state))                # 都在等用户 → 无事可做
+        # revising（按审核意见重做）也要排进备料阶段
+        state["items"][0]["status"] = "revising"
+        self.assertEqual(_next_work(state)["id"], "a")
+
     def test_batch_reuse_previous_analysis_only_for_image_mode(self) -> None:
         """「只调图片」不得重跑模型：否则文案和动作/运镜会被一起改写。"""
         from backend.batch_worker import reuse_previous_analysis

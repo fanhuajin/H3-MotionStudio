@@ -606,15 +606,14 @@ async def _prepare_review_work(
     )
     batch_store.set_item_milestone(batch_id, item_id, "prepare", status="completed", progress=100)
     batch_store.set_item_milestone(batch_id, item_id, "review", status="running")
-    batch_store.add_item_log(batch_id, item_id, "候选图片和发布文案已生成，等待你确认。")
-    batch_store.update(
-        batch_id,
-        status="awaiting_review",
-        stage="review",
-        runnerActive=False,
-        currentItemId=item_id,
-        notice="请查看当前条目的图片与发布文案；确认后才会开始生成视频。",
-    )
+    if result.get("reference_image_path"):
+        batch_store.add_item_log(batch_id, item_id, "候选图与发布文案已就绪，等待你确认出片。")
+    else:
+        batch_store.add_item_log(
+            batch_id, item_id, "出图素材已备齐，等待你上传 GPT 生成的图片后再确认出片。"
+        )
+    # 注意：这里**不**把整个批次置为 awaiting_review，也不停 runner ——
+    # 用户要求先整批备料，所以要让 run_batch 继续跑下一条的备料。
 
 
 async def _wait_for_free_pipeline(batch_id: str, item_id: str) -> None:
@@ -981,10 +980,17 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
     batch_store.add_item_log(batch_id, item_id, f"发布文件已整理：{outputs['folder']}")
 
 
-def _first_actionable(state: dict[str, Any]) -> dict[str, Any] | None:
-    for item in state.get("items") or []:
-        if item.get("status") not in {"completed", "skipped", "deleted"}:
-            return item
+def _next_work(state: dict[str, Any]) -> dict[str, Any] | None:
+    """下一个需要跑的任务：先把整批备料（pending / revising）跑完，再逐条出片（confirmed）。
+
+    `awaiting_review` 是在等用户上传图片并确认，**不算可跑任务** —— 否则整批备料会被
+    第一条的审核点卡住。用户明确要求「先整批备料，再逐条审核出片」。
+    """
+    items = state.get("items") or []
+    for statuses in ({"pending", "revising"}, {"confirmed"}):
+        for item in items:
+            if item.get("status") in statuses:
+                return item
     return None
 
 
@@ -1012,8 +1018,22 @@ async def run_batch(batch_id: str) -> None:
             if state.get("pauseRequested") or state.get("status") == "paused":
                 batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
                 return
-            item = _first_actionable(state)
+            item = _next_work(state)
             if item is None:
+                waiting = [
+                    row for row in state.get("items") or [] if row.get("status") == "awaiting_review"
+                ]
+                if waiting:
+                    # 整批素材已备齐，停下来等用户逐条上传图片 + 确认出片
+                    batch_store.update(
+                        batch_id,
+                        status="awaiting_review",
+                        stage="review",
+                        runnerActive=False,
+                        currentItemId=state.get("currentItemId") or waiting[0]["id"],
+                        notice=f"整批素材已备齐（{len(waiting)} 条待审核）。请逐条上传图片并确认出片。",
+                    )
+                    return
                 warnings = any(row.get("warning") for row in state.get("items") or [])
                 batch_store.update(
                     batch_id,
@@ -1026,11 +1046,16 @@ async def run_batch(batch_id: str) -> None:
                     notice="全部条目已完成。" + (" 部分歌词字幕需要稍后重试。" if warnings else ""),
                 )
                 return
+            preparing = item.get("status") in {"pending", "revising"}
             batch_store.update(
                 batch_id,
                 currentItemId=item["id"],
                 currentIndex=item["index"],
-                notice=f"正在处理第 {item['index']} / {state['total']} 条。",
+                notice=(
+                    f"正在备料第 {item['index']} / {state['total']} 条。"
+                    if preparing
+                    else f"正在出片第 {item['index']} / {state['total']} 条。"
+                ),
             )
             try:
                 if item.get("skipRequested"):
@@ -1039,9 +1064,6 @@ async def run_batch(batch_id: str) -> None:
                         if milestone.get("status") == "pending":
                             batch_store.set_item_milestone(batch_id, item["id"], milestone["id"], status="skipped")
                     continue
-                if item.get("status") == "awaiting_review":
-                    batch_store.update(batch_id, status="awaiting_review", stage="review", runnerActive=False)
-                    return
                 if item.get("status") == "confirmed":
                     await _process_confirmed(batch_id, item["id"])
                     continue
@@ -1052,7 +1074,7 @@ async def run_batch(batch_id: str) -> None:
                 feedback = str(refreshed.get("revisionFeedback") or "")
                 mode = str(refreshed.get("revisionMode") or "both")
                 await _prepare_review(batch_id, item["id"], feedback=feedback, mode=mode)
-                return
+                continue
             except asyncio.CancelledError:
                 current = _item(batch_id, item["id"])
                 deleted = bool(current.get("deleteRequested"))
