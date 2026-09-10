@@ -258,9 +258,8 @@ export function BatchRoute() {
       const state = await response.json();
       setBatch(state);
       if (!append) setSelectedId(state.currentItemId);
-      // 已提交的链接框清空，方便接着粘下一批
-      if (singingUrls.length) setSinging("");
-      if (danceUrls.length) setDance("");
+      // 输入框内容保留：重复链接后端会自动过滤（notice 里写明跳过了几条），
+      // 用户想接着补链接或核对粘贴内容都不用重新粘一遍。
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -436,7 +435,7 @@ export function BatchRoute() {
           </label>
         </div>
         <div className="batch-input-actions">
-          <p><ListChecks /> 只入队、不自动开跑：粘好链接点「加入队列」，确认无误后再点「启动」。</p>
+          <p><ListChecks /> 只入队、不自动开跑：粘好链接点「加入队列」，确认无误后再点「启动」。重复链接会自动跳过，输入框内容会保留。</p>
           <button className="batch-primary" disabled={!canStart || !loaded || busyAction === "start"} onClick={start} title={canAppend ? "追加到当前批次队尾（不会自动开跑）" : undefined}>
             {busyAction === "start" ? <SpinnerGap className="spin" /> : <Plus weight="bold" />}
             加入队列（{splitUrls(singing).length + splitUrls(dance).length} 条）

@@ -487,6 +487,45 @@ class WorkflowPreparationTests(unittest.TestCase):
             with self.assertRaises(app_module.HTTPException):
                 asyncio.run(app_module.start_batch("b1"))
 
+    def test_deleted_items_do_not_take_numbers(self) -> None:
+        """删掉的条目不占号：队列里剩几条就是第 1..N 条（用户只贴了 2 个链接却看到「第 3 条」）。"""
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(
+                    ["https://v.douyin.com/a", "https://v.douyin.com/b"], ["https://v.douyin.com/c"]
+                )
+                self.assertEqual([item["index"] for item in state["items"]], [1, 2, 3])
+                store.create(state)
+
+                # 删掉前两条 → 剩下那条变成「第 1 条」，而不是继续叫第 3 条
+                for item in state["items"][:2]:
+                    store.mutate_item(
+                        state["id"], item["id"], lambda row: row.update(status="deleted")
+                    )
+                after = store.get(state["id"])
+                visible = [item for item in after["items"] if item["status"] != "deleted"]
+                self.assertEqual([item["index"] for item in visible], [1])
+                self.assertEqual(sorted(item["index"] for item in after["items"]), [1, 2, 3])
+
+                # 再追加一条：接着可见队列排（第 2 条），不跟已删除的撞号
+                with patch.object(batch_worker, "batch_store", store):
+                    result = batch_worker.append_batch_items(
+                        state["id"], ["https://v.douyin.com/d"], []
+                    )
+                items = result["state"]["items"]
+                visible = [item for item in items if item["status"] != "deleted"]
+                self.assertEqual([item["index"] for item in visible], [1, 2])
+                self.assertEqual(sorted(item["index"] for item in items), [1, 2, 3, 4])
+            finally:
+                batch_store_module.DB_PATH = original
+
     def test_comfy_stop_endpoint_and_jobless_shutdown(self) -> None:
         """手动关闭 ComfyUI：接口在，且交接用的关闭逻辑能在没有 job 的情况下调用。"""
         import inspect

@@ -27,6 +27,26 @@ class BatchStore:
         connection.row_factory = sqlite3.Row
         return connection
 
+    @staticmethod
+    def _renumber(state: dict[str, Any]) -> None:
+        """把**未删除**的条目按顺序编号成 1..N，已删除的排到末尾不占号。
+
+        页面只显示未删除的条目，编号必须跟着用户看到的队列走：删掉两条旧任务后新加的
+        那条应该是「第 1 条」，而不是「第 3 条」（2026-09-10 用户：「怎么有三条啊，
+        我只有两个链接啊」）。所有读/写都过这一手，历史批次也会自动纠正。
+        """
+        number = 0
+        items = state.get("items") or []
+        for item in items:
+            if item.get("status") == "deleted":
+                continue
+            number += 1
+            item["index"] = number
+        for item in items:
+            if item.get("status") == "deleted":
+                number += 1
+                item["index"] = number
+
     def _init_db(self) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -42,6 +62,7 @@ class BatchStore:
             )
 
     def create(self, state: dict[str, Any]) -> dict[str, Any]:
+        self._renumber(state)
         with self._lock, self._connect() as connection:
             connection.execute(
                 "INSERT INTO batches (id, created_at, updated_at, status, state_json) VALUES (?, ?, ?, ?, ?)",
@@ -60,21 +81,33 @@ class BatchStore:
             row = connection.execute(
                 "SELECT state_json FROM batches WHERE id = ?", (batch_id,)
             ).fetchone()
-        return json.loads(row["state_json"]) if row else None
+        if not row:
+            return None
+        state = json.loads(row["state_json"])
+        self._renumber(state)
+        return state
 
     def latest(self) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
                 "SELECT state_json FROM batches ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
-        return json.loads(row["state_json"]) if row else None
+        if not row:
+            return None
+        state = json.loads(row["state_json"])
+        self._renumber(state)
+        return state
 
     def active(self) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
                 "SELECT state_json FROM batches WHERE status IN ('queued', 'running', 'paused', 'awaiting_review', 'failed') ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
-        return json.loads(row["state_json"]) if row else None
+        if not row:
+            return None
+        state = json.loads(row["state_json"])
+        self._renumber(state)
+        return state
 
     def update(self, batch_id: str, **changes: Any) -> dict[str, Any]:
         state = self.get(batch_id)
@@ -82,6 +115,7 @@ class BatchStore:
             raise KeyError(batch_id)
         state.update(changes)
         state["updatedAt"] = now_iso()
+        self._renumber(state)
         with self._lock, self._connect() as connection:
             connection.execute(
                 "UPDATE batches SET updated_at = ?, status = ?, state_json = ? WHERE id = ?",
