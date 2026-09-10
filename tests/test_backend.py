@@ -415,7 +415,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertTrue(
             all(
                 isinstance(result[key], str)
-                for key in ("title", "introduction", "cover_headline", "action_prompt", "camera_prompt")
+                for key in ("title", "introduction", "action_prompt", "camera_prompt")
             )
         )
 

@@ -34,11 +34,9 @@ interface BatchAI {
   song_name?: string;
   song_mood?: string;
   style_source?: "video" | "redesign";
-  style_note?: string;
   title: string;
   introduction: string;
   tags: string[];
-  cover_headline?: string;
   imagePrompt?: string;
   sceneFramePath?: string;
 }
@@ -89,7 +87,6 @@ interface BatchState {
 }
 
 const INPUT_KEY = "h3-motionstudio:batch-input:v1";
-const FEEDBACK_PREFIX = "h3-motionstudio:batch-feedback:";
 
 function readInputDraft() {
   try {
@@ -136,12 +133,9 @@ export function BatchRoute() {
   const [dance, setDance] = useState(initial.dance);
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState("");
-  const [mode, setMode] = useState<"image" | "copy" | "both">("both");
   const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [imageToken, setImageToken] = useState(0);
 
   const visibleItems = useMemo(() => batch?.items.filter((item) => item.status !== "deleted") || [], [batch]);
@@ -193,17 +187,6 @@ export function BatchRoute() {
     }
   }, [batch?.currentItemId, batch?.items, selectedId]);
 
-  useEffect(() => {
-    if (!selected || !batch) return;
-    const key = `${FEEDBACK_PREFIX}${batch.id}:${selected.id}`;
-    setFeedback(localStorage.getItem(key) || "");
-  }, [batch?.id, selected?.id]);
-
-  useEffect(() => {
-    if (!selected || !batch) return;
-    localStorage.setItem(`${FEEDBACK_PREFIX}${batch.id}:${selected.id}`, feedback);
-  }, [batch?.id, selected?.id, feedback]);
-
   const start = async () => {
     setBusyAction("start");
     setError("");
@@ -248,14 +231,6 @@ export function BatchRoute() {
     await call(`items/${selected.id}${action ? `/${action}` : ""}`, method, body);
   };
 
-  const adjust = async () => {
-    if (!feedback.trim()) {
-      setError("请先写明哪里不合适、希望怎样调整。");
-      return;
-    }
-    await itemCall("adjust", "POST", { feedback, mode });
-  };
-
   const openFolder = () => itemCall("open-output");
   const hasImage = Boolean(selected?.ai?.reference_image_path);
 
@@ -280,17 +255,6 @@ export function BatchRoute() {
     }
   };
 
-  const copyPrompt = async () => {
-    const text = selected?.ai?.imagePrompt || "";
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
-    } catch {
-      setError("浏览器拒绝了剪贴板访问，请展开下面的提示词全文手动复制。");
-    }
-  };
   const canStart = splitUrls(singing).length + splitUrls(dance).length > 0;
   const hasLiveBatch = batch && !["completed", "cancelled"].includes(batch.status);
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
@@ -448,42 +412,19 @@ export function BatchRoute() {
                         <small>确认前不会启动 ComfyUI</small>
                       </div>
 
-                      <div className="batch-materials">
-                        <div className="batch-materials-actions">
-                          <a href={`/api/batches/${batch.id}/items/${selected.id}/material/scene?download=true`}>
-                            <ImageSquare /> 图一 · 造型场景参考
-                          </a>
-                          <a href={`/api/batches/${batch.id}/items/${selected.id}/material/identity?download=true`}>
-                            <ImageSquare /> 图二 · 原型身份图
-                          </a>
-                          <button onClick={copyPrompt} disabled={!selected.ai.imagePrompt}>
-                            <Copy /> {copied ? "已复制" : "复制提示词"}
-                          </button>
-                        </div>
-                      </div>
                       {selected.ai.song_name && <p className="batch-song-name">识别歌曲：{selected.ai.song_name}</p>}
-                      {selected.ai.style_note && (
-                        <p className="batch-style-note">
-                          <i>{selected.ai.style_source === "redesign" ? "已按歌曲重做造型" : "已沿用源视频造型"}</i>
-                          {selected.ai.style_note}
-                        </p>
-                      )}
                       <label><span>标题</span><p>{selected.ai.title}</p></label>
                       <label><span>简介</span><p>{selected.ai.introduction}</p></label>
                       <label><span>标签</span><div className="batch-tags">{selected.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>
-                      <label><span>封面标题</span><p>{selected.ai.cover_headline || selected.ai.title}</p></label>
-                      <div className="batch-feedback">
-                        <span>哪里不合适？写下来我会按你的意见重做</span>
-                        <textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="例如：衣服颜色太暗，背景希望更有舞台感；标题不要太夸张……" />
-                        <div className="batch-mode-row">
-                          {([['image', '只调图片'], ['copy', '只调文案'], ['both', '图片和文案']] as const).map(([value, label]) => (
-                            <button key={value} className={mode === value ? "active" : ""} onClick={() => setMode(value)}>{label}</button>
-                          ))}
-                        </div>
-                        <div className="batch-review-actions">
-                          <button className="batch-secondary" disabled={Boolean(busyAction)} onClick={adjust}><ArrowClockwise />按意见调整</button>
-                          <button className="batch-primary" disabled={Boolean(busyAction)} onClick={() => itemCall("confirm")}><Check weight="bold" />确认并开始生成视频</button>
-                        </div>
+                      <div className="batch-review-actions">
+                        <button
+                          className="batch-primary"
+                          disabled={Boolean(busyAction) || !hasImage}
+                          onClick={() => itemCall("confirm")}
+                          title={hasImage ? undefined : "请先添加上这一条的候选人物图"}
+                        >
+                          <Check weight="bold" />确认并开始生成视频
+                        </button>
                       </div>
                     </div>
                   </section>

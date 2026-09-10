@@ -241,7 +241,6 @@ action_prompt / camera_prompt 返回空字符串。"""
 - 适合：style_source 返回 "video"（沿用源视频的造型/服装/场景/灯光）
 - 不适合：style_source 返回 "redesign"，改由歌曲情绪决定造型，
   并且必须生成一个**适合 ComfyUI 出片**的画面（背景简洁有纵深、人物轮廓稳定、脸和嘴清晰）。
-style_note 用一句中文说明判断理由（适合就写哪里适合，不适合就写哪一项不达标），这句话会直接显示给用户看。
 
 二、发布文案
 - song_name：识别出的歌曲名（跳舞视频返回空字符串）；无法确定时返回空字符串
@@ -250,7 +249,6 @@ style_note 用一句中文说明判断理由（适合就写哪里适合，不适
 - title：原创、可直接发布的中文标题，参考原文风格但不要照抄
 - introduction：一到两句简短简介
 - tags：恰好 5 个不带 # 的中文标签（不多不少）
-- cover_headline：4~12 个汉字，会叠在封面图上
 
 {section_three}{adjustment}
 """
@@ -268,7 +266,7 @@ def copy_prompt(
         adjustment = f"\n\n用户的修改意见（必须满足）：{feedback}\n"
     return f"""这是本地批量制作中的发布文案环节。**第一张图就是本条最终要发布的人物图**。
 
-请以这张图为准写文案：标题、简介、标签、封面标题都必须和画面里**实际出现**的人物造型、发色、服装、配饰、场景、色调与氛围对得上。画面里没有的东西一律不要写。
+请以这张图为准写文案：标题、简介、标签都必须和画面里**实际出现**的人物造型、发色、服装、配饰、场景、色调与氛围对得上。画面里没有的东西一律不要写。
 
 可参考的背景信息（只作参考，画面才是唯一事实来源）：
 歌曲：《{song_name or "未识别"}》
@@ -279,7 +277,6 @@ def copy_prompt(
 - title：原创、可直接发布的中文标题，不要照抄原作品描述
 - introduction：一到两句简短简介，必须能对上画面（不要写画面里没有的颜色、道具或场景）
 - tags：恰好 5 个不带 # 的中文标签，不多不少
-- cover_headline：4~12 个汉字，会叠在封面图上
 
 只返回符合给定 JSON schema 的 JSON。{adjustment}"""
 
@@ -477,11 +474,9 @@ def fallback_result(*, kind: str, description: str, tags: list[str]) -> dict[str
         "song_name": "",
         "song_mood": "",
         "style_source": "video",
-        "style_note": "模型分析不可用，已按源视频造型继续。",
         "title": headline[:40],
         "introduction": "",
         "tags": clean_tags,
-        "cover_headline": headline[:10] or "翻唱作品",
         "remove_subtitles": False,
         "content_prompt": "",
         "video_prompt": "",

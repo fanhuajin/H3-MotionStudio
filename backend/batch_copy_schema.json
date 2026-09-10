@@ -5,8 +5,7 @@
   "properties": {
     "title": { "type": "string" },
     "introduction": { "type": "string" },
-    "tags": { "type": "array", "items": { "type": "string" }, "minItems": 5, "maxItems": 5 },
-    "cover_headline": { "type": "string" }
+    "tags": { "type": "array", "items": { "type": "string" }, "minItems": 5, "maxItems": 5 }
   },
-  "required": ["title", "introduction", "tags", "cover_headline"]
+  "required": ["title", "introduction", "tags"]
 }

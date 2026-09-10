@@ -557,7 +557,7 @@ async def upload_batch_item_image(
                 song_mood=str(ai.get("song_mood") or ""),
                 description=str((item.get("sourceMetadata") or {}).get("desc") or ""),
             )
-            for key in ("title", "introduction", "tags", "cover_headline"):
+            for key in ("title", "introduction", "tags"):
                 if copy.get(key):
                     ai[key] = copy[key]
             rewrite_note = "发布文案已按这张图重写。"

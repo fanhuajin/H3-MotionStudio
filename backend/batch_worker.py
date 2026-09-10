@@ -451,9 +451,13 @@ async def _prepare_review_work(
                 warning = f"{warning} {note}".strip()
                 batch_store.add_item_log(batch_id, item_id, note)
 
-    # 出图素材写进状态，页面据此提供「复制提示词 / 下载图一 / 下载图二 / 上传成图」
+    # 出图素材写进状态；提示词同时落盘，方便直接从条目目录取用
     result["imagePrompt"] = image_prompt
     result["sceneFramePath"] = str(scene_frame)
+    try:
+        (work / "出图提示词.txt").write_text(image_prompt, encoding="utf-8")
+    except OSError:
+        pass
 
     image_path: Path | None = None
     ratio = "4:3" if item["kind"] == "singing" else "9:16"
@@ -579,7 +583,7 @@ async def _prepare_review_work(
                 description=meta_desc,
                 feedback=feedback if mode in {"copy", "both"} else "",
             )
-            for key in ("title", "introduction", "tags", "cover_headline"):
+            for key in ("title", "introduction", "tags"):
                 if copy.get(key):
                     result[key] = copy[key]
             result["tags"] = [
@@ -945,7 +949,7 @@ async def _deliver(
     bili, douyin = await asyncio.to_thread(
         render_covers,
         Path(ai["reference_image_path"]),
-        str(ai.get("cover_headline") or ai.get("title") or "今日作品"),
+        str(ai.get("title") or "今日作品"),
         folder,
     )
     outputs["coverBilibili"] = str(bili)
