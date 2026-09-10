@@ -253,15 +253,19 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertEqual(calls, ["image[]", "image", "image[]"])
 
     def test_batch_image_provider_selection(self) -> None:
-        """auto 只在配了中转站时走 api，其余回落抽帧；本地 Krea2 必须显式指定。"""
+        """默认必须是 manual（用户自己出图）；显式配置才走 api/local/frame。"""
         with process_env_only():
             with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "local"}, clear=False):
                 self.assertEqual(_image_provider(), "local")
+            with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "api"}, clear=False):
+                self.assertEqual(_image_provider(), "api")
+            # 非法值回落到默认值
             with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "没这个值"}, clear=False):
-                self.assertEqual(_image_provider(), "auto")
+                self.assertEqual(_image_provider(), "manual")
+            # 未设置时也必须是 manual：绝不能在用户没要求时自动出图
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("H3_BATCH_IMAGE_PROVIDER", None)
-                self.assertEqual(_image_provider(), "auto")
+                self.assertEqual(_image_provider(), "manual")
 
     def test_batch_ai_image_prompt_carries_review_feedback(self) -> None:
         """审核修改意见必须进入出图提示词，否则「调整图片」只会改文案、图不动。"""

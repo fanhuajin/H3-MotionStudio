@@ -631,17 +631,18 @@ async def _wait_for_free_pipeline(batch_id: str, item_id: str) -> None:
         await asyncio.sleep(4)
 
 
-IMAGE_PROVIDERS = {"auto", "api", "local", "frame"}
+IMAGE_PROVIDERS = {"auto", "api", "local", "frame", "manual"}
 
 
 def _image_provider() -> str:
-    """候选人物图来源：`api` 中转站 / `local` 本地 Krea2 / `frame` 源视频取帧 / `auto`。
+    """候选人物图来源：`manual` 用户自己在 GPT 聊天里做（**默认**）/ `api` 中转站 /
+    `local` 本地 Krea2 / `frame` 源视频取帧 / `auto`。
 
-    `auto` 只在显式配置了中转站时才走 `api`，否则直接用源视频取帧 —— 官方账号没有
-    `gpt-image-*` 余额，本地 Krea2 的画质用户已明确不接受。
+    默认 `manual`：用户明确要求「去掉图片生成，图片由我自己去 gpt 聊天补充」。
+    出图质量与五官由用户把关，批量只负责备料（提示词 + 图一 + 图二）并接收成图。
     """
-    value = env_value("H3_BATCH_IMAGE_PROVIDER", "auto").strip().lower()
-    return value if value in IMAGE_PROVIDERS else "auto"
+    value = env_value("H3_BATCH_IMAGE_PROVIDER", "manual").strip().lower()
+    return value if value in IMAGE_PROVIDERS else "manual"
 
 
 def reuse_previous_analysis(mode: str, previous: dict[str, Any]) -> dict[str, Any] | None:
