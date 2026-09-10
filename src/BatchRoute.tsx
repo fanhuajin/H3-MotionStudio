@@ -238,15 +238,21 @@ export function BatchRoute() {
       if (!singingUrls.length && !danceUrls.length) {
         throw new Error("请先打开要制作的那一类（歌曲 / 跳舞）并填写链接");
       }
-      const response = await fetch("/api/batches", {
+      // 已经有一个批次（不管在跑、暂停、等审核还是刚做完）就往里追加，随时能加；
+      // 只有「已取消」的批次需要新开一个。
+      const append = Boolean(batch && batch.status !== "cancelled");
+      const response = await fetch(append ? `/api/batches/${batch!.id}/items` : "/api/batches", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ singingUrls, danceUrls }),
       });
-      if (!response.ok) throw new Error(await responseMessage(response, "批次创建失败"));
+      if (!response.ok) throw new Error(await responseMessage(response, append ? "加入批次失败" : "批次创建失败"));
       const state = await response.json();
       setBatch(state);
-      setSelectedId(state.currentItemId);
+      if (!append) setSelectedId(state.currentItemId);
+      // 已提交的链接框清空，方便接着粘下一批
+      if (singingUrls.length) setSinging("");
+      if (danceUrls.length) setDance("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -346,7 +352,8 @@ export function BatchRoute() {
   };
 
   const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
-  const hasLiveBatch = batch && !["completed", "cancelled"].includes(batch.status);
+  // 已有批次（取消的除外）时按钮变成「加入当前批次」：随时能加，不必等当前批次跑完。
+  const canAppend = Boolean(batch && batch.status !== "cancelled");
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
 
   return (
@@ -413,10 +420,10 @@ export function BatchRoute() {
           </label>
         </div>
         <div className="batch-input-actions">
-          <p><ListChecks /> 页面会记住这些链接与开关；只有开启的那一类会被提交执行。</p>
-          <button className="batch-primary" disabled={!canStart || Boolean(hasLiveBatch) || busyAction === "start"} onClick={start}>
+          <p><ListChecks /> 随时都能加：批次在跑、暂停或等审核时，粘好链接点「加入当前批次」即排到队尾。</p>
+          <button className="batch-primary" disabled={!canStart || busyAction === "start"} onClick={start} title={canAppend ? "追加到当前批次队尾" : undefined}>
             {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
-            {hasLiveBatch ? "当前批次尚未结束" : "开始批量处理"}
+            {canAppend ? `加入当前批次（${splitUrls(singing).length + splitUrls(dance).length} 条）` : "开始批量处理"}
           </button>
         </div>
       </section>
@@ -476,7 +483,16 @@ export function BatchRoute() {
                   <div className="batch-item-actions">
                     {selected.status === "failed" && <button onClick={() => itemCall("retry")}><ArrowClockwise />重试</button>}
                     {!['completed', 'skipped'].includes(selected.status) && <button onClick={() => itemCall("skip")}><X />跳过</button>}
-                    <button className="danger" onClick={() => itemCall("", "DELETE")}><Trash />删除</button>
+                    <button
+                      className="danger"
+                      onClick={() => {
+                        if (window.confirm(`删除第 ${selected.index} 条？正在跑的步骤会被安全取消，已生成的文件会保留。`)) {
+                          void itemCall("", "DELETE");
+                        }
+                      }}
+                    >
+                      <Trash />删除这一条
+                    </button>
                   </div>
                 </div>
 

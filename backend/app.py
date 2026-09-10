@@ -27,6 +27,7 @@ from .batch_store import batch_store
 from . import batch_ai
 from .batch_worker import (
     IDENTITY_PATH,
+    append_batch_items,
     cancel_item_work,
     image_ratio_note,
     item_ratio,
@@ -279,6 +280,15 @@ class BatchItemRatioRequest(BaseModel):
     ratio: str
 
 
+class BatchAppendRequest(BaseModel):
+    """给已有批次追加任务：批次跑着、暂停着、等审核时都能加。"""
+
+    singingUrls: list[str] = Field(default_factory=list)
+    danceUrls: list[str] = Field(default_factory=list)
+    singingRatio: str | None = None
+    danceRatio: str | None = None
+
+
 class BatchAdjustRequest(BaseModel):
     feedback: str
     mode: str = "both"
@@ -306,6 +316,7 @@ def _resume_batch(batch_id: str, notice: str) -> dict[str, Any]:
         stage="running",
         pauseRequested=False,
         runnerActive=False,
+        finishedAt=None,
         notice=notice,
     )
     spawn(run_batch(batch_id))
@@ -349,6 +360,41 @@ async def create_batch(request: BatchCreateRequest):
 @app.get("/api/batches/{batch_id}")
 async def get_batch(batch_id: str):
     return _batch_or_404(batch_id)
+
+
+@app.post("/api/batches/{batch_id}/items")
+async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest):
+    """随时给已有批次追加任务（用户 2026-09-10：「可以让我随时添加新的任务」）。
+
+    批次完成、失败、暂停、等审核时都能加：新条目排在队尾，已删除的同链接可以再加，
+    未删除的重复链接自动跳过。只有「已取消」的批次不能复活，需要新建批次。
+    """
+    state = _batch_or_404(batch_id)
+    if state.get("status") == "cancelled":
+        raise HTTPException(409, "批次已取消，请新建一个批次")
+    singing = [url.strip() for url in request.singingUrls if url.strip()]
+    dance = [url.strip() for url in request.danceUrls if url.strip()]
+    invalid = next((url for url in singing + dance if not is_douyin_url(url)), None)
+    if invalid:
+        raise HTTPException(400, f"不是有效的抖音链接：{invalid[:80]}")
+    try:
+        result = append_batch_items(
+            batch_id, singing, dance, request.singingRatio, request.danceRatio
+        )
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    added = int(result.get("added") or 0)
+    duplicates = int(result.get("duplicates") or 0)
+    note = f"已加入 {added} 条新任务，正在排队处理。"
+    if duplicates:
+        note += f"（跳过 {duplicates} 条已经在队列里的重复链接）"
+    if not added:
+        return batch_store.update(batch_id, notice=note)
+    if state.get("status") == "paused" or state.get("pauseRequested"):
+        return batch_store.update(
+            batch_id, notice=f"已加入 {added} 条新任务；批次处于暂停，点「继续」后开始处理。"
+        )
+    return _resume_batch(batch_id, note)
 
 
 @app.post("/api/batches/{batch_id}/pause")

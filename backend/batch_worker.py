@@ -76,6 +76,48 @@ def unique_urls(values: list[str]) -> list[str]:
     return result
 
 
+# 一个批次（含随时追加）最多多少条视频
+MAX_BATCH_ITEMS = 50
+
+
+def new_item(kind: str, url: str, ratio: str, index: int, created: str) -> dict[str, Any]:
+    """新建一个批次条目。新建批次与「随时追加」共用，保证字段一致。"""
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "index": index,
+        "kind": kind,
+        "url": url,
+        "ratio": ratio,
+        "status": "pending",
+        "stage": "queued",
+        "createdAt": created,
+        "updatedAt": created,
+        "title": "等待处理",
+        "milestones": item_milestones(kind),
+        "logs": [{"time": created, "message": "已加入批量制作队列"}],
+        "revision": 0,
+        "reviewApproved": False,
+        "childJob": None,
+        "outputs": {},
+        "error": None,
+        "warning": None,
+    }
+
+
+def _build_items(
+    rows: list[tuple[str, str]],
+    defaults: dict[str, str],
+    start_index: int,
+    created: str,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    index = start_index
+    for kind, url in rows:
+        index += 1
+        items.append(new_item(kind, url, defaults[kind], index, created))
+    return items
+
+
 def new_batch_state(
     singing_urls: list[str],
     dance_urls: list[str],
@@ -96,30 +138,7 @@ def new_batch_state(
     rows = [("singing", url) for url in unique_urls(singing_urls)] + [
         ("dance", url) for url in unique_urls(dance_urls)
     ]
-    items: list[dict[str, Any]] = []
-    for index, (kind, url) in enumerate(rows, start=1):
-        items.append(
-            {
-                "id": uuid.uuid4().hex[:12],
-                "index": index,
-                "kind": kind,
-                "url": url,
-                "ratio": defaults[kind],
-                "status": "pending",
-                "stage": "queued",
-                "createdAt": created,
-                "updatedAt": created,
-                "title": "等待处理",
-                "milestones": item_milestones(kind),
-                "logs": [{"time": created, "message": "已加入批量制作队列"}],
-                "revision": 0,
-                "reviewApproved": False,
-                "childJob": None,
-                "outputs": {},
-                "error": None,
-                "warning": None,
-            }
-        )
+    items = _build_items(rows, defaults, 0, created)
     return {
         "id": batch_id,
         "status": "queued",
@@ -138,6 +157,68 @@ def new_batch_state(
         "notice": "任务已创建，准备处理第 1 条。" if items else "没有任务。",
         "items": items,
     }
+
+
+def append_batch_items(
+    batch_id: str,
+    singing_urls: list[str],
+    dance_urls: list[str],
+    singing_ratio: str | None = None,
+    dance_ratio: str | None = None,
+) -> dict[str, Any]:
+    """给已有批次追加条目：批次随时能加，新条目排在队尾（编号接着往下排）。
+
+    用户 2026-09-10：「可以让我随时添加新的任务，删除单条任务」。重复粘贴的链接按
+    「类型 + 链接」比对**未删除**的已有条目后直接跳过，返回跳过的条数给页面提示，
+    避免同一条视频被做两遍。
+    """
+    state = batch_store.get(batch_id)
+    if not state:
+        raise KeyError(batch_id)
+    defaults = {
+        "singing": normalize_batch_ratio(singing_ratio, "singing"),
+        "dance": normalize_batch_ratio(dance_ratio, "dance"),
+    }
+    rows = [("singing", url) for url in unique_urls(singing_urls)] + [
+        ("dance", url) for url in unique_urls(dance_urls)
+    ]
+    if not rows:
+        raise ValueError("请至少填写一条抖音链接")
+    created = now_iso()
+    result = {"added": 0, "duplicates": 0}
+
+    def apply(row: dict[str, Any]) -> None:
+        items = list(row.get("items") or [])
+        known = {
+            f"{item.get('kind')}:{item.get('url')}"
+            for item in items
+            if item.get("status") != "deleted"
+        }
+        fresh: list[tuple[str, str]] = []
+        for kind, url in rows:
+            key = f"{kind}:{url}"
+            if key in known:
+                result["duplicates"] += 1
+                continue
+            known.add(key)
+            fresh.append((kind, url))
+        if not fresh:
+            return
+        live = sum(1 for item in items if item.get("status") != "deleted")
+        if live + len(fresh) > MAX_BATCH_ITEMS:
+            raise ValueError(f"一个批次最多 {MAX_BATCH_ITEMS} 条视频")
+        next_index = max((int(item.get("index") or 0) for item in items), default=0)
+        added = _build_items(fresh, defaults, next_index, created)
+        items.extend(added)
+        row["items"] = items
+        row["total"] = len(items)
+        row["finishedAt"] = None
+        if not row.get("currentItemId"):
+            row["currentItemId"] = added[0]["id"]
+        result["added"] = len(added)
+
+    batch_store.mutate(batch_id, apply)
+    return {"state": batch_store.get(batch_id) or {}, **result}
 
 
 def _item(batch_id: str, item_id: str) -> dict[str, Any]:

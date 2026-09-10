@@ -165,6 +165,114 @@ class WorkflowPreparationTests(unittest.TestCase):
                 batch_worker.batch_store, batch_worker.batch_ai.compose_image_prompt = originals
         self.assertEqual(stub.state["items"][1]["ratio"], "9:16")
 
+    def test_batch_items_can_be_appended_anytime(self) -> None:
+        """批次随时能加任务：跑着的、暂停的、刚做完的都能往队尾追加，重复链接自动跳过。"""
+        from backend import batch_worker
+        from backend.app import app
+
+        state = new_batch_state(["https://v.douyin.com/song"], ["https://www.douyin.com/video/1"])
+        state["status"] = "completed"   # 批次已经跑完也能继续加
+
+        class StubStore:
+            def __init__(self, payload: dict) -> None:
+                self.state = payload
+
+            def get(self, _batch_id):
+                return self.state
+
+            def mutate(self, _batch_id, mutator):
+                mutator(self.state)
+                return self.state
+
+        stub = StubStore(state)
+        with patch.object(batch_worker, "batch_store", stub):
+            result = batch_worker.append_batch_items(
+                "b1", ["https://v.douyin.com/song2", "https://v.douyin.com/song"], []
+            )
+            # 同类型同链接已经存在（未删除）→ 跳过；song2 追加成功
+            self.assertEqual((result["added"], result["duplicates"]), (1, 1))
+            items = stub.state["items"]
+            self.assertEqual([item["index"] for item in items], [1, 2, 3])
+            self.assertEqual(items[2]["url"], "https://v.douyin.com/song2")
+            self.assertEqual(items[2]["ratio"], "4:3")           # 歌曲默认 4:3
+            self.assertEqual(items[2]["status"], "pending")
+            self.assertEqual(stub.state["total"], 3)
+            self.assertIsNone(stub.state["finishedAt"])           # 追加后清掉完成时间
+
+            # 空链接必须报错，不能悄悄什么都不做
+            with self.assertRaises(ValueError):
+                batch_worker.append_batch_items("b1", [], [])
+
+            # 单批上限
+            full = new_batch_state([f"https://v.douyin.com/s{i}" for i in range(50)], [])
+            stub.state = full
+            with self.assertRaises(ValueError):
+                batch_worker.append_batch_items("b1", ["https://v.douyin.com/one-more"], [])
+
+        paths = {getattr(route, "path", "") for route in app.routes}
+        self.assertIn("/api/batches/{batch_id}/items", paths)           # 随时追加
+        self.assertIn("/api/batches/{batch_id}/items/{item_id}", paths)  # 删除单条
+
+    def test_append_endpoint_resumes_and_respects_pause(self) -> None:
+        """追加接口的收尾逻辑：跑完/失败的批次加任务后自动继续；暂停中的只入队不偷跑。"""
+        import asyncio
+
+        from backend import app as app_module
+        from backend import batch_worker
+
+        state = new_batch_state(["https://v.douyin.com/song"], [])
+        state["status"] = "completed"
+
+        class StubStore:
+            def __init__(self, payload: dict) -> None:
+                self.state = payload
+
+            def get(self, _batch_id):
+                return self.state
+
+            def update(self, _batch_id, **changes):
+                self.state.update(changes)
+                return self.state
+
+            def mutate(self, _batch_id, mutator):
+                mutator(self.state)
+                return self.state
+
+        stub = StubStore(state)
+        spawned: list = []
+        with patch.object(batch_worker, "batch_store", stub), patch.object(
+            app_module, "batch_store", stub
+        ), patch.object(app_module, "spawn", lambda coro: (spawned.append(coro), coro.close())):
+            result = asyncio.run(
+                app_module.append_batch_items_endpoint(
+                    "b1", app_module.BatchAppendRequest(singingUrls=["https://v.douyin.com/song2"])
+                )
+            )
+            self.assertEqual(result["status"], "running")     # 已完成的批次被唤醒继续处理
+            self.assertIn("已加入 1 条", result["notice"])
+            self.assertEqual(len(stub.state["items"]), 2)
+            self.assertEqual(len(spawned), 1)
+
+            # 暂停中的批次：加进去但不自动继续，免得违背用户的暂停意图
+            stub.state["status"] = "paused"
+            result = asyncio.run(
+                app_module.append_batch_items_endpoint(
+                    "b1", app_module.BatchAppendRequest(singingUrls=["https://v.douyin.com/song3"])
+                )
+            )
+            self.assertEqual(result["status"], "paused")
+            self.assertIn("暂停", result["notice"])
+            self.assertEqual(len(stub.state["items"]), 3)
+
+            # 取消的批次不能复活
+            stub.state["status"] = "cancelled"
+            with self.assertRaises(app_module.HTTPException):
+                asyncio.run(
+                    app_module.append_batch_items_endpoint(
+                        "b1", app_module.BatchAppendRequest(singingUrls=["https://v.douyin.com/song4"])
+                    )
+                )
+
     def test_batch_preflight_no_longer_drives_the_codex_cli(self) -> None:
         """预审必须直连模型 + 本地出图；不能再起 codex exec agent 会话烧订阅额度。"""
         source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
