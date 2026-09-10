@@ -869,7 +869,43 @@ async def media_metadata(path: Path) -> dict[str, Any]:
     }
 
 
-async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
+def video_with_source_audio(video: Path, audio_from: Path, target: Path) -> Path:
+    """把 `video` 的视频轨与 `audio_from` 的音轨合成一个临时视频（视频轨直接 copy）。
+
+    H3 生成出来的音频和原唱不是一回事；用户要求最终版的音色转换必须基于
+    **源视频的原唱音轨**（2026-09-10：「生成的音频不对，你用原音频然后用
+    kikiV1 去合成最终版」）。所以转换前先把原唱音轨换到成片上，再交给 RVC 脚本。
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(video),
+        "-i",
+        str(audio_from),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        str(target),
+    ]
+    run_ffmpeg_capture(command, "把源视频的原唱音轨换到成片上")
+    if not target.is_file():
+        raise PipelineError("原唱音轨替换失败", f"没有产出：{target}")
+    return target
+
+
+async def run_rvc(job_id: str, enhanced_path: Path, audio_from: Path | None = None) -> Path:
     # 启动转换前也先清孤儿 RVC：后端崩溃后直接「重新音色转换」时，上次的
     # 转换进程可能还在跑，避免同一时刻出现两个 RVC。
     await resources.kill_orphan_rvc(job_id)
@@ -879,6 +915,18 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
         if not path.is_file():
             raise PipelineError("音色转换环境不完整", f"缺少：{path}")
 
+    # 音色转换的输入：默认用成片自己的音频；给了 audio_from 就换成源视频的原唱音轨。
+    convert_input = enhanced_path
+    if audio_from is not None and Path(audio_from).is_file():
+        convert_input = enhanced_path.with_name(f"{enhanced_path.stem}_原唱音轨.mp4")
+        await asyncio.to_thread(
+            video_with_source_audio, enhanced_path, Path(audio_from), convert_input
+        )
+        store.add_log(
+            job_id,
+            f"已先取源视频的原唱音轨（{Path(audio_from).name}）合成到成片上，再做人声转换。",
+        )
+
     store.update(job_id, stage="voice", currentNodeTitle="启动便携音色转换器", progress=0)
     store.set_milestone(job_id, "stems", status="running", currentNode="提取成片音频", progress=0)
     store.add_log(job_id, "ComfyUI 已关闭，正在启动便携音色转换器。")
@@ -886,7 +934,7 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
     command = [
         str(RVC_PYTHON),
         str(RVC_SCRIPT),
-        str(enhanced_path),
+        str(convert_input),
         "--model",
         RVC_MODEL.name,
     ]
@@ -938,7 +986,7 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
         store.set_milestone(job_id, active, status="error")
         raise PipelineError("音色转换失败", detail)
 
-    expected = enhanced_path.with_name(f"{enhanced_path.stem}_{RVC_MODEL.stem}.mp4")
+    expected = convert_input.with_name(f"{convert_input.stem}_{RVC_MODEL.stem}.mp4")
     if not expected.is_file():
         raise PipelineError("音色转换完成但没有找到最终 MP4", f"预期文件：{expected}\n" + "\n".join(lines[-80:]))
     store.set_milestone(job_id, "voice", status="completed", progress=100, currentNode=None)
@@ -947,10 +995,13 @@ async def run_rvc(job_id: str, enhanced_path: Path) -> Path:
     return expected.resolve()
 
 
-async def _run_voice(job_id: str, enhanced_path: Path) -> None:
-    """歌曲生成收尾（RVC 开关开启）：先关闭 ComfyUI，再对成片做人声转换。"""
+async def _run_voice(job_id: str, enhanced_path: Path, audio_from: Path | None = None) -> None:
+    """歌曲生成收尾（RVC 开关开启）：先关闭 ComfyUI，再对成片做人声转换。
+
+    `audio_from` 传源视频时，转换基于原唱音轨而不是 H3 生成的音频。
+    """
     await resources.stop_comfy(job_id)
-    final = await run_rvc(job_id, enhanced_path)
+    final = await run_rvc(job_id, enhanced_path, audio_from=audio_from)
     final = await asyncio.to_thread(mark_final_version, final)
     store.update(
         job_id,
@@ -1043,7 +1094,11 @@ async def run_pipeline(job_id: str) -> None:
                 store.add_log(job_id, "二采放大开关未开启：成片保持 H3 原始分辨率。")
 
             if state.get("useRvc", True):
-                await _run_voice(job_id, output)
+                # 音色转换基于**源视频的原唱音轨**，而不是 H3 生成的音频。
+                source_audio = Path(str(state.get("sourcePath") or ""))
+                await _run_voice(
+                    job_id, output, audio_from=source_audio if source_audio.is_file() else None
+                )
             else:
                 await _complete_without_rvc(job_id, output)
         except Exception as error:
@@ -1851,7 +1906,12 @@ async def retry_voice(job_id: str) -> None:
         else:
             store.set_milestone(job_id, "handoff", status="completed", progress=100)
         try:
-            final = await run_rvc(job_id, source)
+            # 歌曲任务：音色转换同样基于源视频的原唱音轨（与首次出片一致）。
+            # 独立 /rvc 路由没有单独的源视频，保持用待转换视频自己的音频。
+            source_audio = Path(str((state or {}).get("sourcePath") or ""))
+            final = await run_rvc(
+                job_id, source, audio_from=source_audio if source_audio.is_file() else None
+            )
             final = await asyncio.to_thread(mark_final_version, final)
             store.update(
                 job_id,

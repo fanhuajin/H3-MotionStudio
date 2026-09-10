@@ -343,6 +343,23 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertEqual(fallback["tags"], ["a", "b", "c", "d", "e"])
 
+    def test_singing_voice_conversion_uses_the_source_audio(self) -> None:
+        """歌曲链路的音色转换必须基于**源视频的原唱音轨**，不是 H3 生成的音频。
+
+        用户 2026-09-10：「生成的音频不对，你用原音频然后用 kikiV1 去合成最终版」。
+        独立 /rvc 路由没有单独的源视频，保持用待转换视频自己的音频。
+        """
+        source = (Path(__file__).parents[1] / "backend" / "pipeline.py").read_text(encoding="utf-8")
+        self.assertIn("def video_with_source_audio(", source)
+        self.assertIn("async def run_rvc(job_id: str, enhanced_path: Path, audio_from: Path | None = None)", source)
+        self.assertIn("async def _run_voice(job_id: str, enhanced_path: Path, audio_from: Path | None = None)", source)
+        # 歌曲链路与 retry_voice 都显式传源视频音轨
+        self.assertGreaterEqual(
+            source.count("audio_from=source_audio if source_audio.is_file() else None"), 2
+        )
+        # 独立 /rvc 路由不传 audio_from
+        self.assertIn("final = await run_rvc(job_id, source)\n", source)
+
     def test_batch_prepares_every_item_before_waiting_for_review(self) -> None:
         """先整批备料再逐条审核：`awaiting_review` 不能被当成可跑任务，否则第一条就卡住整批。"""
         from backend.batch_worker import _next_work
