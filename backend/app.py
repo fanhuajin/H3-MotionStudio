@@ -579,6 +579,30 @@ async def upload_batch_item_image(
     return _batch_or_404(batch_id)
 
 
+@app.get("/api/batches/{batch_id}/items/{item_id}/stage/{key}")
+async def batch_item_stage(batch_id: str, item_id: str, key: str, download: bool = Query(False)):
+    """只读回看某一阶段的产物，供用户逐阶段检查生成结果（不提供任何修改入口）。
+
+    key：`source` 源视频 / `candidate` 候选人物图 / `draft` 迁移草稿 /
+    `clean` 去字幕视频 / `original` 原版成片 / `enhanced` 二采高清 /
+    `final` 最终成片 / `lyrics` 歌词字幕版。
+    """
+    item = _batch_item_or_404(batch_id, item_id)
+    ai = item.get("ai") or {}
+    if key == "source":
+        raw = str(item.get("sourcePath") or "")
+    elif key == "candidate":
+        raw = str(ai.get("reference_image_path") or "")
+    else:
+        raw = str((item.get("stageMedia") or {}).get(key) or "")
+    path = Path(raw)
+    if not raw or not path.is_file():
+        raise HTTPException(404, "该阶段的产物还不存在")
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    # inline：让浏览器直接播放/预览，而不是触发下载
+    return FileResponse(path, media_type=media_type, filename=path.name if download else None)
+
+
 @app.get("/api/batches/{batch_id}/items/{item_id}/material/{key}")
 async def batch_item_material(batch_id: str, item_id: str, key: str, download: bool = Query(False)):
     """出图素材：`scene` = 图一（源视频取帧，造型/场景参考）、`identity` = 图二（原型身份图）。"""

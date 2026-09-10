@@ -757,7 +757,7 @@ async def _watch_child(batch_id: str, item_id: str, child_id: str, milestone_id:
             "cleanBatch": child.get("cleanBatch"),
             "cleanBatches": child.get("cleanBatches"),
         }
-        _set_item(batch_id, item_id, childJob=snapshot)
+        _set_item(batch_id, item_id, childJob=snapshot, stageMedia=stage_media(child))
         batch_store.set_item_milestone(
             batch_id,
             item_id,
@@ -879,6 +879,10 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
         try:
             lyric_job = await _create_lyrics_job(batch_id, item_id, video_job)
             batch_store.set_item_milestone(batch_id, item_id, "lyrics", status="completed", progress=100)
+            if lyric_job and Path(str(lyric_job.get("finalOutput") or "")).is_file():
+                merged = dict(_item(batch_id, item_id).get("stageMedia") or {})
+                merged["lyrics"] = str(lyric_job["finalOutput"])
+                _set_item(batch_id, item_id, stageMedia=merged)
         except Exception as error:
             _set_item(batch_id, item_id, warning=f"歌词字幕未完成：{error}", childJob=None)
             batch_store.set_item_milestone(batch_id, item_id, "lyrics", status="error", progress=0, currentNode=str(error))
@@ -889,6 +893,27 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
     _set_item(batch_id, item_id, status="completed", stage="completed", outputs=outputs, finishedAt=now_iso())
     batch_store.set_item_milestone(batch_id, item_id, "deliver", status="completed", progress=100)
     batch_store.add_item_log(batch_id, item_id, f"发布文件已整理：{outputs['folder']}")
+
+
+def stage_media(state: dict[str, Any]) -> dict[str, str]:
+    """把子任务状态里的中间成片路径抽出来，供页面只读回看每个阶段的产物。
+
+    这些键在 `app.py` 的 `MEDIA_FIELD_BY_KEY` 里有对应项；成片入口只暴露
+    final/original，但用户要求「可以回看每一阶段生成的内容」——所以中间产物
+    （去字幕、二创草稿、二采高清）也要能被点开看，只是不能改。
+    """
+    media: dict[str, str] = {}
+    for key, field in (
+        ("draft", "draftOutput"),
+        ("clean", "cleanOutput"),
+        ("original", "originalOutput"),
+        ("enhanced", "enhancedOutput"),
+        ("final", "finalOutput"),
+    ):
+        raw = str(state.get(field) or "").strip()
+        if raw and Path(raw).is_file():
+            media[key] = raw
+    return media
 
 
 def _next_work(state: dict[str, Any]) -> dict[str, Any] | None:

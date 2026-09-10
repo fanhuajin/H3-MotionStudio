@@ -69,6 +69,8 @@ interface BatchItem {
   milestones: BatchStep[];
   ai?: BatchAI;
   childJob?: ChildJob | null;
+  stageMedia?: Record<string, string>;
+  sourcePath?: string;
   logs?: Array<{ time: string; message: string }>;
   outputs?: Record<string, string>;
   error?: string | null;
@@ -233,6 +235,26 @@ export function BatchRoute() {
 
   const openFolder = () => itemCall("open-output");
   const hasImage = Boolean(selected?.ai?.reference_image_path);
+
+  // 只读回看每一阶段的产物；顺序按生成先后排列
+  const STAGE_LABELS: Array<[string, string]> = [
+    ["source", "源视频"],
+    ["candidate", "候选人物图"],
+    ["draft", "迁移草稿"],
+    ["clean", "去字幕视频"],
+    ["original", "原版成片"],
+    ["enhanced", "二采高清"],
+    ["final", "最终成片"],
+    ["lyrics", "歌词字幕版"],
+  ];
+  const stageEntries = useMemo(() => {
+    if (!selected) return [] as Array<[string, string]>;
+    const media = selected.stageMedia || {};
+    const available = new Set<string>(Object.keys(media));
+    if (selected.sourcePath) available.add("source");
+    if (selected.ai?.reference_image_path) available.add("candidate");
+    return STAGE_LABELS.filter(([key]) => available.has(key));
+  }, [selected]);
 
   const uploadImage = async (file: File) => {
     if (!batch || !selected) return;
@@ -444,6 +466,27 @@ export function BatchRoute() {
                     ))}
                   </div>
                 </section>
+
+                {stageEntries.length > 0 && (
+                  <section className="batch-child-panel">
+                    <div className="batch-panel-title">
+                      <span>生成阶段产物</span>
+                      <small>只读 · 点开即看，不影响任务</small>
+                    </div>
+                    <div className="batch-stage-list">
+                      {stageEntries.map(([key, label]) => (
+                        <a
+                          key={key}
+                          href={`/api/batches/${batch.id}/items/${selected.id}/stage/${key}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {label}
+                        </a>
+                      ))}
+                    </div>
+                  </section>
+                )}
 
                 {selected.childJob && (
                   <section className="batch-child-panel">

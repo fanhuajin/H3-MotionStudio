@@ -1470,6 +1470,9 @@ body {
 .batch-review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; padding-top: 14px; }
 .batch-progress-panel, .batch-child-panel, .batch-output-panel { margin-top: 14px; padding: 14px; border: 1px solid var(--shell-line); border-radius: 9px; background: #0a081f; }
 .batch-child-panel { border-color: rgba(55, 216, 230, .25); }
+.batch-stage-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.batch-stage-list a { display: inline-flex; align-items: center; min-height: 30px; padding: 0 11px; border: 1px solid #463a64; border-radius: 7px; color: #d9d3e9; background: #17112f; font-size: 11px; text-decoration: none; transition: .18s ease; }
+.batch-stage-list a:hover { border-color: var(--shell-accent); color: #e8f6f8; }
 .batch-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 11px; }
 .batch-panel-title span { color: #eeeafa; font-size: 13px; font-weight: 650; }
 .batch-panel-title small { color: var(--shell-muted); font-size: 10px; text-align: right; }
