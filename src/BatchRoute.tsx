@@ -449,27 +449,17 @@ export function BatchRoute() {
                       </div>
 
                       <div className="batch-materials">
-                        <div className="batch-materials-head">
-                          <span>出图素材</span>
-                          <small>在 GPT 聊天里：先传下面两张图，再粘贴提示词</small>
-                        </div>
                         <div className="batch-materials-actions">
                           <a href={`/api/batches/${batch.id}/items/${selected.id}/material/scene?download=true`}>
-                            <ImageSquare /> 下载图一 · 造型场景参考
+                            <ImageSquare /> 图一 · 造型场景参考
                           </a>
                           <a href={`/api/batches/${batch.id}/items/${selected.id}/material/identity?download=true`}>
-                            <ImageSquare /> 下载图二 · 原型身份图
+                            <ImageSquare /> 图二 · 原型身份图
                           </a>
                           <button onClick={copyPrompt} disabled={!selected.ai.imagePrompt}>
                             <Copy /> {copied ? "已复制" : "复制提示词"}
                           </button>
                         </div>
-                        {selected.ai.imagePrompt && (
-                          <details>
-                            <summary>展开提示词全文（{selected.ai.imagePrompt.length} 字）</summary>
-                            <pre>{selected.ai.imagePrompt}</pre>
-                          </details>
-                        )}
                       </div>
                       {selected.ai.song_name && <p className="batch-song-name">识别歌曲：{selected.ai.song_name}</p>}
                       {selected.ai.style_note && (
