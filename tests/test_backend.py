@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -9,6 +10,7 @@ from backend.app import douyin_job_payload
 from backend.batch_worker import new_batch_state, render_covers, unique_urls
 from backend.douyin_preview import _convert_download_sync
 from backend.douyin_service import (
+    DOUYIN_URL,
     DouyinServiceManager,
     _cookie_ready,
     _extract_aweme_id,
@@ -563,6 +565,10 @@ class WorkflowPreparationTests(unittest.TestCase):
 
 
 class DouyinServiceTests(unittest.TestCase):
+    def test_default_downloader_port_avoids_windows_reserved_9000(self) -> None:
+        if "H3_DOUYIN_DOWNLOADER_URL" not in os.environ:
+            self.assertEqual(DOUYIN_URL, "http://127.0.0.1:9100")
+
     def test_aweme_id_supports_video_and_profile_modal_urls(self) -> None:
         self.assertEqual(
             _extract_aweme_id("https://www.douyin.com/video/7613347091070692019"),

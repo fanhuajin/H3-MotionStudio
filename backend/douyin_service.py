@@ -23,13 +23,27 @@ logger = logging.getLogger("uvicorn.error")
 DOUYIN_ROOT = Path(
     os.getenv("H3_DOUYIN_DOWNLOADER_ROOT", r"D:\project\douyin-downloader")
 ).resolve()
-DOUYIN_URL = os.getenv("H3_DOUYIN_DOWNLOADER_URL", "http://127.0.0.1:9000").rstrip("/")
+# 9000 may be reserved by Windows/Hyper-V (WinError 10013). Keep the service
+# on a nearby fixed port outside the host's excluded range; an explicit env
+# override still wins for installations that already use another port.
+DOUYIN_URL = os.getenv("H3_DOUYIN_DOWNLOADER_URL", "http://127.0.0.1:9100").rstrip("/")
 # 默认保存到 D:\EV；可用 H3_DOUYIN_OUTPUT 覆盖。下载服务子进程通过
 # DOUYIN_PATH 环境变量使用同一目录，保证服务落盘与这里查找结果一致。
 DOUYIN_OUTPUT = Path(os.getenv("H3_DOUYIN_OUTPUT", r"D:\EV")).resolve()
 DOUYIN_PYTHON = DOUYIN_ROOT / ".venv" / "Scripts" / "python.exe"
 DOUYIN_RUN = DOUYIN_ROOT / "run.py"
 DOUYIN_LOG = DATA_DIR / "douyin-downloader.log"
+
+
+def _recent_startup_error() -> str:
+    if not DOUYIN_LOG.is_file():
+        return ""
+    try:
+        lines = [line.strip() for line in DOUYIN_LOG.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return ""
+    relevant = [line for line in lines[-30:] if "ERROR" in line or "WinError" in line or "error" in line.lower()]
+    return "；".join(relevant[-3:])[-700:]
 
 
 class DouyinServiceError(RuntimeError):
@@ -142,7 +156,7 @@ class DouyinServiceManager:
             self.log_handle = DOUYIN_LOG.open("a", encoding="utf-8")
             parsed_url = urlparse(DOUYIN_URL)
             service_host = parsed_url.hostname or "127.0.0.1"
-            service_port = str(parsed_url.port or 9000)
+            service_port = str(parsed_url.port or 9100)
             child_env = os.environ.copy()
             child_env["DOUYIN_PATH"] = str(DOUYIN_OUTPUT)
             self.process = subprocess.Popen(
@@ -163,8 +177,16 @@ class DouyinServiceManager:
             )
             for _ in range(40):
                 if self.process.poll() is not None:
+                    return_code = self.process.returncode
+                    if self.log_handle:
+                        self.log_handle.flush()
+                        self.log_handle.close()
+                    self.log_handle = None
+                    self.process = None
+                    detail = _recent_startup_error()
                     raise DouyinServiceError(
-                        f"抖音下载服务启动失败，退出码 {self.process.returncode}"
+                        f"抖音下载服务启动失败，退出码 {return_code}"
+                        + (f"：{detail}" if detail else "")
                     )
                 if await self.healthy():
                     return
