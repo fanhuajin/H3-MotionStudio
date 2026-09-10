@@ -34,6 +34,10 @@ import { UpScaleRoute } from "./UpScaleRoute";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
 
+// 默认音色名（仅用于骨架里程碑/说明文案；真实模型由后端 backend/settings.py 的 RVC_MODEL 决定，
+// 任务结果里的 job.voiceModel 优先）。改音色时同步这里，避免界面文案与实际音色不符。
+const DEFAULT_VOICE_LABEL = "wanwansu_v1";
+
 const EMPTY_MILESTONES: Milestone[] = [
   { id: "input", label: "读取视频与音频", subtitle: "加载输入视频，分离音频轨道", status: "pending" },
   { id: "h3", label: "H3 分段生成", subtitle: "按时长生成连续唱歌片段", status: "pending" },
@@ -41,7 +45,7 @@ const EMPTY_MILESTONES: Milestone[] = [
   { id: "upscale", label: "二采放大 4×", subtitle: "RealESRGAN 逐帧超分并收 1080p 档", status: "pending" },
   { id: "handoff", label: "关闭 ComfyUI", subtitle: "释放内存和显存，切换到 RVC", status: "pending" },
   { id: "stems", label: "分离人声与伴奏", subtitle: "Demucs 提取演唱人声", status: "pending" },
-  { id: "voice", label: "转换为 yueshao_v1 音色", subtitle: "RVC 模型执行音色转换", status: "pending" },
+  { id: "voice", label: `转换为 ${DEFAULT_VOICE_LABEL} 音色`, subtitle: "RVC 模型执行音色转换", status: "pending" },
   { id: "mux", label: "替换最终成片音频", subtitle: "重新混音并封装最终 MP4", status: "pending" },
 ];
 
@@ -201,7 +205,7 @@ const DEMO_JOB: JobState = {
   logs: [
     { time: new Date().toISOString(), message: "ComfyUI 工作流已完成，显存已释放。" },
     { time: new Date().toISOString(), message: "二采放大：RealESRGAN 4× 已完成，输出 1440×1080。" },
-    { time: new Date().toISOString(), message: "RVC：yueshao_v1 音色转换完成。" },
+    { time: new Date().toISOString(), message: `RVC：${DEFAULT_VOICE_LABEL} 音色转换完成。` },
     { time: new Date().toISOString(), message: "最终 MP4 已完成音频替换。" },
   ],
   originalReady: true,
@@ -775,7 +779,7 @@ function MotionStudioRoute() {
               onChange={setUseRvc}
               title="RVC 音色转换"
               description={useRvc
-                ? "开启：ComfyUI 生成结束后自动转换人声为 yueshao_v1 音色（先完全关闭 ComfyUI 再执行）。"
+                ? `开启：ComfyUI 生成结束后自动转换人声为 ${DEFAULT_VOICE_LABEL} 音色（先完全关闭 ComfyUI 再执行）。`
                 : "关闭：跳过 RVC 流程，成片保留上传视频的原版人声。"}
             />
             <p className="field-note">
@@ -859,7 +863,7 @@ function MotionStudioRoute() {
               <div className="result-grid">
                 <div className="result-video"><video src={!demoMode && (resultUrl || originalUrl) ? `${resultUrl || originalUrl}#t=0.001` : undefined} controls preload="auto" poster={demoMode ? config.fixedReferenceUrl : undefined} /></div>
                 <div className="result-details">
-                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? (job.useRvc === false ? "最终成片 · 保留原声" : "最终成片 · yueshao_v1 音色") : "原版成片"}{job.finalReady && job.useUpscale !== false ? " · 4× 高清" : ""}</strong><span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : canvasDimensionLabel((job.canvas as CanvasRatio | undefined) || ratio)}</span></div></div>
+                  <div className="result-title"><FilmSlate /><div><strong>{job.finalReady ? (job.useRvc === false ? "最终成片 · 保留原声" : `最终成片 · ${DEFAULT_VOICE_LABEL} 音色`) : "原版成片"}{job.finalReady && job.useUpscale !== false ? " · 4× 高清" : ""}</strong><span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : canvasDimensionLabel((job.canvas as CanvasRatio | undefined) || ratio)}</span></div></div>
                   <dl>
                     <div><dt>时长</dt><dd>{formatDuration(job.output?.duration || job.sourceDuration)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(job.output?.size)}</dd></div>

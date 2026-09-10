@@ -35,10 +35,14 @@ type RecentItem = {
 
 type RecentPayload = { jobs: RecentItem[] };
 
+// 默认音色名（仅骨架文案；真实模型由后端 backend/settings.py 的 RVC_MODEL 决定，
+// 任务结果里的 job.voiceModel 优先）。改音色时同步这里。
+const DEFAULT_VOICE_LABEL = "wanwansu_v1";
+
 const SKELETON_MILESTONES: Milestone[] = [
   { id: "handoff", label: "关闭 ComfyUI", subtitle: "释放内存和显存，切换到 RVC", status: "pending" },
   { id: "stems", label: "分离人声与伴奏", subtitle: "Demucs 提取演唱人声", status: "pending" },
-  { id: "voice", label: "转换 yueshao_v1 音色", subtitle: "RVC 模型执行音色转换", status: "pending" },
+  { id: "voice", label: `转换 ${DEFAULT_VOICE_LABEL} 音色`, subtitle: "RVC 模型执行音色转换", status: "pending" },
   { id: "mux", label: "替换成片音频", subtitle: "重新混音并封装最终 MP4", status: "pending" },
 ];
 
@@ -268,7 +272,7 @@ export function RvcRoute() {
         <div>
           <p className="route-eyebrow"><span /> H3 · RVC VOICE</p>
           <h1>音色转换，<em>单独一步。</em></h1>
-          <p className="route-description">上传任意带人声的视频或挑选最近成片，先完全关闭 ComfyUI，再用 Demucs 分离人声并转换成默认音色 yueshao_v1，最后重新封装成最终成片。</p>
+          <p className="route-description">上传任意带人声的视频或挑选最近成片，先完全关闭 ComfyUI，再用 Demucs 分离人声并转换成默认音色 {DEFAULT_VOICE_LABEL}，最后重新封装成最终成片。</p>
         </div>
         <span className={`connection ${job?.status === "running" ? "connected" : "idle"}`}>
           <span className="connection-dot" />
@@ -343,7 +347,7 @@ export function RvcRoute() {
 
           <div className="field-block">
             <div className="field-heading"><h2><span>2.</span> 目标音色</h2></div>
-            <p className="field-note">固定使用默认音色 <strong>yueshao_v1</strong>（v2 / 40k / RMVPE，检索索引 yueshao_v1.index）；执行前会先完全关闭 ComfyUI，避免与生成链路抢占显存。</p>
+            <p className="field-note">固定使用默认音色 <strong>{DEFAULT_VOICE_LABEL}</strong>（v1 / 40k / RMVPE，检索索引 {DEFAULT_VOICE_LABEL}.index）；执行前会先完全关闭 ComfyUI，避免与生成链路抢占显存。</p>
           </div>
 
           {(localError || job?.errorSummary) && (
@@ -406,7 +410,7 @@ export function RvcRoute() {
                   <div className="result-title">
                     <MicrophoneStage />
                     <div>
-                      <strong>最终成片 · {job.voiceModel || "yueshao_v1"} 音色</strong>
+                      <strong>最终成片 · {job.voiceModel || DEFAULT_VOICE_LABEL} 音色</strong>
                       <span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ""}</span>
                     </div>
                   </div>
