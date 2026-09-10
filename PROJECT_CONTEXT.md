@@ -230,7 +230,10 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 | `H3_BATCH_IMAGE_PROVIDER` | 候选人物图来源：`auto`（默认）/ `api` / `local` / `frame` |
 | `H3_BATCH_IMAGE_BASE_URL` | 中转站图片接口地址（配了它才认为出图可用，不走 `OPENAI_BASE_URL`）|
 | `H3_BATCH_IMAGE_API_KEY` | 中转站 key；缺省回落到 `OPENAI_API_KEY` |
-| `H3_BATCH_IMAGE_MODEL` | 中转站出图模型，默认 `gpt-image-2` |
+| `H3_BATCH_IMAGE_MODEL` | 中转站出图模型，默认 `gpt-image-2.5-sunburst` |
+| `H3_BATCH_IMAGE_MODE` | 请求方案：`auto`（默认，多图 `image[]`→`image`→拼合）/ `multi` / `composite` |
+| `H3_BATCH_IMAGE_FIELD` | 钉死 multipart 图片字段名（中转站只认单数 `image` 时用）|
+| `H3_BATCH_IMAGE_QUALITY` / `H3_BATCH_IMAGE_FIDELITY` | 默认 `high`；后者对应编辑接口的 `input_fidelity` |
 | `H3_BATCH_TEXT_BASE_URL` / `H3_BATCH_TEXT_API_KEY` | 预审文本分析端点与凭据（默认官方 `https://api.openai.com/v1`）|
 | `H3_BATCH_LUNA_MODEL` | 预审文本模型，默认 `gpt-5.6-luna` |
 

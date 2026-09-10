@@ -140,14 +140,100 @@ class WorkflowPreparationTests(unittest.TestCase):
                 self.assertTrue(batch_image.configured())
                 self.assertEqual(batch_image.base_url(), "https://relay.example/v1")
                 self.assertEqual(batch_image.model(), "gpt-image-2.5-sunburst")
-            self.assertEqual(batch_image.IMAGE_SIZES["4:3"], "1536x1024")
-            self.assertEqual(batch_image.IMAGE_SIZES["9:16"], "1024x1536")
+            self.assertEqual(batch_image.IMAGE_SIZES["4:3"], "1536x1152")
+            self.assertEqual(batch_image.IMAGE_SIZES["9:16"], "1152x2048")
         finally:
             for name, value in saved.items():
                 if value is None:
                     os.environ.pop(name, None)
                 else:
                     os.environ[name] = value
+            settings._USER_ENV_CACHE.clear()
+
+    def test_batch_image_sizes_match_relay_constraints(self) -> None:
+        """中转站约束：宽高均为 16 的倍数、长宽比 ≤3:1、总像素 655360~8294400，且比例精确。"""
+        for ratio, expected in (("4:3", (4, 3)), ("9:16", (9, 16))):
+            width, height = (int(part) for part in batch_image.IMAGE_SIZES[ratio].split("x"))
+            self.assertEqual(width % 16, 0, f"{ratio} 宽不是 16 的倍数")
+            self.assertEqual(height % 16, 0, f"{ratio} 高不是 16 的倍数")
+            self.assertLessEqual(max(width, height), 3840)
+            self.assertLessEqual(max(width, height) / min(width, height), 3.0)
+            pixels = width * height
+            self.assertGreaterEqual(pixels, 655_360)
+            self.assertLessEqual(pixels, 8_294_400)
+            # 比例必须精确：不能用 1536x1024 这种 3:2 冒充 4:3
+            self.assertEqual(width * expected[1], height * expected[0], f"{ratio} 比例不精确")
+
+    def test_batch_image_request_plans_fall_back_to_singular_field(self) -> None:
+        """官方多图编辑用 image[]，中转站文档只写 image：要能自动回退。"""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("H3_BATCH_IMAGE_FIELD", None)
+            os.environ.pop("H3_BATCH_IMAGE_MODE", None)
+            settings._USER_ENV_CACHE.clear()
+            self.assertEqual(
+                batch_image.request_plans(),
+                [("multi", "image[]"), ("multi", "image"), ("composite", "image")],
+            )
+        with patch.dict(os.environ, {"H3_BATCH_IMAGE_FIELD": "image"}, clear=False):
+            self.assertEqual(batch_image.request_plans(), [("multi", "image"), ("composite", "image")])
+        with patch.dict(
+            os.environ,
+            {"H3_BATCH_IMAGE_MODE": "composite", "H3_BATCH_IMAGE_FIELD": ""},
+            clear=False,
+        ):
+            self.assertEqual(batch_image.request_plans(), [("composite", "image")])
+
+    def test_batch_image_composite_stitches_two_references(self) -> None:
+        """只接受单图的中转站走 composite：把两张参考图左右拼成一张，不叠文字。"""
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            scene = root / "scene.png"
+            identity = root / "identity.png"
+            Image.new("RGB", (640, 480), "#223344").save(scene)
+            Image.new("RGB", (512, 768), "#884466").save(identity)
+            combined = batch_image.compose_reference(scene, identity, root / "combined.png")
+            with Image.open(combined) as image:
+                self.assertEqual(image.height, 768)
+                self.assertGreater(image.width, 512 * 2)
+                self.assertLess(image.width, 512 * 2 + 768)
+
+    def test_batch_image_falls_back_on_transport_error(self) -> None:
+        """连接失败这类传输层异常也必须走回退链，并汇总每一步的失败原因。"""
+        import asyncio
+
+        import httpx as _httpx
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            scene, identity = root / "s.png", root / "i.png"
+            Image.new("RGB", (320, 240), "#223344").save(scene)
+            Image.new("RGB", (240, 320), "#884466").save(identity)
+            calls: list[str] = []
+
+            async def boom(data, files):
+                calls.append(files[0][0])
+                raise _httpx.ConnectError("All connection attempts failed")
+
+            with patch.dict(
+                os.environ,
+                {"H3_BATCH_IMAGE_BASE_URL": "http://127.0.0.1:9/v1", "H3_BATCH_IMAGE_API_KEY": "sk-fake"},
+                clear=False,
+            ), patch.object(batch_image, "_post", boom):
+                settings._USER_ENV_CACHE.clear()
+                with self.assertRaises(RuntimeError) as caught:
+                    asyncio.run(
+                        batch_image.generate_candidate_image(
+                            scene_image=scene,
+                            identity_image=identity,
+                            prompt="p",
+                            ratio="4:3",
+                            output_path=root / "out.png",
+                        )
+                    )
+            message = str(caught.exception)
+            self.assertIn("连接失败", message)
+            self.assertIn("composite", message)  # 提示可切单图拼合
+            self.assertEqual(calls, ["image[]", "image", "image[]"])
             settings._USER_ENV_CACHE.clear()
 
     def test_batch_image_provider_selection(self) -> None:
