@@ -116,9 +116,7 @@ def new_item(kind: str, url: str, ratio: str, index: int, created: str) -> dict[
         "updatedAt": created,
         "title": "等待处理",
         "milestones": item_milestones(kind),
-        "logs": [{"time": created, "message": "已加入队列（还没有启动）"}],
-        # 只有用户点了这一条的「启动这一条」才会被 runner 捡起来跑
-        "startRequested": False,
+        "logs": [{"time": created, "message": "已加入队列（等「开跑」后才开始）"}],
         "revision": 0,
         "reviewApproved": False,
         "childJob": None,
@@ -1130,21 +1128,17 @@ def stage_media(state: dict[str, Any]) -> dict[str, str]:
 
 
 def _next_work(state: dict[str, Any]) -> dict[str, Any] | None:
-    """下一个要跑的任务。**只有用户点过「启动这一条」的条目才会跑**（2026-09-10 用户）。
+    """下一个要跑的任务：先整批备料（pending / revising），再逐条出片（confirmed）。
 
-    顺序：
-    1. `confirmed`（用户已点确认出片）—— 确认本身就是开始；
-    2. `pending` / `revising` 且 `startRequested`（用户点了这一条的「启动这一条」）。
-    其它（没启动的排队条目、`awaiting_review`）都不是可跑任务：`awaiting_review` 在等用户
-    上传图片并确认，没启动的条目在等用户点启动。
+    **队列不会自己跑**：只有用户点了「开跑」（`POST /api/batches/{id}/start`）才会 spawn
+    runner（2026-09-10 用户：「加入队列并不是马上开跑，需要由我点击总的开跑按钮才开始」）。
+    `awaiting_review` 是在等用户上传图片并确认，不算可跑任务。
     """
     items = state.get("items") or []
-    for item in items:
-        if item.get("status") == "confirmed":
-            return item
-    for item in items:
-        if item.get("startRequested") and item.get("status") in {"pending", "revising"}:
-            return item
+    for statuses in ({"pending", "revising"}, {"confirmed"}):
+        for item in items:
+            if item.get("status") in statuses:
+                return item
     return None
 
 
@@ -1176,21 +1170,15 @@ async def run_batch(batch_id: str) -> None:
             if item is None:
                 items = state.get("items") or []
                 waiting = [row for row in items if row.get("status") == "awaiting_review"]
-                idle = [row for row in items if row.get("status") in {"pending", "revising"}]
-                if waiting or idle:
-                    # 停下来等用户：已备好料的去审核区确认出片，没启动的点「启动这一条」
-                    parts = []
-                    if waiting:
-                        parts.append(f"{len(waiting)} 条素材已备齐待你确认出片")
-                    if idle:
-                        parts.append(f"{len(idle)} 条等待你点「启动这一条」")
+                if waiting:
+                    # 素材已备齐，停下来等用户逐条上传图片 + 确认出片
                     batch_store.update(
                         batch_id,
-                        status="awaiting_review" if waiting else "queued",
-                        stage="review" if waiting else "queued",
+                        status="awaiting_review",
+                        stage="review",
                         runnerActive=False,
-                        currentItemId=state.get("currentItemId") or (waiting or idle)[0]["id"],
-                        notice="；".join(parts) + "。",
+                        currentItemId=state.get("currentItemId") or waiting[0]["id"],
+                        notice=f"{len(waiting)} 条素材已备齐，等你确认出片。",
                     )
                     return
                 warnings = any(row.get("warning") for row in items)
@@ -1211,14 +1199,11 @@ async def run_batch(batch_id: str) -> None:
                 currentItemId=item["id"],
                 currentIndex=item["index"],
                 notice=(
-                    f"正在备料第 {item['index']} 条。"
+                    f"正在备料第 {item['index']} / {state['total']} 条。"
                     if preparing
-                    else f"正在出片第 {item['index']} 条。"
+                    else f"正在出片第 {item['index']} / {state['total']} 条。"
                 ),
             )
-            if preparing:
-                # 消费掉启动标记：跑过就不再被 _next_work 捡起来；失败后由「重试」重新置位
-                _set_item(batch_id, item["id"], startRequested=False)
             try:
                 if item.get("skipRequested"):
                     _set_item(batch_id, item["id"], status="skipped", stage="skipped", finishedAt=now_iso())
@@ -1434,7 +1419,6 @@ def request_review_adjustment(batch_id: str, item_id: str, feedback: str, mode: 
         item_id,
         status="revising",
         stage="prepare",
-        startRequested=True,   # 用户主动要求重做 → 重新排进 runner
         revision=revision,
         revisionFeedback=feedback.strip(),
         revisionMode=mode,

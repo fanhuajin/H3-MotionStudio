@@ -411,11 +411,11 @@ async def get_batch(batch_id: str):
 
 @app.post("/api/batches/{batch_id}/start")
 async def start_batch(batch_id: str):
-    """把队列里**所有还没启动**的条目一起标记为启动（API 能力；页面按条启动）。
+    """点「开跑」：整个队列开始按顺序处理（队列不会自己跑）。
 
-    队列流程（用户 2026-09-10 确认）：下载抖音视频 → 生成人物图与发布文案 → 等你的确认 →
-    确认后才出片。预热与流程解耦：预热失败不拦批次，真正出片时 pipeline 会再 ensure 一次
-    并报出真实错误。
+    队列流程（用户 2026-09-10 确认）：下载抖音视频 → 生成人物图素材与发布文案 → 等你的确认 →
+    确认后才出片。预处理失败只记日志不拦批次——备料阶段本来不需要 ComfyUI，
+    真正出片时 pipeline 会再 ensure 一次并报出真实错误。
     """
     state = _batch_or_404(batch_id)
     if state.get("status") == "cancelled":
@@ -423,43 +423,7 @@ async def start_batch(batch_id: str):
     if not _pending_items(state):
         raise HTTPException(409, "队列里没有待处理的任务")
     spawn(_prewarm_comfy())
-    marked = _mark_start_requested(batch_id)
-    return _resume_batch(batch_id, f"已启动 {marked} 条：正在预热 ComfyUI 并逐条处理。")
-
-
-def _mark_start_requested(batch_id: str, item_id: str | None = None) -> int:
-    """把待备料的条目标记为「已请求启动」，返回标记了几条。
-
-    `item_id` 为空表示整批（API 的 `/start`），否则只标记指定条目 —— 页面就是逐条启动的：
-    点「启动这一条」才跑这一条，其它没点的继续排队。
-    """
-    marked = 0
-
-    def apply(state: dict[str, Any]) -> None:
-        nonlocal marked
-        for item in state.get("items") or []:
-            if item_id and item.get("id") != item_id:
-                continue
-            if item.get("status") in {"pending", "revising"}:
-                item["startRequested"] = True
-                marked += 1
-
-    batch_store.mutate(batch_id, apply)
-    return marked
-
-
-@app.post("/api/batches/{batch_id}/items/{item_id}/start")
-async def start_batch_item(batch_id: str, item_id: str):
-    """点「启动这一条」：只让这一条开始（下载 → 分析 → 备人物图与发布文案 → 等确认）。"""
-    item = _batch_item_or_404(batch_id, item_id)
-    state = _batch_or_404(batch_id)
-    if state.get("status") == "cancelled":
-        raise HTTPException(409, "批次已取消，请新建一个批次")
-    if item.get("status") not in {"pending", "revising"}:
-        raise HTTPException(409, "这一条已经启动过了，请在审核区确认出片或重试")
-    spawn(_prewarm_comfy())
-    _mark_start_requested(batch_id, item_id)
-    return _resume_batch(batch_id, "已启动这一条：正在预热 ComfyUI 并准备素材。")
+    return _resume_batch(batch_id, "已开跑：正在预热 ComfyUI 并按队列逐条处理。")
 
 
 @app.post("/api/batches/{batch_id}/items")
@@ -629,7 +593,6 @@ async def retry_batch_item(batch_id: str, item_id: str):
             skipRequested=False,
             deleteRequested=False,
             childJob=None,
-            startRequested=True,   # 用户点了重试 → 重新排进 runner
         )
         for milestone in row.get("milestones") or []:
             if milestone.get("status") == "error":

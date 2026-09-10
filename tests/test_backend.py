@@ -345,8 +345,6 @@ class WorkflowPreparationTests(unittest.TestCase):
         import asyncio
 
         run_state = new_batch_state(["https://v.douyin.com/one"], ["https://v.douyin.com/two"])
-        for entry in run_state["items"]:
-            entry["startRequested"] = True   # 两条都由用户点过「启动这一条」
         box = {"state": run_state}
         first_id = run_state["items"][0]["id"]
 
@@ -476,19 +474,17 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertEqual(stub.state["status"], "queued")
             self.assertEqual(spawned, [])
 
-            # 点「启动这一条」才真的跑这一条，并且顺手把 ComfyUI 拉起来预热
+            # 点「开跑」才真的跑，并且顺手把 ComfyUI 拉起来预热
             stub.state["items"][1]["status"] = "pending"
-            started = asyncio.run(app_module.start_batch_item("b1", stub.state["items"][1]["id"]))
+            started = asyncio.run(app_module.start_batch("b1"))
             self.assertEqual(started["status"], "running")
             self.assertEqual(len(spawned), 2)   # run_batch + ComfyUI 预热
-            self.assertIn("已启动这一条", started["notice"])
-            self.assertTrue(stub.state["items"][1]["startRequested"])
-            self.assertFalse(stub.state["items"][0].get("startRequested", False))  # 别的条目不受影响
-
-            # 已经启动过的条目不能重复启动
-            stub.state["items"][1]["status"] = "awaiting_review"
-            with self.assertRaises(app_module.HTTPException):
-                asyncio.run(app_module.start_batch_item("b1", stub.state["items"][1]["id"]))
+            self.assertIn("已开跑", started["notice"])
+            # 逐条启动的入口已经收掉：唯一开关就是「开跑」
+            self.assertNotIn(
+                "/api/batches/{batch_id}/items/{item_id}/start",
+                {getattr(route, "path", "") for route in app_module.app.routes},
+            )
 
             # 队列里没有待处理任务时不给启动
             stub.state["status"] = "completed"
@@ -916,7 +912,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("final = await run_rvc(job_id, source)\n", source)
 
     def test_batch_prepares_every_item_before_waiting_for_review(self) -> None:
-        """只有点过「启动这一条」的条目才会跑；`awaiting_review` 与没启动的排队条目都不跑。"""
+        """先整批备料再逐条审核：`awaiting_review` 不能被当成可跑任务，否则第一条就卡住整批。"""
         from backend.batch_worker import _next_work
 
         state = {
@@ -926,15 +922,14 @@ class WorkflowPreparationTests(unittest.TestCase):
                 {"id": "c", "status": "confirmed"},
             ]
         }
-        self.assertEqual(_next_work(state)["id"], "c")      # 用户确认出片 → 确认本身就是开始
+        self.assertEqual(_next_work(state)["id"], "b")      # 还有没备料的 → 继续备料
+        state["items"][1]["status"] = "awaiting_review"
+        self.assertEqual(_next_work(state)["id"], "c")      # 备料跑完 → 才轮到出片
         state["items"][2]["status"] = "completed"
-        self.assertIsNone(_next_work(state))                # 没点「启动这一条」→ 谁都不跑
-        state["items"][1]["startRequested"] = True
-        self.assertEqual(_next_work(state)["id"], "b")      # 点过启动 → 轮到它备料
-        state["items"][1]["status"] = "revising"
-        self.assertEqual(_next_work(state)["id"], "b")      # 按意见重做同样由启动标记驱动
-        state["items"][1]["startRequested"] = False
-        self.assertIsNone(_next_work(state))                # 消费掉标记后不再重复跑
+        self.assertIsNone(_next_work(state))                # 都在等用户 → 无事可做
+        # revising（按审核意见重做）也要排进备料阶段
+        state["items"][0]["status"] = "revising"
+        self.assertEqual(_next_work(state)["id"], "a")
 
     def test_batch_reuse_previous_analysis_only_for_image_mode(self) -> None:
         """「只调图片」不得重跑模型：否则文案和动作/运镜会被一起改写。"""

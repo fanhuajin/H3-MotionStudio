@@ -1414,6 +1414,21 @@ body {
 .batch-input-grid textarea { min-height: 104px; padding: 11px 12px; font-size: 12px; line-height: 1.7; }
 .batch-input-grid textarea:focus { border-color: var(--shell-accent); box-shadow: 0 0 0 3px rgba(55, 216, 230, .08); }
 .batch-input-grid small { color: var(--shell-muted); font-size: 11px; }
+/* ① 准备任务：先填信息、核对待加入清单，再入队；入队也不会自己跑 */
+.batch-prepare-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--shell-line); }
+.batch-prepare-head span { color: #f1edf9; font-size: 14px; font-weight: 700; }
+.batch-prepare-head small { color: var(--shell-muted); font-size: 11px; }
+.batch-staged { margin-top: 14px; padding: 12px 13px; border: 1px solid var(--shell-line); border-radius: 9px; background: rgba(15, 11, 34, .8); }
+.batch-staged-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 10px; }
+.batch-staged-head span { color: #ded8ec; font-size: 12px; font-weight: 650; }
+.batch-staged-head small { color: var(--shell-muted); font-size: 10px; }
+.batch-staged-list { display: flex; flex-direction: column; gap: 5px; max-height: 200px; margin: 10px 0 0; padding: 0; overflow-y: auto; list-style: none; }
+.batch-staged-list li { display: grid; grid-template-columns: auto minmax(0, 1fr) 22px; align-items: center; gap: 9px; padding: 6px 8px; border: 1px solid #2c2444; border-radius: 6px; background: #0d0a24; }
+.batch-staged-list li i { padding: 2px 6px; border-radius: 4px; color: #8ceaf6; background: rgba(55, 216, 230, .1); font-size: 10px; font-style: normal; }
+.batch-staged-list li span { min-width: 0; overflow: hidden; color: #cfc9df; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.batch-staged-list li button { width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid #463a64; border-radius: 5px; color: #b9b2cd; background: transparent; cursor: pointer; }
+.batch-staged-list li button:hover { border-color: rgba(255, 108, 137, .4); color: #ff9daf; }
+.batch-input-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 /* 画布比例：分组默认值（歌曲 4:3 / 跳舞 9:16）+ 每条视频可单独改 */
 .batch-ratio-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .batch-ratio-pick em { margin-right: 2px; color: #9d95b5; font-size: 10px; font-style: normal; letter-spacing: .04em; }
@@ -1425,8 +1440,7 @@ body {
 .batch-input-actions { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 15px; padding-top: 14px; border-top: 1px solid var(--shell-line); }
 .batch-input-actions p { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--shell-muted); font-size: 11px; }
 .batch-input-actions p svg { color: var(--shell-accent); }
-.batch-primary, .batch-secondary, .batch-item-actions button, .batch-section-head button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 7px; cursor: pointer; transition: .18s ease; }
-.batch-primary { min-height: 39px; padding: 0 16px; border: 1px solid var(--shell-accent); color: #061316; background: var(--shell-accent); font-size: 12px; font-weight: 700; }
+.batch-primary, .batch-secondary, .batch-item-actions button, .batch-section-head button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 7px; cursor: pointer; transition: .18s ease; }.batch-primary { min-height: 39px; padding: 0 16px; border: 1px solid var(--shell-accent); color: #061316; background: var(--shell-accent); font-size: 12px; font-weight: 700; }
 .batch-primary:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
 .batch-primary:disabled { cursor: not-allowed; opacity: .42; }
 .batch-secondary { min-height: 39px; padding: 0 15px; border: 1px solid #4a3f66; color: #ded8ec; background: #17112f; font-size: 12px; }
