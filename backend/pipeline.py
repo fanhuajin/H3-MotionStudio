@@ -222,10 +222,42 @@ class ResourceManager:
             except (OSError, subprocess.TimeoutExpired):
                 continue
 
-    async def stop_comfy(self, job_id: str) -> None:
-        store.set_milestone(job_id, "handoff", status="running", currentNode="正在卸载模型并关闭 ComfyUI")
-        store.update(job_id, stage="handoff", currentNodeTitle="关闭 ComfyUI", progress=None)
-        store.add_log(job_id, "正在卸载 ComfyUI 模型并释放显存……")
+    def _kill_listener_process(self) -> None:
+        """taskkill 掉占用 8188 的进程；只认预期的 ComfyUI，其它进程拒绝关闭。"""
+        process = self._listener_process()
+        if not process:
+            raise PipelineError("无法安全关闭 ComfyUI", "8188 端口正在使用，但无法确认对应进程。")
+        executable = str(process.get("ExecutablePath") or "")
+        command_line = str(process.get("CommandLine") or "")
+        expected_python = str(COMFY_PYTHON).lower()
+        is_expected = executable.lower() == expected_python or (
+            "comfyui\\main.py" in command_line.lower() and "d:\\comfyui" in command_line.lower()
+        )
+        if not is_expected:
+            raise PipelineError(
+                "拒绝关闭未知进程",
+                f"8188 端口进程不是预期的 ComfyUI。PID={process.get('ProcessId')}\n{command_line}",
+            )
+        result = subprocess.run(
+            ["taskkill", "/PID", str(process["ProcessId"]), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            creationflags=_creation_flags(),
+        )
+        if result.returncode != 0:
+            raise PipelineError("关闭 ComfyUI 失败", result.stderr or result.stdout)
+
+    async def shutdown_comfy(self, job_id: str | None = None) -> bool:
+        """卸载模型并关闭 ComfyUI，释放显存；返回是否真的终止了进程。
+
+        `job_id` 为空表示这是用户在任务队列面板上手动点「关闭 ComfyUI」——
+        只做关闭，不写任何任务状态（批量预审这类没有 jobs 记录的调用同理）。
+        """
+        if job_id:
+            store.set_milestone(job_id, "handoff", status="running", currentNode="正在卸载模型并关闭 ComfyUI")
+            store.update(job_id, stage="handoff", currentNodeTitle="关闭 ComfyUI", progress=None)
+        _log_maybe(job_id, "正在卸载 ComfyUI 模型并释放显存……")
         try:
             async with httpx.AsyncClient(timeout=5) as client:
                 await client.post(f"{COMFY_URL}/free", json={"unload_models": True, "free_memory": True})
@@ -242,44 +274,37 @@ class ResourceManager:
                 await asyncio.to_thread(self.comfy_process.wait)
             stopped = True
         elif await comfy_health():
-            process = await asyncio.to_thread(self._listener_process)
-            if not process:
-                raise PipelineError("无法安全关闭 ComfyUI", "8188 端口正在使用，但无法确认对应进程。")
-            executable = str(process.get("ExecutablePath") or "")
-            command_line = str(process.get("CommandLine") or "")
-            expected_python = str(COMFY_PYTHON).lower()
-            is_expected = executable.lower() == expected_python or (
-                "comfyui\\main.py" in command_line.lower() and "d:\\comfyui" in command_line.lower()
-            )
-            if not is_expected:
-                raise PipelineError(
-                    "拒绝关闭未知进程",
-                    f"8188 端口进程不是预期的 ComfyUI。PID={process.get('ProcessId')}\n{command_line}",
-                )
-            result = await asyncio.to_thread(
-                subprocess.run,
-                ["taskkill", "/PID", str(process["ProcessId"]), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                errors="replace",
-                creationflags=_creation_flags(),
-            )
-            if result.returncode != 0:
-                raise PipelineError("关闭 ComfyUI 失败", result.stderr or result.stdout)
+            await asyncio.to_thread(self._kill_listener_process)
             stopped = True
 
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline and await comfy_health():
-            await asyncio.sleep(1)
+        # 确认端口真的释放；偶发只终止了包装进程时再补一刀，避免"看起来关了其实还在占显存"
+        for attempt in range(2):
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and await comfy_health():
+                await asyncio.sleep(1)
+            if not await comfy_health():
+                break
+            if attempt == 0 and not self.comfy_process:
+                _log_maybe(job_id, "ComfyUI 第一次没有被完全终止，正在重试关闭……")
+                await asyncio.to_thread(self._kill_listener_process)
         if await comfy_health():
-            raise PipelineError("ComfyUI 没有完全关闭", "服务仍在占用 8188 端口，已阻止 RVC 启动。")
+            raise PipelineError("ComfyUI 没有完全关闭", "服务仍在占用 8188 端口。")
 
         if self.comfy_log_handle:
             self.comfy_log_handle.close()
             self.comfy_log_handle = None
         self.comfy_process = None
-        store.set_milestone(job_id, "handoff", status="completed", currentNode=None, progress=100)
-        store.add_log(job_id, "ComfyUI 已完全关闭，资源已切换到 RVC。" if stopped else "ComfyUI 已处于关闭状态。")
+        if job_id:
+            store.set_milestone(job_id, "handoff", status="completed", currentNode=None, progress=100)
+        _log_maybe(
+            job_id,
+            "ComfyUI 已完全关闭，显存已释放。" if stopped else "ComfyUI 已处于关闭状态。",
+        )
+        return stopped
+
+    async def stop_comfy(self, job_id: str) -> None:
+        """链路内的交接步骤：关闭 ComfyUI 并推进 handoff 里程碑。"""
+        await self.shutdown_comfy(job_id)
 
 
 resources = ResourceManager()

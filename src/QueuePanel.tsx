@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowsClockwise, SpinnerGap, X } from "@phosphor-icons/react";
+import { ArrowsClockwise, Power, SpinnerGap, X } from "@phosphor-icons/react";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 
 type QueueEntry = {
@@ -48,6 +48,7 @@ export function QueuePanel({ open, onClose }: { open: boolean; onClose: () => vo
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmStop, setConfirmStop] = useState(false);
   const confirmTimer = useRef<number | null>(null);
 
   const appActive = payload?.app?.status === "queued" || payload?.app?.status === "running";
@@ -120,6 +121,28 @@ export function QueuePanel({ open, onClose }: { open: boolean; onClose: () => vo
     })();
   };
 
+  // 关闭 ComfyUI：释放显存。有任务在跑时后端会拒绝并说明原因。
+  const requestStopComfy = () => {
+    if (!confirmStop) {
+      setConfirmStop(true);
+      if (confirmTimer.current) window.clearTimeout(confirmTimer.current);
+      confirmTimer.current = window.setTimeout(() => setConfirmStop(false), 5000);
+      return;
+    }
+    setBusy(true);
+    void (async () => {
+      try {
+        const response = await fetch("/api/comfy/stop", { method: "POST" });
+        const body = await response.json().catch(() => null);
+        if (!response.ok) window.alert(body?.detail || "关闭失败");
+        await load();
+      } finally {
+        setBusy(false);
+        setConfirmStop(false);
+      }
+    })();
+  };
+
   const app = payload?.app ?? null;
   const appElapsedMs = app ? elapsedMs(app.startedAt, null, tickNow) : null;
 
@@ -188,6 +211,16 @@ export function QueuePanel({ open, onClose }: { open: boolean; onClose: () => vo
                   </button>
                 )}
               </>
+            )}
+            {payload?.connected && (
+              <button
+                className={`queue-cancel quiet ${confirmStop ? "armed" : ""}`}
+                disabled={busy || Boolean(appActive)}
+                title={appActive ? "有任务正在运行，先取消或等它结束" : "卸载模型并关闭 ComfyUI，释放显存"}
+                onClick={requestStopComfy}
+              >
+                <Power /> {confirmStop ? "再点一次确认关闭" : "关闭 ComfyUI"}
+              </button>
             )}
           </div>
     </div>

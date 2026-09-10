@@ -396,6 +396,22 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(by_index[2]["status"], "awaiting_review")   # 后面的条目照常跑
         self.assertNotEqual(box["state"]["status"], "failed")
 
+    def test_comfy_stop_endpoint_and_jobless_shutdown(self) -> None:
+        """手动关闭 ComfyUI：接口在，且交接用的关闭逻辑能在没有 job 的情况下调用。"""
+        import inspect
+
+        from backend.app import app
+        from backend.pipeline import ResourceManager
+
+        self.assertIn("/api/comfy/stop", {getattr(route, "path", "") for route in app.routes})
+        # job_id 缺省为空 → 只关闭、不写任何任务状态（队列面板按钮走这条）
+        self.assertIsNone(inspect.signature(ResourceManager.shutdown_comfy).parameters["job_id"].default)
+        # 链路内的交接步骤仍然必须传 job_id 才能推进 handoff 里程碑
+        self.assertIs(
+            inspect.signature(ResourceManager.stop_comfy).parameters["job_id"].default,
+            inspect.Parameter.empty,
+        )
+
     def test_batch_preflight_no_longer_drives_the_codex_cli(self) -> None:
         """预审必须直连模型 + 本地出图；不能再起 codex exec agent 会话烧订阅额度。"""
         source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")

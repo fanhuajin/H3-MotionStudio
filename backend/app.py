@@ -60,6 +60,7 @@ from .pipeline import (
     estimate_migrate_segments,
     estimate_singing_segments,
     media_metadata,
+    resources,
     retry_voice,
     run_migrate_pipeline,
     run_pipeline,
@@ -1496,6 +1497,52 @@ async def comfy_queue_action(request: ComfyQueueAction):
     except httpx.HTTPError as error:
         raise HTTPException(502, f"清空队列失败：{error}") from error
     return {"cleared": True}
+
+
+@app.post("/api/comfy/stop")
+async def comfy_stop():
+    """手动关闭 ComfyUI，立刻释放显存（用户 2026-09-10：「关闭启动的 comfyui」）。
+
+    有任务在跑时拒绝执行——正在生成的图/视频会因为进程被杀而报废：
+    - jobs 表里有 queued/running 的单链路任务；
+    - 批次里有条目处于 running/revising/confirmed（可能正在出片或用本地出图）；
+    - ComfyUI 自己的队列里还有 running/pending 的 prompt。
+    """
+    active = store.active()
+    if active and active.get("status") in {"queued", "running"}:
+        raise HTTPException(409, "有任务正在运行，请先取消或等它结束，再关闭 ComfyUI")
+    batch = batch_store.active()
+    if batch:
+        busy = next(
+            (
+                item
+                for item in batch.get("items") or []
+                if item.get("status") in {"running", "revising", "confirmed"}
+            ),
+            None,
+        )
+        if busy:
+            raise HTTPException(
+                409, f"批量第 {busy.get('index')} 条正在执行，请先等它结束再关闭 ComfyUI"
+            )
+    if not await comfy_health():
+        return {"stopped": False, "message": "ComfyUI 未运行"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            payload = (await client.get(f"{COMFY_URL}/queue")).json()
+        queued = len(payload.get("queue_running") or []) + len(payload.get("queue_pending") or [])
+    except (httpx.HTTPError, ValueError):
+        queued = 0
+    if queued:
+        raise HTTPException(409, "ComfyUI 队列里还有任务，请先清空或等它跑完")
+    try:
+        stopped = await resources.shutdown_comfy()
+    except PipelineError as error:
+        raise HTTPException(502, f"{error.summary}：{error.detail}") from error
+    return {
+        "stopped": stopped,
+        "message": "ComfyUI 已关闭，显存已释放。" if stopped else "ComfyUI 本来就是关闭状态。",
+    }
 
 
 @app.post("/api/jobs/{job_id}/cancel")
