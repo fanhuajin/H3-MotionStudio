@@ -50,6 +50,11 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertTrue(all(next(step for step in item["milestones"] if step["id"] == "video")["status"] == "pending" for item in state["items"]))
         self.assertEqual(unique_urls([singing, "", singing]), [singing])
 
+    def test_batch_codex_uses_workspace_sandbox_without_conflicting_approval_flag(self) -> None:
+        source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
+        self.assertIn('"--sandbox",\n        "workspace-write",', source)
+        self.assertNotIn('"--approve-for-me"', source)
+
     def test_batch_cover_outputs_have_platform_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

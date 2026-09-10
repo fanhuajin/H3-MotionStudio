@@ -253,7 +253,6 @@ async def _run_codex(
         model,
         "--sandbox",
         "workspace-write",
-        "--approve-for-me",
         "-c",
         'model_reasoning_effort="high"',
         "-C",
