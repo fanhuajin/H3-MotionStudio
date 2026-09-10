@@ -11,3 +11,7 @@ data/
 .tmp_h3_action_analysis/
 output/
 
+.tmp*/
+_tmp_*/
+_video_analysis/
+qrcode.png

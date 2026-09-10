@@ -107,11 +107,12 @@ DIFFUSION_MODELS_DIR = COMFY_ROOT / "models" / "diffusion_models"
 RVC_ROOT = COMFY_HOME / "RVC"
 RVC_PYTHON = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 RVC_SCRIPT = RVC_ROOT / "convert_video_to_my_voice.py"
-# H3 唱歌链路默认音色：kikiV1（2026-09-10 用户要求从 yueshao_v1 切回 kikiV1）。
-# 旧 sasablue_v2、haoshengyin、ranran 与 yueshao_v1 模型仍保留在 weights 中备查。
-RVC_MODEL = RVC_ROOT / "assets" / "weights" / "kikiV1.pth"
-# kikiV1 专属检索索引；文件缺失时转换脚本会退化为无索引模式。
-RVC_INDEX = RVC_ROOT / "assets" / "indices" / "kikiV1.index"
+# H3 唱歌链路默认音色：wanwansu_v1（2026-09-11 用户要求从 kikiV1 切换；用博主「晚晚苏」
+# 20 条翻唱干声训练，素材与再训流程归档在 E:\AI_Assets\RVC\Projects\wanwansu_v1\）。
+# 旧 kikiV1、sasablue_v2、haoshengyin、ranran 与 yueshao_v1 模型已按用户要求删除。
+RVC_MODEL = RVC_ROOT / "assets" / "weights" / "wanwansu_v1.pth"
+# wanwansu_v1 专属检索索引；文件缺失时转换脚本会退化为无索引模式。
+RVC_INDEX = RVC_ROOT / "assets" / "indices" / "wanwansu_v1.index"
 
 # 歌词字幕路由（多语言）：用 RVC 环境的 torchaudio HDEMUCS 分离人声，再用
 # faster-whisper（本地模型目录，缺省 D:\tmp\fw-turbo，可用 H3_WHISPER_MODEL 覆盖）
