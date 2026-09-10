@@ -9,7 +9,7 @@
     "style_note": { "type": "string" },
     "title": { "type": "string" },
     "introduction": { "type": "string" },
-    "tags": { "type": "array", "items": { "type": "string" }, "maxItems": 12 },
+    "tags": { "type": "array", "items": { "type": "string" }, "minItems": 5, "maxItems": 5 },
     "cover_headline": { "type": "string" },
     "remove_subtitles": { "type": "boolean" },
     "content_prompt": { "type": "string" },

@@ -13,6 +13,7 @@ import {
   Play,
   SpinnerGap,
   Trash,
+  UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -31,12 +32,15 @@ interface BatchStep {
 interface BatchAI {
   reference_image_path: string;
   song_name?: string;
+  song_mood?: string;
   style_source?: "video" | "redesign";
   style_note?: string;
   title: string;
   introduction: string;
   tags: string[];
   cover_headline?: string;
+  imagePrompt?: string;
+  sceneFramePath?: string;
 }
 
 interface ChildJob {
@@ -136,6 +140,9 @@ export function BatchRoute() {
   const [mode, setMode] = useState<"image" | "copy" | "both">("both");
   const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [imageToken, setImageToken] = useState(0);
 
   const visibleItems = useMemo(() => batch?.items.filter((item) => item.status !== "deleted") || [], [batch]);
   const selected = useMemo(
@@ -250,6 +257,40 @@ export function BatchRoute() {
   };
 
   const openFolder = () => itemCall("open-output");
+  const hasImage = Boolean(selected?.ai?.reference_image_path);
+
+  const uploadImage = async (file: File) => {
+    if (!batch || !selected) return;
+    setBusyAction("upload");
+    setError("");
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await fetch(`/api/batches/${batch.id}/items/${selected.id}/image`, {
+        method: "POST",
+        body,
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "图片上传失败"));
+      setBatch(await response.json());
+      setImageToken(Date.now());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  const copyPrompt = async () => {
+    const text = selected?.ai?.imagePrompt || "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setError("浏览器拒绝了剪贴板访问，请展开下面的提示词全文手动复制。");
+    }
+  };
   const canStart = splitUrls(singing).length + splitUrls(dance).length > 0;
   const hasLiveBatch = batch && !["completed", "cancelled"].includes(batch.status);
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
@@ -355,12 +396,80 @@ export function BatchRoute() {
                   <section className="batch-review">
                     <div className="batch-review-image">
                       <div className="batch-review-label"><ImageSquare /> 候选人物图 · 第 {(selected.revision || 0) + 1} 版</div>
-                      <img src={`/api/batches/${batch.id}/items/${selected.id}/image?v=${selected.revision || 0}`} alt="待确认的人物图" />
+                      {hasImage ? (
+                        <img
+                          src={`/api/batches/${batch.id}/items/${selected.id}/image?v=${imageToken || selected.revision || 0}`}
+                          alt="待确认的人物图"
+                        />
+                      ) : (
+                        <label
+                          className={`batch-dropzone ${dragging ? "over" : ""}`}
+                          onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+                          onDragLeave={() => setDragging(false)}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            setDragging(false);
+                            const file = event.dataTransfer.files?.[0];
+                            if (file) void uploadImage(file);
+                          }}
+                        >
+                          <UploadSimple weight="bold" />
+                          <strong>{busyAction === "upload" ? "正在上传…" : "把 GPT 生成的图拖到这里"}</strong>
+                          <small>或点击选择文件 · PNG / JPG / WEBP · 单张 25MB 以内</small>
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0];
+                              if (file) void uploadImage(file);
+                              event.target.value = "";
+                            }}
+                          />
+                        </label>
+                      )}
+                      {hasImage && (
+                        <label className="batch-replace">
+                          <UploadSimple /> 换一张
+                          <input
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0];
+                              if (file) void uploadImage(file);
+                              event.target.value = "";
+                            }}
+                          />
+                        </label>
+                      )}
                     </div>
                     <div className="batch-review-copy">
                       <div className="batch-review-title">
                         <span>等待你的确认</span>
                         <small>确认前不会启动 ComfyUI</small>
+                      </div>
+
+                      <div className="batch-materials">
+                        <div className="batch-materials-head">
+                          <span>出图素材</span>
+                          <small>在 GPT 聊天里：先传下面两张图，再粘贴提示词</small>
+                        </div>
+                        <div className="batch-materials-actions">
+                          <a href={`/api/batches/${batch.id}/items/${selected.id}/material/scene?download=true`}>
+                            <ImageSquare /> 下载图一 · 造型场景参考
+                          </a>
+                          <a href={`/api/batches/${batch.id}/items/${selected.id}/material/identity?download=true`}>
+                            <ImageSquare /> 下载图二 · 原型身份图
+                          </a>
+                          <button onClick={copyPrompt} disabled={!selected.ai.imagePrompt}>
+                            <Copy /> {copied ? "已复制" : "复制提示词"}
+                          </button>
+                        </div>
+                        {selected.ai.imagePrompt && (
+                          <details>
+                            <summary>展开提示词全文（{selected.ai.imagePrompt.length} 字）</summary>
+                            <pre>{selected.ai.imagePrompt}</pre>
+                          </details>
+                        )}
                       </div>
                       {selected.ai.song_name && <p className="batch-song-name">识别歌曲：{selected.ai.song_name}</p>}
                       {selected.ai.style_note && (
@@ -397,7 +506,9 @@ export function BatchRoute() {
                       <div className={`batch-step ${step.status}`} key={step.id}>
                         <span className="batch-step-icon">{stepIcon(step.status)}</span>
                         <div><strong>{step.label}</strong><small>{step.currentNode || step.subtitle}</small></div>
-                        {step.status === "running" && typeof step.progress === "number" && <em>{Math.round(step.progress)}%</em>}
+                        {step.status === "running" && (typeof step.progress === "number"
+                          ? <em>{Math.round(step.progress)}%</em>
+                          : <em className="indeterminate" title="该步骤没有节点级进度，按实际耗时显示">进行中</em>)}
                       </div>
                     ))}
                   </div>

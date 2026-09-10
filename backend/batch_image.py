@@ -16,12 +16,13 @@ import asyncio
 import base64
 import json
 import mimetypes
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from .settings import env_value
 
@@ -156,6 +157,104 @@ def _build_request(
     if fidelity:
         data["input_fidelity"] = fidelity
     return data, files, text
+
+
+def _blur_region(image: Image.Image, box: dict[str, float]) -> Image.Image:
+    width, height = image.size
+    x0 = max(0, min(width - 1, int(box["x0"] * width)))
+    y0 = max(0, min(height - 1, int(box["y0"] * height)))
+    x1 = max(x0 + 1, min(width, int(box["x1"] * width)))
+    y1 = max(y0 + 1, min(height, int(box["y1"] * height)))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return image
+    region = image.crop((x0, y0, x1, y1)).filter(
+        ImageFilter.GaussianBlur(radius=max(14.0, (x1 - x0) / 5.0))
+    )
+    image.paste(region, (x0, y0))
+    return image
+
+
+async def defocus_reference_face(scene_image: Path, work_dir: Path) -> tuple[Path, bool]:
+    """把参考帧（图一）里的人脸糊掉，返回 (文件路径, 是否成功糊掉)。
+
+    图一里是**源视频那个人**的脸。直接送进去，模型会把那个人的五官混进成图，
+    而用户要求「五官必须和原型图一致」。把这张脸糊掉之后，图一仍然提供发型轮廓、
+    服装、场景和灯光，但不再提供任何可用于"换脸"的面部信息。
+
+    定位失败时不阻断流程：返回原图并标记未处理，由上层写进日志。
+    """
+    from . import batch_ai
+
+    scene_image = Path(scene_image)
+    target = Path(work_dir) / f"{scene_image.stem}-noface.png"
+    if target.is_file():
+        return target, True
+
+    with Image.open(scene_image) as opened:
+        image = opened.convert("RGB")
+    box = await batch_ai.locate_face(scene_image)
+    if not box:
+        return scene_image, False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _blur_region(image, box).save(target, format="PNG")
+    return target, True
+
+
+async def swap_face_with_prototype(
+    *,
+    generated: Path,
+    prototype: Path,
+    output_path: Path,
+    on_progress: ProgressCallback | None = None,
+) -> Path:
+    """用本地 ReActor 把原型图的脸换到生成图上，锁定身份。
+
+    为什么必须做这一步：中转站用的是图像编辑模型，它本质上是**重新合成**一张脸，
+    `input_fidelity` 只能做到"尽量像"，做不到"就是同一个人"（用户实测判定五官不对）。
+    换脸是确定性的身份迁移，才是「五官必须和原型图一致」这条硬要求的正确实现。
+
+    造型、服装、场景、构图仍由中转站出的那张图决定，换脸只替换面部区域，
+    并接一个 GFPGAN 修复让边缘自然。
+    """
+    from .batch_portrait import run_api_prompt, stage_input
+    from .pipeline import pipeline_lock, resources
+
+    target_name = await asyncio.to_thread(stage_input, Path(generated), "swap_target")
+    source_name = await asyncio.to_thread(stage_input, Path(prototype), "swap_source")
+    prompt: dict[str, Any] = {
+        "1": {"class_type": "LoadImage", "inputs": {"image": target_name}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": source_name}},
+        "3": {
+            "class_type": "ReActorFaceSwap",
+            "inputs": {
+                "enabled": True,
+                "input_image": ["1", 0],
+                "source_image": ["2", 0],
+                "swap_model": "reswapper_128.onnx",
+                "facedetection": "retinaface_resnet50",
+                "face_restore_model": "GFPGANv1.4.pth",
+                "face_restore_visibility": 1.0,
+                "codeformer_weight": 0.5,
+                "detect_gender_input": "no",
+                "detect_gender_source": "no",
+                "input_faces_index": "0",
+                "source_faces_index": "0",
+                "console_log_level": 1,
+            },
+            "_meta": {"title": "ReActor 换脸锁定身份"},
+        },
+        "4": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["3", 0], "filename_prefix": "batch_faceswap"},
+        },
+    }
+    async with pipeline_lock:
+        await resources.ensure_comfy()
+        produced = await run_api_prompt(prompt, on_progress)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(shutil.copy2, produced, output_path)
+    return output_path
 
 
 async def _post(

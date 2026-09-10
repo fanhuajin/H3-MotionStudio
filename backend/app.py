@@ -24,7 +24,14 @@ logger = logging.getLogger("uvicorn.error")
 
 from . import input_preview
 from .batch_store import batch_store
-from .batch_worker import cancel_item_work, new_batch_state, request_review_adjustment, run_batch
+from . import batch_ai
+from .batch_worker import (
+    IDENTITY_PATH,
+    cancel_item_work,
+    new_batch_state,
+    request_review_adjustment,
+    run_batch,
+)
 from .douyin_mirror import all_jobs as mirror_jobs
 from .douyin_mirror import get_job as mirror_get_job
 from .douyin_mirror import upsert_jobs as mirror_upsert
@@ -405,6 +412,8 @@ async def confirm_batch_item(batch_id: str, item_id: str):
     item = _batch_item_or_404(batch_id, item_id)
     if item.get("status") != "awaiting_review":
         raise HTTPException(409, "当前条目不在待确认状态")
+    if not str((item.get("ai") or {}).get("reference_image_path") or "").strip():
+        raise HTTPException(409, "请先添加上这一条的候选人物图，再确认出片")
     batch_store.set_item_milestone(batch_id, item_id, "review", status="completed", progress=100)
 
     def approve(row: dict[str, Any]) -> None:
@@ -505,6 +514,89 @@ async def batch_item_image(batch_id: str, item_id: str):
         raise HTTPException(404, "候选图片不存在")
     media_type = mimetypes.guess_type(path.name)[0] or "image/png"
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/image")
+async def upload_batch_item_image(
+    batch_id: str, item_id: str, file: UploadFile = File(...)
+):
+    """用户把在 GPT 聊天里做好的图片上传回来，作为该条目的候选人物图。
+
+    默认出图方式是 `manual`：批量只备料（提示词 + 图一 + 图二），成图由用户提供。
+    上传后立刻按这张图重写发布文案，保证图文一致，然后仍停在审核点。
+    """
+    state = _batch_or_404(batch_id)
+    item = _batch_item_or_404(batch_id, item_id)
+    if item.get("status") in {"completed", "deleted"}:
+        raise HTTPException(409, "当前条目已经结束")
+    suffix = Path(file.filename or "candidate.png").suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        raise HTTPException(400, "只支持 PNG / JPG / WEBP 图片")
+
+    folder = (DATA_DIR / "batches" / batch_id / item_id).resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    revision = int(item.get("revision") or 0)
+    target = folder / f"candidate_r{revision}_upload{suffix if suffix != '.jpeg' else '.jpg'}"
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(400, "上传的图片是空文件")
+    if len(payload) > 25 * 1024 * 1024:
+        raise HTTPException(400, "图片超过 25MB")
+    target.write_bytes(payload)
+
+    ai = dict(item.get("ai") or {})
+    ai["reference_image_path"] = str(target)
+
+    # 图文一致：文案要看着用户给的那张图来写
+    rewrite_note = ""
+    if batch_ai.configured():
+        try:
+            copy = await batch_ai.write_copy(
+                candidate_image=target,
+                song_name=str(ai.get("song_name") or ""),
+                song_mood=str(ai.get("song_mood") or ""),
+                description=str((item.get("sourceMetadata") or {}).get("desc") or ""),
+            )
+            for key in ("title", "introduction", "tags", "cover_headline"):
+                if copy.get(key):
+                    ai[key] = copy[key]
+            rewrite_note = "发布文案已按这张图重写。"
+        except Exception as error:  # 文案重写失败不影响放行，只记一条日志
+            rewrite_note = f"文案重写失败，沿用原文案：{error}"
+    else:
+        rewrite_note = "未配置文本模型，沿用原文案。"
+
+    ai["tags"] = [
+        str(tag).strip().lstrip("#") for tag in ai.get("tags") or [] if str(tag).strip()
+    ][:5]
+
+    def apply(row: dict[str, Any]) -> None:
+        row["ai"] = ai
+        row["warning"] = None
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(batch_id, item_id, f"已收到你上传的候选图：{target.name}。{rewrite_note}")
+    return _batch_or_404(batch_id)
+
+
+@app.get("/api/batches/{batch_id}/items/{item_id}/material/{key}")
+async def batch_item_material(batch_id: str, item_id: str, key: str, download: bool = Query(False)):
+    """出图素材：`scene` = 图一（源视频取帧，造型/场景参考）、`identity` = 图二（原型身份图）。"""
+    item = _batch_item_or_404(batch_id, item_id)
+    ai = item.get("ai") or {}
+    if key == "scene":
+        raw = str(ai.get("sceneFramePath") or "")
+        name = "图一_源视频参考帧.jpg"
+    elif key == "identity":
+        raw = str(IDENTITY_PATH)
+        name = "图二_原型身份图.png"
+    else:
+        raise HTTPException(404, "素材不存在")
+    path = Path(raw)
+    if not raw or not path.is_file():
+        raise HTTPException(404, "素材尚未生成")
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=name if download else None)
 
 
 @app.get("/api/batches/{batch_id}/items/{item_id}/output/{key}")

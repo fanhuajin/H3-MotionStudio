@@ -1480,6 +1480,9 @@ body {
 .batch-step strong { color: #c9c4d5; font-size: 10px; font-weight: 600; }
 .batch-step small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #746d86; font-size: 9px; }
 .batch-step em { color: var(--shell-accent); font-size: 9px; font-style: normal; }
+.batch-step em.indeterminate { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.batch-step em.indeterminate::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--shell-accent); animation: batchPulse 1.1s ease-in-out infinite; }
+@keyframes batchPulse { 0%, 100% { opacity: .22; transform: scale(.75); } 50% { opacity: 1; transform: scale(1.15); } }
 .batch-step.running { border-color: rgba(55, 216, 230, .35); }
 .batch-step.running .batch-step-icon { border-color: var(--shell-accent); color: var(--shell-accent); }
 .batch-step.completed .batch-step-icon { border-color: rgba(72, 214, 143, .42); color: #64dfa2; }

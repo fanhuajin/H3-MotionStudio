@@ -162,6 +162,23 @@ async def _watch_progress(
         return
 
 
+async def run_api_prompt(
+    api_prompt: dict[str, Any], on_progress: ProgressCallback | None = None
+) -> Path:
+    """把一份 ComfyUI API prompt 提交上去，等它跑完并返回第一张产出图。"""
+    client_id = uuid.uuid4().hex
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            f"{COMFY_URL}/prompt", json={"prompt": api_prompt, "client_id": client_id}
+        )
+        if response.status_code != 200:
+            raise RuntimeError(_submit_error(response))
+        payload = response.json()
+        if payload.get("node_errors"):
+            raise RuntimeError(_submit_error(response, payload))
+        return await _await_image(client, str(payload["prompt_id"]), client_id, on_progress)
+
+
 async def generate_portrait(
     *,
     scene_image: Path,
@@ -195,18 +212,7 @@ async def generate_portrait(
             prefix=prefix,
         )
         api_prompt = graph_to_api_prompt(workflow, await object_info())
-        client_id = uuid.uuid4().hex
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{COMFY_URL}/prompt", json={"prompt": api_prompt, "client_id": client_id}
-            )
-            if response.status_code != 200:
-                raise RuntimeError(_submit_error(response))
-            payload = response.json()
-            if payload.get("node_errors"):
-                raise RuntimeError(_submit_error(response, payload))
-            prompt_id = str(payload["prompt_id"])
-            produced = await _await_image(client, prompt_id, client_id, on_progress)
+        produced = await run_api_prompt(api_prompt, on_progress)
 
     await asyncio.to_thread(shutil.copy2, produced, output_path)
     return output_path

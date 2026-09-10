@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string" },
+    "introduction": { "type": "string" },
+    "tags": { "type": "array", "items": { "type": "string" }, "minItems": 5, "maxItems": 5 },
+    "cover_headline": { "type": "string" }
+  },
+  "required": ["title", "introduction", "tags", "cover_headline"]
+}

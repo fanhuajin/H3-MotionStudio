@@ -410,53 +410,80 @@ async def _prepare_review_work(
             warning = f"模型分析不可用，已降级为源作品信息：{error}"
             batch_store.add_item_log(batch_id, item_id, warning)
 
-    # 2) 候选人物图：中转站图片接口优先 → 本地 Krea2（可选，画质不达标）→ 源视频取帧兜底。
+    # 2) 候选人物图。
+    #    默认 `manual`：系统只备料（提示词 + 图一 + 图二），图片由用户在 GPT 聊天里
+    #    自行生成后上传回页面。也可用 H3_BATCH_IMAGE_PROVIDER 切回 api / local / frame。
     revision = int(item.get("revision") or 0)
     previous_image = Path((item.get("ai") or {}).get("reference_image_path") or "")
     target_image = work / f"candidate_r{revision}.png"
     fallback_image = work / f"candidate_r{revision}_frame.png"
     provider = _image_provider()
     if provider == "auto":
-        provider = "api" if batch_image.configured() else "frame"
+        provider = "api" if batch_image.configured() else "manual"
+
+    style_source = str(result.get("style_source") or "video")
+    image_prompt = batch_ai.compose_image_prompt(
+        item["kind"],
+        style_source,
+        feedback,
+        mode,
+        song_name=str(result.get("song_name") or ""),
+        song_mood=str(result.get("song_mood") or ""),
+    )
+    scene = scene_frame
+    if provider != "manual":
+        if item["kind"] == "singing" and style_source == "redesign":
+            # 源视频造型不适合出片：改按歌曲情绪重做造型。
+            scene = IDENTITY_PATH
+            image_prompt = (
+                "本次没有造型参考图。图像-1 与图像-2 是同一位人物的身份参考，"
+                "请按歌曲情绪完全重新设计造型、服装、背景与灯光。\n\n" + image_prompt
+            )
+        else:
+            # 图一里是源视频那个人的脸，必须糊掉：否则模型会把别人的五官混进来。
+            scene, defocused = await batch_image.defocus_reference_face(scene_frame, work)
+            if defocused:
+                batch_store.add_item_log(
+                    batch_id, item_id, "已把参考帧里的人脸模糊掉，避免混入源视频人物的五官。"
+                )
+            else:
+                note = "参考帧人脸定位失败，未能屏蔽源视频人物的脸（可能影响五官一致性）。"
+                warning = f"{warning} {note}".strip()
+                batch_store.add_item_log(batch_id, item_id, note)
+
+    # 出图素材写进状态，页面据此提供「复制提示词 / 下载图一 / 下载图二 / 上传成图」
+    result["imagePrompt"] = image_prompt
+    result["sceneFramePath"] = str(scene_frame)
+
+    image_path: Path | None = None
+    ratio = "4:3" if item["kind"] == "singing" else "9:16"
 
     if mode == "copy" and previous_image.is_file():
         image_path = previous_image
+    elif provider == "manual":
+        batch_store.add_item_log(
+            batch_id,
+            item_id,
+            "已备好出图素材：复制提示词、下载图一与图二，在 GPT 聊天里生成后把图上传回来。",
+        )
     elif provider == "frame":
         await asyncio.to_thread(shutil.copy2, scene_frame, fallback_image)
         image_path = fallback_image
-        note = "未配置中转站图片接口，已直接用源视频取帧作为候选人物图。"
+        note = "已直接用源视频取帧作为候选人物图。"
         warning = f"{warning} {note}".strip()
         batch_store.add_item_log(batch_id, item_id, note)
     else:
 
         async def report(fraction: float, note: str) -> None:
             changes: dict[str, Any] = {"currentNode": note}
-            # 中转站没有节点进度，只更新时间说明，不编造百分比。
             if fraction > 0:
                 changes["progress"] = round(30 + 68 * max(0.0, min(1.0, fraction)))
+            else:
+                changes["progress"] = None
             batch_store.set_item_milestone(
                 batch_id, item_id, "prepare", status="running", **changes
             )
 
-        style_source = str(result.get("style_source") or "video")
-        prompt = batch_ai.compose_image_prompt(
-            item["kind"],
-            style_source,
-            feedback,
-            mode,
-            song_name=str(result.get("song_name") or ""),
-            song_mood=str(result.get("song_mood") or ""),
-        )
-        scene = scene_frame
-        if item["kind"] == "singing" and style_source == "redesign":
-            # 源视频造型不适合出片：改按歌曲情绪重做造型。工作流固定要两张输入，
-            # 所以两张都喂身份图，并由提示词声明「本次没有造型参考图」。
-            scene = IDENTITY_PATH
-            prompt = (
-                "本次没有造型参考图。图像-1 与图像-2 是同一位人物的身份参考，"
-                "请按歌曲情绪完全重新设计造型、服装、背景与灯光。\n\n" + prompt
-            )
-        ratio = "4:3" if item["kind"] == "singing" else "9:16"
         try:
             batch_store.set_item_milestone(
                 batch_id, item_id, "prepare", status="running", progress=32, currentNode="正在生成候选人物图"
@@ -465,7 +492,7 @@ async def _prepare_review_work(
                 await batch_portrait.generate_portrait(
                     scene_image=scene,
                     identity_image=IDENTITY_PATH,
-                    prompt=prompt,
+                    prompt=image_prompt,
                     ratio=ratio,
                     output_path=target_image,
                     prefix=f"batch_{item_id}",
@@ -475,7 +502,7 @@ async def _prepare_review_work(
                 await batch_image.generate_candidate_image(
                     scene_image=scene,
                     identity_image=IDENTITY_PATH,
-                    prompt=prompt,
+                    prompt=image_prompt,
                     ratio=ratio,
                     output_path=target_image,
                     on_progress=report,
@@ -490,18 +517,71 @@ async def _prepare_review_work(
             warning = f"{warning} {note}".strip()
             batch_store.add_item_log(batch_id, item_id, note)
 
-    image_path = image_path.resolve()
-    try:
-        image_path.relative_to(work.resolve())
-    except ValueError:
-        raise RuntimeError("人物图必须保存在当前批次目录内") from None
-    if not image_path.is_file():
-        raise RuntimeError("人物图生成没有留下可用文件，请点击重试")
+        # 换脸锁定身份：编辑模型是重新合成脸，只靠提示词保不住五官。
+        if image_path == target_image and target_image.is_file():
+            swapped = work / f"candidate_r{revision}_swapped.png"
+            try:
+                batch_store.set_item_milestone(
+                    batch_id, item_id, "prepare", status="running", progress=None,
+                    currentNode="正在用 ReActor 锁定五官",
+                )
+                await batch_image.swap_face_with_prototype(
+                    generated=target_image, prototype=IDENTITY_PATH, output_path=swapped
+                )
+                image_path = swapped
+                batch_store.add_item_log(batch_id, item_id, "已用 ReActor 把原型图的五官换到候选图上。")
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                note = f"换脸失败，沿用未换脸的生成图（五官可能偏离原型图）：{error}"
+                warning = f"{warning} {note}".strip()
+                batch_store.add_item_log(batch_id, item_id, note)
 
-    result["reference_image_path"] = str(image_path)
+    if image_path is not None:
+        image_path = image_path.resolve()
+        try:
+            image_path.relative_to(work.resolve())
+        except ValueError:
+            raise RuntimeError("人物图必须保存在当前批次目录内") from None
+        if not image_path.is_file():
+            raise RuntimeError("人物图没有留下可用文件，请重新上传或点击重试")
+        result["reference_image_path"] = str(image_path)
+    else:
+        result["reference_image_path"] = ""
+
     result["tags"] = [
         str(tag).strip().lstrip("#") for tag in result.get("tags") or [] if str(tag).strip()
-    ][:12]
+    ][:5]
+
+    # 3) 看着最终候选图重写发布文案，保证图文一致。
+    #    预审的分析只看得到源视频联系表、看不到之后生成的图，两者一旦不一致
+    #    （实测出图换成黑发水晶场景、文案却还在写「粉色氛围」），文案就会和画面脱节。
+    #    「只调图片」按用户约定不动文案，所以那条路径不重写。
+    if mode != "image" and result.get("reference_image_path"):
+        batch_store.set_item_milestone(
+            batch_id, item_id, "prepare", status="running", progress=99, currentNode="正在看着最终图写发布文案"
+        )
+        try:
+            copy = await batch_ai.write_copy(
+                candidate_image=Path(str(result["reference_image_path"])),
+                song_name=str(result.get("song_name") or ""),
+                song_mood=str(result.get("song_mood") or ""),
+                description=meta_desc,
+                feedback=feedback if mode in {"copy", "both"} else "",
+            )
+            for key in ("title", "introduction", "tags", "cover_headline"):
+                if copy.get(key):
+                    result[key] = copy[key]
+            result["tags"] = [
+                str(tag).strip().lstrip("#") for tag in result.get("tags") or [] if str(tag).strip()
+            ][:5]
+            batch_store.add_item_log(batch_id, item_id, "发布文案已按最终画面重写，确保图文一致。")
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            note = f"图文一致性的文案重写失败，沿用上一版文案：{error}"
+            warning = f"{warning} {note}".strip()
+            batch_store.add_item_log(batch_id, item_id, note)
     _set_item(
         batch_id,
         item_id,

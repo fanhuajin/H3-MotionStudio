@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from pathlib import Path
+import json
 import os
 import tempfile
 import unittest
@@ -265,9 +266,12 @@ class WorkflowPreparationTests(unittest.TestCase):
     def test_batch_ai_image_prompt_carries_review_feedback(self) -> None:
         """审核修改意见必须进入出图提示词，否则「调整图片」只会改文案、图不动。"""
         base = batch_ai.compose_prompt("singing", "video")
-        self.assertEqual(batch_ai.compose_image_prompt("singing", "video", "", "both"), base)
-        # 只调文案时不应污染出图提示词（那条路径本来就不重新出图）
-        self.assertEqual(batch_ai.compose_image_prompt("singing", "video", "换背景", "copy"), base)
+        # 出图提示词以造型提示词开头，后面追加构图规格、歌曲与身份约束
+        self.assertTrue(batch_ai.compose_image_prompt("singing", "video", "", "both").startswith(base))
+        # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
+        copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
+        self.assertTrue(copy_prompt.startswith(base))
+        self.assertNotIn("换背景", copy_prompt)
         for mode in ("image", "both"):
             prompt = batch_ai.compose_image_prompt("singing", "video", "头顶留白压到 2%", mode)
             self.assertIn("头顶留白压到 2%", prompt)
@@ -298,6 +302,44 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 4) 没识别出歌名时也不能留一个空歌曲块
         self.assertNotIn("【本次歌曲】", batch_ai.compose_image_prompt("singing", "video", song_name=""))
 
+    def test_batch_ai_image_prompt_carries_composition_spec(self) -> None:
+        """构图规格取自用户的构图参考图实测值，且必须按画布比例分别注入。"""
+        singing = batch_ai.compose_image_prompt("singing")
+        self.assertIn("【构图规格 · 按用户的构图参考图实测】", singing)
+        self.assertIn("0%~1%", singing)          # 4:3 参考实测：头发几乎贴边
+        self.assertIn("50%~55%", singing)        # 4:3 参考实测：脸占画面高度
+
+        dance = batch_ai.compose_image_prompt("dance")
+        self.assertIn("9:16", dance)
+        self.assertIn("约 12%", dance)           # 跳舞参考实测：发际线距上边缘
+        self.assertIn("34%", dance)
+        self.assertNotIn("50%~55%", dance)
+
+    def test_batch_ai_identity_block_is_last_and_mandatory(self) -> None:
+        """「五官必须和原型图一致」是硬性要求，必须放在提示词最末尾压住其他要求。"""
+        prompt = batch_ai.compose_image_prompt(
+            "singing", "video", "换个背景", "both", song_name="爱如潮水", song_mood="抒情"
+        )
+        self.assertTrue(prompt.rstrip().endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
+        self.assertIn("图二是唯一的人物身份与面部来源", prompt)
+        self.assertIn("禁止把两张脸融合", prompt)
+        self.assertIn("一律牺牲其他要求、保住图二的脸", prompt)
+        # 跳舞同样受身份约束保护
+        self.assertIn("保住图二的脸", batch_ai.compose_image_prompt("dance"))
+
+    def test_batch_tags_are_exactly_five(self) -> None:
+        """发布标签固定 5 个。"""
+        schema = json.loads((Path(__file__).parents[1] / "backend" / "batch_ai_schema.json").read_text(encoding="utf-8"))
+        self.assertEqual(schema["properties"]["tags"]["maxItems"], 5)
+        self.assertEqual(schema["properties"]["tags"]["minItems"], 5)
+        self.assertIn("恰好 5 个", batch_ai.preflight_prompt(
+            kind="singing", duration=20.0, description="", tags=[]
+        ))
+        fallback = batch_ai.fallback_result(
+            kind="singing", description="标题", tags=["a", "b", "c", "d", "e", "f", "g"]
+        )
+        self.assertEqual(fallback["tags"], ["a", "b", "c", "d", "e"])
+
     def test_batch_reuse_previous_analysis_only_for_image_mode(self) -> None:
         """「只调图片」不得重跑模型：否则文案和动作/运镜会被一起改写。"""
         from backend.batch_worker import reuse_previous_analysis
@@ -311,6 +353,29 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIsNone(reuse_previous_analysis("image", {}))
         # 没有出图结果时（例如上一步降级过）也不该复用
         self.assertIsNone(reuse_previous_analysis("image", {"title": "只有文案"}))
+
+    def test_batch_copy_prompt_is_written_from_the_final_image(self) -> None:
+        """文案必须看着最终候选图写：图文一致是硬要求。"""
+        prompt = batch_ai.copy_prompt(
+            song_name="爱如潮水", song_mood="抒情慢板，克制的失恋感", description="原作品描述"
+        )
+        self.assertIn("第一张图就是本条最终要发布的人物图", prompt)
+        self.assertIn("必须和画面里**实际出现**", prompt)
+        self.assertIn("画面里没有的东西一律不要写", prompt)
+        self.assertIn("《爱如潮水》", prompt)
+        self.assertIn("抒情慢板，克制的失恋感", prompt)
+        self.assertIn("恰好 5 个", prompt)
+        self.assertNotIn("用户的修改意见", prompt)
+        with_feedback = batch_ai.copy_prompt(
+            song_name="爱如潮水", song_mood="", description="", feedback="标题太夸张"
+        )
+        self.assertIn("标题太夸张", with_feedback)
+
+        copy_schema = json.loads(
+            (Path(__file__).parents[1] / "backend" / "batch_copy_schema.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(copy_schema["properties"]["tags"]["maxItems"], 5)
+        self.assertEqual(copy_schema["properties"]["tags"]["minItems"], 5)
 
     def test_batch_ai_fallback_and_action_plan_keep_item_runnable(self) -> None:
         """模型降级时条目仍可继续：文案退到源作品信息，动作/运镜按时长铺满。"""
