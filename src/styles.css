@@ -1422,11 +1422,6 @@ body {
 .batch-ratio-pick button.selected { border-color: var(--shell-accent); color: #8ceaf6; background: rgba(41, 184, 211, .12); }
 .batch-ratio-pick button:disabled { cursor: not-allowed; opacity: .45; }
 .batch-ratio-pick i { color: #7b7290; font-size: 10px; font-style: normal; }
-.batch-ratio-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; padding: 11px 13px; border: 1px solid var(--shell-line); border-radius: 9px; background: rgba(15, 11, 34, .8); }
-.batch-ratio-row.locked { border-color: rgba(255, 199, 108, .26); }
-.batch-ratio-row > .batch-ratio-copy { display: flex; flex-direction: column; gap: 4px; }
-.batch-ratio-row > .batch-ratio-copy span { color: #f1edf9; font-size: 12px; font-weight: 650; }
-.batch-ratio-row > .batch-ratio-copy small { color: var(--shell-muted); font-size: 10px; }
 .batch-input-actions { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 15px; padding-top: 14px; border-top: 1px solid var(--shell-line); }
 .batch-input-actions p { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--shell-muted); font-size: 11px; }
 .batch-input-actions p svg { color: var(--shell-accent); }
@@ -1501,6 +1496,9 @@ body {
 .batch-prompt-list h4 { margin: 0 0 7px; color: var(--shell-accent); font-size: 11px; font-weight: 650; letter-spacing: .04em; }
 .batch-prompt-list pre { margin: 0; color: #ddd8ea; font-family: inherit; font-size: 12px; line-height: 1.75; white-space: pre-wrap; word-break: break-word; -webkit-user-select: text; user-select: text; }
 .batch-prompt-list .batch-empty { margin: 0; }
+/* 审核时的画布比例选择：审核区里唯一的比例入口 */
+.batch-review-copy > label > .batch-ratio-pick { gap: 6px; }
+.batch-review-copy > label > .batch-ratio-pick i { width: 100%; }
 .batch-child-panel { border-color: rgba(55, 216, 230, .25); }
 .batch-stage-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .batch-stage-list a { display: inline-flex; align-items: center; min-height: 30px; padding: 0 11px; border: 1px solid #463a64; border-radius: 7px; color: #d9d3e9; background: #17112f; font-size: 11px; text-decoration: none; transition: .18s ease; }

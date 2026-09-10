@@ -291,13 +291,10 @@ export function BatchRoute() {
 
   const openFolder = () => itemCall("open-output");
   const hasImage = Boolean(selected?.ai?.reference_image_path);
-  // 每条视频的比例都能单独改；开始出片（或已结束）后锁定。
+  // 画布比例只在审核时展示/修改（审核区唯一的比例入口）。
   const selectedRatio = selected ? itemRatio(selected) : DEFAULT_RATIO.singing;
-  const ratioLocked = Boolean(
-    selected && ["running", "revising", "confirmed", "completed", "skipped", "deleted"].includes(selected.status),
-  );
   const changeRatio = (ratio: CanvasRatio) => {
-    if (!selected || ratioLocked || selectedRatio === ratio) return;
+    if (!selected || selectedRatio === ratio) return;
     void itemCall("ratio", "POST", { ratio });
   };
 
@@ -501,7 +498,7 @@ export function BatchRoute() {
                   <span className={`batch-item-index ${item.status}`}>{item.status === "completed" ? <Check /> : item.index}</span>
                   <span className="batch-item-copy">
                     <strong>{item.title || `第 ${item.index} 条`}</strong>
-                    <small>{item.kind === "singing" ? "歌曲视频" : "跳舞视频"} · {itemRatio(item)} · {batchStatusLabel(item.status)}</small>
+                    <small>{item.kind === "singing" ? "歌曲视频" : "跳舞视频"} · {batchStatusLabel(item.status)}</small>
                   </span>
                   {item.status === "running" && <SpinnerGap className="spin" />}
                 </button>
@@ -525,33 +522,6 @@ export function BatchRoute() {
                     <button className="danger" onClick={() => itemCall("", "DELETE")}><Trash />删除</button>
                   </div>
                 </div>
-
-                {!["deleted"].includes(selected.status) && (
-                  <div className={`batch-ratio-row ${ratioLocked ? "locked" : ""}`}>
-                    <div className="batch-ratio-copy">
-                      <span>画布比例</span>
-                      <small>
-                        {ratioDetail(selected.kind, selectedRatio)}
-                        {ratioLocked ? " · 本条已开始出片，比例已锁定" : " · 确认出片前随时可改"}
-                      </small>
-                    </div>
-                    <div className="batch-ratio-pick" role="radiogroup" aria-label="这一条的画布比例">
-                      {RATIOS.map((value) => (
-                        <button
-                          key={value}
-                          type="button"
-                          role="radio"
-                          aria-checked={selectedRatio === value}
-                          className={selectedRatio === value ? "selected" : ""}
-                          disabled={ratioLocked || Boolean(busyAction)}
-                          onClick={() => changeRatio(value)}
-                        >
-                          {RATIO_LABEL[value]}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
 
                 {selected.status === "awaiting_review" && selected.ai && (
                   <section className="batch-review">
@@ -613,6 +583,25 @@ export function BatchRoute() {
                       <label><span>标题</span><p>{selected.ai.title}</p></label>
                       <label><span>简介</span><p>{selected.ai.introduction}</p></label>
                       <label><span>标签</span><div className="batch-tags">{selected.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>
+                      <label>
+                        <span>画布比例</span>
+                        <div className="batch-ratio-pick" role="radiogroup" aria-label="这一条的画布比例">
+                          {RATIOS.map((value) => (
+                            <button
+                              key={value}
+                              type="button"
+                              role="radio"
+                              aria-checked={selectedRatio === value}
+                              className={selectedRatio === value ? "selected" : ""}
+                              disabled={Boolean(busyAction)}
+                              onClick={() => changeRatio(value)}
+                            >
+                              {RATIO_LABEL[value]}
+                            </button>
+                          ))}
+                          <i>{ratioDetail(selected.kind, selectedRatio)}</i>
+                        </div>
+                      </label>
                       <div className="batch-review-actions">
                         <button
                           className="batch-primary"
@@ -654,7 +643,8 @@ export function BatchRoute() {
                 )}
 
                 <section className="batch-progress-panel">
-                  <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(selected.status)}</small></div>                  <div className="batch-steps">
+                  <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(selected.status)}</small></div>
+                  <div className="batch-steps">
                     {selected.milestones.map((step) => (
                       <div className={`batch-step ${step.status}`} key={step.id}>
                         <span className="batch-step-icon">{stepIcon(step.status)}</span>
