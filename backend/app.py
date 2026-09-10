@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import mimetypes
+import os
 import secrets
 import shutil
 import subprocess
@@ -15,13 +16,15 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import httpx
 
 logger = logging.getLogger("uvicorn.error")
 
 from . import input_preview
+from .batch_store import batch_store
+from .batch_worker import cancel_codex_for_item, new_batch_state, request_review_adjustment, run_batch
 from .douyin_mirror import all_jobs as mirror_jobs
 from .douyin_mirror import get_job as mirror_get_job
 from .douyin_mirror import upsert_jobs as mirror_upsert
@@ -57,6 +60,7 @@ from .settings import (
     COMFY_INPUT,
     COMFY_OUTPUT,
     COMFY_URL,
+    BATCH_OUTPUT_ROOT,
     DATA_DIR,
     DEFAULT_SINGING_CANVAS,
     FIXED_REFERENCE,
@@ -221,6 +225,7 @@ def workflow_defaults() -> tuple[str, str]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    batch_store.interrupt_active()
     active = store.active()
     if active:
         store.update(
@@ -248,6 +253,262 @@ app = FastAPI(title="H3 MotionStudio", version="0.1.0", lifespan=lifespan)
 
 class DouyinDownloadRequest(BaseModel):
     url: str
+
+
+class BatchCreateRequest(BaseModel):
+    singingUrls: list[str] = Field(default_factory=list)
+    danceUrls: list[str] = Field(default_factory=list)
+
+
+class BatchAdjustRequest(BaseModel):
+    feedback: str
+    mode: str = "both"
+
+
+def _batch_or_404(batch_id: str) -> dict[str, Any]:
+    state = batch_store.get(batch_id)
+    if not state:
+        raise HTTPException(404, "批次不存在")
+    return state
+
+
+def _batch_item_or_404(batch_id: str, item_id: str) -> dict[str, Any]:
+    state = _batch_or_404(batch_id)
+    for item in state.get("items") or []:
+        if item.get("id") == item_id:
+            return item
+    raise HTTPException(404, "批次条目不存在")
+
+
+def _resume_batch(batch_id: str, notice: str) -> dict[str, Any]:
+    state = batch_store.update(
+        batch_id,
+        status="running",
+        stage="running",
+        pauseRequested=False,
+        runnerActive=False,
+        notice=notice,
+    )
+    spawn(run_batch(batch_id))
+    return state
+
+
+@app.get("/api/batches/latest")
+async def latest_batch():
+    state = batch_store.latest()
+    if not state:
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+    return JSONResponse(state, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/batches")
+async def create_batch(request: BatchCreateRequest):
+    active = batch_store.active()
+    if active:
+        raise HTTPException(409, "已有未完成批次，请先继续、完成或删除其中的条目")
+    singing = [url.strip() for url in request.singingUrls if url.strip()]
+    dance = [url.strip() for url in request.danceUrls if url.strip()]
+    urls = singing + dance
+    if not urls:
+        raise HTTPException(400, "请至少填写一条抖音链接")
+    if len(urls) > 50:
+        raise HTTPException(400, "一次最多处理 50 条链接")
+    invalid = next((url for url in urls if not is_douyin_url(url)), None)
+    if invalid:
+        raise HTTPException(400, f"不是有效的抖音链接：{invalid[:80]}")
+    state = new_batch_state(singing, dance)
+    batch_store.create(state)
+    spawn(run_batch(state["id"]))
+    return state
+
+
+@app.get("/api/batches/{batch_id}")
+async def get_batch(batch_id: str):
+    return _batch_or_404(batch_id)
+
+
+@app.post("/api/batches/{batch_id}/pause")
+async def pause_batch(batch_id: str):
+    state = _batch_or_404(batch_id)
+    if state.get("status") in {"completed", "cancelled"}:
+        raise HTTPException(409, "批次已经结束")
+    return batch_store.update(
+        batch_id,
+        status="paused",
+        pauseRequested=True,
+        notice="已请求暂停；若当前正在生成视频，会在这一条安全结束后暂停。",
+    )
+
+
+@app.post("/api/batches/{batch_id}/resume")
+async def resume_batch(batch_id: str):
+    state = _batch_or_404(batch_id)
+    if state.get("status") == "awaiting_review":
+        raise HTTPException(409, "当前条目正在等待审核，请先确认、调整、跳过或删除")
+    if state.get("status") == "completed":
+        raise HTTPException(409, "批次已经完成")
+    return _resume_batch(batch_id, "批次已继续运行。")
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/confirm")
+async def confirm_batch_item(batch_id: str, item_id: str):
+    item = _batch_item_or_404(batch_id, item_id)
+    if item.get("status") != "awaiting_review":
+        raise HTTPException(409, "当前条目不在待确认状态")
+    batch_store.set_item_milestone(batch_id, item_id, "review", status="completed", progress=100)
+
+    def approve(row: dict[str, Any]) -> None:
+        row.update(
+            status="confirmed",
+            stage="confirmed",
+            reviewApproved=True,
+            approvedAt=now_iso(),
+            error=None,
+        )
+
+    batch_store.mutate_item(batch_id, item_id, approve)
+    return _resume_batch(batch_id, "已确认，正在开始生成这一条视频。")
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/adjust")
+async def adjust_batch_item(batch_id: str, item_id: str, request: BatchAdjustRequest):
+    try:
+        state = request_review_adjustment(batch_id, item_id, request.feedback, request.mode)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    spawn(run_batch(batch_id))
+    return state
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/retry")
+async def retry_batch_item(batch_id: str, item_id: str):
+    item = _batch_item_or_404(batch_id, item_id)
+    if item.get("status") != "failed":
+        raise HTTPException(409, "只有失败的条目可以重试")
+
+    def reset(row: dict[str, Any]) -> None:
+        approved = bool(row.get("reviewApproved"))
+        row.update(
+            status="confirmed" if approved else "pending",
+            stage="confirmed" if approved else "queued",
+            error=None,
+            skipRequested=False,
+            deleteRequested=False,
+            childJob=None,
+        )
+        for milestone in row.get("milestones") or []:
+            if milestone.get("status") == "error":
+                milestone.update(status="pending", progress=0, currentNode=None)
+
+    batch_store.mutate_item(batch_id, item_id, reset)
+    return _resume_batch(batch_id, "正在重试当前条目。")
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/skip")
+async def skip_batch_item(batch_id: str, item_id: str):
+    item = _batch_item_or_404(batch_id, item_id)
+    if item.get("status") in {"completed", "skipped", "deleted"}:
+        raise HTTPException(409, "当前条目已经结束")
+    batch_store.mutate_item(batch_id, item_id, lambda row: row.update(skipRequested=True))
+    cancel_codex_for_item(batch_id, item_id)
+    if item.get("status") not in {"running", "revising"}:
+        def mark_skipped(row: dict[str, Any]) -> None:
+            row.update(status="skipped", stage="skipped", finishedAt=now_iso(), childJob=None)
+            for milestone in row.get("milestones") or []:
+                if milestone.get("status") in {"pending", "running"}:
+                    milestone["status"] = "skipped"
+        batch_store.mutate_item(batch_id, item_id, mark_skipped)
+    return _resume_batch(batch_id, "当前条目已跳过，继续处理下一条。")
+
+
+@app.delete("/api/batches/{batch_id}/items/{item_id}")
+async def delete_batch_item(batch_id: str, item_id: str):
+    item = _batch_item_or_404(batch_id, item_id)
+    if item.get("status") == "deleted":
+        return _batch_or_404(batch_id)
+    child = item.get("childJob") or {}
+    child_id = child.get("id")
+    child_status = child.get("status")
+    batch_store.mutate_item(batch_id, item_id, lambda row: row.update(deleteRequested=True))
+    cancel_codex_for_item(batch_id, item_id)
+    if child_id and child_status in {"queued", "running", "cancelling"}:
+        try:
+            await cancel_job(str(child_id))
+        except HTTPException as error:
+            if error.status_code not in {404, 409}:
+                raise
+    if item.get("status") not in {"running", "revising"}:
+        def mark_deleted(row: dict[str, Any]) -> None:
+            row.update(status="deleted", stage="deleted", finishedAt=now_iso(), childJob=None)
+            for milestone in row.get("milestones") or []:
+                if milestone.get("status") in {"pending", "running"}:
+                    milestone["status"] = "skipped"
+        batch_store.mutate_item(batch_id, item_id, mark_deleted)
+    return _resume_batch(batch_id, "条目已删除，继续处理队列。")
+
+
+@app.get("/api/batches/{batch_id}/items/{item_id}/image")
+async def batch_item_image(batch_id: str, item_id: str):
+    item = _batch_item_or_404(batch_id, item_id)
+    path = Path((item.get("ai") or {}).get("reference_image_path") or "").resolve()
+    if not path.is_file():
+        raise HTTPException(404, "候选图片不存在")
+    media_type = mimetypes.guess_type(path.name)[0] or "image/png"
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/batches/{batch_id}/items/{item_id}/output/{key}")
+async def batch_item_output(batch_id: str, item_id: str, key: str, download: bool = Query(False)):
+    item = _batch_item_or_404(batch_id, item_id)
+    if key not in {"videoNoLyrics", "videoWithLyrics", "videoFinal", "copy", "coverBilibili", "coverDouyin"}:
+        raise HTTPException(404, "输出文件不存在")
+    raw = (item.get("outputs") or {}).get(key)
+    if not raw:
+        raise HTTPException(404, "输出文件尚未生成")
+    path = Path(raw).resolve()
+    try:
+        path.relative_to(BATCH_OUTPUT_ROOT.resolve())
+    except ValueError:
+        raise HTTPException(404, "输出文件不存在") from None
+    if not path.is_file():
+        raise HTTPException(404, "输出文件不存在")
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=path.name if download else None)
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/open-output")
+async def open_batch_item_output(batch_id: str, item_id: str):
+    item = _batch_item_or_404(batch_id, item_id)
+    raw = (item.get("outputs") or {}).get("folder")
+    if not raw:
+        raise HTTPException(404, "发布文件夹尚未生成")
+    folder = Path(raw).resolve()
+    try:
+        folder.relative_to(BATCH_OUTPUT_ROOT.resolve())
+    except ValueError:
+        raise HTTPException(404, "发布文件夹不存在") from None
+    if not folder.is_dir():
+        raise HTTPException(404, "发布文件夹不存在")
+    await asyncio.to_thread(os.startfile, folder)
+    return _batch_or_404(batch_id)
+
+
+@app.websocket("/api/batches/{batch_id}/ws")
+async def batch_websocket(websocket: WebSocket, batch_id: str):
+    state = batch_store.get(batch_id)
+    if not state:
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    await websocket.send_json(state)
+    queue = batch_store.subscribe(batch_id)
+    try:
+        while True:
+            await websocket.send_json(await queue.get())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        batch_store.unsubscribe(batch_id, queue)
 
 
 @app.get("/api/config")
@@ -1436,6 +1697,10 @@ if dist_dir.is_dir():
 
     @app.get("/migrate", include_in_schema=False)
     async def migrate_frontend():
+        return FileResponse(dist_dir / "index.html")
+
+    @app.get("/batch", include_in_schema=False)
+    async def batch_frontend():
         return FileResponse(dist_dir / "index.html")
 
     @app.get("/upscale", include_in_schema=False)

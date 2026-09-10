@@ -11,6 +11,7 @@ import {
   FilmSlate,
   Graph,
   Info,
+  ListChecks,
   MagnifyingGlassPlus,
   MicrophoneStage,
   MusicNotes,
@@ -23,6 +24,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { BatchRoute } from "./BatchRoute";
 import { DouyinRoute } from "./DouyinRoute";
 import { LyricRoute } from "./LyricRoute";
 import { MigrateRoute } from "./MigrateRoute";
@@ -910,7 +912,8 @@ export function App() {
   const isUpscaleRoute = path === "/upscale";
   const isLyricsRoute = path === "/lyrics";
   const isRvcRoute = path === "/rvc";
-  const isWorkspaceRoute = !isMigrateRoute && !isUpscaleRoute && !isLyricsRoute && !isRvcRoute;
+  const isBatchRoute = path === "/batch";
+  const isWorkspaceRoute = path === "";
 
   return (
     <div className="desktop-app-shell">
@@ -960,6 +963,11 @@ export function App() {
                 <span>动作迁移</span>
                 {isMigrateRoute && <i />}
               </a>
+              <a className={isBatchRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
+                <ListChecks />
+                <span>批量制作</span>
+                {isBatchRoute && <i />}
+              </a>
               <a className={isUpscaleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/upscale">
                 <MagnifyingGlassPlus />
                 <span>二采放大</span>
@@ -991,7 +999,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isLyricsRoute ? <LyricRoute /> : <MotionStudioRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isBatchRoute ? <BatchRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isLyricsRoute ? <LyricRoute /> : <MotionStudioRoute />}
       </div>
     </div>
   );

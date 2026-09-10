@@ -3,7 +3,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from PIL import Image
+
 from backend.app import douyin_job_payload
+from backend.batch_worker import new_batch_state, render_covers, unique_urls
 from backend.douyin_preview import _convert_download_sync
 from backend.douyin_service import (
     DouyinServiceManager,
@@ -34,6 +37,28 @@ from backend.workflows import (
 
 
 class WorkflowPreparationTests(unittest.TestCase):
+    def test_batch_state_is_serial_and_requires_review_before_video(self) -> None:
+        singing = "https://v.douyin.com/song"
+        dance = "https://www.douyin.com/video/123"
+        state = new_batch_state([singing, singing], [dance])
+        self.assertEqual([item["kind"] for item in state["items"]], ["singing", "dance"])
+        self.assertEqual(state["total"], 2)
+        self.assertEqual(state["deletedCount"], 0)
+        self.assertTrue(all(item["reviewApproved"] is False for item in state["items"]))
+        self.assertTrue(all(next(step for step in item["milestones"] if step["id"] == "video")["status"] == "pending" for item in state["items"]))
+        self.assertEqual(unique_urls([singing, "", singing]), [singing])
+
+    def test_batch_cover_outputs_have_platform_sizes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "candidate.png"
+            Image.new("RGB", (900, 1200), "#443377").save(source)
+            bilibili, douyin = render_covers(source, "测试封面标题", root / "output")
+            with Image.open(bilibili) as image:
+                self.assertEqual(image.size, (1440, 1080))
+            with Image.open(douyin) as image:
+                self.assertEqual(image.size, (1080, 1440))
+
     def test_elapsed_format_matches_ui(self) -> None:
         self.assertEqual(format_elapsed("2026-09-03T00:00:00+00:00", "2026-09-03T01:02:03+00:00"), "01:02:03")
 

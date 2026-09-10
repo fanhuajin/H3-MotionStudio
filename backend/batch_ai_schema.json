@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "reference_image_path": { "type": "string" },
+    "song_name": { "type": "string" },
+    "title": { "type": "string" },
+    "introduction": { "type": "string" },
+    "tags": { "type": "array", "items": { "type": "string" }, "maxItems": 12 },
+    "cover_headline": { "type": "string" },
+    "content_prompt": { "type": "string" },
+    "video_prompt": { "type": "string" },
+    "image_prompt": { "type": "string" },
+    "remove_subtitles": { "type": "boolean" }
+  },
+  "required": [
+    "reference_image_path",
+    "song_name",
+    "title",
+    "introduction",
+    "tags",
+    "cover_headline",
+    "content_prompt",
+    "video_prompt",
+    "image_prompt",
+    "remove_subtitles"
+  ]
+}

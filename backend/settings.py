@@ -8,6 +8,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# 批量制作成品目录；每个抖音链接最终整理为一个独立发布文件夹。
+BATCH_OUTPUT_ROOT = Path(
+    os.getenv("H3_BATCH_OUTPUT", r"E:\AI_Exports\H3-MotionStudio\发布成品")
+)
+BATCH_SELF_URL = os.getenv("H3_SELF_URL", "http://127.0.0.1:8111").rstrip("/")
+BATCH_CODEX_MODEL = os.getenv("H3_BATCH_CODEX_MODEL", "gpt-5.6-terra")
+
 COMFY_HOME = Path(os.getenv("H3_COMFY_HOME", r"D:\Comfyui")).resolve()
 COMFY_ROOT = COMFY_HOME / "ComfyUI"
 COMFY_INPUT = COMFY_ROOT / "input"

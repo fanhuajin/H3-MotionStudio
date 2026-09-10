@@ -4,4 +4,4 @@ httpx>=0.28,<1
 websockets>=14,<17
 python-multipart>=0.0.20,<1
 psutil>=5.9,<9
-
+pillow>=11,<13
