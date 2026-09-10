@@ -239,6 +239,27 @@ def singing_canvas_params(ratio: str) -> dict:
     return params
 
 
+# 批量制作：画布比例是**每个条目单独选的**，不再按类型写死。
+# 用户 2026-09-10 要求「每个视频需要让我选择比例；歌曲默认 4:3、跳舞默认 9:16，我可以改」，
+# 所以这里只是新建批次时的默认值；用户在页面里逐条改，运行时以条目自己的 ratio 为准。
+BATCH_RATIO_CHOICES = ("4:3", "9:16")
+BATCH_DEFAULT_RATIOS = {"singing": "4:3", "dance": "9:16"}
+
+
+def batch_default_ratio(kind: str) -> str:
+    return BATCH_DEFAULT_RATIOS.get(kind, DEFAULT_SINGING_CANVAS)
+
+
+def normalize_batch_ratio(ratio: str | None, kind: str = "singing") -> str:
+    """校验并归一化批量条目的画布比例；空值时回落到该类型的默认比例。"""
+    value = str(ratio or "").strip()
+    if not value:
+        return batch_default_ratio(kind)
+    if value not in BATCH_RATIO_CHOICES:
+        raise ValueError(f"不支持的画布比例：{value!r}（可选 4:3 / 9:16）")
+    return value
+
+
 def required_paths() -> dict[str, Path]:
     paths = {
         "ComfyUI Python": COMFY_PYTHON,

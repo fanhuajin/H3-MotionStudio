@@ -28,9 +28,12 @@ from . import batch_ai
 from .batch_worker import (
     IDENTITY_PATH,
     cancel_item_work,
+    image_ratio_note,
+    item_ratio,
     new_batch_state,
     request_review_adjustment,
     run_batch,
+    set_item_ratio,
     stage_media,
 )
 from .douyin_mirror import all_jobs as mirror_jobs
@@ -79,6 +82,7 @@ from .settings import (
     UPSCALE_BATCH_FRAMES,
     UPSCALE_MODEL_X4,
     canvas_params,
+    normalize_batch_ratio,
     required_paths,
     singing_canvas_params,
 )
@@ -266,6 +270,13 @@ class DouyinDownloadRequest(BaseModel):
 class BatchCreateRequest(BaseModel):
     singingUrls: list[str] = Field(default_factory=list)
     danceUrls: list[str] = Field(default_factory=list)
+    # 分组默认比例（页面上的选择）。每条视频仍可单独改：歌曲默认 4:3、跳舞默认 9:16。
+    singingRatio: str | None = None
+    danceRatio: str | None = None
+
+
+class BatchItemRatioRequest(BaseModel):
+    ratio: str
 
 
 class BatchAdjustRequest(BaseModel):
@@ -324,7 +335,12 @@ async def create_batch(request: BatchCreateRequest):
     invalid = next((url for url in urls if not is_douyin_url(url)), None)
     if invalid:
         raise HTTPException(400, f"不是有效的抖音链接：{invalid[:80]}")
-    state = new_batch_state(singing, dance)
+    try:
+        singing_ratio = normalize_batch_ratio(request.singingRatio, "singing")
+        dance_ratio = normalize_batch_ratio(request.danceRatio, "dance")
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    state = new_batch_state(singing, dance, singing_ratio, dance_ratio)
     batch_store.create(state)
     spawn(run_batch(state["id"]))
     return state
@@ -428,6 +444,21 @@ async def confirm_batch_item(batch_id: str, item_id: str):
 
     batch_store.mutate_item(batch_id, item_id, approve)
     return _resume_batch(batch_id, "已确认，正在开始生成这一条视频。")
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/ratio")
+async def set_batch_item_ratio(
+    batch_id: str, item_id: str, request: BatchItemRatioRequest
+):
+    """逐条改画布比例：歌曲默认 4:3、跳舞默认 9:16，用户随时可改（确认出片前）。
+
+    出片时以条目自己的比例为准提交；已经跑起来或已结束的条目拒绝修改。
+    """
+    _batch_item_or_404(batch_id, item_id)
+    try:
+        return set_item_ratio(batch_id, item_id, request.ratio)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/adjust")
@@ -577,6 +608,10 @@ async def upload_batch_item_image(
 
     batch_store.mutate_item(batch_id, item_id, apply)
     batch_store.add_item_log(batch_id, item_id, f"已收到你上传的候选图：{target.name}。{rewrite_note}")
+    # 图的比例和本条选定的画布比例不一致时提示（不拦截：最终构图由工作流缩放处理）
+    mismatch = image_ratio_note(target, item_ratio(_batch_item_or_404(batch_id, item_id)))
+    if mismatch:
+        batch_store.add_item_log(batch_id, item_id, mismatch)
     return _batch_or_404(batch_id)
 
 

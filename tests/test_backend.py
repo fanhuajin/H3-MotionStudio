@@ -76,6 +76,95 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertTrue(all(next(step for step in item["milestones"] if step["id"] == "video")["status"] == "pending" for item in state["items"]))
         self.assertEqual(unique_urls([singing, "", singing]), [singing])
 
+    def test_batch_item_ratio_defaults_by_kind_and_group_override(self) -> None:
+        """每条视频单独存比例：歌曲默认 4:3、跳舞默认 9:16，分组选择可覆盖默认值。"""
+        from backend.batch_worker import item_ratio, ratio_hint
+        from backend.settings import normalize_batch_ratio
+
+        state = new_batch_state(["https://v.douyin.com/song"], ["https://www.douyin.com/video/1"])
+        self.assertEqual([item["ratio"] for item in state["items"]], ["4:3", "9:16"])
+
+        custom = new_batch_state(
+            ["https://v.douyin.com/song"], ["https://www.douyin.com/video/1"],
+            singing_ratio="9:16", dance_ratio="4:3",
+        )
+        self.assertEqual([item["ratio"] for item in custom["items"]], ["9:16", "4:3"])
+
+        # 历史批次没有 ratio 字段 → 按类型默认值兜底，行为与旧版一致
+        self.assertEqual(item_ratio({"kind": "singing", "ratio": None}), "4:3")
+        self.assertEqual(item_ratio({"kind": "dance"}), "9:16")
+        self.assertEqual(item_ratio({"kind": "singing", "ratio": "怪值"}), "4:3")
+
+        self.assertEqual(normalize_batch_ratio("", "dance"), "9:16")
+        with self.assertRaises(ValueError):
+            normalize_batch_ratio("16:9", "singing")
+        # 提示文案按链路给不同生成分辨率
+        self.assertIn("480×864", ratio_hint("singing", "9:16"))
+        self.assertIn("512×896", ratio_hint("dance", "9:16"))
+
+    def test_batch_item_ratio_rewrites_material_prompt_and_locks_after_confirm(self) -> None:
+        """改比例要按新比例重拼出图提示词；已出片/已结束的条目拒绝修改。"""
+        from backend import batch_worker
+
+        captured: dict = {}
+        calls: list[str] = []
+
+        class StubStore:
+            def __init__(self) -> None:
+                self.state = {
+                    "items": [
+                        {
+                            "id": "it1",
+                            "kind": "singing",
+                            "ratio": "4:3",
+                            "status": "awaiting_review",
+                            "ai": {"imagePrompt": "旧提示词", "song_name": "爱如潮水", "style_source": "video"},
+                        },
+                        {"id": "it2", "kind": "dance", "ratio": "9:16", "status": "confirmed", "ai": {}},
+                    ]
+                }
+
+            def get(self, _batch_id):
+                return self.state
+
+            def mutate_item(self, _batch_id, item_id, mutator):
+                for item in self.state["items"]:
+                    if item["id"] == item_id:
+                        mutator(item)
+                return self.state
+
+            def add_item_log(self, _batch_id, _item_id, message):
+                calls.append(message)
+
+        def fake_compose(kind, style_source, feedback, mode, song_name="", song_mood="", ratio=""):
+            captured.update(kind=kind, ratio=ratio)
+            return f"提示词-{ratio}"
+
+        stub = StubStore()
+        originals = (batch_worker.batch_store, batch_worker.batch_ai.compose_image_prompt)
+        with tempfile.TemporaryDirectory() as folder:
+            try:
+                batch_worker.batch_store = stub
+                batch_worker.batch_ai.compose_image_prompt = fake_compose
+                with patch.object(batch_worker, "DATA_DIR", Path(folder)):
+                    batch_worker.set_item_ratio("b1", "it1", "9:16")
+
+                    self.assertEqual(captured, {"kind": "singing", "ratio": "9:16"})
+                    self.assertEqual(stub.state["items"][0]["ratio"], "9:16")
+                    self.assertEqual(stub.state["items"][0]["ai"]["imagePrompt"], "提示词-9:16")
+                    self.assertTrue(any("画布比例已改为" in message for message in calls))
+                    # 备料提示词落盘也跟着换成新比例，用户拿到的素材与最终成片一致
+                    written = (Path(folder) / "batches" / "b1" / "it1" / "出图提示词.txt").read_text(encoding="utf-8")
+                    self.assertEqual(written, "提示词-9:16")
+
+                    with self.assertRaises(ValueError):
+                        batch_worker.set_item_ratio("b1", "it2", "4:3")   # 已确认出片 → 锁定
+                    with self.assertRaises(ValueError):
+                        batch_worker.set_item_ratio("b1", "it1", "16:9")  # 非法比例
+            finally:
+                batch_worker.batch_store, batch_worker.batch_ai.compose_image_prompt = originals
+        self.assertEqual(stub.state["items"][1]["ratio"], "9:16")
+
     def test_batch_preflight_no_longer_drives_the_codex_cli(self) -> None:
         """预审必须直连模型 + 本地出图；不能再起 codex exec agent 会话烧订阅额度。"""
         source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
@@ -317,6 +406,34 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("约 12%", dance)           # 跳舞参考实测：发际线距上边缘
         self.assertIn("34%", dance)
         self.assertNotIn("50%~55%", dance)
+
+        # 批量里每条能单独改比例：显式传入的比例必须压过类型默认值
+        singing_portrait = batch_ai.compose_image_prompt("singing", ratio="9:16")
+        self.assertIn("约 12%", singing_portrait)
+        self.assertNotIn("0%~1%", singing_portrait)
+        dance_landscape = batch_ai.compose_image_prompt("dance", ratio="4:3")
+        self.assertIn("0%~1%", dance_landscape)
+        self.assertNotIn("约 12%", dance_landscape)
+
+    def test_batch_ratio_endpoint_and_candidate_image_note(self) -> None:
+        """条目比例接口存在；候选图与新比例不符时给出人话提示。"""
+        from backend.app import app
+        from backend.batch_worker import image_ratio_note
+
+        self.assertIn(
+            "/api/batches/{batch_id}/items/{item_id}/ratio",
+            {getattr(route, "path", "") for route in app.routes},
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            landscape = Path(folder) / "wide.png"
+            portrait = Path(folder) / "tall.png"
+            Image.new("RGB", (1536, 1152), "#223344").save(landscape)
+            Image.new("RGB", (1152, 2048), "#223344").save(portrait)
+            self.assertEqual(image_ratio_note(landscape, "4:3"), "")
+            self.assertIn("1536×1152", image_ratio_note(landscape, "9:16"))
+            self.assertEqual(image_ratio_note(portrait, "9:16"), "")
+            self.assertIn("1152×2048", image_ratio_note(portrait, "4:3"))
+            self.assertEqual(image_ratio_note(Path(folder) / "missing.png", "4:3"), "")
 
     def test_batch_ai_identity_block_is_last_and_mandatory(self) -> None:
         """「五官必须和原型图一致」是硬性要求，必须放在提示词最末尾压住其他要求。"""

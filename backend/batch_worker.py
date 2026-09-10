@@ -21,9 +21,12 @@ from .douyin_service import DouyinServiceError, douyin_service
 from .lyrics_worker import netease_lyric, netease_search
 from .settings import (
     BATCH_OUTPUT_ROOT,
+    BATCH_RATIO_CHOICES,
     BATCH_SELF_URL,
     DATA_DIR,
+    batch_default_ratio,
     env_value,
+    normalize_batch_ratio,
 )
 from .store import now_iso
 
@@ -73,9 +76,23 @@ def unique_urls(values: list[str]) -> list[str]:
     return result
 
 
-def new_batch_state(singing_urls: list[str], dance_urls: list[str]) -> dict[str, Any]:
+def new_batch_state(
+    singing_urls: list[str],
+    dance_urls: list[str],
+    singing_ratio: str | None = None,
+    dance_ratio: str | None = None,
+) -> dict[str, Any]:
+    """新建批次。比例是**条目级**字段：歌曲默认 4:3、跳舞默认 9:16，用户在页面里逐条可改。
+
+    `singing_ratio` / `dance_ratio` 只是建批次时给整组链接的默认值（页面上的分组选择），
+    之后每条都独立保存自己的 `ratio`，运行时以条目自己的值为准。
+    """
     created = now_iso()
     batch_id = uuid.uuid4().hex
+    defaults = {
+        "singing": normalize_batch_ratio(singing_ratio, "singing"),
+        "dance": normalize_batch_ratio(dance_ratio, "dance"),
+    }
     rows = [("singing", url) for url in unique_urls(singing_urls)] + [
         ("dance", url) for url in unique_urls(dance_urls)
     ]
@@ -87,6 +104,7 @@ def new_batch_state(singing_urls: list[str], dance_urls: list[str]) -> dict[str,
                 "index": index,
                 "kind": kind,
                 "url": url,
+                "ratio": defaults[kind],
                 "status": "pending",
                 "stage": "queued",
                 "createdAt": created,
@@ -137,6 +155,32 @@ def _set_item(batch_id: str, item_id: str, **changes: Any) -> dict[str, Any]:
 
     state = batch_store.mutate_item(batch_id, item_id, apply)
     return next(item for item in state["items"] if item["id"] == item_id)
+
+
+def item_ratio(item: dict[str, Any]) -> str:
+    """条目当前的画布比例：歌曲默认 4:3、跳舞默认 9:16，用户在页面上逐条可改。
+
+    历史批次里没有 `ratio` 字段（甚至可能是脏值），这里兜底成类型默认值，保证老批次
+    重试/出片时行为不变；写入路径（新建批次 / 改比例接口）仍然严格校验。
+    """
+    kind = str(item.get("kind") or "singing")
+    try:
+        return normalize_batch_ratio(item.get("ratio"), kind)
+    except ValueError:
+        return batch_default_ratio(kind)
+
+
+def ratio_hint(kind: str, ratio: str) -> str:
+    """给日志/前端用的比例说明（生成分辨率按各链路参数组不同）。"""
+    if kind == "singing":
+        return {
+            "4:3": "4:3 横版（生成 640×480，二采 1440×1080）",
+            "9:16": "9:16 竖版（生成 480×864，二采 1080×1920）",
+        }.get(ratio, ratio)
+    return {
+        "4:3": "4:3 横版（生成 512×384，二采 1440×1080）",
+        "9:16": "9:16 竖版（生成 512×896，二采 1080×1920）",
+    }.get(ratio, ratio)
 
 
 def _safe_name(value: str, fallback: str = "作品") -> str:
@@ -410,6 +454,19 @@ async def _prepare_review_work(
             warning = f"模型分析不可用，已降级为源作品信息：{error}"
             batch_store.add_item_log(batch_id, item_id, warning)
 
+    # 歌曲条目的动作/运镜要能在审核时就给用户看，缺了就现在补上保守时间轴
+    # （提交时 `_post_video_job` 还会再兜一次，两边逻辑一致）。
+    if item["kind"] == "singing":
+        action = str(result.get("action_prompt") or "").strip()
+        camera = str(result.get("camera_prompt") or "").strip()
+        if not action or not camera:
+            fallback_action, fallback_camera = default_action_plan(duration)
+            result["action_prompt"] = action or fallback_action
+            result["camera_prompt"] = camera or fallback_camera
+            batch_store.add_item_log(
+                batch_id, item_id, "模型没有给出动作/运镜，已用按时长铺开的保守时间轴兜底。"
+            )
+
     # 2) 候选人物图。
     #    默认 `manual`：系统只备料（提示词 + 图一 + 图二），图片由用户在 GPT 聊天里
     #    自行生成后上传回页面。也可用 H3_BATCH_IMAGE_PROVIDER 切回 api / local / frame。
@@ -422,6 +479,7 @@ async def _prepare_review_work(
         provider = "api" if batch_image.configured() else "manual"
 
     style_source = str(result.get("style_source") or "video")
+    ratio = item_ratio(item)
     image_prompt = batch_ai.compose_image_prompt(
         item["kind"],
         style_source,
@@ -429,6 +487,7 @@ async def _prepare_review_work(
         mode,
         song_name=str(result.get("song_name") or ""),
         song_mood=str(result.get("song_mood") or ""),
+        ratio=ratio,
     )
     scene = scene_frame
     if provider != "manual":
@@ -454,13 +513,16 @@ async def _prepare_review_work(
     # 出图素材写进状态；提示词同时落盘，方便直接从条目目录取用
     result["imagePrompt"] = image_prompt
     result["sceneFramePath"] = str(scene_frame)
+    # 记住拼提示词用的参数：用户中途改画布比例时，要能按新比例重拼这一条提示词
+    result["imagePromptFeedback"] = feedback
+    result["imagePromptMode"] = mode
+    result["imageRatio"] = ratio
     try:
         (work / "出图提示词.txt").write_text(image_prompt, encoding="utf-8")
     except OSError:
         pass
 
     image_path: Path | None = None
-    ratio = "4:3" if item["kind"] == "singing" else "9:16"
 
     if mode == "copy" and previous_image.is_file():
         image_path = previous_image
@@ -680,7 +742,12 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
     ai = item.get("ai") or {}
     source = Path(item["sourcePath"])
     reference = Path(ai["reference_image_path"])
+    # 比例以条目自己的选择为准（歌曲默认 4:3、跳舞默认 9:16，用户可逐条改）
+    ratio = item_ratio(item)
     await _wait_for_free_pipeline(batch_id, item_id)
+    batch_store.add_item_log(
+        batch_id, item_id, f"本条画布比例：{ratio_hint(str(item['kind']), ratio)}"
+    )
     if item["kind"] == "singing":
         # 动作/运镜已在预审时随文案一起产出（同一次模型调用）。
         # 模型降级时用按时长铺开的保守时间轴兜底，保证视频链路仍能启动。
@@ -699,14 +766,14 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
         data = {
             "action_prompt": action,
             "camera_prompt": camera,
-            "ratio": "4:3",
+            "ratio": ratio,
             "use_rvc": "1",
             "use_upscale": "1",
         }
         endpoint = "/api/jobs"
     else:
         data = {
-            "ratio": "9:16",
+            "ratio": ratio,
             "remove_subtitles": "1" if ai.get("remove_subtitles") else "0",
             "mode": "animation",
             "content_prompt": str(ai.get("content_prompt") or ""),
@@ -1083,6 +1150,94 @@ async def run_batch(batch_id: str) -> None:
         state = batch_store.get(batch_id)
         if state and state.get("runnerActive"):
             batch_store.update(batch_id, runnerActive=False)
+
+
+def _ratio_aspect(ratio: str) -> float:
+    width, height = (int(part) for part in ratio.split(":"))
+    return (width / height) if height else 1.0
+
+
+def _image_box(path: Path) -> tuple[int, int] | None:
+    try:
+        with Image.open(path) as image:
+            return image.size
+    except (OSError, ValueError):
+        return None
+
+
+def image_ratio_note(image: Path, ratio: str) -> str:
+    """候选图与条目画布比例不一致时给一句人话提示；一致或读不出来时返回空串。
+
+    只提示不拦截：最终构图由工作流按画布缩放，用户有权用任意比例的图出片。
+    """
+    box = _image_box(image)
+    if not box:
+        return ""
+    width, height = box
+    if not height:
+        return ""
+    expected = _ratio_aspect(ratio)
+    if abs((width / height) - expected) / expected <= 0.08:
+        return ""
+    return (
+        f"这张图是 {width}×{height}，与本条画布比例 {ratio} 不一致；"
+        f"需要的话可以改用一张 {ratio} 的图（不换也能出片）。"
+    )
+
+
+def set_item_ratio(batch_id: str, item_id: str, ratio: str) -> dict[str, Any]:
+    """改某一条视频的画布比例（歌曲默认 4:3、跳舞默认 9:16，用户逐条可改）。
+
+    用户 2026-09-10：「每个视频需要让我选择比例，歌曲默认 4:3，跳舞默认 9:16，我可以改的」。
+
+    - 正在跑（running/revising）、已确认出片（confirmed）或已结束的条目不接受修改：
+      这时改比例会和已经提交出去的子任务打架。
+    - 已经备过料的条目：按新比例重拼出图提示词并落盘，让用户拿到的备料与最终成片一致；
+      旧候选图若与新比例不符只提示、不擅自删——图是用户自己出的，重做与否由他决定。
+    """
+    item = _item(batch_id, item_id)
+    kind = str(item.get("kind") or "singing")
+    target = normalize_batch_ratio(ratio, kind)
+    if item.get("status") in {"running", "revising", "confirmed", "completed", "skipped", "deleted"}:
+        raise ValueError("当前条目正在执行或已经结束，不能再改画布比例")
+    previous = item_ratio(item)
+    if target == previous:
+        return batch_store.get(batch_id) or {}
+
+    ai = dict(item.get("ai") or {})
+    if ai.get("imagePrompt"):
+        ai["imagePrompt"] = batch_ai.compose_image_prompt(
+            kind,
+            str(ai.get("style_source") or "video"),
+            str(ai.get("imagePromptFeedback") or ""),
+            str(ai.get("imagePromptMode") or "both"),
+            song_name=str(ai.get("song_name") or ""),
+            song_mood=str(ai.get("song_mood") or ""),
+            ratio=target,
+        )
+        ai["imageRatio"] = target
+        try:
+            prompt_path = DATA_DIR / "batches" / batch_id / item_id / "出图提示词.txt"
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
+            prompt_path.write_text(str(ai["imagePrompt"]), encoding="utf-8")
+        except OSError:
+            pass
+
+    warning = item.get("warning")
+    note = f"画布比例已改为 {ratio_hint(kind, target)}。"
+    mismatch = image_ratio_note(Path(str(ai.get("reference_image_path") or "")), target)
+    if mismatch:
+        warning = mismatch
+        note = f"{note} {mismatch}"
+
+    def apply(row: dict[str, Any]) -> None:
+        row["ratio"] = target
+        row["ai"] = ai
+        row["warning"] = warning
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(batch_id, item_id, note)
+    return batch_store.get(batch_id) or {}
 
 
 def request_review_adjustment(batch_id: str, item_id: str, feedback: str, mode: str) -> dict[str, Any]:

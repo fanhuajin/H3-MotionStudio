@@ -125,16 +125,21 @@ def compose_image_prompt(
     mode: str = "both",
     song_name: str = "",
     song_mood: str = "",
+    ratio: str = "",
 ) -> str:
-    """出图提示词 = 造型提示词 + 歌曲信息 + 用户的审核修改意见。
+    """出图提示词 = 造型提示词 + 构图规格 + 歌曲信息 + 用户的审核修改意见。
 
     - 歌曲必须真的进入出图提示词：否则「图一给造型、歌曲给情绪」这条约定落不了地，
       出图跟歌完全无关。
     - 修改意见必须进入出图提示词，否则用户在审核区写「头顶再贴边一些」只会改动文案、
       图片毫无变化 —— 这正是「调整图片」按钮失效的原因。
+    - 构图规格按**条目选定的画布比例**注入（批量里每条都能单独改比例）；未传时
+      按类型默认（歌曲 4:3 / 跳舞 9:16），保持老调用方行为不变。
     """
     prompt = compose_prompt(kind, style_source, song_name)
-    composition = PORTRAIT_COMPOSITION.get("4:3" if kind == "singing" else "9:16")
+    composition = PORTRAIT_COMPOSITION.get(
+        ratio or ("4:3" if kind == "singing" else "9:16")
+    )
     if composition:
         prompt += f"\n\n【构图规格 · 按用户的构图参考图实测】{composition}。必须严格按这组比例构图。"
     title = f"《{song_name}》" if song_name else ""

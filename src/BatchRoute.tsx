@@ -39,6 +39,14 @@ interface BatchAI {
   tags: string[];
   imagePrompt?: string;
   sceneFramePath?: string;
+  /** 歌曲条目：直接进唱歌工作流节点 ③ 的「人物动作要求」与「运镜要求」 */
+  action_prompt?: string;
+  camera_prompt?: string;
+  /** 跳舞条目：迁移工作流的三段提示词 + 是否先去字幕 */
+  content_prompt?: string;
+  video_prompt?: string;
+  image_prompt?: string;
+  remove_subtitles?: boolean;
 }
 
 interface ChildJob {
@@ -62,6 +70,8 @@ interface BatchItem {
   index: number;
   kind: "singing" | "dance";
   url: string;
+  /** 本条视频的画布比例：歌曲默认 4:3、跳舞默认 9:16，可逐条改 */
+  ratio?: CanvasRatio;
   title: string;
   status: string;
   stage: string;
@@ -88,15 +98,48 @@ interface BatchState {
   items: BatchItem[];
 }
 
-const INPUT_KEY = "h3-motionstudio:batch-input:v1";
+type CanvasRatio = "4:3" | "9:16";
+
+const INPUT_KEY = "h3-motionstudio:batch-input:v2";
+const LEGACY_INPUT_KEY = "h3-motionstudio:batch-input:v1";
+// 歌曲默认 4:3、跳舞默认 9:16：这是新建批次时的默认值，每条视频都能单独改。
+const DEFAULT_RATIO: Record<BatchItem["kind"], CanvasRatio> = { singing: "4:3", dance: "9:16" };
+const RATIOS: CanvasRatio[] = ["4:3", "9:16"];
+
+const RATIO_LABEL: Record<CanvasRatio, string> = { "4:3": "4:3 横版", "9:16": "9:16 竖版" };
+
+/** 各链路生成分辨率不同：唱歌 640×480 / 480×864，跳舞 512×384 / 512×896。 */
+function ratioDetail(kind: BatchItem["kind"], ratio: CanvasRatio) {
+  if (kind === "singing") return ratio === "4:3" ? "生成 640×480 · 二采 1440×1080" : "生成 480×864 · 二采 1080×1920";
+  return ratio === "4:3" ? "生成 512×384 · 二采 1440×1080" : "生成 512×896 · 二采 1080×1920";
+}
+
+function itemRatio(item: BatchItem): CanvasRatio {
+  return item.ratio === "4:3" || item.ratio === "9:16" ? item.ratio : DEFAULT_RATIO[item.kind];
+}
+
+function asRatio(value: unknown, fallback: CanvasRatio): CanvasRatio {
+  return value === "4:3" || value === "9:16" ? value : fallback;
+}
 
 function readInputDraft() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(INPUT_KEY) || "{}") as Record<string, string>;
-    return { singing: parsed.singing || "", dance: parsed.dance || "" };
-  } catch {
-    return { singing: "", dance: "" };
-  }
+  const read = (key: string) => {
+    try {
+      return JSON.parse(localStorage.getItem(key) || "{}") as Record<string, string | boolean>;
+    } catch {
+      return {} as Record<string, string | boolean>;
+    }
+  };
+  const parsed = { ...read(LEGACY_INPUT_KEY), ...read(INPUT_KEY) };
+  return {
+    singing: String(parsed.singing || ""),
+    dance: String(parsed.dance || ""),
+    singingRatio: asRatio(parsed.singingRatio, DEFAULT_RATIO.singing),
+    danceRatio: asRatio(parsed.danceRatio, DEFAULT_RATIO.dance),
+    // 开关：关掉的一类既不展示输入框，也不会被提交执行；默认两类都开着。
+    singingOn: parsed.singingOn !== false,
+    danceOn: parsed.danceOn !== false,
+  };
 }
 
 function splitUrls(value: string) {
@@ -133,6 +176,10 @@ export function BatchRoute() {
   const initial = useMemo(readInputDraft, []);
   const [singing, setSinging] = useState(initial.singing);
   const [dance, setDance] = useState(initial.dance);
+  const [singingRatio, setSingingRatio] = useState<CanvasRatio>(initial.singingRatio);
+  const [danceRatio, setDanceRatio] = useState<CanvasRatio>(initial.danceRatio);
+  const [singingOn, setSingingOn] = useState(initial.singingOn);
+  const [danceOn, setDanceOn] = useState(initial.danceOn);
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState("");
@@ -160,8 +207,11 @@ export function BatchRoute() {
   }, [loadLatest]);
 
   useEffect(() => {
-    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance }));
-  }, [singing, dance]);
+    localStorage.setItem(
+      INPUT_KEY,
+      JSON.stringify({ singing, dance, singingRatio, danceRatio, singingOn, danceOn }),
+    );
+  }, [singing, dance, singingRatio, danceRatio, singingOn, danceOn]);
 
   useEffect(() => {
     if (!batch?.id) return;
@@ -193,10 +243,16 @@ export function BatchRoute() {
     setBusyAction("start");
     setError("");
     try {
+      // 关掉的那一类不提交：只有开启的链接会进批次
+      const singingUrls = singingOn ? splitUrls(singing) : [];
+      const danceUrls = danceOn ? splitUrls(dance) : [];
+      if (!singingUrls.length && !danceUrls.length) {
+        throw new Error("请先打开要制作的那一类（歌曲 / 跳舞）并填写链接");
+      }
       const response = await fetch("/api/batches", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ singingUrls: splitUrls(singing), danceUrls: splitUrls(dance) }),
+        body: JSON.stringify({ singingUrls, danceUrls, singingRatio, danceRatio }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, "批次创建失败"));
       const state = await response.json();
@@ -235,6 +291,15 @@ export function BatchRoute() {
 
   const openFolder = () => itemCall("open-output");
   const hasImage = Boolean(selected?.ai?.reference_image_path);
+  // 每条视频的比例都能单独改；开始出片（或已结束）后锁定。
+  const selectedRatio = selected ? itemRatio(selected) : DEFAULT_RATIO.singing;
+  const ratioLocked = Boolean(
+    selected && ["running", "revising", "confirmed", "completed", "skipped", "deleted"].includes(selected.status),
+  );
+  const changeRatio = (ratio: CanvasRatio) => {
+    if (!selected || ratioLocked || selectedRatio === ratio) return;
+    void itemCall("ratio", "POST", { ratio });
+  };
 
   // 只读回看每一阶段的产物；顺序按生成先后排列
   const STAGE_LABELS: Array<[string, string]> = [
@@ -254,6 +319,23 @@ export function BatchRoute() {
     if (selected.sourcePath) available.add("source");
     if (selected.ai?.reference_image_path) available.add("candidate");
     return STAGE_LABELS.filter(([key]) => available.has(key));
+  }, [selected]);
+
+  // 本条实际会写进工作流的动作/运镜（歌唱）或迁移提示词（跳舞）：只读展示给用户核对。
+  const promptBlocks = useMemo(() => {
+    const ai = selected?.ai;
+    if (!ai) return [] as Array<{ label: string; text: string }>;
+    const blocks = selected!.kind === "singing"
+      ? [
+        { label: "人物动作要求", text: String(ai.action_prompt || "").trim() },
+        { label: "运镜要求", text: String(ai.camera_prompt || "").trim() },
+      ]
+      : [
+        { label: "内容提示词", text: String(ai.content_prompt || "").trim() },
+        { label: "视频人物", text: String(ai.video_prompt || "").trim() },
+        { label: "参考图人物", text: String(ai.image_prompt || "").trim() },
+      ];
+    return blocks.filter((block) => block.text);
   }, [selected]);
 
   const uploadImage = async (file: File) => {
@@ -277,7 +359,7 @@ export function BatchRoute() {
     }
   };
 
-  const canStart = splitUrls(singing).length + splitUrls(dance).length > 0;
+  const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
   const hasLiveBatch = batch && !["completed", "cancelled"].includes(batch.status);
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
 
@@ -298,20 +380,86 @@ export function BatchRoute() {
       </header>
 
       <section className="batch-input-card">
-        <div className="batch-input-grid">
-          <label>
-            <span><MusicNotes weight="fill" /> 歌曲视频链接</span>
-            <textarea value={singing} onChange={(event) => setSinging(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-            <small>{splitUrls(singing).length} 条 · 生成无字幕版和歌词字幕版</small>
+        <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
+          <label className={singingOn ? "" : "off"}>
+            <span className="batch-input-head">
+              <b><MusicNotes weight="fill" /> 歌曲视频链接</b>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={singingOn}
+                className={`batch-switch ${singingOn ? "on" : ""}`}
+                onClick={(event) => { event.preventDefault(); setSingingOn((value) => !value); }}
+              >
+                <i />{singingOn ? "已开启" : "已关闭"}
+              </button>
+            </span>
+            {singingOn ? (
+              <>
+                <textarea value={singing} onChange={(event) => setSinging(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
+                <div className="batch-ratio-pick" role="radiogroup" aria-label="歌曲视频默认画布比例">
+                  <em>画布比例</em>
+                  {RATIOS.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={singingRatio === value}
+                      className={singingRatio === value ? "selected" : ""}
+                      onClick={(event) => { event.preventDefault(); setSingingRatio(value); }}
+                    >
+                      {RATIO_LABEL[value]}
+                    </button>
+                  ))}
+                  <i>{ratioDetail("singing", singingRatio)}</i>
+                </div>
+                <small>{splitUrls(singing).length} 条 · 每条都能在审核时单独改比例 · 生成无字幕版和歌词字幕版</small>
+              </>
+            ) : (
+              <small>已关闭：这类链接不会展示，也不会加入批次。</small>
+            )}
           </label>
-          <label>
-            <span><PersonSimpleRun weight="fill" /> 跳舞视频链接</span>
-            <textarea value={dance} onChange={(event) => setDance(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-            <small>{splitUrls(dance).length} 条 · 9:16 动作迁移成片</small>
+          <label className={danceOn ? "" : "off"}>
+            <span className="batch-input-head">
+              <b><PersonSimpleRun weight="fill" /> 跳舞视频链接</b>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={danceOn}
+                className={`batch-switch ${danceOn ? "on" : ""}`}
+                onClick={(event) => { event.preventDefault(); setDanceOn((value) => !value); }}
+              >
+                <i />{danceOn ? "已开启" : "已关闭"}
+              </button>
+            </span>
+            {danceOn ? (
+              <>
+                <textarea value={dance} onChange={(event) => setDance(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
+                <div className="batch-ratio-pick" role="radiogroup" aria-label="跳舞视频默认画布比例">
+                  <em>画布比例</em>
+                  {RATIOS.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={danceRatio === value}
+                      className={danceRatio === value ? "selected" : ""}
+                      onClick={(event) => { event.preventDefault(); setDanceRatio(value); }}
+                    >
+                      {RATIO_LABEL[value]}
+                    </button>
+                  ))}
+                  <i>{ratioDetail("dance", danceRatio)}</i>
+                </div>
+                <small>{splitUrls(dance).length} 条 · 每条都能在审核时单独改比例 · 动作迁移成片</small>
+              </>
+            ) : (
+              <small>已关闭：这类链接不会展示，也不会加入批次。</small>
+            )}
           </label>
         </div>
         <div className="batch-input-actions">
-          <p><ListChecks /> 页面会记住这些链接；不需要导入表格。</p>
+          <p><ListChecks /> 页面会记住这些链接与开关；只有开启的那一类会被提交执行。</p>
           <button className="batch-primary" disabled={!canStart || Boolean(hasLiveBatch) || busyAction === "start"} onClick={start}>
             {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
             {hasLiveBatch ? "当前批次尚未结束" : "开始批量处理"}
@@ -353,7 +501,7 @@ export function BatchRoute() {
                   <span className={`batch-item-index ${item.status}`}>{item.status === "completed" ? <Check /> : item.index}</span>
                   <span className="batch-item-copy">
                     <strong>{item.title || `第 ${item.index} 条`}</strong>
-                    <small>{item.kind === "singing" ? "歌曲视频" : "跳舞视频"} · {batchStatusLabel(item.status)}</small>
+                    <small>{item.kind === "singing" ? "歌曲视频" : "跳舞视频"} · {itemRatio(item)} · {batchStatusLabel(item.status)}</small>
                   </span>
                   {item.status === "running" && <SpinnerGap className="spin" />}
                 </button>
@@ -377,6 +525,33 @@ export function BatchRoute() {
                     <button className="danger" onClick={() => itemCall("", "DELETE")}><Trash />删除</button>
                   </div>
                 </div>
+
+                {!["deleted"].includes(selected.status) && (
+                  <div className={`batch-ratio-row ${ratioLocked ? "locked" : ""}`}>
+                    <div className="batch-ratio-copy">
+                      <span>画布比例</span>
+                      <small>
+                        {ratioDetail(selected.kind, selectedRatio)}
+                        {ratioLocked ? " · 本条已开始出片，比例已锁定" : " · 确认出片前随时可改"}
+                      </small>
+                    </div>
+                    <div className="batch-ratio-pick" role="radiogroup" aria-label="这一条的画布比例">
+                      {RATIOS.map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          role="radio"
+                          aria-checked={selectedRatio === value}
+                          className={selectedRatio === value ? "selected" : ""}
+                          disabled={ratioLocked || Boolean(busyAction)}
+                          onClick={() => changeRatio(value)}
+                        >
+                          {RATIO_LABEL[value]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {selected.status === "awaiting_review" && selected.ai && (
                   <section className="batch-review">
@@ -431,7 +606,7 @@ export function BatchRoute() {
                     <div className="batch-review-copy">
                       <div className="batch-review-title">
                         <span>等待你的确认</span>
-                        <small>确认前不会启动 ComfyUI</small>
+                        <small>按 {selectedRatio} 出片 · 确认前不会启动 ComfyUI</small>
                       </div>
 
                       {selected.ai.song_name && <p className="batch-song-name">识别歌曲：{selected.ai.song_name}</p>}
@@ -452,9 +627,34 @@ export function BatchRoute() {
                   </section>
                 )}
 
+                {selected.ai && (
+                  <section className="batch-prompt-panel">
+                    <div className="batch-panel-title">
+                      <span>{selected.kind === "singing" ? "已填写的动作与运镜" : "已填写的迁移提示词"}</span>
+                      <small>只读 · 确认出片时按原文提交给工作流</small>
+                    </div>
+                    <div className="batch-prompt-list">
+                      {promptBlocks.map((block) => (
+                        <article key={block.label}>
+                          <h4>{block.label}</h4>
+                          <pre>{block.text}</pre>
+                        </article>
+                      ))}
+                      {selected.kind === "dance" && (
+                        <article>
+                          <h4>先去字幕</h4>
+                          <pre>{selected.ai.remove_subtitles ? "是 · 出片前先跑一遍去字幕" : "否 · 直接用源视频驱动"}</pre>
+                        </article>
+                      )}
+                      {promptBlocks.length === 0 && (
+                        <p className="batch-empty">这一条还没有动作/运镜或迁移提示词（预审未完成或模型降级）。</p>
+                      )}
+                    </div>
+                  </section>
+                )}
+
                 <section className="batch-progress-panel">
-                  <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(selected.status)}</small></div>
-                  <div className="batch-steps">
+                  <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(selected.status)}</small></div>                  <div className="batch-steps">
                     {selected.milestones.map((step) => (
                       <div className={`batch-step ${step.status}`} key={step.id}>
                         <span className="batch-step-icon">{stepIcon(step.status)}</span>
