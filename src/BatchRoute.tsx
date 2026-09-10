@@ -144,6 +144,7 @@ function splitUrls(value: string) {
 function batchStatusLabel(status: string) {
   return ({
     queued: "等待开始",
+    pending: "等待启动",
     running: "正在处理",
     revising: "正在调整",
     awaiting_review: "等待确认",
@@ -359,16 +360,8 @@ export function BatchRoute() {
   };
 
   const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
-  // 已有批次（取消的除外）时按钮变成「加入队列」：只排队，流程等用户点「启动」。
+  // 已有批次（取消的除外）时按钮变成「加入队列」：只排队，是否开跑由每条自己的「启动这一条」决定。
   const canAppend = Boolean(batch && batch.status !== "cancelled");
-  // 队列里有待处理任务、且没有在跑也没暂停 → 显示「启动」
-  const canStartRun = Boolean(
-    batch
-    && batch.status !== "cancelled"
-    && batch.status !== "running"
-    && batch.status !== "paused"
-    && (batch.items || []).some((item) => ["pending", "revising", "confirmed"].includes(item.status)),
-  );
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
 
   return (
@@ -435,7 +428,7 @@ export function BatchRoute() {
           </label>
         </div>
         <div className="batch-input-actions">
-          <p><ListChecks /> 只入队、不自动开跑：粘好链接点「加入队列」，确认无误后再点「启动」。重复链接会自动跳过，输入框内容会保留。</p>
+          <p><ListChecks /> 只入队、不自动开跑：粘好链接点「加入队列」，要跑哪一条就在右边点该条右上角的「启动这一条」。重复链接会自动跳过，输入框内容会保留。</p>
           <button className="batch-primary" disabled={!canStart || !loaded || busyAction === "start"} onClick={start} title={canAppend ? "追加到当前批次队尾（不会自动开跑）" : undefined}>
             {busyAction === "start" ? <SpinnerGap className="spin" /> : <Plus weight="bold" />}
             加入队列（{splitUrls(singing).length + splitUrls(dance).length} 条）
@@ -451,9 +444,7 @@ export function BatchRoute() {
             <div className="batch-section-head">
               <div><span>制作队列</span><small>{batch.notice}</small></div>
               <div className="batch-head-actions">
-                {canStartRun ? (
-                  <button className="start" onClick={() => call("start")} disabled={Boolean(busyAction)}><Play weight="fill" />启动</button>
-                ) : batch.status === "paused" ? (
+                {batch.status === "paused" ? (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 ) : !["completed", "awaiting_review", "cancelled"].includes(batch.status) ? (
                   <button onClick={() => call("pause")} disabled={Boolean(busyAction)}><Pause />暂停</button>
@@ -498,6 +489,16 @@ export function BatchRoute() {
                     <a href={selected.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
                   </div>
                   <div className="batch-item-actions">
+                    {selected.status === "pending" && (
+                      <button
+                        className="start"
+                        onClick={() => itemCall("start")}
+                        disabled={Boolean(busyAction)}
+                        title="开始这一条：下载抖音视频 → 生成人物图素材与发布文案 → 停下来等你确认"
+                      >
+                        <Play weight="fill" />启动这一条
+                      </button>
+                    )}
                     {selected.status === "failed" && <button onClick={() => itemCall("retry")}><ArrowClockwise />重试</button>}
                     {!['completed', 'skipped'].includes(selected.status) && <button onClick={() => itemCall("skip")}><X />跳过</button>}
                     <button
@@ -512,6 +513,12 @@ export function BatchRoute() {
                     </button>
                   </div>
                 </div>
+
+                {selected.status === "pending" && (
+                  <p className="field-note">
+                    这一条还没启动：点右上角「启动这一条」后才会下载抖音视频、生成人物图素材与发布文案，然后停下来等你确认。
+                  </p>
+                )}
 
                 {selected.status === "awaiting_review" && selected.ai && (
                   <section className="batch-review">

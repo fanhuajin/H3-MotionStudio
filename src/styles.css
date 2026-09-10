@@ -1475,6 +1475,10 @@ body {
 .batch-item-actions button { min-height: 31px; padding: 0 10px; border: 1px solid #44385f; color: #cbc5da; background: #15102c; font-size: 11px; }
 .batch-item-actions button:hover { border-color: #65577f; color: #fff; }
 .batch-item-actions button.danger { border-color: rgba(255, 108, 137, .3); color: #ff9daf; }
+/* 「启动这一条」：排队不等于开跑，只有点它这一条才开始 */
+.batch-item-actions button.start { border-color: var(--shell-accent); color: #061316; background: var(--shell-accent); font-weight: 700; }
+.batch-item-actions button.start:hover:not(:disabled) { filter: brightness(1.08); }
+.batch-item-actions button:disabled { cursor: not-allowed; opacity: .45; }
 .batch-review { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(380px, 1.15fr); gap: 16px; padding: 14px; border: 1px solid rgba(55, 216, 230, .32); border-radius: 10px; background: linear-gradient(145deg, rgba(17, 17, 45, .96), rgba(10, 8, 29, .96)); }
 .batch-review-image { position: relative; min-height: 440px; overflow: hidden; display: grid; place-items: center; border: 1px solid #302746; border-radius: 8px; background: #070616; }
 .batch-review-image img { width: 100%; height: 100%; max-height: 600px; object-fit: contain; display: block; }

@@ -60,6 +60,7 @@ from .pipeline import (
     estimate_migrate_segments,
     estimate_singing_segments,
     media_metadata,
+    pipeline_lock,
     resources,
     retry_voice,
     run_migrate_pipeline,
@@ -332,6 +333,20 @@ def _pending_items(state: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+async def _prewarm_comfy() -> None:
+    """点「启动」时先把 ComfyUI 拉起来（用户 2026-09-10 要求）。
+
+    在 `pipeline_lock` 里启动，避免和正在跑的任务同时拉起两个 ComfyUI 抢 8188；
+    预热失败只记日志不拦批次——备料阶段（下载 + 分析 + 备图）本来就不需要 ComfyUI，
+    真正出片时 pipeline 会再 ensure 一次并报出真实错误。
+    """
+    try:
+        async with pipeline_lock:
+            await resources.ensure_comfy()
+    except Exception:  # noqa: BLE001 - 预热是尽力而为，不能拖累队列
+        logger.warning("ComfyUI 预热失败（不影响备料，出片时会重试启动）", exc_info=True)
+
+
 def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
     """按需唤醒 runner：**没点过「启动」的批次不会被顺手跑起来**。
 
@@ -396,15 +411,55 @@ async def get_batch(batch_id: str):
 
 @app.post("/api/batches/{batch_id}/start")
 async def start_batch(batch_id: str):
-    """点「启动」：开始跑队列里还没处理的任务（逐条预审 → 等你确认出片）。"""
+    """把队列里**所有还没启动**的条目一起标记为启动（API 能力；页面按条启动）。
+
+    队列流程（用户 2026-09-10 确认）：下载抖音视频 → 生成人物图与发布文案 → 等你的确认 →
+    确认后才出片。预热与流程解耦：预热失败不拦批次，真正出片时 pipeline 会再 ensure 一次
+    并报出真实错误。
+    """
     state = _batch_or_404(batch_id)
     if state.get("status") == "cancelled":
         raise HTTPException(409, "批次已取消，请新建一个批次")
-    if state.get("status") == "running" and state.get("runnerActive"):
-        raise HTTPException(409, "批次已经在运行")
     if not _pending_items(state):
         raise HTTPException(409, "队列里没有待处理的任务")
-    return _resume_batch(batch_id, "已启动，正在按队列逐条处理。")
+    spawn(_prewarm_comfy())
+    marked = _mark_start_requested(batch_id)
+    return _resume_batch(batch_id, f"已启动 {marked} 条：正在预热 ComfyUI 并逐条处理。")
+
+
+def _mark_start_requested(batch_id: str, item_id: str | None = None) -> int:
+    """把待备料的条目标记为「已请求启动」，返回标记了几条。
+
+    `item_id` 为空表示整批（API 的 `/start`），否则只标记指定条目 —— 页面就是逐条启动的：
+    点「启动这一条」才跑这一条，其它没点的继续排队。
+    """
+    marked = 0
+
+    def apply(state: dict[str, Any]) -> None:
+        nonlocal marked
+        for item in state.get("items") or []:
+            if item_id and item.get("id") != item_id:
+                continue
+            if item.get("status") in {"pending", "revising"}:
+                item["startRequested"] = True
+                marked += 1
+
+    batch_store.mutate(batch_id, apply)
+    return marked
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/start")
+async def start_batch_item(batch_id: str, item_id: str):
+    """点「启动这一条」：只让这一条开始（下载 → 分析 → 备人物图与发布文案 → 等确认）。"""
+    item = _batch_item_or_404(batch_id, item_id)
+    state = _batch_or_404(batch_id)
+    if state.get("status") == "cancelled":
+        raise HTTPException(409, "批次已取消，请新建一个批次")
+    if item.get("status") not in {"pending", "revising"}:
+        raise HTTPException(409, "这一条已经启动过了，请在审核区确认出片或重试")
+    spawn(_prewarm_comfy())
+    _mark_start_requested(batch_id, item_id)
+    return _resume_batch(batch_id, "已启动这一条：正在预热 ComfyUI 并准备素材。")
 
 
 @app.post("/api/batches/{batch_id}/items")
@@ -574,6 +629,7 @@ async def retry_batch_item(batch_id: str, item_id: str):
             skipRequested=False,
             deleteRequested=False,
             childJob=None,
+            startRequested=True,   # 用户点了重试 → 重新排进 runner
         )
         for milestone in row.get("milestones") or []:
             if milestone.get("status") == "error":
