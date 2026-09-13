@@ -530,7 +530,11 @@ export function BatchRoute() {
 
   // 已运行时间：批次还在跑就实时跳秒；已结束显示总耗时。
   const batchLive = Boolean(batch && !batch.finishedAt && !["completed", "cancelled", "failed"].includes(batch.status));
-  const batchNowTick = useNowTick(batchLive);
+  // 队列里每一条也要有时间，所以只要还有条目在跑/已放行就继续跳秒（批次可能刚收尾）
+  const queueLive = visibleItems.some(
+    (item) => !item.finishedAt && ["running", "revising", "confirmed"].includes(item.status),
+  );
+  const batchNowTick = useNowTick(batchLive || queueLive);
   const batchElapsedMs = batch ? elapsedMs(batch.startedAt || batch.createdAt, batch.finishedAt, batchNowTick) : null;
   const batchFinishedLabel = batch?.finishedAt ? `批次总耗时（${formatLogTime(batch.finishedAt)} 结束）` : "";
 
@@ -538,6 +542,21 @@ export function BatchRoute() {
   const itemElapsedMs = selected
     ? elapsedMs(selected.createdAt, selected.finishedAt, batchNowTick)
     : null;
+
+  /**
+   * 队列里那条的时间：排队中写「排队」（还没开始，别让人以为在跑）、
+   * 正在跑写「已用」、结束写「耗时」。都从加入队列算起。
+   */
+  const queueTime = (item: BatchItem): string => {
+    const ms = elapsedMs(item.createdAt, item.finishedAt, batchNowTick);
+    if (ms === null) return "";
+    const label = item.status === "pending"
+      ? "排队"
+      : item.finishedAt
+        ? "耗时"
+        : "已用";
+    return `${label} ${formatElapsedMs(ms)}`;
+  };
 
   // 本条实际会写进工作流的动作/运镜（歌唱）或迁移提示词（跳舞）：只读展示给用户核对。
   const promptBlocks = useMemo(() => {
@@ -711,6 +730,8 @@ export function BatchRoute() {
                       {item.childJob?.currentSegment && item.childJob.estimatedSegments
                         ? ` · 分段 ${item.childJob.currentSegment}/${item.childJob.estimatedSegments}`
                         : ""}
+                      {/* 每条自己的时间（用户 2026-09-13：「当前任务队列的时间也给下」） */}
+                      {queueTime(item) ? ` · ${queueTime(item)}` : ""}
                     </small>
                     {/* 模型起的标题认不出是哪条视频：列表里再挂一行源作品自己的文案 */}
                     {sourceCaption(item) && (

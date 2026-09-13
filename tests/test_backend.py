@@ -1647,6 +1647,21 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 交付仍然要写发布文案
         self.assertIn("发布文案.txt", source)
 
+    def test_batch_queue_rows_show_their_own_time(self) -> None:
+        """队列里每条都要显示自己的时间（用户 2026-09-13：「当前任务队列的时间也给下」）。
+
+        以前只有批次总耗时和「当前选中条目」的耗时，左侧队列列表看不到每条跑了多久。
+        排队中的条目必须写「排队」而不是「已用」，否则会让人以为它已经在跑了。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        self.assertIn("const queueTime = (item: BatchItem)", source)
+        self.assertIn("queueTime(item)", source)          # 列表里真的用上了
+        for label in ('"排队"', '"耗时"', '"已用"'):
+            self.assertIn(label, source)
+        # 只要有条目在跑就继续跳秒（批次可能刚收尾）
+        self.assertIn("const queueLive = visibleItems.some(", source)
+        self.assertIn("useNowTick(batchLive || queueLive)", source)
+
     def test_batch_flow_has_four_steps_only(self) -> None:
         """进度只有 下载 / 备料 / 审核 / 出片 四步：歌词字幕与「整理发布文件」都不占格。
 
