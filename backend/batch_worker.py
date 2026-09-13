@@ -18,7 +18,13 @@ from . import batch_ai, batch_image, batch_portrait
 from .batch_store import batch_store
 from .douyin_mirror import upsert_jobs as mirror_upsert
 from .douyin_preview import ensure_download_playable
-from .douyin_service import DouyinServiceError, douyin_service, is_douyin_url
+from .douyin_service import (
+    DOUYIN_OUTPUT,
+    DouyinServiceError,
+    _extract_aweme_id as extract_aweme_id,
+    douyin_service,
+    is_douyin_url,
+)
 from .settings import (
     BATCH_OUTPUT_ROOT,
     BATCH_RATIO_CHOICES,
@@ -372,11 +378,86 @@ def duplicate_item_by_aweme(
     return None
 
 
+def cached_download_path(url: str) -> Path | None:
+    """本地已经有这条作品（按作品号能对上文件）时返回它，否则 None。
+
+    用户 2026-09-13：「抖音下载的时候如果已经有了就不要下载了」。
+    下载器子进程自己也会跳过已存在的视频（`core/video_downloader.py`：
+    「Video %s already downloaded, skipping」），但那条路要**先把下载服务拉起来、再提交一次任务**
+    （一个完整 Python 进程 + 一次轮询）。这里在提交之前就先在本地找一遍：命中就直接复用。
+
+    找法：① 下载器写的 metadata 清单（`download_manifest.jsonl` 的 `file_paths`，最可靠）；
+    ② 清单没有/路径变了时，按作品号在下载目录里搜（结构与 `douyin_service.result_for` 一致）。
+    """
+    aweme_id = extract_aweme_id(str(url or ""))
+    if not aweme_id:
+        return None
+    roots: list[Path] = []
+    for root in (DOUYIN_OUTPUT, MANIFEST_PATH.parent):
+        candidate = Path(root)
+        if candidate.is_dir() and candidate not in roots:
+            roots.append(candidate)
+    if not roots:
+        return None
+    metadata = _manifest_metadata(aweme_id)
+    for relative in metadata.get("file_paths") or []:
+        for root in roots:
+            candidate = root / str(relative)
+            if candidate.is_file():
+                return candidate
+    for root in roots:
+        matches = [
+            path
+            for path in root.rglob(f"*{aweme_id}*")
+            if path.is_file()
+            and path.suffix.lower() in VIDEO_SUFFIXES
+            and ".h3-converted" not in path.name
+            and ".part." not in path.name
+        ]
+        if matches:
+            return max(matches, key=lambda path: path.stat().st_mtime)
+    return None
+
+
+async def _adopt_existing_source(batch_id: str, item_id: str, cached: Path) -> Path:
+    """复用本地已有的源视频：照常过判重、转码与元数据，但不下载。"""
+    item = _item(batch_id, item_id)
+    kind = str(item.get("kind") or "")
+    aweme_id = extract_aweme_id(str(item.get("url") or "")) or str(item.get("awemeId") or "") or cached.stem
+    duplicate = duplicate_item_by_aweme(batch_id, item_id, aweme_id, kind)
+    if duplicate is not None:
+        raise DuplicateItem(
+            f"和第 {duplicate.get('index')} 条是同一个抖音作品"
+            f"（{duplicate.get('title') or duplicate.get('url')}），本条已自动跳过，不重复制作。"
+        )
+    source = await ensure_download_playable(cached, aweme_id)
+    metadata = _manifest_metadata(aweme_id)
+    title = str(metadata.get("desc") or source.stem).splitlines()[0].strip() or source.stem
+    _set_item(
+        batch_id,
+        item_id,
+        sourcePath=str(source.resolve()),
+        sourceName=source.name,
+        awemeId=aweme_id,
+        sourceMetadata=metadata,
+        title=title[:80],
+    )
+    batch_store.set_item_milestone(batch_id, item_id, "download", status="completed", progress=100)
+    batch_store.add_item_log(batch_id, item_id, f"本地已有这条视频，跳过下载：{source.name}")
+    return source
+
+
 async def _download(batch_id: str, item_id: str) -> Path:
     item = _item(batch_id, item_id)
     existing = Path(item.get("sourcePath") or "")
     if existing.is_file():
         return existing
+    # 这条作品本地已经有了（之前下过、或另一条用过同一条素材）→ 直接用，不启动下载器
+    cached = await asyncio.to_thread(cached_download_path, str(item.get("url") or ""))
+    if cached is not None:
+        batch_store.set_item_milestone(batch_id, item_id, "download", status="running", progress=5)
+        _set_item(batch_id, item_id, stage="download", status="running", error=None)
+        return await _adopt_existing_source(batch_id, item_id, cached)
     batch_store.set_item_milestone(batch_id, item_id, "download", status="running", progress=5)
     _set_item(batch_id, item_id, stage="download", status="running", error=None)
     batch_store.add_item_log(batch_id, item_id, "正在下载抖音源视频……")

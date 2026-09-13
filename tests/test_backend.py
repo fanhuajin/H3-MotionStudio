@@ -1604,6 +1604,84 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_batch_reuses_an_already_downloaded_source(self) -> None:
+        """本地已经有这条作品就直接复用，**不启动下载器、也不提交下载任务**。
+
+        用户 2026-09-13：「抖音下载的时候如果已经有了就不要下载了」。下载器子进程自己会跳过
+        已存在的视频，但那条路要先拉起下载服务再提交一次任务；批量应该在提交之前先查本地。
+        """
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        aweme = "7684126327402778850"
+        url = f"https://www.douyin.com/user/self?from_tab_name=main&modal_id={aweme}&showTab=like"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            original_manifest = batch_worker.MANIFEST_PATH
+            original_output = batch_worker.DOUYIN_OUTPUT
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                downloads = root / "EV"
+                relative = Path("作者") / f"2026-09-11_你在哪_{aweme}" / f"2026-09-11_你在哪_{aweme}.mp4"
+                video = downloads / relative
+                video.parent.mkdir(parents=True, exist_ok=True)
+                video.write_bytes(b"fake-mp4")
+                manifest = downloads / "download_manifest.jsonl"
+                manifest.write_text(
+                    json.dumps(
+                        {"aweme_id": aweme, "desc": "你在哪 我的心就在哪", "file_paths": [str(relative)]},
+                        ensure_ascii=False,
+                    ) + "\n",
+                    encoding="utf-8",
+                )
+                batch_worker.MANIFEST_PATH = manifest
+                batch_worker.DOUYIN_OUTPUT = downloads
+
+                # ① 直接查缓存：走清单命中
+                self.assertEqual(batch_worker.cached_download_path(url), video)
+                # ② 清单没有记录时，按作品号在下载目录里搜
+                self.assertEqual(batch_worker.cached_download_path(f"https://www.douyin.com/video/{aweme}"), video)
+                self.assertIsNone(batch_worker.cached_download_path("https://www.douyin.com/video/7000000000000000000"))
+
+                state = new_batch_state([], [url])
+                item = state["items"][0]
+                store = BatchStore()
+                store.create(state)
+                submit_calls: list[str] = []
+
+                async def fake_submit(value: str) -> dict:
+                    submit_calls.append(value)
+                    raise AssertionError("本地已有视频时不该提交下载任务")
+
+                async def fake_playable(source: Path, _aweme: str) -> Path:
+                    return source
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker.douyin_service, "submit", fake_submit
+                ), patch.object(batch_worker, "ensure_download_playable", fake_playable):
+                    resolved = asyncio.run(batch_worker._download(state["id"], item["id"]))
+
+                self.assertEqual(submit_calls, [])
+                self.assertEqual(resolved, video)
+                fresh = store.get(state["id"])["items"][0]
+                self.assertEqual(fresh["awemeId"], aweme)
+                self.assertEqual(fresh["sourcePath"], str(video.resolve()))
+                self.assertEqual(fresh["title"], "你在哪 我的心就在哪")
+                steps = {step["id"]: step["status"] for step in fresh["milestones"]}
+                self.assertEqual(steps["download"], "completed")
+                self.assertTrue(
+                    any("跳过下载" in row["message"] for row in fresh.get("logs") or []),
+                    fresh.get("logs"),
+                )
+            finally:
+                batch_store_module.DB_PATH = original_db
+                batch_worker.MANIFEST_PATH = original_manifest
+                batch_worker.DOUYIN_OUTPUT = original_output
+
     def test_batch_review_lands_image_and_copy_in_publish_folder(self) -> None:
         """审核点就把「人物图 + 发布文案」写进发布目录（用户 2026-09-13：
 
