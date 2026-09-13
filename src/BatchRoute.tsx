@@ -105,6 +105,10 @@ interface BatchItem {
   childJob?: ChildJob | null;
   stageMedia?: Record<string, string>;
   sourcePath?: string;
+  /** 下载子任务 id（抖音下载服务里的任务号） */
+  downloadJobId?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
   /** 源视频文件名（含抖音作品号） */
   sourceName?: string;
   /** 抖音作品号：链接写法不同（短链 / modal_id / 喜欢列表）时唯一能认人的标识 */
@@ -174,6 +178,19 @@ function sourceCaption(item: BatchItem): string {
   return desc || item.sourceName || "";
 }
 
+/** 日志时间：ISO（UTC）→ 本地时间；解析不了就原样显示。 */
+function formatLogTime(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+/** 造型来源：模型判定「源视频不适合出片」时会按歌曲情绪重做。 */
+function styleSourceLabel(value?: string): string {
+  return value === "redesign" ? "源视频不适合出片 → 按歌曲情绪重做造型" : "沿用源视频造型 / 服装 / 场景";
+}
+
 function readInputDraft() {
   const read = (key: string) => {
     try {
@@ -219,8 +236,7 @@ function stepIcon(status: StepStatus) {
   return <Circle />;
 }
 
-function responseMessage(response: Response, fallback: string): Promise<string> {
-  // 交给统一的 readJson：后端 500 现在也是 JSON（{"detail": ...}），且绝不会把
+function responseMessage(response: Response, fallback: string): Promise<string> {  // 交给统一的 readJson：后端 500 现在也是 JSON（{"detail": ...}），且绝不会把
   // "Unexpected token 'I'..." 这种解析错误当成给用户看的提示。
   return readJson<{ detail?: string }>(response, fallback)
     .then(() => fallback)
@@ -314,6 +330,8 @@ export function BatchRoute() {
   const prepare = async () => {
     setBusyAction("start");
     setError("");
+    // 报错信息要带上具体端点，所以在外层先声明（catch 里还要用）
+    let target = "/api/batches";
     try {
       const singingUrls = singingOn ? splitUrls(singing) : [];
       const danceUrls = danceOn ? splitUrls(dance) : [];
@@ -324,8 +342,8 @@ export function BatchRoute() {
       // 只有「已取消」的批次需要新开一个。
       const append = Boolean(batch && batch.status !== "cancelled");
       const autoStart = !(batch && (batch.status === "paused" || batch.pauseRequested));
-      const response = await fetch(append ? `/api/batches/${batch!.id}/items` : "/api/batches", {
-        method: "POST",
+      target = append ? `/api/batches/${batch!.id}/items` : "/api/batches";
+      const response = await fetch(target, {        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ singingUrls, danceUrls, autoStart }),
       });
@@ -342,7 +360,8 @@ export function BatchRoute() {
       // 输入框内容保留：重复链接后端会自动过滤（notice 里写明跳过了几条），
       // 想接着补链接或核对粘贴内容都不用重新粘一遍。
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(`${message}　〔POST ${target}〕`);
     } finally {
       setBusyAction("");
     }
@@ -350,10 +369,11 @@ export function BatchRoute() {
 
   const call = async (action: string, method = "POST", body?: object) => {
     if (!batch) return;
+    const endpoint = `/api/batches/${batch.id}/${action}`;
     setBusyAction(action);
     setError("");
     try {
-      const response = await fetch(`/api/batches/${batch.id}/${action}`, {
+      const response = await fetch(endpoint, {
         method,
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
@@ -361,7 +381,10 @@ export function BatchRoute() {
       if (!response.ok) throw new Error(await responseMessage(response, "操作失败"));
       setBatch(await readJson<BatchState>(response, "操作失败"));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      // 报错要把**所有能给的定位信息**都带上：后端 detail + HTTP 状态 + 具体端点，
+      // 否则用户只能看到一句「操作失败」，没法反馈也没法自己排查。
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(`${message}　〔${method} ${endpoint}〕`);
     } finally {
       setBusyAction("");
     }
@@ -476,6 +499,36 @@ export function BatchRoute() {
     if (selected.ai?.reference_image_path) available.add("candidate");
     return STAGE_LABELS.filter(([key]) => available.has(key));
   }, [selected]);
+
+  // 「等待你的确认」那一屏要把后端掌握的**全部**信息摊开：识别歌曲/情绪、造型来源判断、
+  // 作品号、源作品文案、候选图来源与版本、比例与放行状态、时间线与标识。
+  // 用户 2026-09-13：「报所有可以展示的信息都展示出来」「是指等待你的确认里的信息」。
+  const reviewFacts = useMemo(() => {
+    if (!selected?.ai) return [] as Array<[string, string]>;
+    const ai = selected.ai;
+    const image = String(ai.reference_image_path || "");
+    return [
+      ["类型", selected.kind === "singing" ? "唱歌视频" : "跳舞视频"],
+      ["状态", `${batchStatusLabel(selected.status)} · ${selected.stage}`],
+      ["抖音作品号", String(selected.awemeId || "")],
+      ["源作品文案", sourceCaption(selected)],
+      ["源文件名", String(selected.sourceName || "")],
+      ["识别歌曲", String(ai.song_name || "")],
+      ["歌曲情绪", String(ai.song_mood || "")],
+      ["造型来源", styleSourceLabel(ai.style_source)],
+      ["候选人物图", image ? image.split(/[\\/]/).pop() || image : "还没有（等你上传 GPT 生成的图）"],
+      ["候选图版本", `第 ${(selected.revision || 0) + 1} 版`],
+      ["审核放行", selected.status === "awaiting_review" ? "还没放行" : "已放行"],
+      ["条目 id", selected.id],
+      ["下载子任务", String(selected.downloadJobId || "")],
+      ["视频子任务", String(selected.videoJobId || "")],
+      ["源文件路径", String(selected.sourcePath || "")],
+      ["创建时间", formatLogTime(selected.createdAt)],
+      ["最近更新", formatLogTime(selected.updatedAt)],
+    ] as Array<[string, string]>;
+  }, [selected]);
+
+  const itemLogs = useMemo(() => selected?.logs || [], [selected]);
 
   // 本条实际会写进工作流的动作/运镜（歌唱）或迁移提示词（跳舞）：只读展示给用户核对。
   const promptBlocks = useMemo(() => {
@@ -903,6 +956,34 @@ export function BatchRoute() {
                       <label><span>标题</span><p>{selected.ai.title}</p></label>
                       <label><span>简介</span><p>{selected.ai.introduction}</p></label>
                       <label><span>标签</span><div className="batch-tags">{selected.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>
+                      {/* 确认这一屏要把后端掌握的**全部**信息给出来（用户 2026-09-13：
+                          「报所有可以展示的信息都展示出来」「是指等待你的确认里的信息」）——
+                          以前这里只有标题/简介/标签，歌曲情绪、造型来源、作品号、时间线、
+                          条目日志都藏在后端里，用户没法核对。 */}
+                      <label>
+                        <span>本条全部信息</span>
+                        <dl className="batch-facts">
+                          {reviewFacts.map(([label, value]) => (
+                            <div key={label}>
+                              <dt>{label}</dt>
+                              <dd>{value || "—"}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </label>
+                      <label>
+                        <span>条目日志（{itemLogs.length} 条）</span>
+                        {itemLogs.length ? (
+                          <ol className="batch-logs">
+                            {itemLogs.map((row, index) => (
+                              <li key={`${row.time}-${index}`}>
+                                <time>{formatLogTime(row.time)}</time>
+                                <span>{row.message}</span>
+                              </li>
+                            ))}
+                          </ol>
+                        ) : <p>这一条还没有日志。</p>}
+                      </label>
                       {renderSettings(selected)}
                       <div className="batch-review-actions">
                         <button

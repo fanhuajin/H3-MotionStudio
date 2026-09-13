@@ -1366,6 +1366,50 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("nvidia-smi", payload["degraded"])
         self.assertEqual(payload["gpu"], [])
 
+    def test_backend_modules_import_every_settings_constant_they_use(self) -> None:
+        """不许出现「用了 settings 里的常量却没导入」—— 那就是运行期 NameError。
+
+        2026-09-13 用户实测：点「音色转换」直接 500
+        「服务内部错误（NameError）：name 'RVC_MODEL' is not defined」——
+        `app.py` 用了 `RVC_MODEL` 却没 import。这类错误只有真跑到那一行才会炸，
+        单元测试与类型检查都拦不住，所以用 AST 静态扫一遍。
+        """
+        import ast
+
+        from backend import settings as settings_module
+
+        constants = {name for name in dir(settings_module) if name.isupper()}
+        root = Path(__file__).parents[1] / "backend"
+        problems: list[str] = []
+        for path in sorted(root.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            known: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    known.update(a.asname or a.name for a in node.names)
+                elif isinstance(node, ast.Import):
+                    known.update((a.asname or a.name).split(".")[0] for a in node.names)
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    known.add(node.name)
+                elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                    known.add(node.id)
+                elif isinstance(node, ast.arg):
+                    known.add(node.arg)
+                elif isinstance(node, ast.ExceptHandler) and node.name:
+                    known.add(node.name)
+            used = {
+                n.id for n in ast.walk(tree)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+            }
+            missing = sorted((constants & used) - known)
+            if missing:
+                problems.append(f"{path.name}: {missing}")
+        self.assertEqual(problems, [], "这些模块用了 settings 常量却没导入（运行期会 NameError）")
+        # 音色转换用到的那个常量必须真的能从 app 里取到
+        from backend import app as app_module
+
+        self.assertTrue(str(app_module.RVC_MODEL))
+
     def test_frontend_never_parses_a_response_as_json_blindly(self) -> None:
         """前端必须走 `readJson` 读响应：非 2xx / 非 JSON 都要翻成人话。
 
