@@ -100,6 +100,112 @@ def _data_url(path: Path) -> str:
     return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
 
+# 结构化输出模式：官方 OpenAI 与多数中转站认 `json_schema`（严格模式），而 DeepSeek 只认
+# `json_object` —— 2026-09-13 实测 `deepseek-flash` 对 json_schema 直接 400
+# 「This response_format type is unavailable now」（同一把 key 看图是 200，模型确实多模态）。
+# 所以先按 schema 试，端点明确拒绝就**记住**并整轮降级：把 schema 写进提示词 + json_object。
+JSON_MODE_OVERRIDE = (os.getenv("H3_BATCH_JSON_MODE") or "auto").strip().lower()
+_JSON_SCHEMA_SUPPORTED: bool | None = None
+
+
+def _json_mode() -> str:
+    if JSON_MODE_OVERRIDE in {"schema", "object"}:
+        return JSON_MODE_OVERRIDE
+    return "object" if _JSON_SCHEMA_SUPPORTED is False else "schema"
+
+
+def _strip_code_fence(text: str) -> str:
+    """有的端点会把 JSON 包在 ```json 代码块里。"""
+    body = text.strip()
+    if body.startswith("```"):
+        newline = body.find("\n")
+        if newline != -1:
+            body = body[newline + 1:]
+    if body.rstrip().endswith("```"):
+        body = body.rstrip()[:-3]
+    return body.strip()
+
+
+def _json_mode_unavailable(response: httpx.Response) -> bool:
+    if response.status_code != 400:
+        return False
+    text = response.text.lower()
+    return "response_format" in text or "json_schema" in text
+
+
+def _structured_payload(
+    *, content: list[dict[str, Any]], schema: dict[str, Any], name: str, mode: str
+) -> dict[str, Any]:
+    if mode == "object":
+        content = [
+            *content,
+            {
+                "type": "text",
+                "text": (
+                    "只返回一个 JSON 对象，不要 markdown 代码块、不要额外说明；"
+                    "字段必须严格符合这个 JSON schema：\n"
+                    + json.dumps(schema, ensure_ascii=False)
+                ),
+            },
+        ]
+        return {
+            "model": LUNA_MODEL,
+            "messages": [{"role": "user", "content": content}],
+            "response_format": {"type": "json_object"},
+        }
+    return {
+        "model": LUNA_MODEL,
+        "messages": [{"role": "user", "content": content}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": name, "strict": True, "schema": schema},
+        },
+    }
+
+
+async def _chat_structured(
+    *,
+    content: list[dict[str, Any]],
+    schema: dict[str, Any],
+    name: str,
+    label: str,
+) -> dict[str, Any]:
+    """一次结构化调用（文本/看图都可以）：自动选 json_schema 或 json_object，回来校验必填字段。"""
+    global _JSON_SCHEMA_SUPPORTED
+    last_error = ""
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        payload = _structured_payload(
+            content=content, schema=schema, name=name, mode=_json_mode()
+        )
+        try:
+            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+                response = await client.post(
+                    f"{OPENAI_URL}/chat/completions", headers=_headers(), json=payload
+                )
+            if response.status_code == 200:
+                text = (response.json()["choices"][0]["message"].get("content") or "").strip()
+                result = json.loads(_strip_code_fence(text))
+                if not isinstance(result, dict):
+                    raise ValueError("模型没有返回 JSON 对象")
+                missing = [key for key in schema.get("required") or [] if key not in result]
+                if missing:
+                    raise ValueError(f"模型返回缺少字段：{missing}")
+                return result
+            if _json_mode_unavailable(response) and _json_mode() == "schema":
+                # 这个端点不吃严格模式：记住它，下一轮直接用 json_object
+                _JSON_SCHEMA_SUPPORTED = False
+                last_error = f"{label}：该端点不支持 json_schema，改用 json_object 重试"
+                continue
+            last_error = _api_error(response)
+            if response.status_code < 500 and response.status_code != 429:
+                raise RuntimeError(last_error)
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
+            last_error = str(error)
+        if attempt < MAX_ATTEMPTS:
+            await asyncio.sleep(2 * attempt)
+    raise RuntimeError(f"{label}：{last_error[:400]}")
+
+
 def compose_prompt(kind: str, style_source: str = "video", song_name: str = "") -> str:
     """取本地 Krea2 双图编辑要用的提示词正文（图像-1 造型场景 / 图像-2 身份）。
 
@@ -317,36 +423,9 @@ async def write_copy(
         )},
         {"type": "image_url", "image_url": {"url": _data_url(Path(candidate_image)), "detail": "high"}},
     ]
-    payload = {
-        "model": LUNA_MODEL,
-        "messages": [{"role": "user", "content": content}],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "batch_copy", "strict": True, "schema": schema},
-        },
-    }
-    last_error = ""
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                response = await client.post(
-                    f"{OPENAI_URL}/chat/completions", headers=_headers(), json=payload
-                )
-            if response.status_code == 200:
-                text = (response.json()["choices"][0]["message"].get("content") or "").strip()
-                result = json.loads(text)
-                missing = [key for key in schema["required"] if key not in result]
-                if missing:
-                    raise ValueError(f"模型返回缺少字段：{missing}")
-                return result
-            last_error = _api_error(response)
-            if response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(last_error)
-        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
-            last_error = str(error)
-        if attempt < MAX_ATTEMPTS:
-            await asyncio.sleep(2 * attempt)
-    raise RuntimeError(f"文案生成失败：{last_error[:300]}")
+    return await _chat_structured(
+        content=content, schema=schema, name="batch_copy", label="文案生成失败"
+    )
 
 
 async def locate_face(image: Path) -> dict[str, float] | None:
@@ -368,36 +447,11 @@ async def locate_face(image: Path) -> dict[str, float] | None:
         },
         "required": ["has_face", "x0", "y0", "x1", "y1"],
     }
-    payload = {
-        "model": LUNA_MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": (
-                        "定位这张图里最主要人物的脸部外接矩形（含额头到下巴、两侧颧骨，"
-                        "不含头发和耳朵以外的区域）。用 0~1 的归一化坐标返回："
-                        "x0/y0 是左上角，x1/y1 是右下角。没有人脸时 has_face 返回 false。"
-                        "只返回 JSON。"
-                    )},
-                    {"type": "image_url", "image_url": {"url": _data_url(Path(image)), "detail": "high"}},
-                ],
-            }
-        ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "face_box", "strict": True, "schema": schema},
-        },
-    }
     try:
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            response = await client.post(
-                f"{OPENAI_URL}/chat/completions", headers=_headers(), json=payload
-            )
-        if response.status_code != 200:
-            return None
-        result = json.loads(response.json()["choices"][0]["message"]["content"])
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+        result = await _chat_structured(
+            content=content, schema=schema, name="face_box", label="人脸定位失败"
+        )
+    except (RuntimeError, httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError, TypeError):
         return None
     if not result.get("has_face"):
         return None
@@ -421,7 +475,7 @@ async def analyze(
     """一次调用产出整套预审结果（造型判断 + 发布文案 + 动作/运镜或迁移提示词）。"""
     schema = json.loads(ANALYSIS_SCHEMA.read_text(encoding="utf-8"))
     schema.pop("$schema", None)
-    content: list[dict[str, Any]] = [
+    payload_content: list[dict[str, Any]] = [
         {
             "type": "text",
             "text": preflight_prompt(
@@ -436,38 +490,9 @@ async def analyze(
         },
         {"type": "image_url", "image_url": {"url": _data_url(Path(contact_sheet)), "detail": "high"}},
     ]
-    payload = {
-        "model": LUNA_MODEL,
-        "messages": [{"role": "user", "content": content}],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "batch_preflight", "strict": True, "schema": schema},
-        },
-    }
-    last_error = ""
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                response = await client.post(
-                    f"{OPENAI_URL}/chat/completions", headers=_headers(), json=payload
-                )
-            if response.status_code == 200:
-                text = (response.json()["choices"][0]["message"].get("content") or "").strip()
-                result = json.loads(text)
-                missing = [key for key in schema["required"] if key not in result]
-                if missing:
-                    raise ValueError(f"模型返回缺少字段：{missing}")
-                return result
-            last_error = _api_error(response)
-            if response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(last_error)
-        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
-            last_error = str(error)
-        if attempt < MAX_ATTEMPTS:
-            import asyncio
-
-            await asyncio.sleep(2 * attempt)
-    raise RuntimeError(f"预审分析失败：{last_error[:400]}")
+    return await _chat_structured(
+        content=payload_content, schema=schema, name="batch_preflight", label="预审分析失败"
+    )
 
 
 def _clean_tags(values: Any) -> list[str]:
