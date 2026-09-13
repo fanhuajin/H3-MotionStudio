@@ -1711,6 +1711,21 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("batchElapsedMs", rendered)
         self.assertNotIn("批次总耗时", rendered)
 
+    def test_batch_selection_stays_on_the_item_you_clicked(self) -> None:
+        """点开已完成 / 已跳过的条目不许自己跳走。
+
+        用户 2026-09-13：「取消出片之后为什么点击不了了 一点就跳转到了其他的」——旧逻辑只要
+        选中项的 status 是 completed/skipped/deleted，就把选中项强行改成 `currentItemId`，
+        于是刚取消出片（→ skipped）的那一条根本点不开，已出片的条目也看不了。
+        现在只有「选中的条目已不存在/已删除」或「本来就是自动跟随」时才跳。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        self.assertIn("const selectItem = (itemId: string)", source)
+        self.assertIn("onClick={() => selectItem(item.id)}", source)
+        self.assertIn("followedItemRef", source)
+        self.assertIn('const unusable = !target || target.status === "deleted";', source)
+        self.assertNotIn('["completed", "skipped", "deleted"].includes(currentSelection.status)', source)
+
     def test_batch_flow_has_four_steps_only(self) -> None:
         """进度只有 下载 / 备料 / 审核 / 出片 四步：歌词字幕与「整理发布文件」都不占格。
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readJson } from "./api";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
@@ -327,12 +327,28 @@ export function BatchRoute() {
     };
   }, [batch?.id]);
 
+  // 自动跟随「当前正在处理的条目」只发生在**用户没有自己选**的时候：
+  // 用户 2026-09-13 实测「取消出片之后为什么点击不了了 一点就跳转到了其他的」——旧逻辑
+  // 只要选中项的 status 是 completed/skipped 就强行跳回 currentItemId，于是刚取消出片
+  // （→ skipped）的条目根本点不开，已完成的条目也看不了。`followedItemRef` 记住「上一次是
+  // 自动选中的那一条」：只有还在跟随并且它确实不是当前条目时，才继续跟着走。
+  const followedItemRef = useRef<string | null>(null);
+  const selectItem = (itemId: string) => {
+    followedItemRef.current = null;   // 用户自己点的，别再来抢
+    setSelectedId(itemId);
+  };
+
   useEffect(() => {
     if (!batch?.currentItemId) return;
-    const currentSelection = batch.items.find((item) => item.id === selectedId);
-    if (!currentSelection || ["completed", "skipped", "deleted"].includes(currentSelection.status)) {
-      setSelectedId(batch.currentItemId);
-    }
+    const target = batch.items.find((item) => item.id === selectedId);
+    // 只有「选中的条目已经不存在/已删除」或者「本来就是自动跟随」时才自动跳；
+    // 用户自己点开的条目（哪怕是 completed / skipped）一律留在原地。
+    const unusable = !target || target.status === "deleted";
+    const following = followedItemRef.current !== null && followedItemRef.current === selectedId;
+    if (!unusable && !following) return;
+    if (selectedId === batch.currentItemId) return;
+    followedItemRef.current = batch.currentItemId;
+    setSelectedId(batch.currentItemId);
   }, [batch?.currentItemId, batch?.items, selectedId]);
 
   // 换条目就收起「替换源视频」表单，免得把 A 条的链接写到 B 条上
@@ -367,7 +383,10 @@ export function BatchRoute() {
       if (!response.ok) throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
       const state = await readJson<BatchState>(response, append ? "加入队列失败" : "创建队列失败");
       setBatch(state);
-      if (!append) setSelectedId(state.currentItemId ?? null);
+      if (!append) {
+        followedItemRef.current = state.currentItemId ?? null;
+        setSelectedId(state.currentItemId ?? null);
+      }
       // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
       if (append && (state.items?.length || 0) <= (batch?.items.length || 0)) {
         setNotice("这些链接都已经在队列里了（重复链接自动跳过），这次没有新增任务。");
@@ -725,7 +744,7 @@ export function BatchRoute() {
             </div>
             <div className="batch-item-list">
               {visibleItems.map((item) => (
-                <button key={item.id} className={`batch-item ${selected?.id === item.id ? "selected" : ""}`} onClick={() => setSelectedId(item.id)}>
+                <button key={item.id} className={`batch-item ${selected?.id === item.id ? "selected" : ""}`} onClick={() => selectItem(item.id)}>
                   <span className={`batch-item-index ${item.status}`}>{item.status === "completed" ? <Check /> : item.index}</span>
                   <span className="batch-item-copy">
                     <strong>{itemTitle(item)}</strong>
