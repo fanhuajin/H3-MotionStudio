@@ -1510,8 +1510,15 @@ class WorkflowPreparationTests(unittest.TestCase):
             try:
                 batch_store_module.DB_PATH = root / "queue.db"
                 store = BatchStore()
-                state = new_batch_state(["https://v.douyin.com/done", "https://v.douyin.com/running"], [])
-                done, running = state["items"]
+                state = new_batch_state(
+                    [
+                        "https://v.douyin.com/done",
+                        "https://v.douyin.com/running",
+                        "https://v.douyin.com/waiting",
+                    ],
+                    [],
+                )
+                done, running, waiting = state["items"]
                 image = root / "candidate.png"
                 image.write_bytes(b"fake-image")
                 done.update(
@@ -1530,12 +1537,26 @@ class WorkflowPreparationTests(unittest.TestCase):
                     childJob={"id": "job-live", "status": "running"},
                     ai={"reference_image_path": str(image)},
                 )
+                # 已放行、但 runner 还没轮到它出片（用户 2026-09-13 点的就是这一种状态）
+                waiting.update(
+                    status="confirmed",
+                    stage="confirmed",
+                    reviewApproved=True,
+                    videoJobId=None,
+                    childJob=None,
+                    ai={"reference_image_path": str(image)},
+                )
                 for item in (done, running):
                     for milestone in item["milestones"]:
                         if milestone["id"] == "review":
                             milestone.update(status="completed", progress=100)
                         elif milestone["id"] in {"video", "deliver"}:
                             milestone.update(status="completed", progress=100)
+                for milestone in waiting["milestones"]:
+                    if milestone["id"] == "review":
+                        milestone.update(status="completed", progress=100)
+                    elif milestone["id"] in {"video", "deliver"}:
+                        milestone.update(status="pending", progress=0)
                 state["status"] = "completed"
                 store.create(state)
 
@@ -1558,6 +1579,24 @@ class WorkflowPreparationTests(unittest.TestCase):
                     self.assertEqual(store.get(state["id"])["status"], "awaiting_review")
                     # 上一版的成片不丢：发布文件记录保留，磁盘上的文件不会被删
                     self.assertEqual(row["outputs"]["folder"], "E:/old")
+
+                    # 已放行但**还没轮到**出片的条目：退回确认只是取消这次放行，
+                    # 不取消任何子任务，也不能动到正在出片的别的条目。
+                    asyncio.run(app_module.reopen_batch_item_review(state["id"], waiting["id"]))
+                    row = row_of(waiting["id"])
+                    self.assertEqual((row["status"], row["stage"]), ("awaiting_review", "review"))
+                    self.assertFalse(row["reviewApproved"])
+                    self.assertFalse(row.get("reopenRequested"))
+                    self.assertFalse(row.get("skipRequested"))
+                    self.assertIsNone(row.get("childJob"))
+                    steps = {step["id"]: step["status"] for step in row["milestones"]}
+                    self.assertEqual(steps["review"], "running")
+                    self.assertEqual(steps["video"], "pending")
+                    untouched = row_of(running["id"])
+                    self.assertEqual(untouched["status"], "running")
+                    self.assertEqual(untouched["childJob"]["id"], "job-live")
+                    self.assertFalse(untouched.get("skipRequested"))
+                    self.assertFalse(untouched.get("reopenRequested"))
 
                     # 正在出片的条目：先标记要退回 + 请求取消，由 runner 收尾时落到确认页
                     asyncio.run(app_module.reopen_batch_item_review(state["id"], running["id"]))

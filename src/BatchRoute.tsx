@@ -121,6 +121,18 @@ function itemRatio(item: BatchItem): CanvasRatio {
   return item.ratio === "4:3" || item.ratio === "9:16" ? item.ratio : DEFAULT_RATIO[item.kind];
 }
 
+/**
+ * 这一条是不是**真的**在出片（有子任务在跑）。
+ *
+ * `confirmed` 只是「已放行、还没轮到它」：取消它不会动任何正在跑的东西，所以不能对它
+ * 弹「已生成到一半的进度作废」（2026-09-13 用户：「我操作的是没有开始的任务，为什么
+ * 回影响到正在生成的内容呢」——那句话对 `confirmed` 是错的，正在出片的有可能是别的条目）。
+ */
+function renderingNow(item: BatchItem): boolean {
+  if (item.status === "running") return true;
+  return ["queued", "running", "cancelling"].includes(String(item.childJob?.status || ""));
+}
+
 function readInputDraft() {
   const read = (key: string) => {
     try {
@@ -605,7 +617,10 @@ export function BatchRoute() {
                       <button
                         className="danger"
                         onClick={() => {
-                          if (window.confirm("取消这一条当前的出片？已经生成到一半的进度会作废，取消后可以点「重新开始」再出片。")) {
+                          const message = renderingNow(selected)
+                            ? "取消这一条当前的出片？已经生成到一半的进度会作废，取消后可以点「重新开始」再出片。"
+                            : "这一条还没开始出片，取消这次放行不会动到其它条目。取消后可以点「重新开始」。";
+                          if (window.confirm(message)) {
                             void itemCall("skip");
                           }
                         }}
@@ -620,15 +635,20 @@ export function BatchRoute() {
                     {canReopen && (
                       <button
                         onClick={() => {
-                          const running = ["running", "revising", "confirmed"].includes(selected.status);
+                          // 只有真的在出片的条目才会作废进度；`confirmed`（已放行、还没轮到）
+                          // 退回去只是把放行作废，不碰任何正在跑的生成，不用吓唬用户。
                           if (
-                            !running
+                            !renderingNow(selected)
                             || window.confirm("这一条正在出片。回到确认会先取消当前出片（已生成到一半的进度作废），确定吗？")
                           ) {
                             void itemCall("reopen-review");
                           }
                         }}
-                        title="回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认"
+                        title={
+                          renderingNow(selected)
+                            ? "回到「等待你的确认」：会先安全取消这一条当前的出片"
+                            : "回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认（不会影响其它条目）"
+                        }
                       >
                         <ArrowUUpLeft />回到确认
                       </button>
@@ -648,7 +668,9 @@ export function BatchRoute() {
 
                 {selected.status === "pending" && (
                   <p className="field-note">
-                    这一条还在排队：批次处于暂停，点队列上方的「继续」后才会开始（下载抖音视频 → 生成人物图素材与发布文案 → 停下来等你确认）。
+                    {batch?.status === "paused" || batch?.pauseRequested
+                      ? "这一条还在排队：批次处于暂停，点队列上方的「继续」后才会开始（下载抖音视频 → 生成人物图素材与发布文案 → 停下来等你确认）。"
+                      : "这一条还在排队：轮到它就会自动下载抖音视频、生成人物图素材与发布文案，然后停下来等你确认。"}
                   </p>
                 )}
 
