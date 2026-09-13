@@ -697,7 +697,11 @@ async def adjust_batch_item(batch_id: str, item_id: str, request: BatchAdjustReq
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/retry")
 async def retry_batch_item(batch_id: str, item_id: str):
-    """重新开始这条任务：失败与**已跳过**的条目都能重来（用户 2026-09-14：「跳过的视频允许我重新开始」）。
+    """重新开始这条任务：失败 / 已跳过 / **已出片**的条目都能重来。
+
+    用户 2026-09-14：「跳过的视频允许我重新开始」+「开始中的任务允许取消重新开始」——
+    取消出片后落在 `skipped`，出片完成后落在 `completed`，两种都要能直接再出一版，
+    否则用户只剩「删除这一条」可选。
 
     - 已经确认过（有审核通过的候选图**且源视频还在磁盘上**）的条目直接回到 `confirmed`，
       只重跑视频链路，不再重复下载与备料；
@@ -706,8 +710,8 @@ async def retry_batch_item(batch_id: str, item_id: str):
     整理发布文件」两个里程碑，让页面上的流程重新变成待办而不是已跳过。
     """
     item = _batch_item_or_404(batch_id, item_id)
-    if item.get("status") not in {"failed", "skipped"}:
-        raise HTTPException(409, "只有失败或已跳过的条目可以重新开始")
+    if item.get("status") not in {"failed", "skipped", "completed"}:
+        raise HTTPException(409, "只有失败、已跳过或已出片的条目可以重新开始")
 
     def reset(row: dict[str, Any]) -> None:
         ai = row.get("ai") or {}
@@ -2208,24 +2212,30 @@ async def get_upload_preview_media(upload_id: str):
 
 dist_dir = PROJECT_ROOT / "dist" / "client"
 if dist_dir.is_dir():
+    def _spa_index() -> FileResponse:
+        """SPA 入口必须每次回源：index.html 里引用的是带 hash 的 bundle，
+        一旦被浏览器缓存住，刷新页面也只会继续跑旧前端（2026-09-14 实测：
+        改了三次前端，用户页面还停在最早的 bundle，新按钮全看不到）。"""
+        return FileResponse(dist_dir / "index.html", headers={"Cache-Control": "no-store"})
+
     @app.get("/douyin", include_in_schema=False)
     async def douyin_frontend():
-        return FileResponse(dist_dir / "index.html")
+        return _spa_index()
 
     @app.get("/migrate", include_in_schema=False)
     async def migrate_frontend():
-        return FileResponse(dist_dir / "index.html")
+        return _spa_index()
 
     @app.get("/batch", include_in_schema=False)
     async def batch_frontend():
-        return FileResponse(dist_dir / "index.html")
+        return _spa_index()
 
     @app.get("/upscale", include_in_schema=False)
     async def upscale_frontend():
-        return FileResponse(dist_dir / "index.html")
+        return _spa_index()
 
     @app.get("/rvc", include_in_schema=False)
     async def rvc_frontend():
-        return FileResponse(dist_dir / "index.html")
+        return _spa_index()
 
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")

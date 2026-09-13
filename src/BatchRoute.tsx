@@ -583,20 +583,44 @@ export function BatchRoute() {
                     <a href={selected.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
                   </div>
                   <div className="batch-item-actions">
-                    {/* 失败的「重试」和跳过的「重新开始」走同一个接口：已确认过的只重跑出片，没备齐料的从下载重来 */}
+                    {/* 失败 / 已跳过 / 已出片：都能直接再出一版（同一接口，已确认过的只重跑出片） */}
                     {selected.status === "failed" && <button onClick={() => itemCall("retry")}><ArrowClockwise />重试</button>}
-                    {selected.status === "skipped" && (
+                    {["skipped", "completed"].includes(selected.status) && (
                       <button
-                        onClick={() => itemCall("retry")}
+                        onClick={() => {
+                          if (
+                            selected.status !== "completed"
+                            || window.confirm("再出一版？会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。")
+                          ) {
+                            void itemCall("retry");
+                          }
+                        }}
                         title={hasImage ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
                       >
                         <ArrowClockwise />重新开始
                       </button>
                     )}
+                    {/* 开始中了（已放行 / 正在出片）：给一个明确的「取消出片」，取消后就能重新开始 */}
+                    {["confirmed", "running", "revising"].includes(selected.status) && (
+                      <button
+                        className="danger"
+                        onClick={() => {
+                          if (window.confirm("取消这一条当前的出片？已经生成到一半的进度会作废，取消后可以点「重新开始」再出片。")) {
+                            void itemCall("skip");
+                          }
+                        }}
+                        title="停止这一条当前的生成/出片；取消后可以重新开始"
+                      >
+                        <X weight="bold" />取消出片
+                      </button>
+                    )}
+                    {["pending", "awaiting_review"].includes(selected.status) && (
+                      <button onClick={() => itemCall("skip")}><X />跳过</button>
+                    )}
                     {canReopen && (
                       <button
                         onClick={() => {
-                          const running = selected.status === "running";
+                          const running = ["running", "revising", "confirmed"].includes(selected.status);
                           if (
                             !running
                             || window.confirm("这一条正在出片。回到确认会先取消当前出片（已生成到一半的进度作废），确定吗？")
@@ -609,7 +633,6 @@ export function BatchRoute() {
                         <ArrowUUpLeft />回到确认
                       </button>
                     )}
-                    {!['completed', 'skipped'].includes(selected.status) && <button onClick={() => itemCall("skip")}><X />跳过</button>}
                     <button
                       className="danger"
                       onClick={() => {

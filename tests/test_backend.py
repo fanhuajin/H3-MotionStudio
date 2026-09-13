@@ -1305,9 +1305,19 @@ class WorkflowPreparationTests(unittest.TestCase):
                     self.assertEqual(len(spawned), 3)  # 每次重新开始都会唤醒 runner
                     self.assertEqual(store.get(state["id"])["status"], "running")
 
-                    # 已经完成的条目不能再重来
+                    # 已经出片的条目也能再出一版（用户 2026-09-14：「开始中的任务允许取消重新开始」，
+                    # 取消后落在 skipped、出片完成后落在 completed，两种都要能直接重来）
                     store.mutate_item(
                         state["id"], approved["id"], lambda row: row.update(status="completed")
+                    )
+                    asyncio.run(app_module.retry_batch_item(state["id"], approved["id"]))
+                    row = row_of(approved["id"])
+                    self.assertEqual((row["status"], row["stage"]), ("confirmed", "confirmed"))
+                    self.assertEqual(row["outputs"], {})
+
+                    # 正在出片的条目必须先「取消出片 / 回到确认」，不能直接重来
+                    store.mutate_item(
+                        state["id"], approved["id"], lambda row: row.update(status="running")
                     )
                     with self.assertRaises(app_module.HTTPException):
                         asyncio.run(app_module.retry_batch_item(state["id"], approved["id"]))
@@ -1490,6 +1500,17 @@ class WorkflowPreparationTests(unittest.TestCase):
                         )
             finally:
                 batch_store_module.DB_PATH = original_db
+
+    def test_spa_entry_is_never_cached(self) -> None:
+        """SPA 入口必须 no-store：index.html 引用带 hash 的 bundle，缓存住刷新也只是旧前端。"""
+        import asyncio
+
+        from backend import app as app_module
+
+        for path in ("/batch", "/migrate", "/douyin", "/upscale", "/rvc"):
+            route = next(route for route in app_module.app.routes if getattr(route, "path", "") == path)
+            response = asyncio.run(route.endpoint())
+            self.assertEqual(response.headers.get("cache-control"), "no-store", path)
 
     def test_elapsed_format_matches_ui(self) -> None:
         self.assertEqual(format_elapsed("2026-09-03T00:00:00+00:00", "2026-09-03T01:02:03+00:00"), "01:02:03")
