@@ -1241,6 +1241,95 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(copy_schema["properties"]["tags"]["maxItems"], 5)
         self.assertEqual(copy_schema["properties"]["tags"]["minItems"], 5)
 
+    def test_batch_ai_reads_user_env_when_process_env_is_missing(self) -> None:
+        """后端由别的进程拉起时 `os.getenv` 只有启动快照：用户 setx 存的配置必须回读注册表。
+
+        2026-09-13 把文本模型切到 DeepSeek 时实测：用「设置用户环境变量」的方式配置，
+        新起的后端进程根本读不到 `H3_BATCH_TEXT_BASE_URL` / `H3_BATCH_TEXT_API_KEY`。
+        """
+        from backend import settings as settings_module
+
+        recorded: dict[str, str] = {}
+
+        def fake_env_value(name: str, default: str = "") -> str:
+            recorded[name] = name
+            return {
+                "H3_BATCH_TEXT_BASE_URL": "https://api.deepseek.com/v1",
+                "H3_BATCH_TEXT_API_KEY": "sk-user-level",
+                "H3_BATCH_LUNA_MODEL": "deepseek-flash",
+            }.get(name, default)
+
+        with patch.dict(os.environ, {}, clear=False), patch.object(
+            settings_module, "env_value", fake_env_value
+        ), patch.object(batch_ai, "env_value", fake_env_value):
+            os.environ.pop("H3_BATCH_TEXT_API_KEY", None)
+            batch_ai._CACHED_KEY = None
+            self.assertEqual(batch_ai._api_key(), "sk-user-level")
+            self.assertIn("H3_BATCH_TEXT_API_KEY", recorded)
+
+    def test_batch_ai_falls_back_to_json_object_when_schema_is_refused(self) -> None:
+        """端点不吃 json_schema 时自动改用 json_object（DeepSeek 实测 400）。
+
+        2026-09-13：`deepseek-flash` 对 `response_format: json_schema` 直接 400
+        「This response_format type is unavailable now」，但同一把 key 看图是 200 —— 模型
+        多模态没问题，是结构化输出的模式不同。降级必须**记住**并且仍然校验必填字段。
+        """
+        import asyncio
+
+        import httpx as _httpx
+
+        schema = {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+            "additionalProperties": False,
+        }
+        seen: list[dict] = []
+
+        class FakeResponse:
+            def __init__(self, status: int, payload: dict, text: str = "") -> None:
+                self.status_code = status
+                self._payload = payload
+                self.text = text
+
+            def json(self) -> dict:
+                return self._payload
+
+        async def fake_post(self, url, headers=None, json=None):  # noqa: A002
+            seen.append(json)
+            if (json.get("response_format") or {}).get("type") == "json_schema":
+                return FakeResponse(
+                    400,
+                    {"error": {"message": "This response_format type is unavailable now"}},
+                    "This response_format type is unavailable now",
+                )
+            return FakeResponse(
+                200, {"choices": [{"message": {"content": '```json\n{"title": "只准你看我的眼睛"}\n```'}}]}
+            )
+
+        with patch.object(batch_ai, "_JSON_SCHEMA_SUPPORTED", None), patch.object(
+            batch_ai, "_headers", lambda: {"Authorization": "Bearer test"}
+        ), patch.object(_httpx.AsyncClient, "post", fake_post):
+            result = asyncio.run(
+                batch_ai._chat_structured(
+                    content=[{"type": "text", "text": "写标题"}],
+                    schema=schema,
+                    name="t",
+                    label="测试",
+                )
+            )
+            self.assertEqual(result, {"title": "只准你看我的眼睛"})
+            self.assertIs(batch_ai._JSON_SCHEMA_SUPPORTED, False)
+            # 第一次 json_schema → 400，第二次 json_object → 200，且 schema 被写进提示词
+            self.assertEqual(len(seen), 2)
+            self.assertEqual(seen[1]["response_format"]["type"], "json_object")
+            self.assertIn("JSON schema", json.dumps(seen[1], ensure_ascii=False))
+
+        # 降级要**记住**：下一次调用直接走 json_object，不再浪费一次 400
+        with patch.object(batch_ai, "_JSON_SCHEMA_SUPPORTED", False):
+            self.assertEqual(batch_ai._json_mode(), "object")
+        batch_ai._JSON_SCHEMA_SUPPORTED = None
+
     def test_batch_ai_fallback_and_action_plan_keep_item_runnable(self) -> None:
         """模型降级时条目仍可继续：文案退到源作品信息，动作/运镜按时长铺满。"""
         result = batch_ai.fallback_result(

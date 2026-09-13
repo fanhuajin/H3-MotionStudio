@@ -54,10 +54,18 @@ IDENTITY_PRIORITY_BLOCK = (
     "一律牺牲其他要求、保住图二的脸。"
 )
 
-LUNA_MODEL = os.getenv("H3_BATCH_LUNA_MODEL", "gpt-5.6-luna")
+LUNA_MODEL = (
+    os.getenv("H3_BATCH_LUNA_MODEL") or env_value("H3_BATCH_LUNA_MODEL") or "gpt-5.6-luna"
+)
 # 文本分析固定走官方端点：`gpt-5.6-luna` 在本账号的计划内额度里可用，而图片余额为空。
 # 故意不读 OPENAI_BASE_URL，避免用户为中转站设置它时把文本分析一起带走（中转站没有 luna）。
-OPENAI_URL = (os.getenv("H3_BATCH_TEXT_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+# 回读 Windows 用户级变量：后端常由别的进程拉起，`os.getenv` 只看到**启动时**的环境快照，
+# 用户用 setx/设置界面新存的变量必须经 `env_value`（读注册表）才拿得到。
+OPENAI_URL = (
+    os.getenv("H3_BATCH_TEXT_BASE_URL")
+    or env_value("H3_BATCH_TEXT_BASE_URL")
+    or "https://api.openai.com/v1"
+).rstrip("/")
 REQUEST_TIMEOUT = 300.0
 MAX_ATTEMPTS = 3
 
@@ -74,9 +82,13 @@ _CACHED_KEY: str | None = None
 
 
 def _api_key() -> str:
-    """文本分析的凭据：进程环境优先，缺失时补读 Windows 用户级环境变量。"""
+    """文本分析的凭据：进程环境优先，缺失时补读 Windows 用户级环境变量。
+
+    两条都要走：调用方可能在进程环境里注入（测试、临时覆盖），而用户用 setx 存的
+    `H3_BATCH_TEXT_API_KEY` 只存在于注册表里——`os.getenv` 看不到启动之后新设的变量。
+    """
     global _CACHED_KEY
-    key = (os.getenv("H3_BATCH_TEXT_API_KEY") or "").strip()
+    key = (os.getenv("H3_BATCH_TEXT_API_KEY") or "").strip() or env_value("H3_BATCH_TEXT_API_KEY")
     if key:
         return key
     if _CACHED_KEY is None:
