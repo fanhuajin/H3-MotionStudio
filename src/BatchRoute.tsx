@@ -26,8 +26,30 @@ interface BatchStep {
   label: string;
   subtitle?: string;
   status: StepStatus;
-  progress?: number;
+  progress?: number | null;
   currentNode?: string | null;
+  startedAt?: string | null;
+}
+
+/**
+ * 步骤已经跑了多久。跳舞（SCAIL 迁移）链路不会广播节点级进度，子任务的 progress 一路是
+ * null —— 只有「进行中 + 已耗时」能证明它还在动（2026-09-14 用户：「批量跳舞视频没有进度吗」）。
+ */
+function elapsedLabel(startedAt?: string | null) {
+  if (!startedAt) return "";
+  const started = Date.parse(startedAt);
+  if (Number.isNaN(started)) return "";
+  const total = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
+}
+
+/** 只有真实、非零、未完成的百分比才显示数字；0 与 null 都按「进度未知」处理。 */
+function stepPercent(step: BatchStep) {
+  return typeof step.progress === "number" && step.progress > 0 ? Math.round(step.progress) : null;
 }
 
 interface BatchAI {
@@ -576,7 +598,13 @@ export function BatchRoute() {
                   <span className={`batch-item-index ${item.status}`}>{item.status === "completed" ? <Check /> : item.index}</span>
                   <span className="batch-item-copy">
                     <strong>{item.title || `第 ${item.index} 条`}</strong>
-                    <small>{item.kind === "singing" ? "歌曲视频" : "跳舞视频"} · {batchStatusLabel(item.status)}</small>
+                    <small>
+                      {item.kind === "singing" ? "歌曲视频" : "跳舞视频"} · {batchStatusLabel(item.status)}
+                      {/* 出片中的条目在列表里也给出真实进度：分段 / 去字幕 / 二采第几批 */}
+                      {item.childJob?.currentSegment && item.childJob.estimatedSegments
+                        ? ` · 分段 ${item.childJob.currentSegment}/${item.childJob.estimatedSegments}`
+                        : ""}
+                    </small>
                   </span>
                   {item.status === "running" && <SpinnerGap className="spin" />}
                 </button>
@@ -792,15 +820,23 @@ export function BatchRoute() {
                 <section className="batch-progress-panel">
                   <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(selected.status)}</small></div>
                   <div className="batch-steps">
-                    {selected.milestones.map((step) => (
-                      <div className={`batch-step ${step.status}`} key={step.id}>
-                        <span className="batch-step-icon">{stepIcon(step.status)}</span>
-                        <div><strong>{step.label}</strong><small>{step.currentNode || step.subtitle}</small></div>
-                        {step.status === "running" && (typeof step.progress === "number"
-                          ? <em>{Math.round(step.progress)}%</em>
-                          : <em className="indeterminate" title="该步骤没有节点级进度，按实际耗时显示">进行中</em>)}
-                      </div>
-                    ))}
+                    {selected.milestones.map((step) => {
+                      const percent = stepPercent(step);
+                      const elapsed = elapsedLabel(step.startedAt);
+                      return (
+                        <div className={`batch-step ${step.status}`} key={step.id}>
+                          <span className="batch-step-icon">{stepIcon(step.status)}</span>
+                          <div><strong>{step.label}</strong><small>{step.currentNode || step.subtitle}</small></div>
+                          {step.status === "running" && (percent !== null
+                            ? <em>{percent}%</em>
+                            : (
+                              <em className="indeterminate" title="该步骤没有节点级进度，按实际耗时显示">
+                                进行中{elapsed ? ` · ${elapsed}` : ""}
+                              </em>
+                            ))}
+                        </div>
+                      );
+                    })}
                   </div>
                 </section>
 

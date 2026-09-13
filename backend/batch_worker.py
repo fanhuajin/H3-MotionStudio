@@ -977,6 +977,30 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
     return response.json()
 
 
+def child_progress_label(child: dict[str, Any]) -> str:
+    """条目进度行里那句说明：当前节点 + 分段 / 去字幕 / 二采第几批。
+
+    2026-09-14 用户问「批量跳舞视频没有进度吗」：跳舞（SCAIL 迁移）链路根本不广播
+    ComfyUI 采样进度事件，子任务的 `progress` 全程是 `None`，而这里以前写着 `or 0`，
+    于是条目进度条**整整 35 分钟冻在 0%**（实际已经跑完 7 段并进到二采）。
+    分段 / 批次是真实数字，比一个假的百分比有用得多。
+    """
+    parts: list[str] = []
+    title = str(child.get("currentNodeTitle") or "").strip()
+    if title:
+        parts.append(title)
+    segment, segments = child.get("currentSegment"), child.get("estimatedSegments")
+    if segment and segments:
+        parts.append(f"分段 {segment}/{segments}")
+    clean, cleans = child.get("cleanBatch"), child.get("cleanBatches")
+    if clean and cleans:
+        parts.append(f"去字幕 {clean}/{cleans}")
+    upscale, upscales = child.get("upscaleBatch"), child.get("upscaleBatches")
+    if upscale and upscales:
+        parts.append(f"二采 {upscale}/{upscales}")
+    return " · ".join(parts)
+
+
 async def _watch_child(batch_id: str, item_id: str, child_id: str, milestone_id: str) -> dict[str, Any]:
     while True:
         async with httpx.AsyncClient(timeout=20) as client:
@@ -1006,8 +1030,10 @@ async def _watch_child(batch_id: str, item_id: str, child_id: str, milestone_id:
             item_id,
             milestone_id,
             status="running",
-            progress=child.get("progress") or 0,
-            currentNode=child.get("currentNodeTitle"),
+            # None 必须保持 None：节点级进度未知时前端显示「进行中 + 已耗时」，
+            # 写成 0 会让用户以为卡死（跳舞链路全程没有 progress 事件）。
+            progress=child.get("progress"),
+            currentNode=child_progress_label(child),
         )
         if child.get("status") == "completed":
             return child

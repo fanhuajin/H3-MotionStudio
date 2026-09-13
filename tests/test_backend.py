@@ -1670,6 +1670,36 @@ class WorkflowPreparationTests(unittest.TestCase):
             response = asyncio.run(route.endpoint())
             self.assertEqual(response.headers.get("cache-control"), "no-store", path)
 
+    def test_batch_item_progress_never_fakes_a_percentage(self) -> None:
+        """跳舞链路没有节点级进度：条目进度不能冻在 0%，要给出真实的分段/去字幕/二采说明。
+
+        2026-09-14 用户：「批量跳舞视频没有进度吗」——SCAIL 迁移全程没有 ComfyUI 采样
+        progress 事件，子任务 progress 一直是 None，而 `_watch_child` 原先写 `or 0`，
+        条目进度条整整 35 分钟显示 0%（实际已经跑完 7 段进了二采）。
+        """
+        from backend.batch_worker import child_progress_label
+
+        label = child_progress_label(
+            {
+                "currentNodeTitle": "SamplerCustom",
+                "currentSegment": 3,
+                "estimatedSegments": 7,
+                "cleanBatch": 2,
+                "cleanBatches": 2,
+                "upscaleBatch": 1,
+                "upscaleBatches": 4,
+            }
+        )
+        for piece in ("SamplerCustom", "分段 3/7", "去字幕 2/2", "二采 1/4"):
+            self.assertIn(piece, label)
+        self.assertEqual(child_progress_label({}), "")
+        self.assertEqual(child_progress_label({"currentNodeTitle": "SamplerCustom"}), "SamplerCustom")
+
+        # 进度未知时必须写 None（前端显示「进行中 + 已耗时」），不能再写成 0
+        source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(encoding="utf-8")
+        self.assertNotIn('progress=child.get("progress") or 0', source)
+        self.assertIn('progress=child.get("progress")', source)
+
     def test_elapsed_format_matches_ui(self) -> None:
         self.assertEqual(format_elapsed("2026-09-03T00:00:00+00:00", "2026-09-03T01:02:03+00:00"), "01:02:03")
 
