@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -551,6 +552,28 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("sourceMetadata", source)
         self.assertIn("抖音作品号", source)
         self.assertIn("batch-item-source", source)     # 队列列表里也能分辨是哪条
+
+    def test_batch_page_does_not_render_publish_status_chatter(self) -> None:
+        """批量页不许出现「发布文件已整理 / 还没整理」这类话术。
+
+        用户 2026-09-13 先要求去掉「发布文件还没整理」与「发布目录已收到人物图与文案」，
+        成品面板还留着标题「发布文件已整理」时又追问一次（「发布文件已整理 没有去掉吗」）。
+        成品面板只保留能点开的入口（最终成片 / 人物图 / 发布文案 / 打开文件夹），不写状态句；
+        条目日志同样不渲染。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 注释里可以写这些词（要记录「为什么去掉」），**渲染出来的文字**里不许有：
+        # 去掉 {/* … */} 块注释与整行 // 注释后再断言。
+        rendered = re.sub(r"\{/\*.*?\*/\}", "", source, flags=re.S)
+        rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
+        for phrase in (
+            "发布文件已整理",
+            "发布文件还没整理",
+            "发布目录已收到人物图与文案",
+            "均已保存",
+            "条目日志",
+        ):
+            self.assertNotIn(phrase, rendered, f"批量页不该再渲染「{phrase}」")
 
     def test_batch_never_starts_two_renders_at_once(self) -> None:
         """出片仍然严格一条一条：后台已经有一条在出片时，不得再挑第二条 confirmed。"""

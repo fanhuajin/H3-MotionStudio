@@ -1136,12 +1136,9 @@ export function BatchRoute() {
 
                 {outputsReady && selected.outputs && (
                   <section className="batch-output-panel">
-                    <div className="batch-panel-title">
-                      {/* 只有成片真的进了发布目录才显示这一块（用户 2026-09-13：
-                          「发布目录已收到人物图与文案」那句不要、也不要「发布文件还没整理」） */}
-                      <span>发布文件已整理</span>
-                      <small>{selected.warning || "成片、人物图和发布文案均已保存"}</small>
-                    </div>
+                    {/* 只留「点开就能看/下载」的入口，不写发布状态话术。
+                        用户 2026-09-13：「发布文件已整理 没有去掉吗」——所以「发布文件已整理」
+                        「成片、人物图和发布文案均已保存」这类句子一律不渲染。 */}
                     <div className="batch-output-grid">
                       {selected.outputs.videoFinal && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoFinal`} target="_blank">最终成片</a>}
                       {/* 旧交付（2026-09-14 之前）留下的键，历史条目仍能点开 */}
