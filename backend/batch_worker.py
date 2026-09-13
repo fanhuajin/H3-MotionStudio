@@ -834,6 +834,21 @@ async def _prepare_review_work(
             note = f"图文一致性的文案重写失败，沿用上一版文案：{error}"
             warning = f"{warning} {note}".strip()
             batch_store.add_item_log(batch_id, item_id, note)
+
+    # 简介 / 标签缺了就自动生成：模型不可用（`fallback_result` 的简介恒为空、标签可能一个都没有）、
+    # 模型返回空串、以及 manual 出图时用户还没上传图（根本没走 write_copy）都要覆盖。
+    # 用户 2026-09-13：「流程中简介和标签没有的话自动生成」。
+    filled = batch_ai.ensure_copy_fields(
+        result,
+        kind=str(item["kind"]),
+        description=meta_desc,
+        source_tags=meta_tags,
+    )
+    if filled:
+        batch_store.add_item_log(
+            batch_id, item_id, f"{'与'.join(filled)}为空，已按歌曲与源作品信息自动生成。"
+        )
+
     _set_item(
         batch_id,
         item_id,

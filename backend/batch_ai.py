@@ -461,6 +461,96 @@ async def analyze(
     raise RuntimeError(f"预审分析失败：{last_error[:400]}")
 
 
+def _clean_tags(values: Any) -> list[str]:
+    """去掉 #、空白与重复，并剔掉占位词（「未识别」这类不能当发布标签）。"""
+    cleaned: list[str] = []
+    for value in values or []:
+        name = str(value or "").strip().lstrip("#").strip()
+        if name and name not in cleaned and name not in PLACEHOLDER_VALUES:
+            cleaned.append(name)
+    return cleaned
+
+
+# 「没识别出来」的占位值：模型认不出歌名时可能回这些，绝不能当成标签发出去
+PLACEHOLDER_VALUES = {"未识别", "未知", "无", "暂无", "没有", "none", "null", "n/a", "-", "—"}
+
+
+# 简介/标签兜底池：模型不可用、模型返回空串、或用户还没上传候选图（没走 write_copy）时，
+# 确认页也必须有简介、标签必须恰好 5 个。用户 2026-09-13：「流程中简介和标签没有的话自动生成」。
+TAG_POOL: dict[str, list[str]] = {
+    "singing": ["翻唱作品", "情感演唱", "歌曲翻唱", "音乐分享", "人物演唱"],
+    "dance": ["动作演绎", "舞蹈翻跳", "节奏卡点", "全身动作", "音乐分享"],
+}
+
+
+def compose_introduction(
+    kind: str,
+    *,
+    song_name: str = "",
+    song_mood: str = "",
+    description: str = "",
+) -> str:
+    """简介兜底文案：拿不到模型结果时也要有一句与画面/歌曲对得上的说明。"""
+    headline = (description or "").strip().splitlines()[0].split("#")[0].strip() if description else ""
+    song = str(song_name or "").strip()
+    mood = str(song_mood or "").strip()
+    if kind == "dance":
+        if song and mood:
+            return f"跟随《{song}》的动作演绎：{mood}，画面以人物全身动作与身体线条为主。"
+        if song:
+            return f"跟随《{song}》的动作演绎，画面以人物全身动作与身体线条为主。"
+        if headline:
+            return f"围绕「{headline}」的动作演绎，画面以全身动作与节奏卡点为主。"
+        return "跟随原曲节奏的动作演绎，画面以人物全身动作与身体线条为主。"
+    if song and mood:
+        return f"《{song}》的翻唱演绎：{mood}，画面以人物近景、口型与情绪表达为主。"
+    if song:
+        return f"《{song}》的翻唱演绎，画面以人物近景、口型与情绪表达为主。"
+    if headline:
+        return f"围绕「{headline}」的翻唱演绎，画面以人物近景与情绪表达为主。"
+    return "情感翻唱演绎，画面以人物近景、口型与情绪表达为主。"
+
+
+def ensure_copy_fields(
+    result: dict[str, Any],
+    *,
+    kind: str,
+    description: str = "",
+    source_tags: list[str] | None = None,
+) -> list[str]:
+    """就地补全 `introduction` 与 `tags`，返回被补的字段名（给批次日志用）。
+
+    必须覆盖所有路径：模型不可用（`fallback_result` 的简介恒为空）、模型返回空字符串、
+    以及 manual 出图时用户还没上传图所以根本没走 `write_copy`。
+    标签规则是**恰好 5 个**（发布标签固定 5 个），少了用源作品标签 + 类型兜底池补，
+    多了截断——先保留模型/源作品给的，再补通用的。
+    """
+    filled: list[str] = []
+    if not str(result.get("introduction") or "").strip():
+        result["introduction"] = compose_introduction(
+            kind,
+            song_name=str(result.get("song_name") or ""),
+            song_mood=str(result.get("song_mood") or ""),
+            description=description,
+        )
+        filled.append("简介")
+    tags = _clean_tags(result.get("tags"))
+    if len(tags) != 5:
+        for candidate in [
+            str(result.get("song_name") or ""),
+            *_clean_tags(source_tags),
+            *TAG_POOL.get(kind, TAG_POOL["singing"]),
+        ]:
+            name = str(candidate or "").strip().lstrip("#").strip()
+            if name and name not in tags and name not in PLACEHOLDER_VALUES:
+                tags.append(name)
+            if len(tags) == 5:
+                break
+        result["tags"] = tags[:5]
+        filled.append("标签")
+    return filled
+
+
 def _api_error(response: httpx.Response) -> str:
     try:
         body = response.json()
@@ -471,17 +561,20 @@ def _api_error(response: httpx.Response) -> str:
 
 
 def fallback_result(*, kind: str, description: str, tags: list[str]) -> dict[str, Any]:
-    """模型不可用时的降级结果：保住条目继续跑，文案退到源作品信息。"""
+    """模型不可用时的降级结果：保住条目继续跑，文案退到源作品信息。
+
+    简介与标签也要按 `ensure_copy_fields` 补齐：以前这里 `introduction` 恒为空、
+    `tags` 直接取源作品标签（可能一个都没有），确认页就会出现空简介/空标签。
+    """
     headline = (description or "").strip().splitlines()[0] if description else ""
     headline = headline.split("#")[0].strip() or "翻唱作品"
-    clean_tags = [str(tag).strip().lstrip("#") for tag in tags if str(tag).strip()][:5]
-    return {
+    result: dict[str, Any] = {
         "song_name": "",
         "song_mood": "",
         "style_source": "video",
         "title": headline[:40],
         "introduction": "",
-        "tags": clean_tags,
+        "tags": _clean_tags(tags)[:5],
         "remove_subtitles": False,
         "content_prompt": "",
         "video_prompt": "",
@@ -489,3 +582,5 @@ def fallback_result(*, kind: str, description: str, tags: list[str]) -> dict[str
         "action_prompt": "",
         "camera_prompt": "",
     }
+    ensure_copy_fields(result, kind=kind, description=description, source_tags=tags)
+    return result

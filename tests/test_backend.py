@@ -1250,7 +1250,12 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertEqual(result["style_source"], "video")
         self.assertEqual(result["title"], "粉色限定")
-        self.assertEqual(result["tags"], ["爱如潮水", "翻唱"])
+        # 源作品标签排在前面，缺的用兜底池补到恰好 5 个（发布标签固定 5 个）
+        self.assertEqual(result["tags"][:2], ["爱如潮水", "翻唱"])
+        self.assertEqual(len(result["tags"]), 5)
+        # 降级时简介不能是空的（2026-09-13 用户：「流程中简介和标签没有的话自动生成」）
+        self.assertTrue(result["introduction"].strip())
+        self.assertIn("粉色限定", result["introduction"])
         self.assertIsInstance(result["remove_subtitles"], bool)
         self.assertTrue(
             all(
@@ -1264,6 +1269,87 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("20.6秒", action)
         self.assertIn("：", camera)
         self.assertNotIn("秒：", camera.split("：")[0])
+
+    def test_batch_copy_fields_are_always_filled(self) -> None:
+        """简介/标签缺了就自动生成，覆盖所有路径（用户 2026-09-13）。
+
+        - 模型返回空简介、标签不足 5 个 → 用歌曲信息 + 源作品标签 + 类型兜底池补；
+        - 标签多于 5 个 → 截断（发布标签固定 5 个）；
+        - 源作品连标签都没有、歌曲也没识别出来 → 也必须有一句简介和 5 个标签，
+          否则确认页就是空的（这次 429 降级实测就是这种情况）。
+        """
+        result = {"song_name": "樱花草", "song_mood": "轻快甜蜜", "introduction": "", "tags": ["翻唱"]}
+        filled = batch_ai.ensure_copy_fields(result, kind="singing", description="樱花草花语")
+        self.assertEqual(filled, ["简介", "标签"])
+        self.assertIn("樱花草", result["introduction"])
+        self.assertEqual(len(result["tags"]), 5)
+        self.assertEqual(result["tags"][0], "翻唱")
+
+        many = {"introduction": "已有简介", "tags": ["a", "b", "c", "d", "e", "f"]}
+        self.assertEqual(batch_ai.ensure_copy_fields(many, kind="singing"), ["标签"])
+        self.assertEqual(many["tags"], ["a", "b", "c", "d", "e"])
+        self.assertEqual(many["introduction"], "已有简介")
+
+        empty: dict = {"introduction": "   ", "tags": []}
+        self.assertEqual(
+            batch_ai.ensure_copy_fields(empty, kind="dance", description="", source_tags=[]),
+            ["简介", "标签"],
+        )
+        self.assertTrue(empty["introduction"].strip())
+        self.assertEqual(len(empty["tags"]), 5)
+        self.assertEqual(len(set(empty["tags"])), 5)
+
+        # 备用池本身必须够 5 个且两类各不相同
+        for kind in ("singing", "dance"):
+            self.assertEqual(len(batch_ai.TAG_POOL[kind]), 5)
+        self.assertNotEqual(batch_ai.TAG_POOL["singing"], batch_ai.TAG_POOL["dance"])
+
+        # 「未识别」这类占位值绝不能当标签（补标签时会把 song_name 也算进候选）
+        placeholders = {"song_name": "未识别", "introduction": "有简介", "tags": ["翻唱", "未识别", "未知"]}
+        batch_ai.ensure_copy_fields(placeholders, kind="singing")
+        self.assertEqual(len(placeholders["tags"]), 5)
+        self.assertNotIn("未识别", placeholders["tags"])
+        self.assertNotIn("未知", placeholders["tags"])
+
+    def test_batch_store_backfills_missing_copy_on_read(self) -> None:
+        """已经备过料的条目（比如 429 降级留下的空简介/空标签）读取时就自愈。"""
+        from backend import batch_store as batch_store_module
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state([], ["https://www.douyin.com/video/7000000000000000123"])
+                item = state["items"][0]
+                item.update(
+                    status="awaiting_review",
+                    stage="review",
+                    title="你在哪 我的心就在哪",
+                    sourceMetadata={"desc": "你在哪 我的心就在哪", "tags": []},
+                    ai={"imagePrompt": "本地拼好的提示词", "introduction": "", "tags": []},
+                )
+                store.create(state)
+
+                fresh = store.get(state["id"])["items"][0]["ai"]
+                self.assertTrue(fresh["introduction"].strip())
+                self.assertEqual(len(fresh["tags"]), 5)
+                self.assertEqual(len(set(fresh["tags"])), 5)
+                self.assertEqual(fresh["imagePrompt"], "本地拼好的提示词")   # 原有字段不许被破坏
+
+                # 已经有完整文案的条目不动它
+                def keep(row: dict) -> None:
+                    row["ai"] = {
+                        "introduction": "手写简介",
+                        "tags": ["a", "b", "c", "d", "e"],
+                    }
+
+                store.mutate_item(state["id"], item["id"], keep)
+                self.assertEqual(store.get(state["id"])["items"][0]["ai"]["introduction"], "手写简介")
+                self.assertEqual(store.get(state["id"])["items"][0]["ai"]["tags"][0], "a")
+            finally:
+                batch_store_module.DB_PATH = original
 
     def test_batch_deliver_no_longer_renders_covers(self) -> None:
         """双封面改由用户自己在 GPT 聊天里出，交付阶段只留成片与发布文案。"""

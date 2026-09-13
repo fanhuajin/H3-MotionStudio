@@ -872,6 +872,16 @@ async def upload_batch_item_image(
     ai["tags"] = [
         str(tag).strip().lstrip("#") for tag in ai.get("tags") or [] if str(tag).strip()
     ][:5]
+    # 简介 / 标签缺了就自动生成（模型没配、模型返回空、或原分析降级成空文案时都会缺）
+    metadata = item.get("sourceMetadata") or {}
+    filled = batch_ai.ensure_copy_fields(
+        ai,
+        kind=str(item.get("kind") or "singing"),
+        description=str(metadata.get("desc") or ""),
+        source_tags=[str(tag) for tag in metadata.get("tags") or []],
+    )
+    if filled:
+        rewrite_note = f"{rewrite_note} {'与'.join(filled)}为空，已自动生成。".strip()
 
     def apply(row: dict[str, Any]) -> None:
         row["ai"] = ai

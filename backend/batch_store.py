@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .settings import DB_PATH
 from .store import now_iso
+from . import batch_ai
 
 
 TERMINAL_BATCH_STATUSES = {"completed", "failed", "cancelled"}
@@ -63,9 +64,38 @@ class BatchStore:
             if len(kept) != len(rows):
                 item["milestones"] = kept
 
+    @staticmethod
+    def _backfill_copy_fields(state: dict[str, Any]) -> None:
+        """已经备过料、但简介/标签是空的条目就地补一份（纯本地，不调模型）。
+
+        用户 2026-09-13：官方文本模型 429 打满（要等约 10 小时）时预审降级，
+        确认页出现**空简介 + 空标签**（实测 #3 就是 `intro='' tags=[]`）——用户要求
+        「流程中简介和标签没有的话自动生成」。放在读取路径上，历史条目也会自愈；
+        之后模型（或用户上传图触发的 `write_copy`）给出真文案时会正常覆盖。
+        """
+        for item in state.get("items") or []:
+            ai = item.get("ai")
+            if not isinstance(ai, dict) or not ai:
+                continue
+            if str(ai.get("introduction") or "").strip() and len(
+                batch_ai._clean_tags(ai.get("tags"))
+            ) == 5:
+                continue
+            metadata = item.get("sourceMetadata") or {}
+            try:
+                batch_ai.ensure_copy_fields(
+                    ai,
+                    kind=str(item.get("kind") or "singing"),
+                    description=str(metadata.get("desc") or ""),
+                    source_tags=[str(tag) for tag in metadata.get("tags") or []],
+                )
+            except Exception:  # noqa: BLE001 - 兜底文案不能影响任何读写
+                continue
+
     def _normalize(self, state: dict[str, Any]) -> None:
         self._renumber(state)
         self._prune_milestones(state)
+        self._backfill_copy_fields(state)
 
     def _init_db(self) -> None:
         with self._connect() as connection:
