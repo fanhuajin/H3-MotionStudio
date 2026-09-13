@@ -1108,8 +1108,14 @@ export function BatchRoute() {
                 {hasOutputs && selected.outputs && (
                   <section className="batch-output-panel">
                     <div className="batch-panel-title">
-                      <span>发布文件已整理</span>
-                      <small>{selected.warning || "成片、人物图和发布文案均已保存"}</small>
+                      {/* 审核点就先落了人物图+文案（2026-09-13 用户要求），这时还不能说成片已保存 */}
+                      <span>{outputsReady ? "发布文件已整理" : "发布目录已收到人物图与文案"}</span>
+                      <small>
+                        {selected.warning
+                          || (outputsReady
+                            ? "成片、人物图和发布文案均已保存"
+                            : "最终成片跑完后再补「最终成片.mp4」，人物图与文案已可直接取用")}
+                      </small>
                     </div>
                     <div className="batch-output-grid">
                       {selected.outputs.videoFinal && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoFinal`} target="_blank">最终成片</a>}

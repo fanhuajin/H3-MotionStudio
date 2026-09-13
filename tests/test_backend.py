@@ -1604,6 +1604,93 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_batch_review_lands_image_and_copy_in_publish_folder(self) -> None:
+        """审核点就把「人物图 + 发布文案」写进发布目录（用户 2026-09-13：
+
+        「批量创建的时候 发布成品 这个目录下怎么没有生成对应内容呢」）。
+        提前落盘不能碰里程碑、不能写 videoFinal —— 成片还得等出片，之后由 `_deliver` 覆盖补上。
+        """
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                store = BatchStore()
+                state = new_batch_state([], ["https://v.douyin.com/dance"])
+                item = state["items"][0]
+                upload = root / "uploaded.png"
+                Image.new("RGB", (48, 64), "white").save(upload)
+                item.update(
+                    status="awaiting_review",
+                    stage="review",
+                    awemeId="7684126327402778850",
+                    ai={
+                        "song_name": "",
+                        "title": "你在哪，我的心就舞到哪",
+                        "introduction": "这支舞只想跳给一个人看💗",
+                        "tags": ["手势舞", "甜妹舞", "白色系穿搭", "心动氛围", "跟我一起跳"],
+                        "reference_image_path": str(upload),
+                    },
+                )
+                store.create(state)
+
+                def row() -> dict:
+                    return store.get(state["id"])["items"][0]
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+                ):
+                    outputs = batch_worker.deliver_review_materials(state["id"], item["id"])
+
+                self.assertIsNotNone(outputs)
+                assert outputs is not None
+                self.assertEqual(Path(outputs["image"]).name, "人物图.png")
+                self.assertTrue(Path(outputs["image"]).is_file())
+                self.assertTrue(Path(outputs["copy"]).is_file())
+                self.assertNotIn("videoFinal", outputs)
+                self.assertIn("7684126327402778850", Path(outputs["folder"]).name)
+                self.assertIn("#手势舞", Path(outputs["copy"]).read_text(encoding="utf-8-sig"))
+                # 里程碑不许被提前打勾（成片还没跑）
+                steps = {step["id"]: step["status"] for step in row()["milestones"]}
+                self.assertNotEqual(steps["video"], "completed")
+                self.assertNotEqual(steps["deliver"], "completed")
+                self.assertEqual(row()["status"], "awaiting_review")
+
+                # 出片之后 `_deliver` 用同一个目录补上最终成片，且不会留下两张人物图
+                final = root / "final.mp4"
+                final.write_bytes(b"fake-video")
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+                ):
+                    delivered = asyncio.run(
+                        batch_worker._deliver(state["id"], item["id"], {"finalOutput": str(final)})
+                    )
+                self.assertEqual(Path(delivered["folder"]), Path(outputs["folder"]))
+                self.assertEqual(Path(delivered["videoFinal"]).name, "最终成片.mp4")
+                self.assertTrue(Path(delivered["videoFinal"]).is_file())
+                self.assertEqual(
+                    sorted(p.name for p in Path(delivered["folder"]).glob("人物图.*")),
+                    ["人物图.png"],
+                )
+                # 换图后重跑：只留一张新图
+                Image.new("RGB", (48, 64), "black").save(upload)
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+                ):
+                    batch_worker.deliver_review_materials(state["id"], item["id"])
+                self.assertEqual(
+                    sorted(p.name for p in Path(delivered["folder"]).glob("人物图.*")),
+                    ["人物图.png"],
+                )
+            finally:
+                batch_store_module.DB_PATH = original_db
+
     def test_batch_deliver_copies_final_video_and_uploaded_image(self) -> None:
         """发布目录必须同时拿到最终成片、用户上传的人物图和发布文案。"""
         import asyncio

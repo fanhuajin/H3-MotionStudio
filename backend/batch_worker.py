@@ -869,6 +869,9 @@ async def _prepare_review_work(
         batch_store.add_item_log(
             batch_id, item_id, "出图素材已备齐，等待你上传 GPT 生成的图片后再确认出片。"
         )
+    # 审核点就把「人物图 + 发布文案」先放进发布目录（用户 2026-09-13 要求），
+    # 最终成片等出片后由 `_deliver` 补上；失败只记日志，不影响停在审核点。
+    await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
     # 注意：这里**不**把整个批次置为 awaiting_review，也不停 runner ——
     # 用户要求先整批备料，所以要让 run_batch 继续跑下一条的备料。
 
@@ -1081,6 +1084,79 @@ def _deliverable_image(item: dict[str, Any]) -> Path | None:
     return path if raw and path.is_file() else None
 
 
+def publish_folder(item: dict[str, Any]) -> Path:
+    """发布目录：`{三位编号}_{歌名或标题}_{作品号}`。
+
+    「审核点先落人物图+文案」与「出片后交付」必须用**同一个**目录，所以抽出来共用。
+    """
+    ai = item.get("ai") or {}
+    aweme_id = str(item.get("awemeId") or item.get("id"))
+    base_name = _safe_name(str(ai.get("song_name") or ai.get("title") or item.get("title") or "作品"))
+    return BATCH_OUTPUT_ROOT / f"{int(item['index']):03d}_{base_name}_{aweme_id}"
+
+
+def publish_copy_text(ai: dict[str, Any]) -> str:
+    tags = " ".join(f"#{str(tag).strip().lstrip('#')}" for tag in ai.get("tags") or [] if str(tag).strip())
+    return (
+        f"标题：\n{str(ai.get('title') or '').strip()}\n\n"
+        f"简介：\n{str(ai.get('introduction') or '').strip()}\n\n"
+        f"标签：\n{tags}\n"
+    )
+
+
+def _write_publish_image(folder: Path, image: Path | None) -> Path | None:
+    """写 `人物图.<原后缀>`；先清掉同名其它后缀，避免换图后目录里留两张。"""
+    for stale in folder.glob("人物图.*"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    if image is None:
+        return None
+    suffix = image.suffix.lower() if image.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+    return _copy_file(image, folder / f"人物图{suffix}")
+
+
+def deliver_review_materials(batch_id: str, item_id: str) -> dict[str, str] | None:
+    """**审核点就把「人物图 + 发布文案」写进发布目录**，最终成片等出片后由 `_deliver` 补。
+
+    用户 2026-09-13：「批量创建的时候 E:\\AI_Exports\\H3-MotionStudio\\发布成品 这个目录下
+    怎么没有生成对应内容呢」—— 人物图（用户上传的那张）与发布文案在确认前就已就绪，
+    没必要等成片跑完才落盘。这里只提前落这两件 + `folder`，**不碰里程碑、不写 videoFinal**，
+    所以「发布文件还没整理 / 重新整理发布文件」的语义不变；`_deliver` 之后照旧覆盖补全。
+    幂等：换图或重写文案后再次调用会覆盖同名文件。
+    """
+    item = _item(batch_id, item_id)
+    ai = dict(item.get("ai") or {})
+    if not ai:
+        return None
+    folder = publish_folder(item)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        fresh: dict[str, str] = {}
+        image = _write_publish_image(folder, _deliverable_image(item))
+        if image is not None:
+            fresh["image"] = str(image)
+        copy_path = folder / "发布文案.txt"
+        copy_path.write_text(publish_copy_text(ai), encoding="utf-8-sig")
+        fresh["copy"] = str(copy_path)
+        fresh["folder"] = str(folder.resolve())
+        merged = {**(item.get("outputs") or {}), **fresh}
+        _set_item(batch_id, item_id, outputs=merged)
+    except OSError as error:
+        batch_store.add_item_log(
+            batch_id, item_id, f"提前写发布目录失败（不影响出片）：{error}"
+        )
+        return None
+    batch_store.add_item_log(
+        batch_id,
+        item_id,
+        f"{'人物图与发布文案' if 'image' in fresh else '发布文案'}已先放进发布目录："
+        f"{folder}（最终成片跑完后再补）",
+    )
+    return merged
+
+
 async def _deliver(
     batch_id: str,
     item_id: str,
@@ -1093,9 +1169,7 @@ async def _deliver(
     """
     item = _item(batch_id, item_id)
     ai = item.get("ai") or {}
-    aweme_id = str(item.get("awemeId") or item_id)
-    base_name = _safe_name(str(ai.get("song_name") or ai.get("title") or item.get("title") or "作品"))
-    folder = BATCH_OUTPUT_ROOT / f"{int(item['index']):03d}_{base_name}_{aweme_id}"
+    folder = publish_folder(item)
     folder.mkdir(parents=True, exist_ok=True)
     final_path = Path(video_job.get("finalOutput") or "")
     if not final_path.is_file():
@@ -1103,18 +1177,11 @@ async def _deliver(
     outputs: dict[str, str] = {}
     final = _copy_file(final_path, folder / "最终成片.mp4")
     outputs["videoFinal"] = str(final)
-    image = _deliverable_image(item)
+    image = _write_publish_image(folder, _deliverable_image(item))
     if image is not None:
-        suffix = image.suffix.lower() if image.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
-        outputs["image"] = str(_copy_file(image, folder / f"人物图{suffix}"))
-    tags = " ".join(f"#{str(tag).strip().lstrip('#')}" for tag in ai.get("tags") or [] if str(tag).strip())
-    copy_text = (
-        f"标题：\n{str(ai.get('title') or '').strip()}\n\n"
-        f"简介：\n{str(ai.get('introduction') or '').strip()}\n\n"
-        f"标签：\n{tags}\n"
-    )
+        outputs["image"] = str(image)
     copy_path = folder / "发布文案.txt"
-    copy_path.write_text(copy_text, encoding="utf-8-sig")
+    copy_path.write_text(publish_copy_text(ai), encoding="utf-8-sig")
     outputs["copy"] = str(copy_path)
     # 双封面由用户自己在 GPT 聊天里生成，这里不再渲染（2026-09-10 用户要求）。
     outputs["folder"] = str(folder.resolve())
