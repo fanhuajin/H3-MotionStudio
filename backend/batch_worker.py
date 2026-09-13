@@ -18,7 +18,7 @@ from . import batch_ai, batch_image, batch_portrait
 from .batch_store import batch_store
 from .douyin_mirror import upsert_jobs as mirror_upsert
 from .douyin_preview import ensure_download_playable
-from .douyin_service import DouyinServiceError, douyin_service
+from .douyin_service import DouyinServiceError, douyin_service, is_douyin_url
 from .settings import (
     BATCH_OUTPUT_ROOT,
     BATCH_RATIO_CHOICES,
@@ -1640,6 +1640,99 @@ def image_ratio_note(image: Path, ratio: str) -> str:
         f"这张图是 {width}×{height}，与本条画布比例 {ratio} 不一致；"
         f"需要的话可以改用一张 {ratio} 的图（不换也能出片）。"
     )
+
+
+def replace_item_source(
+    batch_id: str,
+    item_id: str,
+    url: str,
+    kind: str | None = None,
+) -> dict[str, Any]:
+    """把这一条的**源视频**换成另一条抖音链接（不用删了重加）。
+
+    用户 2026-09-13：看完「本条源视频」发现是唱歌视频却放在跳舞槽里 →「要有让我可以替换的操作」。
+    替换 = 这一条从头再来一遍：清掉旧源视频与**按它做的**分析（联系表 / 取景帧 / 出图提示词 /
+    文案 / 候选图指针 / 里程碑），排回 `pending` 重新下载与备料，然后停在审核点等确认。
+
+    - 类型可以一起改（唱歌 ↔ 跳舞）；改了类型就用新类型的默认画布比例，没改则保持原比例。
+    - **不删用户的东西**：用户上传过的图还在条目目录里，只是不再指向它；可再生的分析缓存
+      （联系表 / 取景帧 / 出图提示词）必须删掉，否则下载后会被当成新视频的分析结果复用。
+    - `running` / `revising` / `completed` 不允许直接换（先「取消出片」或「回到确认」）。
+    """
+    item = _item(batch_id, item_id)
+    status = str(item.get("status") or "")
+    if status in {"running", "revising", "completed"}:
+        raise ValueError("这一条正在出片或已经出片，请先「取消出片」或「回到确认」再换源视频")
+    if status == "deleted":
+        raise ValueError("这一条已经删除，不能换源视频")
+    target_url = str(url or "").strip()
+    if not is_douyin_url(target_url):
+        raise ValueError("请填写有效的抖音链接")
+    current_kind = str(item.get("kind") or "singing")
+    target_kind = str(kind or current_kind).strip() or current_kind
+    if target_kind not in {"singing", "dance"}:
+        raise ValueError("类型只支持唱歌视频或跳舞视频")
+
+    state = batch_store.get(batch_id) or {}
+    for other in state.get("items") or []:
+        if other.get("id") == item_id or other.get("status") in {"deleted", "skipped"}:
+            continue
+        if item_key(str(other.get("kind") or ""), str(other.get("url") or "")) == item_key(
+            target_kind, target_url
+        ):
+            raise ValueError(
+                f"第 {other.get('index')} 条已经是这条链接了，同一条视频不用重复制作"
+            )
+
+    ratio = item_ratio(item) if target_kind == current_kind else batch_default_ratio(target_kind)
+    work = DATA_DIR / "batches" / batch_id / item_id
+
+    def apply(row: dict[str, Any]) -> None:
+        row.update(
+            url=target_url,
+            kind=target_kind,
+            ratio=ratio,
+            status="pending",
+            stage="queued",
+            title="等待处理",
+            ai={},
+            outputs={},
+            stageMedia={},
+            sourcePath="",
+            sourceName="",
+            awemeId="",
+            sourceMetadata={},
+            downloadJobId=None,
+            videoJobId=None,
+            childJob=None,
+            reviewApproved=False,
+            skipRequested=False,
+            deleteRequested=False,
+            reopenRequested=False,
+            revision=0,
+            revisionFeedback="",
+            revisionMode="",
+            error=None,
+            warning=None,
+            finishedAt=None,
+            milestones=item_milestones(target_kind),
+        )
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    # 旧视频的联系表 / 取景帧 / 出图提示词必须清掉：`_prepare_review_work` 命中即复用，
+    # 留着就会把上一条视频的分析结果套到新视频上。
+    for name in ("source-contact-sheet.jpg", "scene-frame.jpg", "出图提示词.txt"):
+        try:
+            (work / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    batch_store.add_item_log(
+        batch_id,
+        item_id,
+        f"已把源视频换成 {target_url}（类型：{'唱歌视频' if target_kind == 'singing' else '跳舞视频'}），"
+        "正在重新下载与备料。",
+    )
+    return batch_store.get(batch_id) or {}
 
 
 def item_settings_editable(item: dict[str, Any]) -> bool:

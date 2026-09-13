@@ -33,6 +33,7 @@ from .batch_worker import (
     image_ratio_note,
     item_ratio,
     new_batch_state,
+    replace_item_source,
     request_review_adjustment,
     reset_review_row,
     run_batch,
@@ -302,6 +303,13 @@ class BatchAppendRequest(BaseModel):
     singingRatio: str | None = None
     danceRatio: str | None = None
     autoStart: bool = False
+
+
+class BatchItemSourceRequest(BaseModel):
+    """替换这一条的源视频（放错槽位 / 贴错链接时不用删了重加）。"""
+
+    url: str
+    kind: str | None = None
 
 
 class BatchAdjustRequest(BaseModel):
@@ -683,6 +691,24 @@ async def reopen_batch_item_review(batch_id: str, item_id: str):
             notice="已回到「等待你的确认」。",
         )
     return batch_store.update(batch_id, notice="已回到「等待你的确认」。")
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/source")
+async def replace_batch_item_source(
+    batch_id: str, item_id: str, request: BatchItemSourceRequest
+):
+    """换掉这一条的源视频：放错槽位（唱歌视频贴进了跳舞口）或贴错链接时不用删了重加。
+
+    用户 2026-09-13：确认页能看到「本条源视频」之后追加「要有让我可以替换的操作」。
+    替换会把这一条退回 `pending` 重新下载 + 备料（旧的分析/提示词/文案都作废），
+    类型可以一起改；已经出片或正在出片的条目要先「取消出片」或「回到确认」。
+    """
+    _batch_item_or_404(batch_id, item_id)
+    try:
+        replace_item_source(batch_id, item_id, request.url, request.kind)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return _resume_batch(batch_id, "已替换源视频，正在重新下载并准备候选图与发布文案。")
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/adjust")

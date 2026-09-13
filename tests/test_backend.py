@@ -548,7 +548,109 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIsNone(_next_work({"items": state["items"][:2]}, allow_confirmed=False))
         self.assertEqual(_next_work({"items": state["items"][:2]})["id"], "a")  # 空闲时才出片
 
-    def test_queue_only_runs_after_explicit_start(self) -> None:
+    def test_batch_item_source_can_be_replaced(self) -> None:
+        """贴错链接 / 放错槽位时可以就地替换源视频（用户 2026-09-13：「要有让我可以替换的操作」）。
+
+        替换必须：换 url（可一并换类型）、清掉按旧视频做的分析（联系表 / 取景帧 / 出图提示词）、
+        作废候选图指针与文案、回到 pending 重新备料；类型换了就用新类型的默认画布比例。
+        已经出片 / 正在出片的条目必须先取消或回到确认。
+        """
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            original_data = batch_worker.DATA_DIR
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                batch_worker.DATA_DIR = root / "data"
+                store = BatchStore()
+                state = new_batch_state([], ["https://www.douyin.com/video/7000000000000000001"])
+                item = state["items"][0]
+                item.update(
+                    status="awaiting_review",
+                    stage="review",
+                    sourcePath=str(root / "old.mp4"),
+                    sourceName="old.mp4",
+                    awemeId="7000000000000000001",
+                    title="模型起的标题",
+                    ai={"reference_image_path": str(root / "old.png"), "imagePrompt": "旧提示词"},
+                    reviewApproved=False,
+                )
+                work = root / "data" / "batches" / state["id"] / item["id"]
+                work.mkdir(parents=True, exist_ok=True)
+                for name in ("source-contact-sheet.jpg", "scene-frame.jpg", "出图提示词.txt"):
+                    (work / name).write_text("stale", encoding="utf-8")
+                (work / "candidate_r0_upload.png").write_bytes(b"user-image")
+                store.create(state)
+
+                def row():
+                    return store.get(state["id"])["items"][0]
+
+                with patch.object(batch_worker, "batch_store", store):
+                    # 校验：类型 + 链接
+                    with self.assertRaises(ValueError):
+                        batch_worker.replace_item_source(state["id"], item["id"], "https://example.com/x")
+                    with self.assertRaises(ValueError):
+                        batch_worker.replace_item_source(
+                            state["id"], item["id"], "https://www.douyin.com/video/7000000000000000002", "talking"
+                        )
+                    # 正常替换：顺便把唱歌视频放回跳舞槽的错改成唱歌
+                    batch_worker.replace_item_source(
+                        state["id"],
+                        item["id"],
+                        "https://www.douyin.com/video/7000000000000000002",
+                        "singing",
+                    )
+                fresh = row()
+                self.assertEqual(fresh["url"], "https://www.douyin.com/video/7000000000000000002")
+                self.assertEqual(fresh["kind"], "singing")
+                self.assertEqual(fresh["ratio"], "4:3")            # 换成唱歌 → 该类型默认比例
+                self.assertEqual((fresh["status"], fresh["stage"]), ("pending", "queued"))
+                self.assertEqual(fresh["sourcePath"], "")
+                self.assertEqual(fresh["ai"], {})
+                self.assertIsNone(fresh["reviewApproved"] or None)
+                self.assertEqual(
+                    {step["status"] for step in fresh["milestones"]}, {"pending"}
+                )
+                # 旧视频的分析缓存必须删掉，否则新视频会复用旧联系表/取景帧/提示词
+                self.assertFalse((work / "source-contact-sheet.jpg").exists())
+                self.assertFalse((work / "scene-frame.jpg").exists())
+                self.assertFalse((work / "出图提示词.txt").exists())
+                # 用户上传过的图不删，只是不再指向它
+                self.assertTrue((work / "candidate_r0_upload.png").exists())
+
+                # 正在出片 / 已出片的条目不许直接换
+                for blocked in ("running", "revising", "completed"):
+                    def set_status(row_, value=blocked):
+                        row_["status"] = value
+
+                    store.mutate_item(state["id"], item["id"], set_status)
+                    with patch.object(batch_worker, "batch_store", store):
+                        with self.assertRaises(ValueError):
+                            batch_worker.replace_item_source(
+                                state["id"], item["id"], "https://www.douyin.com/video/7000000000000000003"
+                            )
+
+                # 同一条链接已经在别的条目里 → 拒绝（自己不算重复）
+                store.mutate_item(
+                    state["id"], item["id"], lambda row_: row_.update(status="pending", kind="singing")
+                )
+                with patch.object(batch_worker, "batch_store", store):
+                    batch_worker.append_batch_items(
+                        state["id"], ["https://www.douyin.com/video/7000000000000000009"], []
+                    )
+                    with self.assertRaises(ValueError):
+                        batch_worker.replace_item_source(
+                            state["id"], item["id"], "https://www.douyin.com/video/7000000000000000009"
+                        )
+            finally:
+                batch_store_module.DB_PATH = original_db
+                batch_worker.DATA_DIR = original_data
+
+    def test_batch_queue_only_runs_after_explicit_start(self) -> None:
         """页面入口是「加入队列并开始」：带 autoStart 直接跑，不带则只排队（API 用法）。"""
         import asyncio
 

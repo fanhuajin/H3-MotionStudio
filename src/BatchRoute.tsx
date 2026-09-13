@@ -236,6 +236,10 @@ export function BatchRoute() {
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [imageToken, setImageToken] = useState(0);
+  // 「替换源视频」：贴错链接 / 放错槽位（唱歌视频贴进跳舞口）时不用删了重加
+  const [replacingSource, setReplacingSource] = useState(false);
+  const [replaceUrl, setReplaceUrl] = useState("");
+  const [replaceKind, setReplaceKind] = useState<"singing" | "dance">("singing");
   // 先把上次的队列读回来再允许提交：否则刚打开页面就点「加入队列」会新开一个批次，
   // 看到的现象就是「我排好的队列不见了」。
   const [loaded, setLoaded] = useState(false);
@@ -292,6 +296,12 @@ export function BatchRoute() {
       setSelectedId(batch.currentItemId);
     }
   }, [batch?.currentItemId, batch?.items, selectedId]);
+
+  // 换条目就收起「替换源视频」表单，免得把 A 条的链接写到 B 条上
+  useEffect(() => {
+    setReplacingSource(false);
+    setReplaceUrl("");
+  }, [selectedId]);
 
   // 「准备任务」：把填好的链接交给后端，并立即开始准备
   // （下载抖音视频 → 生成人物图与发布文案 → 停在等确认）。
@@ -374,6 +384,11 @@ export function BatchRoute() {
   // 「回到确认」：过了审核点的条目（含正在出片，会先安全取消）都能退回去重做
   const canReopen = Boolean(
     selected?.ai && !["awaiting_review", "deleted"].includes(selected.status),
+  );
+  // 「替换源视频」：没开始出片（pending / awaiting_review / confirmed / failed / skipped）都能换，
+  // 和改比例同一条规则；正在出片或已经出片要先「取消出片」/「回到确认」。
+  const canReplaceSource = Boolean(
+    selected && !["running", "revising", "completed", "deleted"].includes(selected.status),
   );
   // 画布比例 / 去除字幕：没开始出片的条目都能改（审核区是主要入口，见 renderSettings）
   const selectedRatio = selected ? itemRatio(selected) : DEFAULT_RATIO.singing;
@@ -719,36 +734,101 @@ export function BatchRoute() {
                 </div>
 
                 {/* 本条对应的源视频：确认前必须先能认出「这是哪条抖音视频」。
-                    条目上的标题是模型重起的发布标题，源作品文案 + 可播放源片 + 作品号才认得出。 */}
-                {selected.sourcePath && (
-                  <section className="batch-source-panel">
-                    <div className="batch-panel-title">
-                      <span>本条源视频</span>
+                    条目上的标题是模型重起的发布标题，源作品文案 + 可播放源片 + 作品号才认得出。
+                    认出来不对就地替换（用户 2026-09-13：「要有让我可以替换的操作」）。 */}
+                <section className="batch-source-panel">
+                  <div className="batch-panel-title">
+                    <span>本条源视频</span>
+                    <div className="batch-source-head">
                       <small>
                         {selected.kind === "singing" ? "唱歌条目" : "跳舞条目"}
-                        {selected.awemeId ? ` · 抖音作品号 ${selected.awemeId}` : ""}
+                        {selected.awemeId ? ` · 抖音作品号 ${selected.awemeId}` : " · 还没下载"}
                       </small>
+                      {canReplaceSource && (
+                        <button
+                          onClick={() => {
+                            setReplaceKind(selected.kind);
+                            setReplaceUrl("");
+                            setReplacingSource((open) => !open);
+                          }}
+                        >
+                          <ArrowClockwise />{replacingSource ? "收起" : "替换源视频"}
+                        </button>
+                      )}
                     </div>
-                    <div className="batch-source-body">
+                  </div>
+                  <div className="batch-source-body">
+                    {selected.sourcePath ? (
                       <video
                         key={selected.sourcePath}
                         src={`/api/batches/${batch.id}/items/${selected.id}/stage/source`}
                         controls
                         preload="metadata"
                       />
-                      <div className="batch-source-meta">
-                        <strong title={sourceCaption(selected)}>{sourceCaption(selected) || "源视频"}</strong>
-                        {selected.sourceName && <small title={selected.sourceName}>{selected.sourceName}</small>}
-                        <em>
-                          {selected.kind === "singing"
-                            ? "出片时按这条视频的画面与音轨生成"
-                            : "出片时按这条视频的动作做迁移"}
-                        </em>
-                        <a href={selected.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
+                    ) : (
+                      <div className="batch-source-empty">还没下载源视频<br />下载完成后这里可以直接播放核对</div>
+                    )}
+                    <div className="batch-source-meta">
+                      <strong title={sourceCaption(selected)}>
+                        {sourceCaption(selected) || "这一条还没有下载源视频"}
+                      </strong>
+                      {selected.sourceName && <small title={selected.sourceName}>{selected.sourceName}</small>}
+                      <em>
+                        {selected.kind === "singing"
+                          ? "出片时按这条视频的画面与音轨生成"
+                          : "出片时按这条视频的动作做迁移"}
+                      </em>
+                      <a href={selected.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
+                    </div>
+                  </div>
+
+                  {replacingSource && (
+                    <div className="batch-source-replace">
+                      <label>
+                        <span>换成哪条抖音链接</span>
+                        <textarea
+                          rows={2}
+                          value={replaceUrl}
+                          onChange={(event) => setReplaceUrl(event.target.value)}
+                          placeholder="粘贴抖音分享链接，或 www.douyin.com/video/作品号"
+                        />
+                      </label>
+                      <div className="batch-source-kind">
+                        <span>类型</span>
+                        {(["singing", "dance"] as const).map((value) => (
+                          <button
+                            key={value}
+                            className={replaceKind === value ? "active" : ""}
+                            onClick={() => setReplaceKind(value)}
+                          >
+                            {value === "singing" ? "唱歌视频" : "跳舞视频"}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="field-note">
+                        替换后这一条会作废按旧视频做的分析、出图提示词与文案，重新下载并备料，然后停在「等待你的确认」。
+                        {replaceKind !== selected.kind
+                          ? ` 类型改成${replaceKind === "singing" ? "唱歌视频" : "跳舞视频"}，画布比例回到该类型默认值。`
+                          : ""}
+                      </p>
+                      <div className="batch-review-actions">
+                        <button onClick={() => setReplacingSource(false)}>取消</button>
+                        <button
+                          className="batch-primary"
+                          disabled={!replaceUrl.trim() || Boolean(busyAction)}
+                          onClick={async () => {
+                            await itemCall("source", "POST", { url: replaceUrl.trim(), kind: replaceKind });
+                            setReplaceUrl("");
+                            setReplacingSource(false);
+                          }}
+                        >
+                          {busyAction.endsWith("/source") ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
+                          替换并重新备料
+                        </button>
                       </div>
                     </div>
-                  </section>
-                )}
+                  )}
+                </section>
 
                 {selected.status === "pending" && (
                   <p className="field-note">
