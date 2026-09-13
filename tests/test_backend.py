@@ -47,6 +47,25 @@ from backend.workflows import (
 )
 
 
+# 测试绝不许写到真实发布目录（`E:\AI_Exports\H3-MotionStudio\发布成品`）：2026-09-13
+# 实测 `test_batch_reuses_previous_prep_for_the_same_aweme` 忘了换发布根，真的在用户
+# 的发布目录里留下一个 `001_上一次的标题_<作品号>` 目录（标题/简介都是测试假数据）。
+# 所以整个测试模块统一把发布根钉到临时目录，单个用例要断言目录结构时再自行覆盖。
+_TEST_PUBLISH_ROOT = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+_PUBLISH_ROOT_PATCH = patch(
+    "backend.batch_worker.BATCH_OUTPUT_ROOT", Path(_TEST_PUBLISH_ROOT.name) / "发布成品"
+)
+
+
+def setUpModule() -> None:
+    _PUBLISH_ROOT_PATCH.start()
+
+
+def tearDownModule() -> None:
+    _PUBLISH_ROOT_PATCH.stop()
+    _TEST_PUBLISH_ROOT.cleanup()
+
+
 @contextmanager
 def process_env_only():
     """让环境读取只认进程环境。
@@ -1656,7 +1675,12 @@ class WorkflowPreparationTests(unittest.TestCase):
                 fresh_item.update(awemeId=aweme, status="pending")
                 store.create(fresh)
 
+                # 发布根必须一起换成临时目录：提前落盘（deliver_review_materials）会真的写
+                # `E:\AI_Exports\H3-MotionStudio\发布成品`，2026-09-13 实测这个测试污染了真实
+                # 发布目录（多出一个 `001_上一次的标题_<作品号>` 目录）。
                 with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+                ), patch.object(
                     batch_worker.batch_ai, "analyze", side_effect=AssertionError("不该重新调模型")
                 ):
                     adopted = batch_worker._adopt_previous_work(fresh["id"], fresh_item["id"])
@@ -1687,6 +1711,12 @@ class WorkflowPreparationTests(unittest.TestCase):
                 # 发布目录里同步有了人物图与文案（提前落盘）
                 self.assertTrue(Path(row["outputs"]["image"]).is_file())
                 self.assertTrue(Path(row["outputs"]["copy"]).is_file())
+                # 而且必须落在临时发布根里 —— 绝不许写到真实发布目录
+                for key in ("image", "copy", "folder"):
+                    self.assertTrue(
+                        Path(row["outputs"][key]).is_relative_to(root),
+                        f"{key} 写到真实发布目录里去了：{row['outputs'][key]}",
+                    )
 
                 # 没有可复用结果时不能误判
                 stranger = new_batch_state([], ["https://www.douyin.com/video/7000000000000000000"])
