@@ -1598,6 +1598,49 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("评论区", fallback)
         self.assertTrue(fallback.strip())
 
+    def test_batch_item_title_follows_the_published_title(self) -> None:
+        """条目标题只认发布标题 `ai.title`（用户 2026-09-13：「批量生成任务 4 为什么标题不一致」）。
+
+        队列左侧显示 `item.title`（预审阶段写的），审核面板「标题」与发布文案/发布目录用
+        `ai.title`（上传候选图后按图重写过），两个字段各自更新就会出现两个标题。读取时同步。
+        """
+        from backend import batch_store as batch_store_module
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state([], ["https://www.douyin.com/video/7680438814691729585"])
+                state["items"][0].update(
+                    status="awaiting_review",
+                    stage="review",
+                    title="一支舞，把整段行程成了痛",          # 预审阶段写的旧标题
+                    ai={"title": "这支没人听过的曲子，我跳了很久"},  # 上传候选图后重写的发布标题
+                )
+                store.create(state)
+                stored = store.get(state["id"])["items"][0]
+                self.assertEqual(stored["title"], "这支没人听过的曲子，我跳了很久")
+
+                # 还没有发布标题（没备过料）时不乱改
+                blank = new_batch_state(["https://v.douyin.com/x"], [])
+                blank["items"][0].update(title="原始标题", ai={"introduction": "有简介"})
+                store.create(blank)
+                self.assertEqual(store.get(blank["id"])["items"][0]["title"], "原始标题")
+            finally:
+                batch_store_module.DB_PATH = original
+
+    def test_batch_queue_and_detail_show_one_title(self) -> None:
+        """前端队列与详情必须用同一个标题来源，不许一边 item.title、一边 ai.title。"""
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        self.assertIn("function itemTitle(item: BatchItem)", source)
+        self.assertIn("<strong>{itemTitle(item)}</strong>", source)
+        self.assertIn("<h2>{itemTitle(selected)}</h2>", source)
+        self.assertNotIn("{selected.title}</h2>", source)
+        # 队列行不再直接用 item.title（只能通过 itemTitle() 走统一来源）
+        self.assertNotIn("<strong>{item.title", source)
+
     def test_batch_store_backfills_missing_copy_on_read(self) -> None:
         """已经备过料的条目（比如 429 降级留下的空简介/空标签）读取时就自愈。"""
         from backend import batch_store as batch_store_module

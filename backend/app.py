@@ -906,6 +906,10 @@ async def upload_batch_item_image(
 
     def apply(row: dict[str, Any]) -> None:
         row["ai"] = ai
+        # 标题只有一个来源：`ai.title`（发布文案/发布目录都用它）。`write_copy` 可能刚改过它，
+        # 这里同步到条目标题，免得左侧队列和审核面板显示两个不同的标题。
+        if str(ai.get("title") or "").strip():
+            row["title"] = str(ai["title"]).strip()
         row["warning"] = None
 
     batch_store.mutate_item(batch_id, item_id, apply)

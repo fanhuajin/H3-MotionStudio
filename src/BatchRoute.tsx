@@ -196,6 +196,18 @@ function styleSourceLabel(value?: string): string {
   return value === "redesign" ? "源视频不适合出片 → 按歌曲情绪重做造型" : "沿用源视频造型 / 服装 / 场景";
 }
 
+/**
+ * 条目该显示的标题：**只认发布标题 `ai.title`**，没有才回退到 `item.title`。
+ *
+ * 用户 2026-09-13 实测「批量生成任务 4 为什么标题不一致」：左侧队列显示的是预审阶段写的
+ * `item.title`，审核面板与发布文案用的是用户上传候选图后 `write_copy` 重写的 `ai.title`，
+ * 两个字段各自更新就会出现两个标题。后端读取时已把 `item.title` 同步成 `ai.title`，
+ * 这里再兜一层，保证同一屏永远不会出现两个不同的标题。
+ */
+function itemTitle(item: BatchItem): string {
+  return String(item.ai?.title || "").trim() || item.title || `第 ${item.index} 条`;
+}
+
 function readInputDraft() {
   const read = (key: string) => {
     try {
@@ -723,7 +735,7 @@ export function BatchRoute() {
                 <button key={item.id} className={`batch-item ${selected?.id === item.id ? "selected" : ""}`} onClick={() => setSelectedId(item.id)}>
                   <span className={`batch-item-index ${item.status}`}>{item.status === "completed" ? <Check /> : item.index}</span>
                   <span className="batch-item-copy">
-                    <strong>{item.title || `第 ${item.index} 条`}</strong>
+                    <strong>{itemTitle(item)}</strong>
                     <small>
                       {item.kind === "singing" ? "歌曲视频" : "跳舞视频"} · {batchStatusLabel(item.status)}
                       {/* 出片中的条目在列表里也给出真实进度：分段 / 去字幕 / 二采第几批 */}
@@ -753,7 +765,7 @@ export function BatchRoute() {
                 <div className="batch-detail-head">
                   <div>
                     <p>第 {selected.index} 条 · {selected.kind === "singing" ? "歌曲视频" : "跳舞视频"}</p>
-                    <h2>{selected.title}</h2>
+                    <h2>{itemTitle(selected)}</h2>
                     <div className="batch-detail-meta">
                       <a href={selected.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
                       {/* 本条已运行时间：跑到哪一步、一共花了多久 */}

@@ -97,9 +97,27 @@ class BatchStore:
             except Exception:  # noqa: BLE001 - 兜底文案不能影响任何读写
                 continue
 
+    @staticmethod
+    def _sync_titles(state: dict[str, Any]) -> None:
+        """条目标题只认**发布标题** `ai.title`，`item.title` 跟着它走。
+
+        用户 2026-09-13 看到「批量生成任务 4 为什么标题不一致」：左侧队列显示的是
+        `item.title`（预审阶段写的），审核面板「标题」与发布文案/发布目录用的是
+        `ai.title`（用户上传候选图后 `write_copy` 按图重写过），两个字段各自更新，
+        于是同一条出现两个标题。放在读取路径上，历史条目读一次就对齐。
+        """
+        for item in state.get("items") or []:
+            ai = item.get("ai")
+            if not isinstance(ai, dict):
+                continue
+            published = str(ai.get("title") or "").strip()
+            if published and str(item.get("title") or "").strip() != published:
+                item["title"] = published
+
     def _normalize(self, state: dict[str, Any]) -> None:
         self._renumber(state)
         self._prune_milestones(state)
+        self._sync_titles(state)
         self._backfill_copy_fields(state)
 
     def _init_db(self) -> None:
