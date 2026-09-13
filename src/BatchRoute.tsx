@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowClockwise,
+  ArrowUUpLeft,
   Check,
   Circle,
   Copy,
@@ -314,11 +315,74 @@ export function BatchRoute() {
     || selected?.outputs?.videoWithLyrics
     || selected?.outputs?.copy,
   );
-  // 画布比例只在审核时展示/修改（审核区唯一的比例入口）。
+  // 用户 2026-09-14：「未开始前的任务都允许修改」——没开始出片的条目都能改比例/去除字幕
+  const settingsEditable = Boolean(
+    selected?.ai && !["running", "revising", "completed", "deleted"].includes(selected.status),
+  );
+  // 「回到确认」：过了审核点的条目（含正在出片，会先安全取消）都能退回去重做
+  const canReopen = Boolean(
+    selected?.ai && !["awaiting_review", "deleted"].includes(selected.status),
+  );
+  // 画布比例 / 去除字幕：没开始出片的条目都能改（审核区是主要入口，见 renderSettings）
   const selectedRatio = selected ? itemRatio(selected) : DEFAULT_RATIO.singing;
   const changeRatio = (ratio: CanvasRatio) => {
     if (!selected || selectedRatio === ratio) return;
     void itemCall("ratio", "POST", { ratio });
+  };
+  const selectedSubtitles = Boolean(selected?.ai?.remove_subtitles);
+  const changeSubtitles = (value: boolean) => {
+    if (!selected || selectedSubtitles === value) return;
+    void itemCall("remove-subtitles", "POST", { removeSubtitles: value });
+  };
+
+  /** 出片前的两个设置（画布比例 + 跳舞条目的去除字幕）：审核区与「出片前设置」面板共用。 */
+  const renderSettings = (item: BatchItem) => {
+    const ratio = itemRatio(item);
+    const subtitles = Boolean(item.ai?.remove_subtitles);
+    return (
+      <>
+        <label>
+          <span>画布比例</span>
+          <div className="batch-ratio-pick" role="radiogroup" aria-label="这一条的画布比例">
+            {RATIOS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={ratio === value}
+                className={ratio === value ? "selected" : ""}
+                disabled={Boolean(busyAction)}
+                onClick={() => changeRatio(value)}
+              >
+                {RATIO_LABEL[value]}
+              </button>
+            ))}
+            <i>{ratioDetail(item.kind, ratio)}</i>
+          </div>
+        </label>
+        {item.kind === "dance" && (
+          <label>
+            <span>去除字幕</span>
+            <div className="batch-ratio-pick" role="radiogroup" aria-label="出片前是否先去字幕">
+              {[true, false].map((value) => (
+                <button
+                  key={String(value)}
+                  type="button"
+                  role="radio"
+                  aria-checked={subtitles === value}
+                  className={subtitles === value ? "selected" : ""}
+                  disabled={Boolean(busyAction)}
+                  onClick={() => changeSubtitles(value)}
+                >
+                  {value ? "先去字幕再迁移" : "不去字幕"}
+                </button>
+              ))}
+              <i>{subtitles ? "出片前先跑一遍 ProPainter 去字幕" : "直接用源视频驱动，不去字幕"}</i>
+            </div>
+          </label>
+        )}
+      </>
+    );
   };
 
   // 只读回看每一阶段的产物；顺序按生成先后排列
@@ -529,6 +593,22 @@ export function BatchRoute() {
                         <ArrowClockwise />重新开始
                       </button>
                     )}
+                    {canReopen && (
+                      <button
+                        onClick={() => {
+                          const running = selected.status === "running";
+                          if (
+                            !running
+                            || window.confirm("这一条正在出片。回到确认会先取消当前出片（已生成到一半的进度作废），确定吗？")
+                          ) {
+                            void itemCall("reopen-review");
+                          }
+                        }}
+                        title="回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认"
+                      >
+                        <ArrowUUpLeft />回到确认
+                      </button>
+                    )}
                     {!['completed', 'skipped'].includes(selected.status) && <button onClick={() => itemCall("skip")}><X />跳过</button>}
                     <button
                       className="danger"
@@ -609,25 +689,7 @@ export function BatchRoute() {
                       <label><span>标题</span><p>{selected.ai.title}</p></label>
                       <label><span>简介</span><p>{selected.ai.introduction}</p></label>
                       <label><span>标签</span><div className="batch-tags">{selected.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>
-                      <label>
-                        <span>画布比例</span>
-                        <div className="batch-ratio-pick" role="radiogroup" aria-label="这一条的画布比例">
-                          {RATIOS.map((value) => (
-                            <button
-                              key={value}
-                              type="button"
-                              role="radio"
-                              aria-checked={selectedRatio === value}
-                              className={selectedRatio === value ? "selected" : ""}
-                              disabled={Boolean(busyAction)}
-                              onClick={() => changeRatio(value)}
-                            >
-                              {RATIO_LABEL[value]}
-                            </button>
-                          ))}
-                          <i>{ratioDetail(selected.kind, selectedRatio)}</i>
-                        </div>
-                      </label>
+                      {renderSettings(selected)}
                       <div className="batch-review-actions">
                         <button
                           className="batch-primary"
@@ -639,6 +701,20 @@ export function BatchRoute() {
                         </button>
                       </div>
                     </div>
+                  </section>
+                )}
+
+                {selected.ai && selected.status !== "awaiting_review" && settingsEditable && (
+                  <section className="batch-prompt-panel">
+                    <div className="batch-panel-title">
+                      <span>出片前设置</span>
+                      <small>
+                        {selected.status === "confirmed"
+                          ? "已加入出片队列，轮到它之前仍可改"
+                          : "这一条还没开始出片，可以直接改"}
+                      </small>
+                    </div>
+                    <div className="batch-review-copy">{renderSettings(selected)}</div>
                   </section>
                 )}
 

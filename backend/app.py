@@ -34,9 +34,11 @@ from .batch_worker import (
     item_ratio,
     new_batch_state,
     request_review_adjustment,
+    reset_review_row,
     run_batch,
     salvage_abandoned_items,
     set_item_ratio,
+    set_item_remove_subtitles,
     stage_media,
 )
 from .douyin_mirror import all_jobs as mirror_jobs
@@ -284,6 +286,12 @@ class BatchCreateRequest(BaseModel):
 
 class BatchItemRatioRequest(BaseModel):
     ratio: str
+
+
+class BatchItemSubtitlesRequest(BaseModel):
+    """跳舞条目的「是否去除字幕」开关。"""
+
+    removeSubtitles: bool
 
 
 class BatchAppendRequest(BaseModel):
@@ -579,15 +587,102 @@ async def confirm_batch_item(batch_id: str, item_id: str):
 async def set_batch_item_ratio(
     batch_id: str, item_id: str, request: BatchItemRatioRequest
 ):
-    """逐条改画布比例：歌曲默认 4:3、跳舞默认 9:16，用户随时可改（确认出片前）。
+    """逐条改画布比例：歌曲默认 4:3、跳舞默认 9:16。
 
-    出片时以条目自己的比例为准提交；已经跑起来或已结束的条目拒绝修改。
+    用户 2026-09-14：「未开始前的任务都允许修改」——`pending`/`awaiting_review`/`confirmed`/
+    `failed`/`skipped` 都能改，只有正在出片（running/revising）和已出片（completed）拒绝，
+    那时请先走「回到确认」。
     """
     _batch_item_or_404(batch_id, item_id)
     try:
         return set_item_ratio(batch_id, item_id, request.ratio)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/remove-subtitles")
+async def set_batch_item_remove_subtitles(
+    batch_id: str, item_id: str, request: BatchItemSubtitlesRequest
+):
+    """跳舞条目：改「是否去除字幕」（出片前先跑一遍 ProPainter 去字幕）。
+
+    这个值原先只由预审模型决定、页面上只能看；用户 2026-09-14 要求可以自己改，
+    规则与画布比例一致——没开始出片就能改，出片时按当前值提交迁移工作流。
+    """
+    _batch_item_or_404(batch_id, item_id)
+    try:
+        return set_item_remove_subtitles(batch_id, item_id, request.removeSubtitles)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/reopen-review")
+async def reopen_batch_item_review(batch_id: str, item_id: str):
+    """回到「等待你的确认」：换图 / 改比例 / 改去除字幕后重新确认出片。
+
+    用户 2026-09-14：「我希望可以回到等待你的确认的页面，有可能我需要重新修改内容，
+    现在回不去」——出片之后（含正在出片）必须能退回来重做。
+
+    - 没在出片（pending / confirmed / failed / skipped / completed）：直接把条目重置回
+      审核点，`reviewApproved` 清空，重新点确认才会再出片；
+    - 正在出片（running）：先安全取消子任务（和「跳过」同一条链路），runner 收尾时再把它
+      退回审核点，避免和服务里的任务状态打架。用户明确要求允许这么干。
+    """
+    item = _batch_item_or_404(batch_id, item_id)
+    status = str(item.get("status") or "")
+    if status == "deleted":
+        raise HTTPException(409, "这一条已经删除，不能回到确认")
+    if status == "awaiting_review":
+        return _batch_or_404(batch_id)
+    if status == "revising":
+        raise HTTPException(409, "这一条正在重新备料，等它停下来再回到确认")
+
+    decision: dict[str, Any] = {}
+
+    def apply(row: dict[str, Any]) -> None:
+        child = row.get("childJob") or {}
+        busy = str(row.get("status") or "") == "running" or str(child.get("status") or "") in {
+            "queued",
+            "running",
+            "cancelling",
+        }
+        decision["busy"] = busy
+        if busy:
+            # 交给 runner 收尾：_finish_abandoned 看到 reopenRequested 就退回审核点
+            row.update(reopenRequested=True, skipRequested=True)
+        else:
+            reset_review_row(row)
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    if decision.get("busy"):
+        cancel_item_work(batch_id, item_id)
+        child = item.get("childJob") or {}
+        child_id = child.get("id")
+        if child_id and child.get("status") in {"queued", "running", "cancelling"}:
+            try:
+                await cancel_job(str(child_id))
+            except HTTPException as error:
+                if error.status_code not in {404, 409}:
+                    raise
+        batch_store.add_item_log(batch_id, item_id, "正在安全取消当前出片，取消后回到等待确认。")
+        return batch_store.update(
+            batch_id, notice="正在安全取消当前出片，取消后这一条会回到「等待你的确认」。"
+        )
+    batch_store.add_item_log(
+        batch_id, item_id, "已回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认。"
+    )
+    state = batch_store.get(batch_id) or {}
+    if state.get("status") in {"completed", "cancelled", "failed"}:
+        return batch_store.update(
+            batch_id,
+            status="awaiting_review",
+            stage="review",
+            currentItemId=item_id,
+            runnerActive=False,
+            finishedAt=None,
+            notice="已回到「等待你的确认」。",
+        )
+    return batch_store.update(batch_id, notice="已回到「等待你的确认」。")
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/adjust")

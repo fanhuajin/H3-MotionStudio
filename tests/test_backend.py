@@ -157,13 +157,21 @@ class WorkflowPreparationTests(unittest.TestCase):
                     written = (Path(folder) / "batches" / "b1" / "it1" / "出图提示词.txt").read_text(encoding="utf-8")
                     self.assertEqual(written, "提示词-9:16")
 
-                    with self.assertRaises(ValueError):
-                        batch_worker.set_item_ratio("b1", "it2", "4:3")   # 已确认出片 → 锁定
+                    # 用户 2026-09-14：「未开始前的任务都允许修改」——已确认但还没开始出片的
+                    # 条目（confirmed）也能改，改了之后提交的就是新比例
+                    batch_worker.set_item_ratio("b1", "it2", "4:3")
+                    self.assertEqual(stub.state["items"][1]["ratio"], "4:3")
+
+                    # 正在出片 / 已出片：锁定，必须先点「回到确认」
+                    for blocked in ("running", "revising", "completed"):
+                        stub.state["items"][1]["status"] = blocked
+                        with self.assertRaises(ValueError):
+                            batch_worker.set_item_ratio("b1", "it2", "9:16")
                     with self.assertRaises(ValueError):
                         batch_worker.set_item_ratio("b1", "it1", "16:9")  # 非法比例
             finally:
                 batch_worker.batch_store, batch_worker.batch_ai.compose_image_prompt = originals
-        self.assertEqual(stub.state["items"][1]["ratio"], "9:16")
+        self.assertEqual(stub.state["items"][1]["ratio"], "4:3")
 
     def test_batch_items_can_be_appended_anytime(self) -> None:
         """批次随时能加任务：跑着的、暂停的、刚做完的都能往队尾追加，重复链接自动跳过。"""
@@ -1352,6 +1360,134 @@ class WorkflowPreparationTests(unittest.TestCase):
                     asyncio.run(batch_worker._process_confirmed(state["id"], item["id"]))
 
                 self.assertEqual(order, ["download", "submit"])
+            finally:
+                batch_store_module.DB_PATH = original_db
+
+    def test_reopen_review_brings_the_item_back_to_the_confirmation_page(self) -> None:
+        """回到「等待你的确认」（2026-09-14 用户：「现在回不去」）：出片后能退回去改内容。
+
+        正在出片的条目先安全取消（交给 runner 收尾时退回审核点），没在出片的直接退。
+        """
+        import asyncio
+
+        from backend import app as app_module
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/done", "https://v.douyin.com/running"], [])
+                done, running = state["items"]
+                image = root / "candidate.png"
+                image.write_bytes(b"fake-image")
+                done.update(
+                    status="completed",
+                    stage="completed",
+                    reviewApproved=True,
+                    videoJobId="job-old",
+                    outputs={"videoFinal": "E:/old/最终成片.mp4", "folder": "E:/old"},
+                    ai={"reference_image_path": str(image), "remove_subtitles": True},
+                )
+                running.update(
+                    status="running",
+                    stage="video",
+                    reviewApproved=True,
+                    videoJobId="job-live",
+                    childJob={"id": "job-live", "status": "running"},
+                    ai={"reference_image_path": str(image)},
+                )
+                for item in (done, running):
+                    for milestone in item["milestones"]:
+                        if milestone["id"] == "review":
+                            milestone.update(status="completed", progress=100)
+                        elif milestone["id"] in {"video", "deliver"}:
+                            milestone.update(status="completed", progress=100)
+                state["status"] = "completed"
+                store.create(state)
+
+                def row_of(item_id):
+                    return next(it for it in store.get(state["id"])["items"] if it["id"] == item_id)
+
+                with patch.object(app_module, "batch_store", store), patch.object(
+                    batch_worker, "batch_store", store
+                ):
+                    # 已经出完片的条目：直接退回确认页
+                    asyncio.run(app_module.reopen_batch_item_review(state["id"], done["id"]))
+                    row = row_of(done["id"])
+                    self.assertEqual((row["status"], row["stage"]), ("awaiting_review", "review"))
+                    self.assertFalse(row["reviewApproved"])
+                    self.assertIsNone(row["videoJobId"])
+                    steps = {step["id"]: step["status"] for step in row["milestones"]}
+                    self.assertEqual(steps["review"], "running")
+                    self.assertEqual(steps["video"], "pending")
+                    self.assertEqual(steps["deliver"], "pending")
+                    self.assertEqual(store.get(state["id"])["status"], "awaiting_review")
+                    # 上一版的成片不丢：发布文件记录保留，磁盘上的文件不会被删
+                    self.assertEqual(row["outputs"]["folder"], "E:/old")
+
+                    # 正在出片的条目：先标记要退回 + 请求取消，由 runner 收尾时落到确认页
+                    asyncio.run(app_module.reopen_batch_item_review(state["id"], running["id"]))
+                    row = row_of(running["id"])
+                    self.assertEqual(row["status"], "running")
+                    self.assertTrue(row["reopenRequested"])
+                    self.assertTrue(row["skipRequested"])
+                    asyncio.run(batch_worker._finish_abandoned(state["id"], running["id"], deleted=False))
+                    row = row_of(running["id"])
+                    self.assertEqual((row["status"], row["stage"]), ("awaiting_review", "review"))
+                    self.assertFalse(row["reopenRequested"])
+                    self.assertFalse(row["skipRequested"])
+            finally:
+                batch_store_module.DB_PATH = original_db
+
+    def test_dance_item_can_toggle_remove_subtitles_before_production(self) -> None:
+        """跳舞条目的「去除字幕」用户可以自己改（2026-09-14）——没开始出片就能改，出片后拒绝。"""
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original_db = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state([], ["https://v.douyin.com/dance"])
+                item = state["items"][0]
+                item.update(
+                    status="awaiting_review",
+                    stage="review",
+                    ai={"reference_image_path": "x.png", "remove_subtitles": True},
+                )
+                store.create(state)
+
+                with patch.object(batch_worker, "batch_store", store):
+                    state_after = batch_worker.set_item_remove_subtitles(state["id"], item["id"], False)
+                    row = state_after["items"][0]
+                    self.assertFalse(row["ai"]["remove_subtitles"])
+                    self.assertTrue(any("不去字幕" in log["message"] for log in row["logs"]))
+                    # 还没出片（confirmed）也能改：用户要求「未开始前的任务都允许修改」
+                    store.mutate_item(state["id"], item["id"], lambda r: r.update(status="confirmed"))
+                    state_after = batch_worker.set_item_remove_subtitles(state["id"], item["id"], True)
+                    self.assertTrue(state_after["items"][0]["ai"]["remove_subtitles"])
+                    # 正在出片 / 已出片：拒绝，要先回到确认
+                    for blocked in ("running", "completed"):
+                        store.mutate_item(state["id"], item["id"], lambda r, s=blocked: r.update(status=s))
+                        with self.assertRaises(ValueError):
+                            batch_worker.set_item_remove_subtitles(state["id"], item["id"], False)
+
+                # 歌曲条目没有这个开关
+                song_state = new_batch_state(["https://v.douyin.com/song"], [])
+                song_state["items"][0].update(status="awaiting_review", ai={"reference_image_path": "x.png"})
+                store.create(song_state)
+                with patch.object(batch_worker, "batch_store", store):
+                    with self.assertRaises(ValueError):
+                        batch_worker.set_item_remove_subtitles(
+                            song_state["id"], song_state["items"][0]["id"], False
+                        )
             finally:
                 batch_store_module.DB_PATH = original_db
 

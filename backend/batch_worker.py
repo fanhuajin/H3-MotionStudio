@@ -1014,7 +1014,13 @@ async def _watch_child(batch_id: str, item_id: str, child_id: str, milestone_id:
                 await client.post(f"{BATCH_SELF_URL}/api/jobs/{child_id}/cancel")
             raise asyncio.CancelledError
         if child.get("status") in {"failed", "cancelled", "interrupted"}:
-            raise RuntimeError(str(child.get("errorSummary") or child.get("errorDetail") or "子任务失败"))
+            # 子任务被取消/中断时 errorSummary 是空的，只有一句「子任务失败」看不出原因
+            # （2026-09-14 实测：用户在队列面板取消 ComfyUI 任务后条目只说「子任务失败」）。
+            fallback = {
+                "cancelled": "视频子任务被取消（可在这一条点「重试」重新出片）",
+                "interrupted": "视频子任务被中断（本地服务重启过），点「重试」即可继续",
+            }.get(str(child.get("status")), "子任务失败")
+            raise RuntimeError(str(child.get("errorSummary") or child.get("errorDetail") or fallback))
         await asyncio.sleep(3)
 
 
@@ -1198,8 +1204,67 @@ def _spawn_deferred_salvage(batch_id: str, item_id: str, job_id: str) -> None:
     task.add_done_callback(_SALVAGE_TASKS.discard)
 
 
+def reset_review_row(row: dict[str, Any]) -> None:
+    """把条目行重置回「等待你的确认」（纯函数，调用方自己负责持久化）。
+
+    用户 2026-09-14：「我希望可以回到等待你的确认的页面，有可能我需要重新修改内容」——
+    出片之后想换人物图 / 改画布比例 / 改跳舞条目的「去除字幕」时，必须能退回审核点。
+    `reviewApproved` 一并清掉：退回确认页就代表上一次的放行作废，重新点确认才会再出片。
+    旧成片留在发布目录里（`outputs` 不删），只是流程重新变成待办。
+    """
+    row.update(
+        status="awaiting_review",
+        stage="review",
+        reviewApproved=False,
+        reopenRequested=False,
+        skipRequested=False,
+        deleteRequested=False,
+        childJob=None,
+        videoJobId=None,
+        error=None,
+        finishedAt=None,
+    )
+    for milestone in row.get("milestones") or []:
+        if milestone.get("id") == "review":
+            # 与 _prepare_review 停在审核点时的状态一致（页面上是「等你确认」的进行中）
+            milestone.update(status="running", progress=None, currentNode=None, finishedAt=None)
+        elif milestone.get("id") in {"video", "deliver"} or milestone.get("status") == "error":
+            milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
+
+
+def reset_item_to_review(batch_id: str, item_id: str) -> None:
+    batch_store.mutate_item(batch_id, item_id, reset_review_row)
+
+
+def set_item_remove_subtitles(batch_id: str, item_id: str, value: bool) -> dict[str, Any]:
+    """跳舞条目的「是否去除字幕」：和画布比例同一规则，没开始出片就能改。
+
+    用户 2026-09-14：「跳舞视频我想要修改是否去除字幕这个操作」——以前这个值由预审模型
+    给出且**只能看不能改**，现在在审核点（以及任何还没出片的状态）可以自己决定，
+    确认出片时按这个值提交迁移工作流。
+    """
+    item = _item(batch_id, item_id)
+    if str(item.get("kind") or "") != "dance":
+        raise ValueError("只有跳舞条目有「去除字幕」开关")
+    if not item_settings_editable(item):
+        raise ValueError("这一条正在出片或已经完成，请先点「回到确认」再改去除字幕")
+    ai = dict(item.get("ai") or {})
+    ai["remove_subtitles"] = bool(value)
+
+    def apply(row: dict[str, Any]) -> None:
+        row["ai"] = ai
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(
+        batch_id,
+        item_id,
+        "已改为：先跑一遍去字幕再迁移。" if value else "已改为：直接用源视频驱动，不去字幕。",
+    )
+    return batch_store.get(batch_id) or {}
+
+
 async def _finish_abandoned(batch_id: str, item_id: str, *, deleted: bool) -> None:
-    """条目被跳过 / 删除时的收尾：先抢救已经出片的成果，再落到 skipped / deleted。
+    """条目被跳过 / 删除 / **退回确认页**时的收尾。
 
     用户 2026-09-14 实测「跳过时成片已经跑完但没进发布目录、后面的步骤全是 ✗」：
     只要视频子任务真的完成过，就照样整理发布文件并把已完成的步骤打勾；没出片的
@@ -1207,6 +1272,22 @@ async def _finish_abandoned(batch_id: str, item_id: str, *, deleted: bool) -> No
     """
     current = _item(batch_id, item_id)
     job_id = str(current.get("videoJobId") or "")
+    if not deleted and current.get("reopenRequested"):
+        reset_item_to_review(batch_id, item_id)
+        batch_store.add_item_log(
+            batch_id, item_id, "已回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认。"
+        )
+        if (batch_store.get(batch_id) or {}).get("status") in {"completed", "cancelled", "failed"}:
+            batch_store.update(
+                batch_id,
+                status="awaiting_review",
+                stage="review",
+                currentItemId=item_id,
+                runnerActive=False,
+                finishedAt=None,
+                notice="已回到「等待你的确认」。",
+            )
+        return
     if job_id and await _salvage_deliver(batch_id, item_id):
         batch_store.add_item_log(
             batch_id,
@@ -1457,21 +1538,31 @@ def image_ratio_note(image: Path, ratio: str) -> str:
     )
 
 
+def item_settings_editable(item: dict[str, Any]) -> bool:
+    """条目是否还处在「没开始出片」的可改阶段（用户 2026-09-14：「未开始前的任务都允许修改」）。
+
+    - 可改：`pending`（排队中）、`awaiting_review`（等你确认）、`confirmed`（已放行但 runner
+      还没轮到它）、`failed`、`skipped`——这些改比例/去字幕都只会影响**还没提交**的那次出片；
+    - 不可改：`running`/`revising`（子任务已经在跑，改了就和工作流里的输入打架）、
+      `completed`（已经出片，要先点「回到确认」）、`deleted`。
+    """
+    return str(item.get("status") or "") not in {"running", "revising", "completed", "deleted"}
+
+
 def set_item_ratio(batch_id: str, item_id: str, ratio: str) -> dict[str, Any]:
     """改某一条视频的画布比例（歌曲默认 4:3、跳舞默认 9:16，用户逐条可改）。
 
     用户 2026-09-10：「每个视频需要让我选择比例，歌曲默认 4:3，跳舞默认 9:16，我可以改的」。
+    2026-09-14 放宽为：**只要还没开始出片就能改**（见 `item_settings_editable`）。
 
-    - 正在跑（running/revising）、已确认出片（confirmed）或已结束的条目不接受修改：
-      这时改比例会和已经提交出去的子任务打架。
     - 已经备过料的条目：按新比例重拼出图提示词并落盘，让用户拿到的备料与最终成片一致；
       旧候选图若与新比例不符只提示、不擅自删——图是用户自己出的，重做与否由他决定。
     """
     item = _item(batch_id, item_id)
     kind = str(item.get("kind") or "singing")
     target = normalize_batch_ratio(ratio, kind)
-    if item.get("status") in {"running", "revising", "confirmed", "completed", "skipped", "deleted"}:
-        raise ValueError("当前条目正在执行或已经结束，不能再改画布比例")
+    if not item_settings_editable(item):
+        raise ValueError("这一条正在出片或已经完成，请先点「回到确认」再改画布比例")
     previous = item_ratio(item)
     if target == previous:
         return batch_store.get(batch_id) or {}
