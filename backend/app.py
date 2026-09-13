@@ -604,9 +604,9 @@ async def adjust_batch_item(batch_id: str, item_id: str, request: BatchAdjustReq
 async def retry_batch_item(batch_id: str, item_id: str):
     """重新开始这条任务：失败与**已跳过**的条目都能重来（用户 2026-09-14：「跳过的视频允许我重新开始」）。
 
-    - 已经确认过（有审核通过的候选图）的条目直接回到 `confirmed`，只重跑视频链路，
-      不再重复下载与备料；
-    - 还没确认的（跳过时连素材都没备齐）回到 `pending`，从下载/备料重新走一遍。
+    - 已经确认过（有审核通过的候选图**且源视频还在磁盘上**）的条目直接回到 `confirmed`，
+      只重跑视频链路，不再重复下载与备料；
+    - 还没确认的、或者源视频已经被清理掉的，回到 `pending`，从下载/备料重新走一遍。
     两种都会清掉跳过/删除请求、错误与上一次的发布文件记录，并重置「生成最终视频 /
     整理发布文件」两个里程碑，让页面上的流程重新变成待办而不是已跳过。
     """
@@ -616,8 +616,10 @@ async def retry_batch_item(batch_id: str, item_id: str):
 
     def reset(row: dict[str, Any]) -> None:
         ai = row.get("ai") or {}
-        approved = bool(row.get("reviewApproved")) and bool(
-            str(ai.get("reference_image_path") or "").strip()
+        approved = (
+            bool(row.get("reviewApproved"))
+            and bool(str(ai.get("reference_image_path") or "").strip())
+            and Path(str(row.get("sourcePath") or "")).is_file()
         )
         row.update(
             status="confirmed" if approved else "pending",
@@ -638,7 +640,6 @@ async def retry_batch_item(batch_id: str, item_id: str):
     batch_store.mutate_item(batch_id, item_id, reset)
     batch_store.add_item_log(batch_id, item_id, "已重新开始这一条，正在按当前结果继续出片。")
     return _resume_batch(batch_id, "已重新开始跳过的条目。")
-
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/skip")
 async def skip_batch_item(batch_id: str, item_id: str):

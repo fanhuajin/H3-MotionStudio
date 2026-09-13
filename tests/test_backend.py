@@ -1222,24 +1222,43 @@ class WorkflowPreparationTests(unittest.TestCase):
         from backend.batch_store import BatchStore
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
             original_db = batch_store_module.DB_PATH
             spawned: list = []
             try:
-                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                batch_store_module.DB_PATH = root / "queue.db"
                 store = BatchStore()
-                state = new_batch_state(["https://v.douyin.com/song", "https://v.douyin.com/dance"], [])
-                approved, unapproved = state["items"]
+                state = new_batch_state(
+                    ["https://v.douyin.com/song", "https://v.douyin.com/dance", "https://v.douyin.com/old"],
+                    [],
+                )
+                approved, unapproved, source_gone = state["items"]
+                source = root / "source.mp4"
+                source.write_bytes(b"fake-source")
+                image = root / "candidate.png"
+                image.write_bytes(b"fake-image")
                 approved.update(
                     status="skipped",
                     stage="skipped",
                     reviewApproved=True,
                     skipRequested=True,
                     videoJobId="job-old",
+                    sourcePath=str(source),
                     outputs={"videoFinal": "E:/old/最终成片.mp4", "folder": "E:/old"},
-                    ai={"reference_image_path": "E:/old/人物图.png"},
+                    ai={"reference_image_path": str(image)},
                 )
                 unapproved.update(status="skipped", stage="skipped", skipRequested=True)
-                for item in (approved, unapproved):
+                # 审核过了、候选图也在，但源视频已经被清理掉：必须回到 pending 重新下载，
+                # 否则提交视频任务时会因为文件不存在直接失败（2026-09-14 实测就是这样）。
+                source_gone.update(
+                    status="skipped",
+                    stage="skipped",
+                    reviewApproved=True,
+                    skipRequested=True,
+                    sourcePath=str(root / "gone.mp4"),
+                    ai={"reference_image_path": str(image)},
+                )
+                for item in (approved, unapproved, source_gone):
                     for milestone in item["milestones"]:
                         if milestone["id"] in {"video", "deliver"}:
                             milestone.update(status="skipped", finishedAt="2026-09-13T00:00:00+00:00")
@@ -1247,15 +1266,16 @@ class WorkflowPreparationTests(unittest.TestCase):
                             milestone.update(status="completed")
                 state["status"] = "completed"
                 store.create(state)
-                approved = next(it for it in store.get(state["id"])["items"] if it["id"] == approved["id"])
-                unapproved = next(it for it in store.get(state["id"])["items"] if it["id"] == unapproved["id"])
+
+                def row_of(item_id):
+                    return next(it for it in store.get(state["id"])["items"] if it["id"] == item_id)
 
                 with patch.object(app_module, "batch_store", store), patch.object(
                     app_module, "spawn", lambda coro: (spawned.append(coro), coro.close())
                 ):
-                    # 已确认（有候选图）的条目：回到 confirmed，只重跑出片，旧的发布记录清空
+                    # 已确认且源视频还在：回到 confirmed，只重跑出片，旧的发布记录清空
                     asyncio.run(app_module.retry_batch_item(state["id"], approved["id"]))
-                    row = next(it for it in store.get(state["id"])["items"] if it["id"] == approved["id"])
+                    row = row_of(approved["id"])
                     self.assertEqual((row["status"], row["stage"]), ("confirmed", "confirmed"))
                     self.assertEqual(row["outputs"], {})
                     self.assertIsNone(row["videoJobId"])
@@ -1267,10 +1287,14 @@ class WorkflowPreparationTests(unittest.TestCase):
 
                     # 没备齐料的条目：回到 pending，从下载/备料重来
                     asyncio.run(app_module.retry_batch_item(state["id"], unapproved["id"]))
-                    row = next(it for it in store.get(state["id"])["items"] if it["id"] == unapproved["id"])
+                    self.assertEqual(row_of(unapproved["id"])["status"], "pending")
+
+                    # 源视频没了：也要回到 pending 重新下载
+                    asyncio.run(app_module.retry_batch_item(state["id"], source_gone["id"]))
+                    row = row_of(source_gone["id"])
                     self.assertEqual((row["status"], row["stage"]), ("pending", "queued"))
 
-                    self.assertEqual(len(spawned), 2)  # 每次重新开始都会唤醒 runner
+                    self.assertEqual(len(spawned), 3)  # 每次重新开始都会唤醒 runner
                     self.assertEqual(store.get(state["id"])["status"], "running")
 
                     # 已经完成的条目不能再重来
@@ -1279,6 +1303,55 @@ class WorkflowPreparationTests(unittest.TestCase):
                     )
                     with self.assertRaises(app_module.HTTPException):
                         asyncio.run(app_module.retry_batch_item(state["id"], approved["id"]))
+            finally:
+                batch_store_module.DB_PATH = original_db
+
+    def test_confirmed_item_redownloads_a_missing_source_before_submitting(self) -> None:
+        """重新开始时源视频已被清理：提交前先补一次下载，不能直接抛「文件不存在」。"""
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/song"], [])
+                state["items"][0].update(status="confirmed", reviewApproved=True, sourcePath=str(root / "gone.mp4"))
+                store.create(state)
+                item = state["items"][0]
+                order: list[str] = []
+
+                async def fake_download(batch_id, item_id):
+                    order.append("download")
+                    store.mutate_item(
+                        batch_id,
+                        item_id,
+                        lambda row: row.update(sourcePath=str(root / "redownloaded.mp4")),
+                    )
+
+                async def fake_submit(batch_id, item_id):
+                    order.append("submit")
+                    return {"id": "job-new"}
+
+                async def fake_watch(batch_id, item_id, child_id, milestone_id):
+                    return {"id": child_id, "status": "completed", "finalOutput": str(root / "final.mp4")}
+
+                async def fake_deliver(batch_id, item_id, video_job):
+                    return {"videoFinal": "x", "folder": "y"}
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "_download", fake_download
+                ), patch.object(batch_worker, "_post_video_job", fake_submit), patch.object(
+                    batch_worker, "_watch_child", fake_watch
+                ), patch.object(batch_worker, "_deliver", fake_deliver):
+                    asyncio.run(batch_worker._process_confirmed(state["id"], item["id"]))
+
+                self.assertEqual(order, ["download", "submit"])
             finally:
                 batch_store_module.DB_PATH = original_db
 

@@ -1234,6 +1234,12 @@ async def _finish_abandoned(batch_id: str, item_id: str, *, deleted: bool) -> No
 
 async def _process_confirmed(batch_id: str, item_id: str) -> None:
     _set_item(batch_id, item_id, status="running", stage="video", error=None, childJob=None)
+    # 源视频可能已经被清理掉（用户重新开始一条老任务时很常见）：先补下载，
+    # 否则提交视频任务时会直接抛「文件不存在」，看起来像系统坏了。
+    item = _item(batch_id, item_id)
+    if not Path(str(item.get("sourcePath") or "")).is_file():
+        batch_store.add_item_log(batch_id, item_id, "源视频已不在磁盘上，正在重新下载……")
+        await _download(batch_id, item_id)
     batch_store.set_item_milestone(batch_id, item_id, "video", status="running", progress=1)
     batch_store.add_item_log(batch_id, item_id, "已确认候选结果，开始执行视频生成单链路。")
     video_job = await _post_video_job(batch_id, item_id)
