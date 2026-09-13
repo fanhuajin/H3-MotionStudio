@@ -6,8 +6,6 @@ import {
   ArrowUUpLeft,
   Check,
   Circle,
-  Copy,
-  FolderOpen,
   ImageSquare,
   ListChecks,
   MusicNotes,
@@ -402,16 +400,7 @@ export function BatchRoute() {
     await call(`items/${selected.id}${action ? `/${action}` : ""}`, method, body);
   };
 
-  const openFolder = () => itemCall("open-output");
   const hasImage = Boolean(selected?.ai?.reference_image_path);
-  // 「最终成片」是当前交付格式；旧的 videoNoLyrics/videoWithLyrics 键只有历史条目才有。
-  const outputsReady = Boolean(selected?.outputs?.videoFinal);
-  const hasOutputs = Boolean(
-    selected?.outputs?.videoFinal
-    || selected?.outputs?.videoNoLyrics
-    || selected?.outputs?.videoWithLyrics
-    || selected?.outputs?.copy,
-  );
   // 用户 2026-09-14：「未开始前的任务都允许修改」——没开始出片的条目都能改比例/去除字幕
   const settingsEditable = Boolean(
     selected?.ai && !["running", "revising", "completed", "deleted"].includes(selected.status),
@@ -1134,22 +1123,9 @@ export function BatchRoute() {
                   </section>
                 )}
 
-                {outputsReady && selected.outputs && (
-                  <section className="batch-output-panel">
-                    {/* 只留「点开就能看/下载」的入口，不写发布状态话术。
-                        用户 2026-09-13：「发布文件已整理 没有去掉吗」——所以「发布文件已整理」
-                        「成片、人物图和发布文案均已保存」这类句子一律不渲染。 */}
-                    <div className="batch-output-grid">
-                      {selected.outputs.videoFinal && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoFinal`} target="_blank">最终成片</a>}
-                      {/* 旧交付（2026-09-14 之前）留下的键，历史条目仍能点开 */}
-                      {selected.outputs.videoNoLyrics && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoNoLyrics`} target="_blank">无字幕成片（旧）</a>}
-                      {selected.outputs.videoWithLyrics && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoWithLyrics`} target="_blank">歌词字幕版（旧）</a>}
-                      {selected.outputs.image && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/image`} target="_blank">人物图</a>}
-                      <a href={`/api/batches/${batch.id}/items/${selected.id}/output/copy?download=true`}><Copy />发布文案</a>
-                    </div>
-                    <button className="batch-primary" onClick={openFolder}><FolderOpen />打开文件夹</button>
-                  </section>
-                )}
+                {/* 成品区整个去掉（2026-09-13 用户指着一张只有「最终成片 / 人物图 / 发布文案 /
+                    打开文件夹」的截图说「这个没有去掉吗 不是说去掉吗」）：交付照做（文件照样写进
+                    发布目录），页面上不再放这块面板。成片仍可在「生成阶段产物」里点开看。 */}
 
                 {(selected.error || selected.warning) && <div className="batch-alert"><WarningCircle weight="fill" />{selected.error || selected.warning}</div>}
               </>

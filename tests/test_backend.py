@@ -572,6 +572,13 @@ class WorkflowPreparationTests(unittest.TestCase):
             "发布目录已收到人物图与文案",
             "均已保存",
             "条目日志",
+            # 整个成品面板（最终成片 / 人物图 / 发布文案 / 打开文件夹）都不要
+            # （2026-09-13 用户指着截图：「这个没有去掉吗 不是说去掉吗」）
+            "batch-output-panel",
+            "batch-output-grid",
+            "打开文件夹",
+            "output/videoFinal",
+            "output/copy",
         ):
             self.assertNotIn(phrase, rendered, f"批量页不该再渲染「{phrase}」")
 
