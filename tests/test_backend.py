@@ -1213,6 +1213,75 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original_db
 
+    def test_skipped_item_can_be_restarted(self) -> None:
+        """跳过的视频允许重新开始（2026-09-14 用户要求）：已确认过的只重跑出片，没备齐料的从下载重来。"""
+        import asyncio
+
+        from backend import app as app_module
+        from backend import batch_store as batch_store_module
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original_db = batch_store_module.DB_PATH
+            spawned: list = []
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/song", "https://v.douyin.com/dance"], [])
+                approved, unapproved = state["items"]
+                approved.update(
+                    status="skipped",
+                    stage="skipped",
+                    reviewApproved=True,
+                    skipRequested=True,
+                    videoJobId="job-old",
+                    outputs={"videoFinal": "E:/old/最终成片.mp4", "folder": "E:/old"},
+                    ai={"reference_image_path": "E:/old/人物图.png"},
+                )
+                unapproved.update(status="skipped", stage="skipped", skipRequested=True)
+                for item in (approved, unapproved):
+                    for milestone in item["milestones"]:
+                        if milestone["id"] in {"video", "deliver"}:
+                            milestone.update(status="skipped", finishedAt="2026-09-13T00:00:00+00:00")
+                        else:
+                            milestone.update(status="completed")
+                state["status"] = "completed"
+                store.create(state)
+                approved = next(it for it in store.get(state["id"])["items"] if it["id"] == approved["id"])
+                unapproved = next(it for it in store.get(state["id"])["items"] if it["id"] == unapproved["id"])
+
+                with patch.object(app_module, "batch_store", store), patch.object(
+                    app_module, "spawn", lambda coro: (spawned.append(coro), coro.close())
+                ):
+                    # 已确认（有候选图）的条目：回到 confirmed，只重跑出片，旧的发布记录清空
+                    asyncio.run(app_module.retry_batch_item(state["id"], approved["id"]))
+                    row = next(it for it in store.get(state["id"])["items"] if it["id"] == approved["id"])
+                    self.assertEqual((row["status"], row["stage"]), ("confirmed", "confirmed"))
+                    self.assertEqual(row["outputs"], {})
+                    self.assertIsNone(row["videoJobId"])
+                    self.assertFalse(row["skipRequested"])
+                    steps = {step["id"]: step["status"] for step in row["milestones"]}
+                    self.assertEqual(steps["video"], "pending")
+                    self.assertEqual(steps["deliver"], "pending")
+                    self.assertEqual(steps["review"], "completed")
+
+                    # 没备齐料的条目：回到 pending，从下载/备料重来
+                    asyncio.run(app_module.retry_batch_item(state["id"], unapproved["id"]))
+                    row = next(it for it in store.get(state["id"])["items"] if it["id"] == unapproved["id"])
+                    self.assertEqual((row["status"], row["stage"]), ("pending", "queued"))
+
+                    self.assertEqual(len(spawned), 2)  # 每次重新开始都会唤醒 runner
+                    self.assertEqual(store.get(state["id"])["status"], "running")
+
+                    # 已经完成的条目不能再重来
+                    store.mutate_item(
+                        state["id"], approved["id"], lambda row: row.update(status="completed")
+                    )
+                    with self.assertRaises(app_module.HTTPException):
+                        asyncio.run(app_module.retry_batch_item(state["id"], approved["id"]))
+            finally:
+                batch_store_module.DB_PATH = original_db
+
     def test_elapsed_format_matches_ui(self) -> None:
         self.assertEqual(format_elapsed("2026-09-03T00:00:00+00:00", "2026-09-03T01:02:03+00:00"), "01:02:03")
 

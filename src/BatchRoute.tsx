@@ -519,7 +519,16 @@ export function BatchRoute() {
                     <a href={selected.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
                   </div>
                   <div className="batch-item-actions">
+                    {/* 失败的「重试」和跳过的「重新开始」走同一个接口：已确认过的只重跑出片，没备齐料的从下载重来 */}
                     {selected.status === "failed" && <button onClick={() => itemCall("retry")}><ArrowClockwise />重试</button>}
+                    {selected.status === "skipped" && (
+                      <button
+                        onClick={() => itemCall("retry")}
+                        title={hasImage ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
+                      >
+                        <ArrowClockwise />重新开始
+                      </button>
+                    )}
                     {!['completed', 'skipped'].includes(selected.status) && <button onClick={() => itemCall("skip")}><X />跳过</button>}
                     <button
                       className="danger"

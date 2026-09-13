@@ -602,26 +602,42 @@ async def adjust_batch_item(batch_id: str, item_id: str, request: BatchAdjustReq
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/retry")
 async def retry_batch_item(batch_id: str, item_id: str):
+    """重新开始这条任务：失败与**已跳过**的条目都能重来（用户 2026-09-14：「跳过的视频允许我重新开始」）。
+
+    - 已经确认过（有审核通过的候选图）的条目直接回到 `confirmed`，只重跑视频链路，
+      不再重复下载与备料；
+    - 还没确认的（跳过时连素材都没备齐）回到 `pending`，从下载/备料重新走一遍。
+    两种都会清掉跳过/删除请求、错误与上一次的发布文件记录，并重置「生成最终视频 /
+    整理发布文件」两个里程碑，让页面上的流程重新变成待办而不是已跳过。
+    """
     item = _batch_item_or_404(batch_id, item_id)
-    if item.get("status") != "failed":
-        raise HTTPException(409, "只有失败的条目可以重试")
+    if item.get("status") not in {"failed", "skipped"}:
+        raise HTTPException(409, "只有失败或已跳过的条目可以重新开始")
 
     def reset(row: dict[str, Any]) -> None:
-        approved = bool(row.get("reviewApproved"))
+        ai = row.get("ai") or {}
+        approved = bool(row.get("reviewApproved")) and bool(
+            str(ai.get("reference_image_path") or "").strip()
+        )
         row.update(
             status="confirmed" if approved else "pending",
             stage="confirmed" if approved else "queued",
             error=None,
+            warning=None,
             skipRequested=False,
             deleteRequested=False,
             childJob=None,
+            videoJobId=None,
+            outputs={},
+            finishedAt=None,
         )
         for milestone in row.get("milestones") or []:
-            if milestone.get("status") == "error":
-                milestone.update(status="pending", progress=0, currentNode=None)
+            if milestone.get("id") in {"video", "deliver"} or milestone.get("status") == "error":
+                milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
 
     batch_store.mutate_item(batch_id, item_id, reset)
-    return _resume_batch(batch_id, "正在重试当前条目。")
+    batch_store.add_item_log(batch_id, item_id, "已重新开始这一条，正在按当前结果继续出片。")
+    return _resume_batch(batch_id, "已重新开始跳过的条目。")
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/skip")
