@@ -1219,13 +1219,13 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIsNone(reuse_previous_analysis("image", {"title": "只有文案"}))
 
     def test_batch_copy_prompt_is_written_from_the_final_image(self) -> None:
-        """文案必须看着最终候选图写：图文一致是硬要求。"""
+        """文案必须看着最终候选图写：图文一致是硬要求（但不许写成画面描述）。"""
         prompt = batch_ai.copy_prompt(
             song_name="爱如潮水", song_mood="抒情慢板，克制的失恋感", description="原作品描述"
         )
         self.assertIn("第一张图就是本条最终要发布的人物图", prompt)
-        self.assertIn("必须和画面里**实际出现**", prompt)
-        self.assertIn("画面里没有的东西一律不要写", prompt)
+        self.assertIn("不要写画面里没有的颜色、道具或场景", prompt)
+        self.assertIn("绝对不要复述画面", prompt)
         self.assertIn("《爱如潮水》", prompt)
         self.assertIn("抒情慢板，克制的失恋感", prompt)
         self.assertIn("恰好 5 个", prompt)
@@ -1310,6 +1310,33 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(len(placeholders["tags"]), 5)
         self.assertNotIn("未识别", placeholders["tags"])
         self.assertNotIn("未知", placeholders["tags"])
+
+    def test_batch_copy_prompts_ask_for_creator_voice_not_description(self) -> None:
+        """发布文案必须是**创作者口吻**（钩子 + 互动号召），不能是画面描述。
+
+        用户 2026-09-13：「这个完全不像啊 你这是在陈述啊 我是内容创作者啊」——旧的提示词只有
+        「introduction：一到两句简短简介」+「必须能对上画面」，模型于是写出「长发女孩身穿酒红色
+        上衣，在蓝色夜景前直视镜头」这种画面说明，根本不能直接发。
+        """
+        from backend.batch_ai import compose_introduction, copy_prompt, preflight_prompt
+
+        preflight = preflight_prompt(kind="singing", duration=20.0, description="", tags=[])
+        self.assertIn("发布用文案，不是画面说明", preflight)
+        self.assertIn("禁止客观描述句", preflight)
+        self.assertIn("创作者口吻", preflight)
+        copy_text = copy_prompt(song_name="", song_mood="", description="")
+        self.assertIn("内容创作者的发布文案", copy_text)
+        self.assertIn("创作者口吻", copy_text)
+        self.assertIn("绝对不要复述画面", copy_text)
+
+        intro = compose_introduction("singing", song_name="爱情专属权")
+        self.assertIn("爱情专属权", intro)
+        self.assertIn("你会想起谁", intro)
+        for banned in ("画面", "身穿", "光线"):
+            self.assertNotIn(banned, intro)
+        dance_intro = compose_introduction("dance")
+        self.assertIn("跳给你看", dance_intro)
+        self.assertNotIn("画面", dance_intro)
 
     def test_batch_store_backfills_missing_copy_on_read(self) -> None:
         """已经备过料的条目（比如 429 降级留下的空简介/空标签）读取时就自愈。"""
