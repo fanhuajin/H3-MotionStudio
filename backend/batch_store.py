@@ -13,6 +13,11 @@ from .store import now_iso
 
 TERMINAL_BATCH_STATUSES = {"completed", "failed", "cancelled"}
 
+# 已经取消的步骤：历史条目里残留的这些里程碑在**读取时**剔掉，页面不再显示它们。
+# 用户 2026-09-14：「已经没有生成歌词字幕版，可是流程还是存在」——歌词字幕路由已因效果差
+# 关闭，批量也去掉了这一步，老条目不能再挂着一个永远不产出的步骤。
+RETIRED_MILESTONE_IDS = {"lyrics"}
+
 
 class BatchStore:
     """Persistent state for page-owned, strictly serial production batches."""
@@ -47,6 +52,21 @@ class BatchStore:
                 number += 1
                 item["index"] = number
 
+    @staticmethod
+    def _prune_milestones(state: dict[str, Any]) -> None:
+        """剔掉已取消步骤（歌词字幕）的历史里程碑，让页面流程与实际交付一致。"""
+        for item in state.get("items") or []:
+            rows = item.get("milestones")
+            if not rows:
+                continue
+            kept = [row for row in rows if row.get("id") not in RETIRED_MILESTONE_IDS]
+            if len(kept) != len(rows):
+                item["milestones"] = kept
+
+    def _normalize(self, state: dict[str, Any]) -> None:
+        self._renumber(state)
+        self._prune_milestones(state)
+
     def _init_db(self) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -62,7 +82,7 @@ class BatchStore:
             )
 
     def create(self, state: dict[str, Any]) -> dict[str, Any]:
-        self._renumber(state)
+        self._normalize(state)
         with self._lock, self._connect() as connection:
             connection.execute(
                 "INSERT INTO batches (id, created_at, updated_at, status, state_json) VALUES (?, ?, ?, ?, ?)",
@@ -84,29 +104,32 @@ class BatchStore:
         if not row:
             return None
         state = json.loads(row["state_json"])
-        self._renumber(state)
+        self._normalize(state)
         return state
 
     def latest(self) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
+            # created_at 在 Windows 上的分辨率约 15.6ms：同一毫秒内建的两个批次会拿到相同
+            # 时间戳，只按时间排序会随机取到旧的那条；rowid 兜底保证取最新插入的。
             row = connection.execute(
-                "SELECT state_json FROM batches ORDER BY created_at DESC LIMIT 1"
+                "SELECT state_json FROM batches ORDER BY created_at DESC, rowid DESC LIMIT 1"
             ).fetchone()
         if not row:
             return None
         state = json.loads(row["state_json"])
-        self._renumber(state)
+        self._normalize(state)
         return state
 
     def active(self) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
-                "SELECT state_json FROM batches WHERE status IN ('queued', 'running', 'paused', 'awaiting_review', 'failed') ORDER BY created_at DESC LIMIT 1"
+                "SELECT state_json FROM batches WHERE status IN ('queued', 'running', 'paused', 'awaiting_review', 'failed')"
+                " ORDER BY created_at DESC, rowid DESC LIMIT 1"
             ).fetchone()
         if not row:
             return None
         state = json.loads(row["state_json"])
-        self._renumber(state)
+        self._normalize(state)
         return state
 
     def update(self, batch_id: str, **changes: Any) -> dict[str, Any]:
@@ -115,7 +138,7 @@ class BatchStore:
             raise KeyError(batch_id)
         state.update(changes)
         state["updatedAt"] = now_iso()
-        self._renumber(state)
+        self._normalize(state)
         with self._lock, self._connect() as connection:
             connection.execute(
                 "UPDATE batches SET updated_at = ?, status = ?, state_json = ? WHERE id = ?",

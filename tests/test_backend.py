@@ -1029,6 +1029,190 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 交付仍然要写发布文案
         self.assertIn("发布文案.txt", source)
 
+    def test_batch_flow_has_no_lyrics_step(self) -> None:
+        """批量流程不再有「生成歌词字幕版」（2026-09-14 用户确认）：新条目与历史条目都不显示这一步。"""
+        from backend import batch_store as batch_store_module
+        from backend.batch_store import BatchStore
+        from backend.batch_worker import item_milestones
+
+        ids = [step["id"] for step in item_milestones("singing")]
+        self.assertEqual(ids, ["download", "prepare", "review", "video", "deliver"])
+        self.assertEqual(ids, [step["id"] for step in item_milestones("dance")])
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/old"], [])
+                # 模拟历史条目里残留的歌词字幕里程碑
+                state["items"][0]["milestones"].append(
+                    {"id": "lyrics", "label": "生成歌词字幕版", "status": "skipped"}
+                )
+                store.create(state)
+                stored = store.get(state["id"])
+                self.assertNotIn(
+                    "lyrics", [step["id"] for step in stored["items"][0]["milestones"]]
+                )
+            finally:
+                batch_store_module.DB_PATH = original
+
+    def test_batch_deliver_copies_final_video_and_uploaded_image(self) -> None:
+        """发布目录必须同时拿到最终成片、用户上传的人物图和发布文案。"""
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/song"], [])
+                state["items"][0].update(
+                    status="running",
+                    awemeId="7663001746131065849",
+                    ai={
+                        "song_name": "爱如潮水 Remix",
+                        "title": "标题",
+                        "introduction": "简介",
+                        "tags": ["粉色长发", "齐刘海"],
+                        "reference_image_path": str(root / "uploaded.png"),
+                    },
+                )
+                store.create(state)
+                item = state["items"][0]
+                Image.new("RGB", (64, 48), "pink").save(root / "uploaded.png")
+                final = root / "final.mp4"
+                final.write_bytes(b"fake-video")
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+                ):
+                    outputs = asyncio.run(
+                        batch_worker._deliver(state["id"], item["id"], {"finalOutput": str(final)})
+                    )
+
+                self.assertEqual(Path(outputs["videoFinal"]).name, "最终成片.mp4")
+                self.assertEqual(Path(outputs["image"]).name, "人物图.png")
+                self.assertTrue(Path(outputs["videoFinal"]).is_file())
+                self.assertTrue(Path(outputs["image"]).is_file())
+                self.assertTrue(Path(outputs["copy"]).is_file())
+                self.assertIn("爱如潮水 Remix", Path(outputs["folder"]).name)
+                self.assertIn("#粉色长发", Path(outputs["copy"]).read_text(encoding="utf-8-sig"))
+            finally:
+                batch_store_module.DB_PATH = original_db
+
+    def test_skipping_after_the_video_finished_still_delivers(self) -> None:
+        """跳过/删除时子任务其实已经跑完：成片照样整理进发布目录，已完成的步骤打勾。"""
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        class StubJobs:
+            def __init__(self, job):
+                self.job = job
+
+            def get(self, job_id):
+                return self.job if job_id == self.job.get("id") else None
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/song"], [])
+                final = root / "final.mp4"
+                final.write_bytes(b"fake-video")
+                image = root / "uploaded.png"
+                Image.new("RGB", (64, 48), "pink").save(image)
+                state["items"][0].update(
+                    status="running",
+                    stage="video",
+                    awemeId="7663001746131065849",
+                    videoJobId="83ea862bc2864faf893fd708edd97979",
+                    ai={"song_name": "爱如潮水 Remix", "reference_image_path": str(image)},
+                )
+                store.create(state)
+                item = state["items"][0]
+                for milestone in item["milestones"]:
+                    milestone["status"] = "completed"
+                store.mutate_item(
+                    state["id"], item["id"], lambda row: row.update(milestones=item["milestones"])
+                )
+                job = {
+                    "id": "83ea862bc2864faf893fd708edd97979",
+                    "status": "completed",
+                    "finalOutput": str(final),
+                }
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "store", StubJobs(job)
+                ), patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"):
+                    asyncio.run(
+                        batch_worker._finish_abandoned(state["id"], item["id"], deleted=False)
+                    )
+
+                row = next(
+                    it for it in store.get(state["id"])["items"] if it["id"] == item["id"]
+                )
+                self.assertEqual(row["status"], "completed")
+                self.assertTrue(Path(row["outputs"]["videoFinal"]).is_file())
+                self.assertTrue(Path(row["outputs"]["image"]).is_file())
+                self.assertEqual(
+                    [step["status"] for step in row["milestones"]], ["completed"] * 5
+                )
+            finally:
+                batch_store_module.DB_PATH = original_db
+
+    def test_manual_redeliver_requires_a_finished_video_job(self) -> None:
+        """「重新整理发布文件」只对真的出过片、且成片还在磁盘上的条目生效。"""
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        class StubJobs:
+            def __init__(self, job):
+                self.job = job
+
+            def get(self, job_id):
+                return self.job if job_id == self.job.get("id") else None
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/song"], [])
+                store.create(state)
+                item = state["items"][0]
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "store", StubJobs({"id": "job1", "status": "running"})
+                ):
+                    with self.assertRaises(ValueError):
+                        asyncio.run(batch_worker.deliver_item_now(state["id"], item["id"]))
+
+                store.mutate_item(
+                    state["id"], item["id"], lambda row: row.update(videoJobId="job1")
+                )
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "store",
+                    StubJobs({"id": "job1", "status": "completed", "finalOutput": str(root / "missing.mp4")}),
+                ):
+                    with self.assertRaises(ValueError):
+                        asyncio.run(batch_worker.deliver_item_now(state["id"], item["id"]))
+            finally:
+                batch_store_module.DB_PATH = original_db
+
     def test_elapsed_format_matches_ui(self) -> None:
         self.assertEqual(format_elapsed("2026-09-03T00:00:00+00:00", "2026-09-03T01:02:03+00:00"), "01:02:03")
 

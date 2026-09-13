@@ -29,11 +29,13 @@ from .batch_worker import (
     IDENTITY_PATH,
     append_batch_items,
     cancel_item_work,
+    deliver_item_now,
     image_ratio_note,
     item_ratio,
     new_batch_state,
     request_review_adjustment,
     run_batch,
+    salvage_abandoned_items,
     set_item_ratio,
     stage_media,
 )
@@ -534,6 +536,11 @@ async def cancel_batch(batch_id: str):
                     milestone["status"] = "skipped"
 
     batch_store.mutate(batch_id, stop_everything)
+    # 已经出片、只是还没整理的条目照样补进发布目录（用户 2026-09-14：取消不能丢成片）
+    saved = await salvage_abandoned_items(batch_id)
+    note = "批次已取消，可以开始新的批次。"
+    if saved:
+        note += f" 其中 {saved} 条已经出片，成片与人物图已整理进发布目录。"
     return batch_store.update(
         batch_id,
         status="cancelled",
@@ -542,7 +549,7 @@ async def cancel_batch(batch_id: str):
         runnerActive=False,
         currentItemId=None,
         finishedAt=now_iso(),
-        notice="批次已取消，可以开始新的批次。",
+        notice=note,
     )
 
 
@@ -793,8 +800,12 @@ async def batch_item_material(batch_id: str, item_id: str, key: str, download: b
 
 @app.get("/api/batches/{batch_id}/items/{item_id}/output/{key}")
 async def batch_item_output(batch_id: str, item_id: str, key: str, download: bool = Query(False)):
+    """发布目录里的成品：最终成片 / 人物图 / 发布文案。
+
+    `videoNoLyrics` / `videoWithLyrics` 是 2026-09-14 之前的旧键，历史条目仍能点开。
+    """
     item = _batch_item_or_404(batch_id, item_id)
-    if key not in {"videoNoLyrics", "videoWithLyrics", "videoFinal", "copy"}:
+    if key not in {"videoFinal", "videoNoLyrics", "videoWithLyrics", "image", "copy"}:
         raise HTTPException(404, "输出文件不存在")
     raw = (item.get("outputs") or {}).get(key)
     if not raw:
@@ -808,6 +819,20 @@ async def batch_item_output(batch_id: str, item_id: str, key: str, download: boo
         raise HTTPException(404, "输出文件不存在")
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return FileResponse(path, media_type=media_type, filename=path.name if download else None)
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/deliver")
+async def redeliver_batch_item(batch_id: str, item_id: str):
+    """重新整理发布文件：给「成片已经生成、但发布目录里没有」的条目补一次交付。
+
+    用户 2026-09-14：「最终成片没有在指定目录中出现」——旧版本在跳过/取消时会把已经
+    跑完的成片丢掉，这个接口让历史条目不用重跑整条链路就能把成片与人物图补回目录。
+    """
+    _batch_item_or_404(batch_id, item_id)
+    try:
+        return await deliver_item_now(batch_id, item_id)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/open-output")

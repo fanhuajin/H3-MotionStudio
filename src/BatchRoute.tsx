@@ -81,6 +81,7 @@ interface BatchItem {
   childJob?: ChildJob | null;
   stageMedia?: Record<string, string>;
   sourcePath?: string;
+  videoJobId?: string | null;
   logs?: Array<{ time: string; message: string }>;
   outputs?: Record<string, string>;
   error?: string | null;
@@ -305,6 +306,14 @@ export function BatchRoute() {
 
   const openFolder = () => itemCall("open-output");
   const hasImage = Boolean(selected?.ai?.reference_image_path);
+  // 「最终成片」是当前交付格式；旧的 videoNoLyrics/videoWithLyrics 键只有历史条目才有。
+  const outputsReady = Boolean(selected?.outputs?.videoFinal);
+  const hasOutputs = Boolean(
+    selected?.outputs?.videoFinal
+    || selected?.outputs?.videoNoLyrics
+    || selected?.outputs?.videoWithLyrics
+    || selected?.outputs?.copy,
+  );
   // 画布比例只在审核时展示/修改（审核区唯一的比例入口）。
   const selectedRatio = selected ? itemRatio(selected) : DEFAULT_RATIO.singing;
   const changeRatio = (ratio: CanvasRatio) => {
@@ -411,7 +420,7 @@ export function BatchRoute() {
             {singingOn ? (
               <>
                 <textarea value={singing} onChange={(event) => setSinging(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-                <small>{splitUrls(singing).length} 条 · 默认 4:3 横版（审核时每条都能改）· 生成无字幕版和歌词字幕版</small>
+                <small>{splitUrls(singing).length} 条 · 默认 4:3 横版（审核时每条都能改）· 交付最终成片（无字幕）+ 人物图 + 发布文案</small>
               </>
             ) : (
               <small>已关闭：这类链接不会展示，也不会加入批次。</small>
@@ -708,16 +717,33 @@ export function BatchRoute() {
                   </section>
                 )}
 
-                {selected.status === "completed" && selected.outputs && (
+                {hasOutputs && selected.outputs && (
                   <section className="batch-output-panel">
-                    <div className="batch-panel-title"><span>发布文件已整理</span><small>{selected.warning || "文案和成片均已保存"}</small></div>
+                    <div className="batch-panel-title">
+                      <span>发布文件已整理</span>
+                      <small>{selected.warning || "成片、人物图和发布文案均已保存"}</small>
+                    </div>
                     <div className="batch-output-grid">
-                      {selected.outputs.videoWithLyrics && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoWithLyrics`} target="_blank">有字幕成片</a>}
-                      {selected.outputs.videoNoLyrics && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoNoLyrics`} target="_blank">无字幕成片</a>}
                       {selected.outputs.videoFinal && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoFinal`} target="_blank">最终成片</a>}
+                      {/* 旧交付（2026-09-14 之前）留下的键，历史条目仍能点开 */}
+                      {selected.outputs.videoNoLyrics && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoNoLyrics`} target="_blank">无字幕成片（旧）</a>}
+                      {selected.outputs.videoWithLyrics && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoWithLyrics`} target="_blank">歌词字幕版（旧）</a>}
+                      {selected.outputs.image && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/image`} target="_blank">人物图</a>}
                       <a href={`/api/batches/${batch.id}/items/${selected.id}/output/copy?download=true`}><Copy />发布文案</a>
                     </div>
                     <button className="batch-primary" onClick={openFolder}><FolderOpen />打开文件夹</button>
+                  </section>
+                )}
+
+                {selected.videoJobId && !outputsReady && selected.status !== "deleted" && (
+                  <section className="batch-output-panel">
+                    <div className="batch-panel-title">
+                      <span>发布文件还没整理</span>
+                      <small>成片已经生成但没进发布目录时，点一下补齐（不会重跑生成）</small>
+                    </div>
+                    <button className="batch-primary" onClick={() => itemCall("deliver")} disabled={Boolean(busyAction)}>
+                      {busyAction === "deliver" ? <SpinnerGap className="spin" /> : <FolderOpen />}重新整理发布文件
+                    </button>
                   </section>
                 )}
 

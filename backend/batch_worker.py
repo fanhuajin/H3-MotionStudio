@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,6 @@ from .batch_store import batch_store
 from .douyin_mirror import upsert_jobs as mirror_upsert
 from .douyin_preview import ensure_download_playable
 from .douyin_service import DouyinServiceError, douyin_service
-from .lyrics_worker import netease_lyric, netease_search
 from .settings import (
     BATCH_OUTPUT_ROOT,
     BATCH_RATIO_CHOICES,
@@ -28,7 +28,7 @@ from .settings import (
     env_value,
     normalize_batch_ratio,
 )
-from .store import now_iso
+from .store import now_iso, store
 
 
 IDENTITY_PATH = Path(r"E:\AI_Assets\PortraitIdentity\本人固定参考.png")
@@ -38,6 +38,8 @@ VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 _RUNNING_BATCHES: set[str] = set()
 # 每个条目当前在跑的预审协程（模型调用 + 本地出图），跳过/删除时据此安全取消。
 _ITEM_TASKS: dict[str, asyncio.Task] = {}
+# 跳过/取消后仍在后台跑的子任务：等它落定再把成片补进发布目录（避免任务被垃圾回收）。
+_SALVAGE_TASKS: set[asyncio.Task] = set()
 
 
 def cancel_item_work(batch_id: str, item_id: str) -> bool:
@@ -49,20 +51,21 @@ def cancel_item_work(batch_id: str, item_id: str) -> bool:
 
 
 def item_milestones(kind: str) -> list[dict[str, Any]]:
-    rows = [
+    """批量条目的里程碑。
+
+    **不再有「生成歌词字幕版」这一步**（2026-09-14 用户确认）：歌词字幕路由已因效果差
+    隐藏，批量也一并去掉这一步，只交付最终成片（无字幕）+ 发布文案 + 人物图，避免
+    流程里挂着一个永远不产出的步骤（用户原话：「已经没有生成歌词字幕版，可是流程还是存在」）。
+    `kind` 只影响日志文案，里程碑本身两类一致。
+    """
+    del kind
+    return [
         {"id": "download", "label": "下载抖音视频", "subtitle": "获取源视频与原作品文案", "status": "pending"},
         {"id": "prepare", "label": "生成人物图与发布文案", "subtitle": "本地分析画面并生成候选结果", "status": "pending"},
         {"id": "review", "label": "等待你的确认", "subtitle": "查看图片、标题、简介和标签", "status": "pending"},
         {"id": "video", "label": "生成最终视频", "subtitle": "复用工作台真实节点与单链路进度", "status": "pending"},
+        {"id": "deliver", "label": "整理发布文件", "subtitle": "最终成片、人物图与发布文案", "status": "pending"},
     ]
-    if kind == "singing":
-        rows.append(
-            {"id": "lyrics", "label": "生成歌词字幕版", "subtitle": "保留无字幕版并烧录发布版", "status": "pending"}
-        )
-    rows.append(
-        {"id": "deliver", "label": "整理发布文件", "subtitle": "发布文案与最终视频", "status": "pending"}
-    )
-    return rows
 
 
 def unique_urls(values: list[str]) -> list[str]:
@@ -1015,59 +1018,29 @@ async def _watch_child(batch_id: str, item_id: str, child_id: str, milestone_id:
         await asyncio.sleep(3)
 
 
-async def _create_lyrics_job(batch_id: str, item_id: str, source_job: dict[str, Any]) -> dict[str, Any] | None:
-    item = _item(batch_id, item_id)
-    ai = item.get("ai") or {}
-    song_name = str(ai.get("song_name") or "").strip()
-    if not song_name:
-        raise RuntimeError("没有识别出歌曲名，无法自动搜索歌词")
-    candidates = await netease_search(song_name, 6)
-    if not candidates:
-        raise RuntimeError(f"网易云没有找到《{song_name}》的歌词")
-    normalized = re.sub(r"\s+", "", song_name).lower()
-    selected = max(
-        candidates,
-        key=lambda row: (
-            re.sub(r"\s+", "", str(row.get("name") or "")).lower() in normalized,
-            int(row.get("lineCount") or 0),
-        ),
-    )
-    detail = await netease_lyric(int(selected["id"]))
-    lines = detail.get("lines") or []
-    if not lines:
-        raise RuntimeError("歌词候选没有可用正文")
-    data = {
-        "source_job_id": str(source_job["id"]),
-        "source_key": "final",
-        "song_name": f"{selected.get('name') or song_name} - {selected.get('artist') or ''}".strip(" -"),
-        "lines_json": json.dumps(lines, ensure_ascii=False),
-    }
-    await _wait_for_free_pipeline(batch_id, item_id)
-    async with httpx.AsyncClient(timeout=180) as client:
-        response = await client.post(f"{BATCH_SELF_URL}/api/jobs/lyrics", data=data)
-    if not response.is_success:
-        try:
-            detail_text = response.json().get("detail")
-        except ValueError:
-            detail_text = response.text
-        raise RuntimeError(detail_text or "歌词字幕任务提交失败")
-    child = response.json()
-    _set_item(batch_id, item_id, lyricJobId=child["id"], childJob=child)
-    return await _watch_child(batch_id, item_id, child["id"], "lyrics")
-
-
 def _copy_file(source: Path, target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
     return target
 
 
+def _deliverable_image(item: dict[str, Any]) -> Path | None:
+    """本条要一起放进发布目录的人物图（就是这一条最终使用的候选图/用户上传的那张）。"""
+    raw = str((item.get("ai") or {}).get("reference_image_path") or "").strip()
+    path = Path(raw)
+    return path if raw and path.is_file() else None
+
+
 async def _deliver(
     batch_id: str,
     item_id: str,
     video_job: dict[str, Any],
-    lyric_job: dict[str, Any] | None,
 ) -> dict[str, str]:
+    """把这一条的成品整理进发布目录：最终成片 + 人物图 + 发布文案。
+
+    用户 2026-09-14：「最终成片没有在指定目录中出现，我上传的图片也要放到指定目录下」——
+    成片一直会拷，人物图以前压根没拷，这里补上（用户上传的那张就是本条最终发布用图）。
+    """
     item = _item(batch_id, item_id)
     ai = item.get("ai") or {}
     aweme_id = str(item.get("awemeId") or item_id)
@@ -1078,15 +1051,12 @@ async def _deliver(
     if not final_path.is_file():
         raise RuntimeError("视频任务完成但没有找到最终成片")
     outputs: dict[str, str] = {}
-    if item["kind"] == "singing":
-        no_lyrics = _copy_file(final_path, folder / "最终发布视频_无字幕.mp4")
-        outputs["videoNoLyrics"] = str(no_lyrics)
-        if lyric_job and Path(lyric_job.get("finalOutput") or "").is_file():
-            with_lyrics = _copy_file(Path(lyric_job["finalOutput"]), folder / "最终发布视频_有字幕.mp4")
-            outputs["videoWithLyrics"] = str(with_lyrics)
-    else:
-        final = _copy_file(final_path, folder / "最终发布视频.mp4")
-        outputs["videoFinal"] = str(final)
+    final = _copy_file(final_path, folder / "最终成片.mp4")
+    outputs["videoFinal"] = str(final)
+    image = _deliverable_image(item)
+    if image is not None:
+        suffix = image.suffix.lower() if image.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+        outputs["image"] = str(_copy_file(image, folder / f"人物图{suffix}"))
     tags = " ".join(f"#{str(tag).strip().lstrip('#')}" for tag in ai.get("tags") or [] if str(tag).strip())
     copy_text = (
         f"标题：\n{str(ai.get('title') or '').strip()}\n\n"
@@ -1101,8 +1071,168 @@ async def _deliver(
     return outputs
 
 
-async def _process_confirmed(batch_id: str, item_id: str) -> None:
+async def _mark_delivered(batch_id: str, item_id: str, outputs: dict[str, str], *, note: str) -> None:
+    """交付成功后的统一收尾：里程碑打勾 + 写 outputs + 记日志。"""
+    batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
+    batch_store.set_item_milestone(batch_id, item_id, "deliver", status="completed", progress=100)
+    _set_item(
+        batch_id,
+        item_id,
+        status="completed",
+        stage="completed",
+        outputs=outputs,
+        finishedAt=now_iso(),
+        error=None,
+    )
+    batch_store.add_item_log(batch_id, item_id, f"{note}{outputs['folder']}")
+
+
+async def _salvage_deliver(batch_id: str, item_id: str) -> bool:
+    """条目被跳过 / 删除 / 整批取消时，抢救已经出片的成果。
+
+    用户 2026-09-14 实测：点「跳过」时子任务其实已经跑完（成片就在磁盘上），但原来的
+    实现把结果整条丢掉——成片没进发布目录，后面的步骤全部标成 ✗。现在只要子任务真的
+    完成过，就照样整理进发布目录并把已完成的步骤打勾（用户确认「照样整理」）。
+    """
     item = _item(batch_id, item_id)
+    job_id = str(item.get("videoJobId") or "")
+    if not job_id:
+        return False
+    child = store.get(job_id)
+    if not child or child.get("status") != "completed":
+        return False
+    if not Path(str(child.get("finalOutput") or "")).is_file():
+        return False
+    try:
+        outputs = await _deliver(batch_id, item_id, child)
+    except Exception as error:
+        batch_store.add_item_log(batch_id, item_id, f"成片已生成，但整理发布文件失败：{error}")
+        return False
+    await _mark_delivered(batch_id, item_id, outputs, note="子任务已出片，已照样整理发布文件：")
+    batch_store.add_item_log(
+        batch_id, item_id, "这一条虽然被跳过/取消，但视频子任务已经跑完，成片与人物图已保留。"
+    )
+    return True
+
+
+async def deliver_item_now(batch_id: str, item_id: str) -> dict[str, Any]:
+    """手动补齐发布文件：给已经出片、但发布目录里没有成片的历史条目用。
+
+    用户 2026-09-14：「加按钮并现在就把它们补出来」——页面上的
+    「重新整理发布文件」按钮走这里，对老条目做一次幂等的重新交付。
+    """
+    item = _item(batch_id, item_id)
+    if item.get("status") == "deleted":
+        raise ValueError("这一条已经删除，不再整理发布文件")
+    job_id = str(item.get("videoJobId") or "")
+    if not job_id:
+        raise ValueError("这一条还没有提交过视频任务，没有可整理的成片")
+    child = store.get(job_id)
+    if not child:
+        raise ValueError("找不到这一条的视频任务记录")
+    if child.get("status") != "completed":
+        raise ValueError(f"视频任务还没有完成（当前：{child.get('status')}），无法整理发布文件")
+    final_path = Path(str(child.get("finalOutput") or ""))
+    if not final_path.is_file():
+        raise ValueError(f"最终成片文件已不在磁盘上：{final_path}")
+    batch_store.set_item_milestone(batch_id, item_id, "deliver", status="running", progress=50)
+    outputs = await _deliver(batch_id, item_id, child)
+    await _mark_delivered(batch_id, item_id, outputs, note="已重新整理发布文件：")
+    return batch_store.get(batch_id) or {}
+
+
+async def salvage_abandoned_items(batch_id: str) -> int:
+    """整批取消后，把已经出片但还没交付的条目补进发布目录（返回抢救成功的条数）。
+
+    用户 2026-09-14 确认：「跳过 / 删除 / 取消整批」时已经跑完的成片照样整理，
+    不能因为用户点了取消就把磁盘上已经做好的成片丢掉。
+    """
+    state = batch_store.get(batch_id) or {}
+    saved = 0
+    for item in state.get("items") or []:
+        if item.get("status") == "deleted":
+            continue
+        if (item.get("outputs") or {}).get("videoFinal"):
+            continue
+        if await _salvage_deliver(batch_id, str(item.get("id") or "")):
+            saved += 1
+    return saved
+
+
+async def _deferred_salvage(batch_id: str, item_id: str, job_id: str) -> None:
+    """跳过/取消时子任务还在跑：等它落定，万一它自己跑完了就把成片补进发布目录。
+
+    2026-09-13 实测：用户在 RVC 阶段点跳过，取消请求到得太晚，子任务 3 秒后照样
+    完成——那一刻还没成片，抢救不到。这个看护任务负责补上这一步。
+    """
+    try:
+        child = store.get(job_id)
+        deadline = time.monotonic() + 3 * 60 * 60
+        while (
+            child
+            and child.get("status") in {"queued", "running", "cancelling"}
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(10)
+            child = store.get(job_id)
+        if not child or child.get("status") != "completed":
+            return
+        item = batch_store.get(batch_id)
+        row = next((it for it in (item or {}).get("items") or [] if it.get("id") == item_id), None)
+        if row is None or (row.get("outputs") or {}).get("videoFinal"):
+            return
+        if await _salvage_deliver(batch_id, item_id):
+            batch_store.add_item_log(
+                batch_id, item_id, "视频子任务随后自行跑完，成片与人物图已补进发布目录。"
+            )
+    except Exception:
+        return
+
+
+def _spawn_deferred_salvage(batch_id: str, item_id: str, job_id: str) -> None:
+    child = store.get(job_id)
+    if not child or child.get("status") not in {"queued", "running", "cancelling"}:
+        return
+    task = asyncio.create_task(_deferred_salvage(batch_id, item_id, job_id))
+    _SALVAGE_TASKS.add(task)
+    task.add_done_callback(_SALVAGE_TASKS.discard)
+
+
+async def _finish_abandoned(batch_id: str, item_id: str, *, deleted: bool) -> None:
+    """条目被跳过 / 删除时的收尾：先抢救已经出片的成果，再落到 skipped / deleted。
+
+    用户 2026-09-14 实测「跳过时成片已经跑完但没进发布目录、后面的步骤全是 ✗」：
+    只要视频子任务真的完成过，就照样整理发布文件并把已完成的步骤打勾；没出片的
+    才整条标成已跳过/已删除，并留一个看护任务等子任务落定后再补一次交付。
+    """
+    current = _item(batch_id, item_id)
+    job_id = str(current.get("videoJobId") or "")
+    if job_id and await _salvage_deliver(batch_id, item_id):
+        batch_store.add_item_log(
+            batch_id,
+            item_id,
+            "当前条目已删除，但成片已经生成，已先整理进发布目录。" if deleted
+            else "当前条目已跳过，但成片已经生成，已先整理进发布目录。",
+        )
+        return
+    next_status = "deleted" if deleted else "skipped"
+    _set_item(
+        batch_id,
+        item_id,
+        status=next_status,
+        stage=next_status,
+        finishedAt=now_iso(),
+        childJob=None,
+    )
+    for milestone in current.get("milestones") or []:
+        if milestone.get("status") in {"pending", "running"}:
+            batch_store.set_item_milestone(batch_id, item_id, milestone["id"], status="skipped")
+    batch_store.add_item_log(batch_id, item_id, "当前条目已删除。" if deleted else "当前条目已跳过。")
+    if job_id:
+        _spawn_deferred_salvage(batch_id, item_id, job_id)
+
+
+async def _process_confirmed(batch_id: str, item_id: str) -> None:
     _set_item(batch_id, item_id, status="running", stage="video", error=None, childJob=None)
     batch_store.set_item_milestone(batch_id, item_id, "video", status="running", progress=1)
     batch_store.add_item_log(batch_id, item_id, "已确认候选结果，开始执行视频生成单链路。")
@@ -1110,26 +1240,10 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
     _set_item(batch_id, item_id, videoJobId=video_job["id"], childJob=video_job)
     video_job = await _watch_child(batch_id, item_id, video_job["id"], "video")
     batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
-    lyric_job: dict[str, Any] | None = None
-    if item["kind"] == "singing":
-        batch_store.set_item_milestone(batch_id, item_id, "lyrics", status="running", progress=1)
-        try:
-            lyric_job = await _create_lyrics_job(batch_id, item_id, video_job)
-            batch_store.set_item_milestone(batch_id, item_id, "lyrics", status="completed", progress=100)
-            if lyric_job and Path(str(lyric_job.get("finalOutput") or "")).is_file():
-                merged = dict(_item(batch_id, item_id).get("stageMedia") or {})
-                merged["lyrics"] = str(lyric_job["finalOutput"])
-                _set_item(batch_id, item_id, stageMedia=merged)
-        except Exception as error:
-            _set_item(batch_id, item_id, warning=f"歌词字幕未完成：{error}", childJob=None)
-            batch_store.set_item_milestone(batch_id, item_id, "lyrics", status="error", progress=0, currentNode=str(error))
-            batch_store.add_item_log(batch_id, item_id, f"歌词字幕未完成，已保留无字幕成片：{error}")
     batch_store.set_item_milestone(batch_id, item_id, "deliver", status="running", progress=20)
     _set_item(batch_id, item_id, stage="deliver", childJob=None)
-    outputs = await _deliver(batch_id, item_id, video_job, lyric_job)
-    _set_item(batch_id, item_id, status="completed", stage="completed", outputs=outputs, finishedAt=now_iso())
-    batch_store.set_item_milestone(batch_id, item_id, "deliver", status="completed", progress=100)
-    batch_store.add_item_log(batch_id, item_id, f"发布文件已整理：{outputs['folder']}")
+    outputs = await _deliver(batch_id, item_id, video_job)
+    await _mark_delivered(batch_id, item_id, outputs, note="发布文件已整理：")
 
 
 def stage_media(state: dict[str, Any]) -> dict[str, str]:
@@ -1232,10 +1346,7 @@ async def run_batch(batch_id: str) -> None:
             )
             try:
                 if item.get("skipRequested"):
-                    _set_item(batch_id, item["id"], status="skipped", stage="skipped", finishedAt=now_iso())
-                    for milestone in item.get("milestones") or []:
-                        if milestone.get("status") == "pending":
-                            batch_store.set_item_milestone(batch_id, item["id"], milestone["id"], status="skipped")
+                    await _finish_abandoned(batch_id, item["id"], deleted=bool(item.get("deleteRequested")))
                     continue
                 if item.get("status") == "confirmed":
                     await _process_confirmed(batch_id, item["id"])
@@ -1270,50 +1381,15 @@ async def run_batch(batch_id: str) -> None:
                 continue
             except asyncio.CancelledError:
                 current = _item(batch_id, item["id"])
-                deleted = bool(current.get("deleteRequested"))
-                next_status = "deleted" if deleted else "skipped"
-                _set_item(
-                    batch_id,
-                    item["id"],
-                    status=next_status,
-                    stage=next_status,
-                    finishedAt=now_iso(),
-                    childJob=None,
-                )
-                for milestone in current.get("milestones") or []:
-                    if milestone.get("status") in {"pending", "running"}:
-                        batch_store.set_item_milestone(
-                            batch_id, item["id"], milestone["id"], status="skipped"
-                        )
-                batch_store.add_item_log(
-                    batch_id,
-                    item["id"],
-                    "当前条目已删除。" if deleted else "当前条目已跳过。",
+                await _finish_abandoned(
+                    batch_id, item["id"], deleted=bool(current.get("deleteRequested"))
                 )
                 continue
             except Exception as error:
                 current = _item(batch_id, item["id"])
                 if current.get("skipRequested") or current.get("deleteRequested"):
-                    deleted = bool(current.get("deleteRequested"))
-                    next_status = "deleted" if deleted else "skipped"
-                    _set_item(
-                        batch_id,
-                        item["id"],
-                        status=next_status,
-                        stage=next_status,
-                        finishedAt=now_iso(),
-                        childJob=None,
-                        error=None,
-                    )
-                    for milestone in current.get("milestones") or []:
-                        if milestone.get("status") in {"pending", "running"}:
-                            batch_store.set_item_milestone(
-                                batch_id, item["id"], milestone["id"], status="skipped"
-                            )
-                    batch_store.add_item_log(
-                        batch_id,
-                        item["id"],
-                        "当前条目已删除。" if deleted else "当前条目已跳过。",
+                    await _finish_abandoned(
+                        batch_id, item["id"], deleted=bool(current.get("deleteRequested"))
                     )
                     continue
                 message = str(error)
