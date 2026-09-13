@@ -647,6 +647,102 @@ async def _prepare_review(
             _ITEM_TASKS.pop(key, None)
 
 
+def _adopt_previous_work(batch_id: str, item_id: str) -> bool:
+    """同一条抖音作品**之前已经备过料**（提示词 / 候选图 / 文案都还在磁盘上）→ 直接沿用。
+
+    用户 2026-09-13：「你可以知道是否已经建立的文件吗，如果已经建立的文件 当我复制抖音链接
+    的时候不要在重复建立了直接往下走」+「我可能只跑完了前面的几步没有让 comfyui 去生成又重新
+    跑了这条任务」—— 备料跑完但没出片、或者删了又重加同一条时，没必要再下载、再抽帧（6 帧联系表）、
+    再调一次模型：把上一版的文件复制进本条目录、状态直接落到「等待你的确认」。**不碰 ComfyUI。**
+
+    只在「本条自己还没有备料结果」且**不是**用户在要求调整（feedback/mode）时生效。
+    """
+    item = _item(batch_id, item_id)
+    if item.get("ai"):
+        return False
+    aweme_id = str(item.get("awemeId") or "")
+    if not aweme_id:
+        return False
+    candidates = [
+        row
+        for row in batch_store.items_for_aweme(aweme_id)
+        if row.get("id") != item_id and (row.get("ai") or {}).get("imagePrompt")
+    ]
+    if not candidates:
+        return False
+    same_kind = [row for row in candidates if str(row.get("kind")) == str(item.get("kind"))]
+    pool = same_kind or candidates
+    pool.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
+    for previous in pool:
+        previous_ai = dict(previous.get("ai") or {})
+        previous_work = DATA_DIR / "batches" / str(previous.get("_batchId") or "") / str(previous["id"])
+        work = DATA_DIR / "batches" / batch_id / item_id
+        work.mkdir(parents=True, exist_ok=True)
+
+        ratio = item_ratio(item)
+        result = dict(previous_ai)
+        # 画布比例是**条目级**字段：按本条的比例重拼出图提示词（与 set_item_ratio 同一套逻辑）
+        result["imagePrompt"] = batch_ai.compose_image_prompt(
+            str(item["kind"]),
+            str(result.get("style_source") or "video"),
+            str(result.get("imagePromptFeedback") or ""),
+            str(result.get("imagePromptMode") or "both"),
+            song_name=str(result.get("song_name") or ""),
+            song_mood=str(result.get("song_mood") or ""),
+            ratio=ratio,
+        )
+        result["imageRatio"] = ratio
+        try:
+            (work / "出图提示词.txt").write_text(str(result["imagePrompt"]), encoding="utf-8")
+        except OSError:
+            pass
+        # 联系表 / 取景帧 / 候选图都复制进本条目录，别跨条目共用同一份文件
+        copied_image = ""
+        previous_image = Path(str(previous_ai.get("reference_image_path") or ""))
+        if previous_image.is_file():
+            suffix = previous_image.suffix.lower() if previous_image.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+            target = work / f"candidate_r{int(item.get('revision') or 0)}_upload{suffix}"
+            try:
+                shutil.copy2(previous_image, target)
+                copied_image = str(target.resolve())
+            except OSError:
+                copied_image = ""
+        if previous_work.is_dir():
+            for name in ("source-contact-sheet.jpg", "scene-frame.jpg"):
+                source = previous_work / name
+                if source.is_file() and not (work / name).is_file():
+                    try:
+                        shutil.copy2(source, work / name)
+                    except OSError:
+                        pass
+        result["reference_image_path"] = copied_image
+        result["sceneFramePath"] = str(work / "scene-frame.jpg")
+
+        _set_item(
+            batch_id,
+            item_id,
+            ai=result,
+            title=str(result.get("title") or item.get("title") or "候选作品"),
+            status="awaiting_review",
+            stage="review",
+            reviewApproved=False,
+            revisionFeedback="",
+            revisionMode="",
+            warning=None,
+        )
+        batch_store.set_item_milestone(batch_id, item_id, "prepare", status="completed", progress=100)
+        batch_store.set_item_milestone(batch_id, item_id, "review", status="running")
+        batch_store.add_item_log(
+            batch_id,
+            item_id,
+            "这条作品之前已经备过料：直接沿用上次的出图提示词、人物图与发布文案"
+            "（不会再下载/抽帧/调模型），可以直接确认出片，也可以在确认页换一张图。",
+        )
+        deliver_review_materials(batch_id, item_id)
+        return True
+    return False
+
+
 async def _prepare_review_work(
     batch_id: str,
     item_id: str,
@@ -662,6 +758,11 @@ async def _prepare_review_work(
         item_id,
         "正在按修改意见重新准备候选结果……" if feedback else "正在分析源视频并准备候选图与发布文案……",
     )
+    # 这条作品之前已经备过料（源视频/提示词/成图/文案都在）→ 直接沿用，不再下载/抽帧/调模型。
+    # 用户在要求调整（feedback/mode）时不走这条路，老实按意见重做。
+    if not feedback and mode == "both":
+        if await asyncio.to_thread(_adopt_previous_work, batch_id, item_id):
+            return
     work = DATA_DIR / "batches" / batch_id / item_id
     work.mkdir(parents=True, exist_ok=True)
     source = Path(item["sourcePath"])

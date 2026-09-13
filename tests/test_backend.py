@@ -1604,6 +1604,101 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_batch_reuses_previous_prep_for_the_same_aweme(self) -> None:
+        """同一条作品之前已备过料（没出片就重跑了）→ 直接沿用，不再下载/抽帧/调模型。
+
+        用户 2026-09-13：「如果已经建立的文件 当我复制抖音链接的时候不要在重复建立了直接往下走」
+        +「我可能只跑完了前面的几步没有让 comfyui 去生成又重新跑了这条任务」。
+        """
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        aweme = "7684126327402778850"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            original_data = batch_worker.DATA_DIR
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                batch_worker.DATA_DIR = root / "data"
+                store = BatchStore()
+
+                # ① 上一批：这条已经备过料（有提示词、成图、文案），但从未出片
+                old = new_batch_state([], [f"https://www.douyin.com/video/{aweme}"])
+                old_item = old["items"][0]
+                old_work = root / "data" / "batches" / old["id"] / old_item["id"]
+                old_work.mkdir(parents=True, exist_ok=True)
+                old_image = old_work / "candidate_r0_upload.png"
+                Image.new("RGB", (48, 64), "white").save(old_image)
+                (old_work / "scene-frame.jpg").write_bytes(b"frame")
+                (old_work / "source-contact-sheet.jpg").write_bytes(b"sheet")
+                old_item.update(
+                    status="deleted",
+                    stage="deleted",
+                    awemeId=aweme,
+                    title="上一次的标题",
+                    ai={
+                        "imagePrompt": "上一次拼好的提示词",
+                        "imageRatio": "9:16",
+                        "reference_image_path": str(old_image),
+                        "title": "上一次的标题",
+                        "introduction": "上一次的简介",
+                        "tags": ["手势舞", "甜妹舞", "白色系穿搭", "心动氛围", "跟我一起跳"],
+                        "style_source": "video",
+                    },
+                )
+                store.create(old)
+
+                # ② 新一批：同一条作品被重新加进来
+                fresh = new_batch_state([], [f"https://www.douyin.com/video/{aweme}"])
+                fresh_item = fresh["items"][0]
+                fresh_item.update(awemeId=aweme, status="pending")
+                store.create(fresh)
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker.batch_ai, "analyze", side_effect=AssertionError("不该重新调模型")
+                ):
+                    adopted = batch_worker._adopt_previous_work(fresh["id"], fresh_item["id"])
+
+                self.assertTrue(adopted)
+                row = store.get(fresh["id"])["items"][0]
+                self.assertEqual(row["status"], "awaiting_review")
+                self.assertEqual(row["ai"]["title"], "上一次的标题")
+                self.assertEqual(row["ai"]["introduction"], "上一次的简介")
+                self.assertEqual(len(row["ai"]["tags"]), 5)
+                # 图与取景帧都复制进了**本条自己的**目录，不跨条目共用同一份文件
+                copied = Path(row["ai"]["reference_image_path"])
+                self.assertTrue(copied.is_file())
+                self.assertEqual(copied.parent, root / "data" / "batches" / fresh["id"] / fresh_item["id"])
+                self.assertNotEqual(copied, old_image)
+                self.assertTrue((copied.parent / "scene-frame.jpg").is_file())
+                # 提示词按**本条比例**重拼并落盘（提示词本来就是模板拼的，必须按本条比例重拼）
+                self.assertTrue((copied.parent / "出图提示词.txt").is_file())
+                self.assertIn("9:16", row["ai"]["imagePrompt"])
+                self.assertEqual(row["ai"]["imageRatio"], "9:16")
+                steps = {step["id"]: step["status"] for step in row["milestones"]}
+                self.assertEqual(steps["prepare"], "completed")
+                self.assertEqual(steps["review"], "running")
+                self.assertTrue(
+                    any("之前已经备过料" in log["message"] for log in row.get("logs") or []),
+                    row.get("logs"),
+                )
+                # 发布目录里同步有了人物图与文案（提前落盘）
+                self.assertTrue(Path(row["outputs"]["image"]).is_file())
+                self.assertTrue(Path(row["outputs"]["copy"]).is_file())
+
+                # 没有可复用结果时不能误判
+                stranger = new_batch_state([], ["https://www.douyin.com/video/7000000000000000000"])
+                stranger_item = stranger["items"][0]
+                stranger_item.update(awemeId="7000000000000000000", status="pending")
+                store.create(stranger)
+                with patch.object(batch_worker, "batch_store", store):
+                    self.assertFalse(batch_worker._adopt_previous_work(stranger["id"], stranger_item["id"]))
+            finally:
+                batch_store_module.DB_PATH = original_db
+                batch_worker.DATA_DIR = original_data
+
     def test_publish_folder_is_stable_when_the_title_changes(self) -> None:
         """一个条目只能有一个发布目录：标题变了就改名复用，**不许新建第二个**。
 

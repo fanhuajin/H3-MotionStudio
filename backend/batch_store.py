@@ -290,6 +290,32 @@ class BatchStore:
             notice="本地服务重启，批次已安全暂停；点击继续后从当前条目恢复。",
         )
 
+    def items_for_aweme(self, aweme_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """按作品号找**历史做过的条目**（跨批次，最新的在前）。
+
+        用户 2026-09-13：「如果已经建立的文件 当我复制抖音链接的时候不要在重复建立了直接往下走」
+        —— 备料跑完但没出片、或者删了又重加同一条时，源视频 / 出图提示词 / 用户上传的成图 /
+        发布文案都还在磁盘上，没必要再下载、再抽帧、再调一次模型。这里给出可复用的候选条目。
+        """
+        if not aweme_id:
+            return []
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM batches WHERE state_json LIKE ?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (f'%"{aweme_id}"%', limit),
+            ).fetchall()
+        found: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                state = json.loads(row["state_json"])
+            except (TypeError, ValueError):
+                continue
+            for item in state.get("items") or []:
+                if str(item.get("awemeId") or "") == aweme_id:
+                    found.append({**item, "_batchId": state.get("id")})
+        return found
+
     def subscribe(self, batch_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=5)
         self._subscribers.setdefault(batch_id, set()).add(queue)
