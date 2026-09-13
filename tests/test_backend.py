@@ -517,6 +517,22 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(box["state"]["status"], "awaiting_review")
         self.assertEqual(box["state"]["items"][0]["id"], confirmed_id)
 
+    def test_batch_review_shows_which_source_video_the_item_is(self) -> None:
+        """确认时必须能认出「这是哪条抖音视频」。
+
+        2026-09-13 用户：「现在跳舞视频生成的内容不对没有对应上跳舞的视频，你可以在让我确认
+        的时候让我知道现在的是哪个视频吗」——条目上显示的是模型重起的发布标题（例如
+        「只对你心动的花季暗号」），用户根本认不出它对应哪条抖音视频。所以条目详情必须另外给出：
+        源作品自己的文案（`sourceMetadata.desc`）、可播放的源视频（`stage/source`）、抖音作品号。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        self.assertIn("本条源视频", source)
+        self.assertIn("stage/source", source)          # 内嵌播放器直接放源视频
+        self.assertIn("function sourceCaption(", source)
+        self.assertIn("sourceMetadata", source)
+        self.assertIn("抖音作品号", source)
+        self.assertIn("batch-item-source", source)     # 队列列表里也能分辨是哪条
+
     def test_batch_never_starts_two_renders_at_once(self) -> None:
         """出片仍然严格一条一条：后台已经有一条在出片时，不得再挑第二条 confirmed。"""
         from backend.batch_worker import _next_work

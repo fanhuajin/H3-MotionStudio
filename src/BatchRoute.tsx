@@ -104,6 +104,12 @@ interface BatchItem {
   childJob?: ChildJob | null;
   stageMedia?: Record<string, string>;
   sourcePath?: string;
+  /** 源视频文件名（含抖音作品号） */
+  sourceName?: string;
+  /** 抖音作品号：链接写法不同（短链 / modal_id / 喜欢列表）时唯一能认人的标识 */
+  awemeId?: string;
+  /** 源作品自己的文案（`desc` 第一行就是用户在抖音上看到的那句话） */
+  sourceMetadata?: { desc?: string; tags?: string[] } | null;
   videoJobId?: string | null;
   logs?: Array<{ time: string; message: string }>;
   outputs?: Record<string, string>;
@@ -153,6 +159,18 @@ function itemRatio(item: BatchItem): CanvasRatio {
 function renderingNow(item: BatchItem): boolean {
   if (item.status === "running") return true;
   return ["queued", "running", "cancelling"].includes(String(item.childJob?.status || ""));
+}
+
+/**
+ * 这一条对应的**源视频**自己的文案。
+ *
+ * 条目上显示的 `title` 是模型重新起的发布标题（例如「只对你心动的花季暗号」），用户根本
+ * 认不出它是哪条抖音视频；源作品的原始文案才是他认识的那句话（2026-09-13 用户：
+ * 「你可以在让我确认的时候让我知道现在的是哪个视频吗」）。
+ */
+function sourceCaption(item: BatchItem): string {
+  const desc = String(item.sourceMetadata?.desc || "").split("\n")[0].trim();
+  return desc || item.sourceName || "";
 }
 
 function readInputDraft() {
@@ -605,6 +623,12 @@ export function BatchRoute() {
                         ? ` · 分段 ${item.childJob.currentSegment}/${item.childJob.estimatedSegments}`
                         : ""}
                     </small>
+                    {/* 模型起的标题认不出是哪条视频：列表里再挂一行源作品自己的文案 */}
+                    {sourceCaption(item) && (
+                      <small className="batch-item-source" title={sourceCaption(item)}>
+                        源：{sourceCaption(item)}
+                      </small>
+                    )}
                   </span>
                   {item.status === "running" && <SpinnerGap className="spin" />}
                 </button>
@@ -693,6 +717,38 @@ export function BatchRoute() {
                     </button>
                   </div>
                 </div>
+
+                {/* 本条对应的源视频：确认前必须先能认出「这是哪条抖音视频」。
+                    条目上的标题是模型重起的发布标题，源作品文案 + 可播放源片 + 作品号才认得出。 */}
+                {selected.sourcePath && (
+                  <section className="batch-source-panel">
+                    <div className="batch-panel-title">
+                      <span>本条源视频</span>
+                      <small>
+                        {selected.kind === "singing" ? "唱歌条目" : "跳舞条目"}
+                        {selected.awemeId ? ` · 抖音作品号 ${selected.awemeId}` : ""}
+                      </small>
+                    </div>
+                    <div className="batch-source-body">
+                      <video
+                        key={selected.sourcePath}
+                        src={`/api/batches/${batch.id}/items/${selected.id}/stage/source`}
+                        controls
+                        preload="metadata"
+                      />
+                      <div className="batch-source-meta">
+                        <strong title={sourceCaption(selected)}>{sourceCaption(selected) || "源视频"}</strong>
+                        {selected.sourceName && <small title={selected.sourceName}>{selected.sourceName}</small>}
+                        <em>
+                          {selected.kind === "singing"
+                            ? "出片时按这条视频的画面与音轨生成"
+                            : "出片时按这条视频的动作做迁移"}
+                        </em>
+                        <a href={selected.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
+                      </div>
+                    </div>
+                  </section>
+                )}
 
                 {selected.status === "pending" && (
                   <p className="field-note">
