@@ -547,8 +547,6 @@ export function BatchRoute() {
     (item) => !item.finishedAt && ["running", "revising", "confirmed"].includes(item.status),
   );
   const batchNowTick = useNowTick(batchLive || queueLive);
-  const batchElapsedMs = batch ? elapsedMs(batch.startedAt || batch.createdAt, batch.finishedAt, batchNowTick) : null;
-  const batchFinishedLabel = batch?.finishedAt ? `批次总耗时（${formatLogTime(batch.finishedAt)} 结束）` : "";
 
   // 本条已运行时间：从条目创建算到结束（或此刻）。
   const itemElapsedMs = selected
@@ -703,13 +701,8 @@ export function BatchRoute() {
             <div className="batch-section-head">
               <div><span>制作队列</span><small>{batch.notice}</small></div>
               <div className="batch-head-actions">
-                {/* 已运行时间：批次还在跑就实时跳秒，结束了显示总耗时 */}
-                {batchElapsedMs !== null && (
-                  <span className="batch-timer" title={batchFinishedLabel || "批次已运行时间（含排队）"}>
-                    <Timer weight="fill" /> {formatElapsedMs(batchElapsedMs)}
-                    {batchFinishedLabel ? "（总）" : ""}
-                  </span>
-                )}
+                {/* 不再显示**批次总耗时**（2026-09-13 用户：「每一个队列里的任务都是独立的计算时间
+                    我不需要看总时间」）：每条自己的时间在队列行里，选中条目在标题下有耗时。 */}
                 {batch.status === "paused" ? (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 ) : !["completed", "awaiting_review", "cancelled"].includes(batch.status) ? (

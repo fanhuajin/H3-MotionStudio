@@ -1691,9 +1691,10 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("发布文案.txt", source)
 
     def test_batch_queue_rows_show_their_own_time(self) -> None:
-        """队列里每条都要显示自己的时间（用户 2026-09-13：「当前任务队列的时间也给下」）。
+        """每条任务显示**自己的**时间，不显示批次总耗时。
 
-        以前只有批次总耗时和「当前选中条目」的耗时，左侧队列列表看不到每条跑了多久。
+        用户 2026-09-13 先要「当前任务队列的时间也给下」，随后明确「每一个队列里的任务都是
+        独立的计算时间我不需要看总时间」——所以队列行各有各的时间，队列头部不再有批次计时。
         排队中的条目必须写「排队」而不是「已用」，否则会让人以为它已经在跑了。
         """
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
@@ -1704,6 +1705,11 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 只要有条目在跑就继续跳秒（批次可能刚收尾）
         self.assertIn("const queueLive = visibleItems.some(", source)
         self.assertIn("useNowTick(batchLive || queueLive)", source)
+        # 批次总耗时整块去掉（注释里提到这几个字不算）
+        rendered = re.sub(r"\{/\*.*?\*/\}", "", source, flags=re.S)
+        rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
+        self.assertNotIn("batchElapsedMs", rendered)
+        self.assertNotIn("批次总耗时", rendered)
 
     def test_batch_flow_has_four_steps_only(self) -> None:
         """进度只有 下载 / 备料 / 审核 / 出片 四步：歌词字幕与「整理发布文件」都不占格。
