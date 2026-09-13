@@ -17,7 +17,7 @@ TERMINAL_BATCH_STATUSES = {"completed", "failed", "cancelled"}
 # 已经取消的步骤：历史条目里残留的这些里程碑在**读取时**剔掉，页面不再显示它们。
 # 用户 2026-09-14：「已经没有生成歌词字幕版，可是流程还是存在」——歌词字幕路由已因效果差
 # 关闭，批量也去掉了这一步，老条目不能再挂着一个永远不产出的步骤。
-RETIRED_MILESTONE_IDS = {"lyrics"}
+RETIRED_MILESTONE_IDS = {"lyrics", "deliver"}
 
 
 class BatchStore:
@@ -55,7 +55,12 @@ class BatchStore:
 
     @staticmethod
     def _prune_milestones(state: dict[str, Any]) -> None:
-        """剔掉已取消步骤（歌词字幕）的历史里程碑，让页面流程与实际交付一致。"""
+        """剔掉已取消步骤的历史里程碑，让页面流程与实际交付一致。
+
+        - `lyrics`：批量已去掉「生成歌词字幕版」这一步；
+        - `deliver`：2026-09-13 用户要求「直接去掉这一格」（进度只剩 下载/备料/审核/出片），
+          交付仍然照做，只是不再单独占一格进度。
+        """
         for item in state.get("items") or []:
             rows = item.get("milestones")
             if not rows:

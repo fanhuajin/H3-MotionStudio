@@ -1543,31 +1543,53 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("未知", placeholders["tags"])
 
     def test_batch_copy_prompts_ask_for_creator_voice_not_description(self) -> None:
-        """发布文案必须是**创作者口吻**（钩子 + 互动号召），不能是画面描述。
+        """发布文案必须是**创作者口吻**（第一人称情绪），不能是画面描述、也不能喊话互动。
 
         用户 2026-09-13：「这个完全不像啊 你这是在陈述啊 我是内容创作者啊」——旧的提示词只有
         「introduction：一到两句简短简介」+「必须能对上画面」，模型于是写出「长发女孩身穿酒红色
         上衣，在蓝色夜景前直视镜头」这种画面说明，根本不能直接发。
+        同日追加：「简介：🤍 评论区告诉我下一首想看我跳什么～ 不要这种话」——互动喊话/向观众提问
+        也一律不要，提示词禁止 + `sanitize_introduction` 事后剪掉双保险。
         """
-        from backend.batch_ai import compose_introduction, copy_prompt, preflight_prompt
+        from backend.batch_ai import (
+            compose_introduction,
+            copy_prompt,
+            preflight_prompt,
+            sanitize_introduction,
+        )
 
         preflight = preflight_prompt(kind="singing", duration=20.0, description="", tags=[])
         self.assertIn("发布用文案，不是画面说明", preflight)
         self.assertIn("禁止客观描述句", preflight)
         self.assertIn("创作者口吻", preflight)
+        self.assertIn("不许互动喊话", preflight)
+        self.assertIn("用户明确说过「不要这种话」", preflight)
         copy_text = copy_prompt(song_name="", song_mood="", description="")
         self.assertIn("内容创作者的发布文案", copy_text)
         self.assertIn("创作者口吻", copy_text)
         self.assertIn("绝对不要复述画面", copy_text)
+        self.assertIn("不许互动喊话", copy_text)
 
         intro = compose_introduction("singing", song_name="爱情专属权")
         self.assertIn("爱情专属权", intro)
-        self.assertIn("你会想起谁", intro)
-        for banned in ("画面", "身穿", "光线"):
+        for banned in ("画面", "身穿", "光线", "评论区", "你会想起谁", "？", "?"):
             self.assertNotIn(banned, intro)
         dance_intro = compose_introduction("dance")
-        self.assertIn("跳给你看", dance_intro)
+        self.assertIn("懂的人", dance_intro)
         self.assertNotIn("画面", dance_intro)
+        for banned in ("评论区", "看到最后", "？"):
+            self.assertNotIn(banned, dance_intro)
+
+        # 模型不听话时也要能兜住：互动喊话截断、向观众提问整句丢掉
+        dirty = "甜到忍不住想拉你一起跳，你会先牵哪只手？🤍 评论区告诉我下一首想看我跳什么～"
+        cleaned = sanitize_introduction(dirty, kind="dance")
+        self.assertNotIn("评论区", cleaned)
+        self.assertNotIn("你会先牵哪只手", cleaned)
+        self.assertIn("甜到忍不住想拉你一起跳", cleaned)
+        # 整句都是喊话 → 退回本地兜底文案（不能留空）
+        fallback = sanitize_introduction("评论区告诉我你们想听什么？", kind="dance")
+        self.assertNotIn("评论区", fallback)
+        self.assertTrue(fallback.strip())
 
     def test_batch_store_backfills_missing_copy_on_read(self) -> None:
         """已经备过料的条目（比如 429 降级留下的空简介/空标签）读取时就自愈。"""
@@ -1618,14 +1640,19 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 交付仍然要写发布文案
         self.assertIn("发布文案.txt", source)
 
-    def test_batch_flow_has_no_lyrics_step(self) -> None:
-        """批量流程不再有「生成歌词字幕版」（2026-09-14 用户确认）：新条目与历史条目都不显示这一步。"""
+    def test_batch_flow_has_four_steps_only(self) -> None:
+        """进度只有 下载 / 备料 / 审核 / 出片 四步：歌词字幕与「整理发布文件」都不占格。
+
+        - 歌词字幕：2026-09-14 用户确认去掉这一步（流程里挂着一个永远不产出的步骤）；
+        - 交付：2026-09-13 用户看到「发布文件已整理」后要求「直接去掉这一格」，交付照做但不再占进度。
+        新条目与历史条目（`RETIRED_MILESTONE_IDS` 在读取路径剔除）都不显示这两步。
+        """
         from backend import batch_store as batch_store_module
         from backend.batch_store import BatchStore
         from backend.batch_worker import item_milestones
 
         ids = [step["id"] for step in item_milestones("singing")]
-        self.assertEqual(ids, ["download", "prepare", "review", "video", "deliver"])
+        self.assertEqual(ids, ["download", "prepare", "review", "video"])
         self.assertEqual(ids, [step["id"] for step in item_milestones("dance")])
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
@@ -1634,15 +1661,18 @@ class WorkflowPreparationTests(unittest.TestCase):
                 batch_store_module.DB_PATH = Path(folder) / "queue.db"
                 store = BatchStore()
                 state = new_batch_state(["https://v.douyin.com/old"], [])
-                # 模拟历史条目里残留的歌词字幕里程碑
+                # 模拟历史条目里残留的歌词字幕与发布整理里程碑
                 state["items"][0]["milestones"].append(
                     {"id": "lyrics", "label": "生成歌词字幕版", "status": "skipped"}
                 )
+                state["items"][0]["milestones"].append(
+                    {"id": "deliver", "label": "整理发布文件", "status": "completed"}
+                )
                 store.create(state)
                 stored = store.get(state["id"])
-                self.assertNotIn(
-                    "lyrics", [step["id"] for step in stored["items"][0]["milestones"]]
-                )
+                kept = [step["id"] for step in stored["items"][0]["milestones"]]
+                self.assertNotIn("lyrics", kept)
+                self.assertNotIn("deliver", kept)
             finally:
                 batch_store_module.DB_PATH = original
 
@@ -1927,7 +1957,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                 # 里程碑不许被提前打勾（成片还没跑）
                 steps = {step["id"]: step["status"] for step in row()["milestones"]}
                 self.assertNotEqual(steps["video"], "completed")
-                self.assertNotEqual(steps["deliver"], "completed")
+                self.assertNotIn("deliver", steps)
                 self.assertEqual(row()["status"], "awaiting_review")
 
                 # 出片之后 `_deliver` 用同一个目录补上最终成片，且不会留下两张人物图
@@ -2067,7 +2097,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                 self.assertTrue(Path(row["outputs"]["videoFinal"]).is_file())
                 self.assertTrue(Path(row["outputs"]["image"]).is_file())
                 self.assertEqual(
-                    [step["status"] for step in row["milestones"]], ["completed"] * 5
+                    [step["status"] for step in row["milestones"]], ["completed"] * 4
                 )
             finally:
                 batch_store_module.DB_PATH = original_db
@@ -2162,7 +2192,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                 )
                 for item in (approved, unapproved, source_gone):
                     for milestone in item["milestones"]:
-                        if milestone["id"] in {"video", "deliver"}:
+                        if milestone["id"] == "video":
                             milestone.update(status="skipped", finishedAt="2026-09-13T00:00:00+00:00")
                         else:
                             milestone.update(status="completed")
@@ -2184,7 +2214,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                     self.assertFalse(row["skipRequested"])
                     steps = {step["id"]: step["status"] for step in row["milestones"]}
                     self.assertEqual(steps["video"], "pending")
-                    self.assertEqual(steps["deliver"], "pending")
+                    self.assertNotIn("deliver", steps)
                     self.assertEqual(steps["review"], "completed")
 
                     # 没备齐料的条目：回到 pending，从下载/备料重来
@@ -2325,12 +2355,12 @@ class WorkflowPreparationTests(unittest.TestCase):
                     for milestone in item["milestones"]:
                         if milestone["id"] == "review":
                             milestone.update(status="completed", progress=100)
-                        elif milestone["id"] in {"video", "deliver"}:
+                        elif milestone["id"] == "video":
                             milestone.update(status="completed", progress=100)
                 for milestone in waiting["milestones"]:
                     if milestone["id"] == "review":
                         milestone.update(status="completed", progress=100)
-                    elif milestone["id"] in {"video", "deliver"}:
+                    elif milestone["id"] == "video":
                         milestone.update(status="pending", progress=0)
                 state["status"] = "completed"
                 store.create(state)
@@ -2350,7 +2380,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                     steps = {step["id"]: step["status"] for step in row["milestones"]}
                     self.assertEqual(steps["review"], "running")
                     self.assertEqual(steps["video"], "pending")
-                    self.assertEqual(steps["deliver"], "pending")
+                    self.assertNotIn("deliver", steps)
                     self.assertEqual(store.get(state["id"])["status"], "awaiting_review")
                     # 上一版的成片不丢：发布文件记录保留，磁盘上的文件不会被删
                     self.assertEqual(row["outputs"]["folder"], "E:/old")

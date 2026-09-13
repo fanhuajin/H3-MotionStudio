@@ -65,6 +65,8 @@ def item_milestones(kind: str) -> list[dict[str, Any]]:
     **不再有「生成歌词字幕版」这一步**（2026-09-14 用户确认）：歌词字幕路由已因效果差
     隐藏，批量也一并去掉这一步，只交付最终成片（无字幕）+ 发布文案 + 人物图，避免
     流程里挂着一个永远不产出的步骤（用户原话：「已经没有生成歌词字幕版，可是流程还是存在」）。
+    **也不再有「整理发布文件」这一格**（2026-09-13 用户：「直接去掉这一格」）：交付照做，
+    但进度只保留 下载 → 备料 → 审核 → 出片 四步。
     `kind` 只影响日志文案，里程碑本身两类一致。
     """
     del kind
@@ -73,7 +75,6 @@ def item_milestones(kind: str) -> list[dict[str, Any]]:
         {"id": "prepare", "label": "生成人物图与发布文案", "subtitle": "本地分析画面并生成候选结果", "status": "pending"},
         {"id": "review", "label": "等待你的确认", "subtitle": "查看图片、标题、简介和标签", "status": "pending"},
         {"id": "video", "label": "生成最终视频", "subtitle": "复用工作台真实节点与单链路进度", "status": "pending"},
-        {"id": "deliver", "label": "整理发布文件", "subtitle": "最终成片、人物图与发布文案", "status": "pending"},
     ]
 
 
@@ -1397,9 +1398,12 @@ async def _deliver(
 
 
 async def _mark_delivered(batch_id: str, item_id: str, outputs: dict[str, str], *, note: str) -> None:
-    """交付成功后的统一收尾：里程碑打勾 + 写 outputs + 记日志。"""
+    """交付成功后的统一收尾：里程碑打勾 + 写 outputs + 记日志。
+
+    交付本身没有独立的进度格（2026-09-13 用户去掉「整理发布文件」那一格），
+    所以这里只把「生成最终视频」打勾。
+    """
     batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
-    batch_store.set_item_milestone(batch_id, item_id, "deliver", status="completed", progress=100)
     _set_item(
         batch_id,
         item_id,
@@ -1460,7 +1464,7 @@ async def deliver_item_now(batch_id: str, item_id: str) -> dict[str, Any]:
     final_path = Path(str(child.get("finalOutput") or ""))
     if not final_path.is_file():
         raise ValueError(f"最终成片文件已不在磁盘上：{final_path}")
-    batch_store.set_item_milestone(batch_id, item_id, "deliver", status="running", progress=50)
+    # 交付没有独立的进度格；「生成最终视频」在这一步之前就已经完成，不要把它退回 running
     outputs = await _deliver(batch_id, item_id, child)
     await _mark_delivered(batch_id, item_id, outputs, note="已重新整理发布文件：")
     return batch_store.get(batch_id) or {}
@@ -1547,7 +1551,7 @@ def reset_review_row(row: dict[str, Any]) -> None:
         if milestone.get("id") == "review":
             # 与 _prepare_review 停在审核点时的状态一致（页面上是「等你确认」的进行中）
             milestone.update(status="running", progress=None, currentNode=None, finishedAt=None)
-        elif milestone.get("id") in {"video", "deliver"} or milestone.get("status") == "error":
+        elif milestone.get("id") == "video" or milestone.get("status") == "error":
             milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
 
 
@@ -1646,7 +1650,6 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
     _set_item(batch_id, item_id, videoJobId=video_job["id"], childJob=video_job)
     video_job = await _watch_child(batch_id, item_id, video_job["id"], "video")
     batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
-    batch_store.set_item_milestone(batch_id, item_id, "deliver", status="running", progress=20)
     _set_item(batch_id, item_id, stage="deliver", childJob=None)
     outputs = await _deliver(batch_id, item_id, video_job)
     await _mark_delivered(batch_id, item_id, outputs, note="发布文件已整理：")

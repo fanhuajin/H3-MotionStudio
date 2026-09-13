@@ -14,6 +14,7 @@ import base64
 import json
 import mimetypes
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -374,14 +375,15 @@ action_prompt / camera_prompt 返回空字符串。"""
 产出会由内容创作者直接发到抖音，**读者看不到图**，所以文案要能勾住人而不是描述画面：
 - **禁止客观描述句**：不许出现「画面中 / 图中 / 一位…的女子 / 身穿… / 站在…前 / 光线映出」这类陈述；
 - title：原创、可直接发布的中文标题（≤20 字），带钩子或情绪，参考原文风格但不要照抄
-- introduction：一到两句**创作者口吻**的发布简介 = 一句钩子或情绪 + 一句互动号召
-  （例如「听到这句你会想起谁？」「跟我一起比一个」「看到最后别走开」），可用 1~2 个 emoji；
+- introduction：一到两句**创作者口吻**的发布简介 = 一句第一人称的情绪或态度，可带 1~2 个 emoji；
+  **不许互动喊话、不许向观众提问**（「评论区告诉我」「你想听我唱哪句」「你听到第几秒」「点赞关注」
+  「看到最后别走开」这类一律禁止，用户明确说过「不要这种话」）；
   情绪必须与这首歌/这支舞对得上，也不许写源视频里没有的元素，但**不要复述画面**
 - song_name：识别出的歌曲名（跳舞视频返回空字符串）；无法确定时返回空字符串
 - song_mood：一句话概括这首歌的情绪、调性与氛围（例如「抒情慢板，克制的失恋感，偏冷的蓝调」）；
   这句会直接进入出图提示词，用来决定人物的情绪表达与画面色调。无法确定时返回空字符串
 - tags：恰好 5 个不带 # 的中文标签（不多不少），按内容创作者的用法挑
-  （题材 / 曲风或舞种 / 穿搭造型 / 氛围 / 互动），不要出现「画面」「描述」这类无意义词
+  （题材 / 曲风或舞种 / 穿搭造型 / 氛围 / 情绪），不要出现「画面」「描述」「评论区」这类无意义词
 
 {section_three}{adjustment}
 """
@@ -409,11 +411,13 @@ def copy_prompt(
 
 要求：
 - title：原创、可直接发布的中文标题（≤20 字），带钩子或情绪，不要照抄原作品描述
-- introduction：一到两句**创作者口吻**的发布简介 = 钩子/情绪 + 互动号召，可用 1~2 个 emoji；
+- introduction：一到两句**创作者口吻**的发布简介 = 一句第一人称的情绪/态度，可带 1~2 个 emoji；
+  **不许互动喊话、不许向观众提问**（「评论区告诉我」「你想听我唱哪句」「你听到第几秒」「点赞关注」
+  「看到最后别走开」这类一律禁止，用户明确说过「不要这种话」）；
   必须与画面和歌曲对得上（不要写画面里没有的颜色、道具或场景），但**绝对不要复述画面**
-  （不许出现「图中 / 身穿 / 站在…前 / 光线映出」这类描述句）——文案是用来勾住人的，不是画面说明
-- tags：恰好 5 个不带 # 的中文标签，按内容创作者的用法挑（题材 / 曲风或舞种 / 穿搭造型 / 氛围 / 互动），
-  不多不少，不要出现「画面」「描述」这类无意义词
+  （不许出现「图中 / 身穿 / 站在…前 / 光线映出」这类描述句）——文案是用来表达自己的，不是画面说明
+- tags：恰好 5 个不带 # 的中文标签，按内容创作者的用法挑（题材 / 曲风或舞种 / 穿搭造型 / 氛围 / 情绪），
+  不多不少，不要出现「画面」「描述」「评论区」这类无意义词
 
 只返回符合给定 JSON schema 的 JSON。{adjustment}"""
 
@@ -513,12 +517,15 @@ async def analyze(
 
 
 def _clean_tags(values: Any) -> list[str]:
-    """去掉 #、空白与重复，并剔掉占位词（「未识别」这类不能当发布标签）。"""
+    """去掉 #、空白与重复，剔掉占位词与「互动喊话」类标签（用户明确不要）。"""
     cleaned: list[str] = []
     for value in values or []:
         name = str(value or "").strip().lstrip("#").strip()
-        if name and name not in cleaned and name not in PLACEHOLDER_VALUES:
-            cleaned.append(name)
+        if not name or name in cleaned or name in PLACEHOLDER_VALUES:
+            continue
+        if any(marker in name for marker in INTERACTION_MARKERS):
+            continue
+        cleaned.append(name)
     return cleaned
 
 
@@ -526,10 +533,63 @@ def _clean_tags(values: Any) -> list[str]:
 PLACEHOLDER_VALUES = {"未识别", "未知", "无", "暂无", "没有", "none", "null", "n/a", "-", "—"}
 
 
+# 互动喊话 / 向观众提问：**用户明确不要**（2026-09-13 用户指着自动生成的简介说
+# 「简介：🤍 评论区告诉我下一首想看我跳什么～ 不要这种话」）。提示词里禁止，生成结果
+# 里出现就剪掉（`sanitize_introduction` / `_clean_tags`），不指望模型每次都听话。
+INTERACTION_MARKERS = (
+    "评论区",
+    "点歌",
+    "扣1",
+    "三连",
+    "关注我",
+    "关注一下",
+    "点个关注",
+    "点赞",
+    "双击",
+    "收藏",
+    "转发",
+    "分享给",
+    "告诉我",
+    "你想听",
+    "想看我",
+    "想听我",
+    "你会不会",
+    "看到最后",
+    "你们",
+)
+
+
+# 尾部的 emoji / 波浪号：先把它们摘掉，才能看出「……你会先牵哪只手？」是不是收尾提问
+_TAIL_EMOJI = re.compile(r"[\s🤍🎧🎤💗✨🌸💫🥀🍷❤️💕💖🎵🎶👀🔥~～]+$")
+# 分句分隔符：结尾提问必须是一个独立分句，不能把前半句的情绪一起吃掉
+_CLAUSE_BREAKS = "，,。！!；;～~\n"
+
+
+def _drop_viewer_question(text: str) -> str:
+    """删掉结尾那句**向观众提问**（保留前面的内容）；结尾不是提问就原样返回。
+
+    只认最后一个「你/您」开头、且以问号收尾、内部不含分句分隔符的那一小句：
+    「甜到忍不住想拉你一起跳，你会先牵哪只手？」→ 只删「你会先牵哪只手？」；
+    「唱给你听🎧」→ 不是提问，原样保留。
+    """
+    cleaned = _TAIL_EMOJI.sub("", text)
+    for index in range(len(cleaned) - 1, -1, -1):
+        if cleaned[index] not in "你您":
+            continue
+        tail = cleaned[index:]
+        if not tail.rstrip().endswith(("？", "?")):
+            return text
+        if any(break_char in tail for break_char in _CLAUSE_BREAKS):
+            return text
+        return cleaned[:index]
+    return text
+
+
 # 简介/标签兜底池：模型不可用、模型返回空串、或用户还没上传候选图（没走 write_copy）时，
 # 确认页也必须有简介、标签必须恰好 5 个。用户 2026-09-13：「流程中简介和标签没有的话自动生成」。
-# 文案一律**创作者口吻**（钩子 + 互动号召），不是画面说明：用户 2026-09-13「这个完全不像啊
-# 你这是在陈述啊 我是内容创作者啊」。
+# 文案一律**创作者口吻**（第一人称的情绪/态度），不是画面说明：用户 2026-09-13「这个完全不像啊
+# 你这是在陈述啊 我是内容创作者啊」；而且**不要互动喊话**（同日追加：「简介：🤍 评论区告诉我
+# 下一首想看我跳什么～ 不要这种话」）。
 TAG_POOL: dict[str, list[str]] = {
     "singing": ["翻唱", "情感演唱", "唱歌给你听", "治愈系歌声", "音乐分享"],
     "dance": ["舞蹈翻跳", "卡点舞", "一起跳舞", "律动舞蹈", "舞蹈日常"],
@@ -543,23 +603,63 @@ def compose_introduction(
     song_mood: str = "",
     description: str = "",
 ) -> str:
-    """简介兜底文案：**创作者口吻**（钩子/情绪 + 互动号召），不许写成画面描述。"""
+    """简介兜底文案：**创作者口吻**（第一人称的情绪/态度），不写成画面描述、也不喊话互动。"""
     headline = (description or "").strip().splitlines()[0].split("#")[0].strip() if description else ""
     song = str(song_name or "").strip()
     mood = str(song_mood or "").strip()
     if kind == "dance":
         if song:
-            return f"《{song}》这支舞跳给你看，跟着节奏一起动起来～ 看到最后别走开🤍"
+            return f"《{song}》这支舞，跳给懂的人看🤍"
         if headline:
-            return f"「{headline}」跳给你看，跟着节奏一起动起来～ 看到最后别走开🤍"
-        return "这支舞跳给你看，跟着节奏一起动起来～ 看到最后别走开🤍"
+            return f"「{headline}」跳成一支舞🤍"
+        return "今天这支舞，跳给懂的人看🤍"
     if song and mood:
-        return f"《{song}》翻唱｜{mood}。戴上耳机听，副歌那句你会想起谁？"
+        return f"《{song}》翻唱｜{mood}，戴上耳机听更清楚🎧"
     if song:
-        return f"《{song}》翻唱，戴上耳机听更有感觉～ 副歌那句你会想起谁？"
+        return f"《{song}》翻唱，戴上耳机听更清楚🎧"
     if headline:
-        return f"「{headline}」唱给你听，戴上耳机更有感觉～ 你会想起谁？"
-    return "唱给你听，戴上耳机更有感觉～ 你会想起谁？"
+        return f"「{headline}」唱给你听🎧"
+    return "唱给你听，戴上耳机更清楚🎧"
+
+
+def sanitize_introduction(
+    text: str,
+    *,
+    kind: str,
+    song_name: str = "",
+    song_mood: str = "",
+    description: str = "",
+) -> str:
+    """剪掉简介里的**互动喊话 / 向观众提问**；剪没了就退回本地兜底文案。
+
+    用户 2026-09-13：「简介：🤍 评论区告诉我下一首想看我跳什么～ 不要这种话」——模型即使被
+    提示词禁止也会写出来，所以在**落盘/展示之前**统一剪一遍：先截到第一个互动词之前，再把结尾
+    那句向观众提问（「你会先牵哪只手？」）整句去掉，剩下的不够一句就用 `compose_introduction`。
+    """
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return compose_introduction(
+            kind, song_name=song_name, song_mood=song_mood, description=description
+        )
+    cuts = [cleaned.find(marker) for marker in INTERACTION_MARKERS if marker in cleaned]
+    if cuts:
+        cleaned = cleaned[: min(cuts)]
+    # 结尾的「你会先牵哪只手？🤍 / 你听到第几秒开始跟着晃？」这类提问整句丢掉
+    while True:
+        trimmed = _drop_viewer_question(cleaned)
+        if trimmed == cleaned:
+            break
+        cleaned = trimmed
+    # 剪完可能留下孤零零的分隔符（「……一起跳，」）与 emoji 后的空格；句末的 。！？ 要留着
+    cleaned = re.sub(r"[\s，,、;；:：~～—-]+$", "", cleaned).strip()
+    cleaned = re.sub(r"[\s]+$", "", cleaned)
+    # 只有「被剪过、而且剪完不够一句」或「整句都是喊话」时才退回兜底；
+    # 本来就短的正常简介（例如「已有简介」）要原样保留。
+    if not cleaned or (cleaned != str(text or "").strip() and len(cleaned) < 6):
+        return compose_introduction(
+            kind, song_name=song_name, song_mood=song_mood, description=description
+        )
+    return cleaned
 
 
 def ensure_copy_fields(
@@ -577,14 +677,16 @@ def ensure_copy_fields(
     多了截断——先保留模型/源作品给的，再补通用的。
     """
     filled: list[str] = []
-    if not str(result.get("introduction") or "").strip():
-        result["introduction"] = compose_introduction(
-            kind,
-            song_name=str(result.get("song_name") or ""),
-            song_mood=str(result.get("song_mood") or ""),
-            description=description,
-        )
+    intro = sanitize_introduction(
+        str(result.get("introduction") or ""),
+        kind=kind,
+        song_name=str(result.get("song_name") or ""),
+        song_mood=str(result.get("song_mood") or ""),
+        description=description,
+    )
+    if intro != str(result.get("introduction") or "").strip():
         filled.append("简介")
+    result["introduction"] = intro
     tags = _clean_tags(result.get("tags"))
     if len(tags) != 5:
         for candidate in [
@@ -597,8 +699,12 @@ def ensure_copy_fields(
                 tags.append(name)
             if len(tags) == 5:
                 break
-        result["tags"] = tags[:5]
         filled.append("标签")
+    # 洗过的标签一律写回（模型可能带 # 前缀或塞了「评论区点歌」这类互动标签）
+    if tags[:5] != list(result.get("tags") or []):
+        if "标签" not in filled:
+            filled.append("标签")
+    result["tags"] = tags[:5]
     return filled
 
 

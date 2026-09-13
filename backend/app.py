@@ -753,8 +753,8 @@ async def retry_batch_item(batch_id: str, item_id: str):
     - 已经确认过（有审核通过的候选图**且源视频还在磁盘上**）的条目直接回到 `confirmed`，
       只重跑视频链路，不再重复下载与备料；
     - 还没确认的、或者源视频已经被清理掉的，回到 `pending`，从下载/备料重新走一遍。
-    两种都会清掉跳过/删除请求、错误与上一次的发布文件记录，并重置「生成最终视频 /
-    整理发布文件」两个里程碑，让页面上的流程重新变成待办而不是已跳过。
+    两种都会清掉跳过/删除请求、错误与上一次的发布文件记录，并重置「生成最终视频」
+    里程碑，让页面上的流程重新变成待办而不是已跳过。
     """
     item = _batch_item_or_404(batch_id, item_id)
     if item.get("status") not in {"failed", "skipped", "completed"}:
@@ -780,7 +780,7 @@ async def retry_batch_item(batch_id: str, item_id: str):
             finishedAt=None,
         )
         for milestone in row.get("milestones") or []:
-            if milestone.get("id") in {"video", "deliver"} or milestone.get("status") == "error":
+            if milestone.get("id") == "video" or milestone.get("status") == "error":
                 milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
 
     batch_store.mutate_item(batch_id, item_id, reset)
