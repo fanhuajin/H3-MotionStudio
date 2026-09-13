@@ -40,6 +40,9 @@ _RUNNING_BATCHES: set[str] = set()
 _ITEM_TASKS: dict[str, asyncio.Task] = {}
 # 跳过/取消后仍在后台跑的子任务：等它落定再把成片补进发布目录（避免任务被垃圾回收）。
 _SALVAGE_TASKS: set[asyncio.Task] = set()
+# 正在后台出片的条目任务。runner 不再原地 await 出片，而是把出片放进这里的任务，
+# 自己继续给后面的条目备料；这个集合是**强引用**（否则任务可能在跑的过程中被回收）。
+_VIDEO_TASKS: set[asyncio.Task] = set()
 
 
 def cancel_item_work(batch_id: str, item_id: str) -> bool:
@@ -1354,25 +1357,64 @@ def stage_media(state: dict[str, Any]) -> dict[str, str]:
     return media
 
 
-def _next_work(state: dict[str, Any]) -> dict[str, Any] | None:
+def _next_work(state: dict[str, Any], *, allow_confirmed: bool = True) -> dict[str, Any] | None:
     """下一个要跑的任务：先整批备料（pending / revising），再逐条出片（confirmed）。
 
     **队列不会自己跑**：只有用户点了「开跑」（`POST /api/batches/{id}/start`）才会 spawn
     runner（2026-09-10 用户：「加入队列并不是马上开跑，需要由我点击总的开跑按钮才开始」）。
     `awaiting_review` 是在等用户上传图片并确认，不算可跑任务。
+
+    `allow_confirmed=False`：已经有一条在后台出片时，不再挑新的出片条目（出片仍严格
+    一条一条来），但**继续**返回可备料的条目 —— 2026-09-13 用户实测的痛点：
+    出片要十几分钟，期间新追加的条目一直卡在「排队中」拿不到候选图与文案。
     """
     items = state.get("items") or []
     for statuses in ({"pending", "revising"}, {"confirmed"}):
+        if not allow_confirmed and statuses == {"confirmed"}:
+            continue
         for item in items:
             if item.get("status") in statuses:
                 return item
     return None
 
 
+def _fail_item_and_batch(batch_id: str, item_id: str, message: str) -> None:
+    """条目级失败：条目标错 + 整个批次停下等人工处理（与 runner 内联分支同一套收尾）。
+
+    出片改到后台任务后，失败可能从任务里抛出来，收尾逻辑必须和原来内联时完全一致。
+    """
+    _set_item(batch_id, item_id, status="failed", stage="failed", error=message, childJob=None)
+    active_milestone = next(
+        (row for row in _item(batch_id, item_id)["milestones"] if row.get("status") == "running"),
+        None,
+    )
+    if active_milestone:
+        batch_store.set_item_milestone(
+            batch_id, item_id, active_milestone["id"], status="error", currentNode=message
+        )
+    batch_store.add_item_log(batch_id, item_id, f"任务暂停：{message}")
+    batch_store.update(
+        batch_id,
+        status="failed",
+        stage="failed",
+        runnerActive=False,
+        notice="当前条目需要处理后重试，后续条目尚未启动。",
+    )
+
+
 async def run_batch(batch_id: str) -> None:
+    """批次 runner：备料（下载 + 出图素材 + 文案）在循环里跑，**出片放到后台任务**。
+
+    2026-09-13 用户实测的问题：出片一条要十几分钟，runner 原地 await 出片时，
+    新追加的条目一直停在「排队中」，拿不到候选图与发布文案（「都处理了，现在没有处理啊」）。
+    出片与备料互不争资源（备料不用 ComfyUI），所以出片改成后台任务、runner 继续备料；
+    出片本身仍然严格一条一条来（`_next_work(allow_confirmed=...)`）。
+    """
     if batch_id in _RUNNING_BATCHES:
         return
     _RUNNING_BATCHES.add(batch_id)
+    video_task: asyncio.Task | None = None
+    video_row: dict[str, Any] | None = None
     try:
         state = batch_store.get(batch_id)
         if not state:
@@ -1390,11 +1432,52 @@ async def run_batch(batch_id: str) -> None:
             state = batch_store.get(batch_id)
             if not state:
                 return
+            # ① 后台出片落定：在这里 await 一次，让失败/取消复用下面同一套收尾分支。
+            if video_task is not None and video_task.done():
+                finished, row = video_task, video_row
+                video_task, video_row = None, None
+                try:
+                    await finished
+                except asyncio.CancelledError:
+                    current = _item(batch_id, str((row or {}).get("id") or ""))
+                    await _finish_abandoned(
+                        batch_id, current["id"], deleted=bool(current.get("deleteRequested"))
+                    )
+                except Exception as error:
+                    _fail_item_and_batch(batch_id, str((row or {}).get("id") or ""), str(error))
+                    return
+                else:
+                    # 出片正常返回却没把条目推进出 confirmed（异常路径之外不该发生）：
+                    # 再挑一次就会无限重投出片任务，直接停下等人工处理。
+                    landed_id = str((row or {}).get("id") or "")
+                    landed = next(
+                        (
+                            item
+                            for item in (batch_store.get(batch_id) or {}).get("items") or []
+                            if item.get("id") == landed_id
+                        ),
+                        None,
+                    )
+                    if landed is not None and landed.get("status") == "confirmed":
+                        _fail_item_and_batch(
+                            batch_id, landed_id, "出片任务结束后条目仍停在「已确认」，已停下避免重复出片"
+                        )
+                        return
+                continue
+            # ② 暂停不打断正在出片的这一条（保持原语义：等它落定再停）。
             if state.get("pauseRequested") or state.get("status") == "paused":
+                if video_task is not None:
+                    await asyncio.wait({video_task}, timeout=3)
+                    continue
                 batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
                 return
-            item = _next_work(state)
+            # ③ 挑下一件活：备料优先，出片一次只许一条（`allow_confirmed`）。
+            item = _next_work(state, allow_confirmed=video_task is None)
             if item is None:
+                if video_task is not None:
+                    # 备料都做完了，只剩后台出片：等它落定（每 3 秒回到循环顶，暂停仍能响应）
+                    await asyncio.wait({video_task}, timeout=3)
+                    continue
                 items = state.get("items") or []
                 waiting = [row for row in items if row.get("status") == "awaiting_review"]
                 if waiting:
@@ -1421,22 +1504,34 @@ async def run_batch(batch_id: str) -> None:
                 )
                 return
             preparing = item.get("status") in {"pending", "revising"}
+            busy_with_video = video_task is not None and video_row is not None
+            if preparing and busy_with_video:
+                notice = (
+                    f"第 {video_row['index']} 条正在出片，同时正在备料第 {item['index']} / {state['total']} 条。"
+                )
+            elif preparing:
+                notice = f"正在备料第 {item['index']} / {state['total']} 条。"
+            else:
+                notice = f"正在出片第 {item['index']} / {state['total']} 条。"
             batch_store.update(
                 batch_id,
-                currentItemId=item["id"],
-                currentIndex=item["index"],
-                notice=(
-                    f"正在备料第 {item['index']} / {state['total']} 条。"
-                    if preparing
-                    else f"正在出片第 {item['index']} / {state['total']} 条。"
-                ),
+                # 出片在后台跑时，页面焦点留在出片的那一条，不因为备料跳走
+                currentItemId=(video_row["id"] if busy_with_video else item["id"]),
+                currentIndex=(int(video_row["index"]) if busy_with_video else item["index"]),
+                notice=notice,
             )
             try:
                 if item.get("skipRequested"):
                     await _finish_abandoned(batch_id, item["id"], deleted=bool(item.get("deleteRequested")))
                     continue
                 if item.get("status") == "confirmed":
-                    await _process_confirmed(batch_id, item["id"])
+                    # 出片丢进后台任务：runner 立刻回到循环顶，继续给后面的条目备料
+                    # （备料只用下载 + ffmpeg 抽帧 + 一次文本模型调用，不碰 ComfyUI，
+                    #  所以能和出片并行；用户 2026-09-13：「新加的这条现在没有处理啊」）。
+                    task = asyncio.create_task(_process_confirmed(batch_id, item["id"]))
+                    _VIDEO_TASKS.add(task)
+                    task.add_done_callback(_VIDEO_TASKS.discard)
+                    video_task, video_row = task, item
                     continue
                 await _download(batch_id, item["id"])
                 refreshed = _item(batch_id, item["id"])
@@ -1479,24 +1574,7 @@ async def run_batch(batch_id: str) -> None:
                         batch_id, item["id"], deleted=bool(current.get("deleteRequested"))
                     )
                     continue
-                message = str(error)
-                _set_item(batch_id, item["id"], status="failed", stage="failed", error=message, childJob=None)
-                active_milestone = next(
-                    (row for row in _item(batch_id, item["id"])["milestones"] if row.get("status") == "running"),
-                    None,
-                )
-                if active_milestone:
-                    batch_store.set_item_milestone(
-                        batch_id, item["id"], active_milestone["id"], status="error", currentNode=message
-                    )
-                batch_store.add_item_log(batch_id, item["id"], f"任务暂停：{message}")
-                batch_store.update(
-                    batch_id,
-                    status="failed",
-                    stage="failed",
-                    runnerActive=False,
-                    notice="当前条目需要处理后重试，后续条目尚未启动。",
-                )
+                _fail_item_and_batch(batch_id, item["id"], str(error))
                 return
     finally:
         _RUNNING_BATCHES.discard(batch_id)

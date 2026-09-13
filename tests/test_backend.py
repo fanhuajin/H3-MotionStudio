@@ -413,6 +413,125 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(by_index[2]["status"], "awaiting_review")   # 后面的条目照常跑
         self.assertNotEqual(box["state"]["status"], "failed")
 
+    def test_batch_keeps_preparing_items_while_another_one_renders(self) -> None:
+        """出片跑在后台时，后面的条目照常备料。
+
+        用户 2026-09-13 实测：「我现在重新加入了一条…下载抖音视频、生成人物图与发布文案、
+        等待你的确认…现在没有处理啊」——出片一条要十几分钟，runner 原来原地 await 出片，
+        新追加的条目就卡在「排队中」拿不到候选图与文案。备料只用下载 + ffmpeg + 文本模型，
+        不碰 ComfyUI，所以必须能和出片并行；出片本身仍严格一条一条来。
+        """
+        import asyncio
+
+        from backend import batch_worker
+        from backend.batch_worker import new_batch_state
+
+        state = new_batch_state(["https://v.douyin.com/sing"], [])
+        state["items"][0]["status"] = "confirmed"       # 第 1 条已放行、开始出片
+        confirmed_id = state["items"][0]["id"]
+        box = {"state": state}
+        order: list[str] = []
+        video_started = asyncio.Event()
+        release = asyncio.Event()
+        appended: dict = {}
+
+        class RunStore:  # 与 run_batch 交互的最小状态存储
+            def get(self, _batch_id):
+                return box["state"]
+
+            def update(self, _batch_id, **changes):
+                box["state"].update(changes)
+                return box["state"]
+
+            def mutate_item(self, _batch_id, item_id, mutator):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        mutator(item)
+                return box["state"]
+
+            def set_item_milestone(self, _batch_id, item_id, milestone_id, **changes):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        for milestone in item["milestones"]:
+                            if milestone["id"] == milestone_id:
+                                milestone.update(changes)
+                return box["state"]
+
+            def add_item_log(self, _batch_id, item_id, message):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        item.setdefault("logs", []).append({"time": "t", "message": message})
+                return box["state"]
+
+        async def fake_video(_batch_id, item_id):
+            # 真实的 _process_confirmed 第一件事就是把条目推进 running
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "running"
+            order.append("video-start")
+            video_started.set()
+            await release.wait()
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "completed"
+            order.append("video-end")
+
+        async def fake_download(_batch_id, item_id):
+            order.append(f"download-{item_id}")
+
+        async def fake_prepare(_batch_id, item_id, **_kwargs):
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "awaiting_review"
+
+        async def scenario() -> None:
+            with patch.object(batch_worker, "batch_store", RunStore()), patch.object(
+                batch_worker, "_process_confirmed", fake_video
+            ), patch.object(batch_worker, "_download", fake_download), patch.object(
+                batch_worker, "_prepare_review", fake_prepare
+            ):
+                runner = asyncio.create_task(batch_worker.run_batch("b1"))
+                await asyncio.wait_for(video_started.wait(), timeout=5)
+                # 出片**跑起来之后**用户才追加一条（页面上「加入队列」的行为：排到队尾）
+                late = new_batch_state(["https://v.douyin.com/late"], [])["items"][0]
+                late["index"] = 2
+                box["state"]["items"].append(late)
+                box["state"]["total"] = 2
+                appended["id"] = late["id"]
+                for _ in range(300):
+                    if late["status"] == "awaiting_review":
+                        break
+                    await asyncio.sleep(0.01)
+                # 出片还在后台跑，新追加的那一条已经备完料了
+                self.assertEqual(late["status"], "awaiting_review")
+                self.assertIn(f"download-{late['id']}", order)
+                self.assertNotIn("video-end", order)
+                release.set()
+                await asyncio.wait_for(runner, timeout=5)
+
+        asyncio.run(scenario())
+        self.assertEqual(order[0], "video-start")
+        self.assertEqual(order[-1], "video-end")
+        self.assertEqual(box["state"]["items"][1]["id"], appended["id"])
+        # 出片落定后批次停在「等你确认」，而不是把待审核的条目当成已完成
+        self.assertEqual(box["state"]["status"], "awaiting_review")
+        self.assertEqual(box["state"]["items"][0]["id"], confirmed_id)
+
+    def test_batch_never_starts_two_renders_at_once(self) -> None:
+        """出片仍然严格一条一条：后台已经有一条在出片时，不得再挑第二条 confirmed。"""
+        from backend.batch_worker import _next_work
+
+        state = {
+            "items": [
+                {"id": "a", "status": "confirmed"},
+                {"id": "b", "status": "confirmed"},
+                {"id": "c", "status": "pending"},
+            ]
+        }
+        self.assertEqual(_next_work(state, allow_confirmed=False)["id"], "c")   # 只挑备料
+        self.assertIsNone(_next_work({"items": state["items"][:2]}, allow_confirmed=False))
+        self.assertEqual(_next_work({"items": state["items"][:2]})["id"], "a")  # 空闲时才出片
+
     def test_queue_only_runs_after_explicit_start(self) -> None:
         """页面入口是「加入队列并开始」：带 autoStart 直接跑，不带则只排队（API 用法）。"""
         import asyncio
