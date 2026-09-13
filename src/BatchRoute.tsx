@@ -503,6 +503,7 @@ export function BatchRoute() {
   // 「等待你的确认」那一屏要把后端掌握的**全部**信息摊开：识别歌曲/情绪、造型来源判断、
   // 作品号、源作品文案、候选图来源与版本、比例与放行状态、时间线与标识。
   // 用户 2026-09-13：「报所有可以展示的信息都展示出来」「是指等待你的确认里的信息」。
+  // **不要条目日志**（同日追加：「信息展示 条目日志不要」）——日志留在后端/接口里排查用。
   const reviewFacts = useMemo(() => {
     if (!selected?.ai) return [] as Array<[string, string]>;
     const ai = selected.ai;
@@ -527,8 +528,6 @@ export function BatchRoute() {
       ["最近更新", formatLogTime(selected.updatedAt)],
     ] as Array<[string, string]>;
   }, [selected]);
-
-  const itemLogs = useMemo(() => selected?.logs || [], [selected]);
 
   // 本条实际会写进工作流的动作/运镜（歌唱）或迁移提示词（跳舞）：只读展示给用户核对。
   const promptBlocks = useMemo(() => {
@@ -958,8 +957,8 @@ export function BatchRoute() {
                       <label><span>标签</span><div className="batch-tags">{selected.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>
                       {/* 确认这一屏要把后端掌握的**全部**信息给出来（用户 2026-09-13：
                           「报所有可以展示的信息都展示出来」「是指等待你的确认里的信息」）——
-                          以前这里只有标题/简介/标签，歌曲情绪、造型来源、作品号、时间线、
-                          条目日志都藏在后端里，用户没法核对。 */}
+                          以前这里只有标题/简介/标签，歌曲情绪、造型来源、作品号、时间线
+                          都藏在后端里，用户没法核对。条目日志不放这里（用户要求去掉）。 */}
                       <label>
                         <span>本条全部信息</span>
                         <dl className="batch-facts">
@@ -970,19 +969,6 @@ export function BatchRoute() {
                             </div>
                           ))}
                         </dl>
-                      </label>
-                      <label>
-                        <span>条目日志（{itemLogs.length} 条）</span>
-                        {itemLogs.length ? (
-                          <ol className="batch-logs">
-                            {itemLogs.map((row, index) => (
-                              <li key={`${row.time}-${index}`}>
-                                <time>{formatLogTime(row.time)}</time>
-                                <span>{row.message}</span>
-                              </li>
-                            ))}
-                          </ol>
-                        ) : <p>这一条还没有日志。</p>}
                       </label>
                       {renderSettings(selected)}
                       <div className="batch-review-actions">

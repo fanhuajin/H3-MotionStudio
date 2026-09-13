@@ -1490,11 +1490,6 @@ body {
 .batch-facts > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; align-items: baseline; }
 .batch-facts dt { color: #87809d; font-size: 10px; }
 .batch-facts dd { margin: 0; color: #d9d3e9; font-size: 11px; line-height: 1.65; word-break: break-all; user-select: text; }
-.batch-logs { max-height: 260px; margin: 0; padding: 0 0 0 2px; overflow: auto; list-style: none; }
-.batch-logs li { display: flex; gap: 8px; padding: 4px 0; border-bottom: 1px dashed rgba(67, 55, 91, .5); }
-.batch-logs li:last-child { border-bottom: none; }
-.batch-logs time { flex: none; min-width: 118px; color: #6f6889; font-size: 10px; }
-.batch-logs span { color: #cfc8e2; font-size: 11px; line-height: 1.7; word-break: break-word; user-select: text; }
 .batch-source-replace { margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(67, 55, 91, .56); }
 .batch-source-replace > label { display: block; }
 .batch-source-replace > label > span { display: block; margin-bottom: 6px; color: #87809d; font-size: 10px; }
