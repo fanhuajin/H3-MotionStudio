@@ -19,6 +19,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { readJson, readJsonOrNull } from "./api";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import { QueuePanel } from "./QueuePanel";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
@@ -518,9 +519,8 @@ export function MigrateRoute() {
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      fetch("/api/config", { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject()),
-      fetch("/api/jobs/latest?kind=migrate", { cache: "no-store" })
-        .then((response) => response.status === 204 ? null : response.json()),
+      readJson<AppConfig>(fetch("/api/config", { cache: "no-store" }), "读取配置失败"),
+      readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=migrate", { cache: "no-store" }), "读取上次任务失败"),
     ]).then(([nextConfig, latest]) => {
       if (cancelled) return;
       setConfig(nextConfig);

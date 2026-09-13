@@ -24,6 +24,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { BatchRoute } from "./BatchRoute";
+import { readJson, readJsonOrNull } from "./api";
 import { DouyinRoute } from "./DouyinRoute";
 import { MigrateRoute } from "./MigrateRoute";
 import { QueuePanel } from "./QueuePanel";
@@ -548,10 +549,10 @@ function MotionStudioRoute() {
     let cancelled = false;
     const draft = readDraft();
     Promise.all([
-      fetch("/api/config", { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject()),
+      readJson<AppConfig>(fetch("/api/config", { cache: "no-store" }), "读取配置失败"),
       demoMode
         ? Promise.resolve(null)
-        : fetch("/api/jobs/latest?kind=singing", { cache: "no-store" }).then((response) => response.status === 204 ? null : response.json()),
+        : readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=singing", { cache: "no-store" }), "读取上次任务失败"),
     ]).then(([nextConfig, latest]) => {
       if (cancelled) return;
       setConfig(nextConfig);

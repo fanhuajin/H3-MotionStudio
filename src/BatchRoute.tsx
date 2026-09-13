@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { readJson } from "./api";
 import {
   ArrowClockwise,
   ArrowUUpLeft,
@@ -218,8 +219,12 @@ function stepIcon(status: StepStatus) {
   return <Circle />;
 }
 
-function responseMessage(response: Response, fallback: string) {
-  return response.json().then((payload) => String(payload?.detail || fallback)).catch(() => fallback);
+function responseMessage(response: Response, fallback: string): Promise<string> {
+  // 交给统一的 readJson：后端 500 现在也是 JSON（{"detail": ...}），且绝不会把
+  // "Unexpected token 'I'..." 这种解析错误当成给用户看的提示。
+  return readJson<{ detail?: string }>(response, fallback)
+    .then(() => fallback)
+    .catch((reason) => (reason instanceof Error ? reason.message : fallback));
 }
 
 export function BatchRoute() {
@@ -257,7 +262,7 @@ export function BatchRoute() {
       const response = await fetch("/api/batches/latest", { cache: "no-store" });
       if (response.status === 204) return;
       if (!response.ok) throw new Error(await responseMessage(response, "无法读取上次批次"));
-      setBatch(await response.json());
+      setBatch(await readJson<BatchState>(response, "无法读取上次批次"));
     } finally {
       setLoaded(true);
     }
@@ -325,9 +330,9 @@ export function BatchRoute() {
         body: JSON.stringify({ singingUrls, danceUrls, autoStart }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
-      const state = await response.json();
+      const state = await readJson<BatchState>(response, append ? "加入队列失败" : "创建队列失败");
       setBatch(state);
-      if (!append) setSelectedId(state.currentItemId);
+      if (!append) setSelectedId(state.currentItemId ?? null);
       // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
       if (append && (state.items?.length || 0) <= (batch?.items.length || 0)) {
         setNotice("这些链接都已经在队列里了（重复链接自动跳过），这次没有新增任务。");
@@ -354,7 +359,7 @@ export function BatchRoute() {
         body: body ? JSON.stringify(body) : undefined,
       });
       if (!response.ok) throw new Error(await responseMessage(response, "操作失败"));
-      setBatch(await response.json());
+      setBatch(await readJson<BatchState>(response, "操作失败"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -501,7 +506,7 @@ export function BatchRoute() {
         body,
       });
       if (!response.ok) throw new Error(await responseMessage(response, "图片上传失败"));
-      setBatch(await response.json());
+      setBatch(await readJson<BatchState>(response, "图片上传失败"));
       setImageToken(Date.now());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));

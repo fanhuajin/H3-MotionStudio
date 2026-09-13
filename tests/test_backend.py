@@ -1330,6 +1330,62 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertEqual(batch_ai._json_mode(), "object")
         batch_ai._JSON_SCHEMA_SUPPORTED = None
 
+    def test_unhandled_errors_answer_json_with_a_readable_detail(self) -> None:
+        """未处理异常必须回 **JSON**（HTTP 500），不能回纯文本 `Internal Server Error`。
+
+        2026-09-13 用户实测「Unexpected token 'I', "Internal S"... is not valid JSON」：FastAPI 默认
+        纯文本 500，前端 `response.json()` 抛解析错误，真正的原因完全看不到；而且当时后端由启动
+        脚本拉起、输出没落盘，连 traceback 都没了。
+        """
+        import asyncio
+
+        from backend import app as app_module
+        from starlette.requests import Request
+
+        request = Request({"type": "http", "method": "GET", "path": "/api/boom", "headers": []})
+        response = asyncio.run(app_module.unhandled_exception_handler(request, ValueError("模型超时")))
+        self.assertEqual(response.status_code, 500)
+        body = json.loads(response.body.decode("utf-8"))
+        self.assertIn("ValueError", body["detail"])
+        self.assertIn("模型超时", body["detail"])
+        self.assertEqual(body["path"], "/api/boom")
+
+    def test_system_stats_degrades_instead_of_500(self) -> None:
+        """系统采样失败也要回可解析的 JSON（前端拿到非 JSON 只会显示解析错误）。"""
+        import asyncio
+
+        from backend import app as app_module
+        from backend import system_stats as system_stats_module
+
+        def boom() -> dict:
+            raise RuntimeError("nvidia-smi 不见了")
+
+        with patch.object(system_stats_module, "collect_system_stats", boom):
+            payload = asyncio.run(app_module.system_stats())
+        self.assertIn("degraded", payload)
+        self.assertIn("nvidia-smi", payload["degraded"])
+        self.assertEqual(payload["gpu"], [])
+
+    def test_frontend_never_parses_a_response_as_json_blindly(self) -> None:
+        """前端必须走 `readJson` 读响应：非 2xx / 非 JSON 都要翻成人话。
+
+        守住 `.../latest` 那几处 `response.status === 204 ? null : response.json()` ——
+        后端一旦回 500（哪怕是纯文本），那种写法就把解析错误当提示抛给用户。
+        """
+        root = Path(__file__).parents[1] / "src"
+        api = (root / "api.ts").read_text(encoding="utf-8")
+        self.assertIn("export async function readJson", api)
+        self.assertIn("不是 JSON", api)
+        for name in ("App.tsx", "MigrateRoute.tsx", "BatchRoute.tsx"):
+            source = (root / name).read_text(encoding="utf-8")
+            self.assertIn('from "./api"', source, name)
+            self.assertIn("readJson", source, name)
+        # 这几个路由以前都是 `response.status === 204 ? null : response.json()`
+        for name in ("RvcRoute.tsx", "UpScaleRoute.tsx", "LyricRoute.tsx"):
+            source = (root / name).read_text(encoding="utf-8")
+            self.assertNotIn("? null : response.json()", source, name)
+            self.assertIn("readJsonOrNull", source, name)
+
     def test_batch_ai_fallback_and_action_plan_keep_item_runnable(self) -> None:
         """模型降级时条目仍可继续：文案退到源作品信息，动作/运镜按时长铺满。"""
         result = batch_ai.fallback_result(

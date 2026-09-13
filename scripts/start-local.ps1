@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $projectRoot
 
@@ -43,10 +43,16 @@ Write-Host '正在构建前端页面……'
 npm run build
 
 Write-Host '正在启动本地服务……'
+# 后端输出必须落盘：2026-09-13 页面上出现过「Unexpected token 'I', "Internal S"...」，
+# 但当时的实例没有重定向输出，500 的 traceback 直接丢了，只能靠猜。
+$logDir = Join-Path $projectRoot 'data'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $backend = Start-Process -FilePath $venvPython `
     -ArgumentList @('-m', 'uvicorn', 'backend.app:app', '--host', '127.0.0.1', '--port', '8111') `
     -WorkingDirectory $projectRoot `
     -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $logDir 'backend-stdout.log') `
+    -RedirectStandardError (Join-Path $logDir 'backend-stderr.log') `
     -PassThru
 
 try {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowsClockwise,
   CaretDown,
@@ -19,6 +19,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { QueuePanel } from "./QueuePanel";
+import { readJsonOrNull } from "./api";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { JobState, Milestone, MilestoneStatus } from "./types";
 
@@ -176,8 +177,7 @@ export function UpScaleRoute() {
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      fetch("/api/jobs/latest?kind=upscale", { cache: "no-store" })
-        .then((response) => response.status === 204 ? null : response.json()),
+      readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=upscale", { cache: "no-store" }), "读取上次任务失败"),
     ]).then(([latest]) => {
       if (cancelled) return;
       if (latest?.id) {

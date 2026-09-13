@@ -271,6 +271,25 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="H3 MotionStudio", version="0.1.0", lifespan=lifespan)
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    """任何未处理异常都回 **JSON** 并留下 traceback。
+
+    2026-09-13 用户实测「Unexpected token 'I', "Internal S"... is not valid JSON」：FastAPI 默认把
+    未处理异常回成纯文本 `Internal Server Error`，前端 `response.json()` 于是抛这句解析错误，
+    真正的原因（哪个端点、什么异常）完全看不到 —— 而且当时后端由启动脚本拉起、输出没落盘，
+    连 traceback 都没了。这里统一回 `{"detail": ...}`（HTTP 500）并把堆栈写进日志。
+    """
+    logger.exception("未处理异常 %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"服务内部错误（{type(exc).__name__}）：{str(exc)[:200] or '没有更多信息'}",
+            "path": str(request.url.path),
+        },
+    )
+
+
 class DouyinDownloadRequest(BaseModel):
     url: str
 
@@ -1045,10 +1064,25 @@ async def get_config() -> dict[str, Any]:
 
 @app.get("/api/system/stats")
 async def system_stats() -> dict[str, Any]:
-    """CPU / 内存 / 磁盘 / 以太网吞吐 / GPU（含显存与温度）采样。"""
+    """CPU / 内存 / 磁盘 / 以太网吞吐 / GPU（含显存与温度）采样。
+
+    采样依赖 nvidia-smi / psutil，任何一项失败都不该让页面吃到 500（前端拿到非 JSON 就只会
+    报「Unexpected token」）。失败时退回可用部分 + `degraded` 说明。
+    """
     from .system_stats import collect_system_stats
 
-    return await asyncio.to_thread(collect_system_stats)
+    try:
+        return await asyncio.to_thread(collect_system_stats)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("系统采样失败：%s", error, exc_info=True)
+        return {
+            "degraded": f"{type(error).__name__}: {error}"[:200],
+            "cpu": None,
+            "memory": None,
+            "disks": [],
+            "net": None,
+            "gpu": [],
+        }
 
 
 @app.get("/api/jobs/latest")

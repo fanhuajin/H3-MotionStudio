@@ -88,11 +88,16 @@ def _api_key() -> str:
     `H3_BATCH_TEXT_API_KEY` 只存在于注册表里——`os.getenv` 看不到启动之后新设的变量。
     """
     global _CACHED_KEY
-    key = (os.getenv("H3_BATCH_TEXT_API_KEY") or "").strip() or env_value("H3_BATCH_TEXT_API_KEY")
+    key = (os.getenv("H3_BATCH_TEXT_API_KEY") or "").strip()
+    if key:
+        return key
+    # 进程环境里显式注入的官方 key 也要认（测试、临时覆盖），而且**必须优先于注册表**：
+    # 否则用户把 key 存成用户级变量后，临时注入的进程变量会被静默盖掉。
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
     if key:
         return key
     if _CACHED_KEY is None:
-        _CACHED_KEY = env_value("OPENAI_API_KEY")
+        _CACHED_KEY = env_value("H3_BATCH_TEXT_API_KEY") or env_value("OPENAI_API_KEY")
     return _CACHED_KEY
 
 
