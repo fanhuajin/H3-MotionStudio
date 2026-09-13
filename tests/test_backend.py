@@ -1604,6 +1604,48 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_publish_folder_is_stable_when_the_title_changes(self) -> None:
+        """一个条目只能有一个发布目录：标题变了就改名复用，**不许新建第二个**。
+
+        用户 2026-09-13：「我只开始了两个任务啊 文件夹多了好多」—— 标题在备料时是一版、
+        用户上传候选图后 `write_copy` 又改一版，而目录名里带标题，于是同一个作品号下
+        留下好几个目录。
+        """
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                item = {
+                    "id": "it1",
+                    "index": 1,
+                    "kind": "dance",
+                    "awemeId": "7684126327402778850",
+                    "ai": {"title": "第一版标题"},
+                    "outputs": {},
+                }
+                first = batch_worker.publish_folder(item)
+                first.mkdir(parents=True)
+                (first / "人物图.png").write_bytes(b"x")
+                item["outputs"] = {"folder": str(first)}
+
+                item["ai"]["title"] = "第二版标题"
+                second = batch_worker.publish_folder(item)
+                self.assertEqual(second.parent, root)
+                self.assertIn("第二版标题", second.name)
+                self.assertFalse(first.exists(), "旧目录应当被改名，而不是留下两个")
+                self.assertTrue((second / "人物图.png").is_file())
+                # 反复调用必须稳定在同一个目录
+                self.assertEqual(batch_worker.publish_folder(item), second)
+                self.assertEqual(len(list(root.iterdir())), 1)
+                # 记录的目录已经不在了（被清掉）→ 用新目录
+                item["outputs"] = {"folder": str(root / "gone")}
+                item["ai"]["title"] = "第三版标题"
+                self.assertIn("第三版标题", batch_worker.publish_folder(item).name)
+                # 记录的目录在发布根之外（脏数据）→ 用新目录，不越界写
+                item["outputs"] = {"folder": str(root.parent / "outside")}
+                self.assertEqual(batch_worker.publish_folder(item).parent, root)
+
     def test_batch_reuses_an_already_downloaded_source(self) -> None:
         """本地已经有这条作品就直接复用，**不启动下载器、也不提交下载任务**。
 

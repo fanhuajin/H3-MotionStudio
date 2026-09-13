@@ -1165,15 +1165,41 @@ def _deliverable_image(item: dict[str, Any]) -> Path | None:
     return path if raw and path.is_file() else None
 
 
-def publish_folder(item: dict[str, Any]) -> Path:
-    """发布目录：`{三位编号}_{歌名或标题}_{作品号}`。
-
-    「审核点先落人物图+文案」与「出片后交付」必须用**同一个**目录，所以抽出来共用。
-    """
+def _ideal_publish_folder(item: dict[str, Any]) -> Path:
+    """发布目录的**理想名字**：`{三位编号}_{歌名或标题}_{作品号}`。"""
     ai = item.get("ai") or {}
     aweme_id = str(item.get("awemeId") or item.get("id"))
     base_name = _safe_name(str(ai.get("song_name") or ai.get("title") or item.get("title") or "作品"))
     return BATCH_OUTPUT_ROOT / f"{int(item['index']):03d}_{base_name}_{aweme_id}"
+
+
+def publish_folder(item: dict[str, Any]) -> Path:
+    """本条目的发布目录：**一个条目只能有一个目录**。
+
+    标题会变（备料时一版、用户上传候选图后 `write_copy` 又改一版），如果每次都按新标题拼
+    路径，同一个作品号就会留下好几个目录 —— 2026-09-13 用户实测：「我只开始了两个任务啊
+    文件夹多了好多」。所以优先复用 `outputs.folder` 记下的目录，名字过时了就**改名**过去，
+    改不动就继续用旧目录，**绝不新建第二个**。
+    """
+    ideal = _ideal_publish_folder(item)
+    recorded = str((item.get("outputs") or {}).get("folder") or "").strip()
+    if not recorded:
+        return ideal
+    current = Path(recorded)
+    try:
+        current.relative_to(BATCH_OUTPUT_ROOT)
+    except ValueError:
+        return ideal
+    if not current.is_dir():
+        return ideal
+    if current.name == ideal.name:
+        return current
+    try:
+        current.rename(ideal)
+        return ideal
+    except OSError:
+        # 目标已存在（历史遗留的同名目录）或改名失败：继续用旧目录，也不要再建一个
+        return current
 
 
 def publish_copy_text(ai: dict[str, Any]) -> str:
