@@ -587,23 +587,6 @@ export function BatchRoute() {
     return `${label} ${formatElapsedMs(ms)}`;
   };
 
-  // 本条实际会写进工作流的动作/运镜（歌唱）或迁移提示词（跳舞）：只读展示给用户核对。
-  const promptBlocks = useMemo(() => {
-    const ai = selected?.ai;
-    if (!ai) return [] as Array<{ label: string; text: string }>;
-    const blocks = selected!.kind === "singing"
-      ? [
-        { label: "人物动作要求", text: String(ai.action_prompt || "").trim() },
-        { label: "运镜要求", text: String(ai.camera_prompt || "").trim() },
-      ]
-      : [
-        { label: "内容提示词", text: String(ai.content_prompt || "").trim() },
-        { label: "视频人物", text: String(ai.video_prompt || "").trim() },
-        { label: "参考图人物", text: String(ai.image_prompt || "").trim() },
-      ];
-    return blocks.filter((block) => block.text);
-  }, [selected]);
-
   const uploadImage = async (file: File) => {
     if (!batch || !selected) return;
     setBusyAction("upload");
@@ -1076,31 +1059,9 @@ export function BatchRoute() {
                   </section>
                 )}
 
-                {selected.ai && (
-                  <section className="batch-prompt-panel">
-                    <div className="batch-panel-title">
-                      <span>{selected.kind === "singing" ? "已填写的动作与运镜" : "已填写的迁移提示词"}</span>
-                      <small>只读 · 确认出片时按原文提交给工作流</small>
-                    </div>
-                    <div className="batch-prompt-list">
-                      {promptBlocks.map((block) => (
-                        <article key={block.label}>
-                          <h4>{block.label}</h4>
-                          <pre>{block.text}</pre>
-                        </article>
-                      ))}
-                      {selected.kind === "dance" && (
-                        <article>
-                          <h4>先去字幕</h4>
-                          <pre>{selected.ai.remove_subtitles ? "是 · 出片前先跑一遍去字幕" : "否 · 直接用源视频驱动"}</pre>
-                        </article>
-                      )}
-                      {promptBlocks.length === 0 && (
-                        <p className="batch-empty">这一条还没有动作/运镜或迁移提示词（预审未完成或模型降级）。</p>
-                      )}
-                    </div>
-                  </section>
-                )}
+                {/* 「已填写的动作与运镜 / 迁移提示词」整块去掉（2026-09-13 用户：
+                    「已填写的迁移提示词 这块内容整个都可以去掉 我不关心」）——
+                    提示词仍然照常提交给工作流，只是不再在页面上展示。 */}
 
                 <section className="batch-progress-panel">
                   <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(selected.status)}</small></div>

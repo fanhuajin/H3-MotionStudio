@@ -1726,6 +1726,21 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn('const unusable = !target || target.status === "deleted";', source)
         self.assertNotIn('["completed", "skipped", "deleted"].includes(currentSelection.status)', source)
 
+    def test_batch_page_hides_the_prompt_blocks(self) -> None:
+        """「已填写的迁移提示词 / 动作与运镜」整块不再展示。
+
+        用户 2026-09-13：「已填写的迁移提示词 这块内容整个都可以去掉 我不关心」。
+        提示词仍然照常提交给工作流，只是页面上不再是一块只读内容。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        rendered = re.sub(r"\{/\*.*?\*/\}", "", source, flags=re.S)
+        rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
+        for phrase in ("已填写的迁移提示词", "已填写的动作与运镜", "batch-prompt-list", "promptBlocks"):
+            self.assertNotIn(phrase, rendered, f"批量页不该再渲染「{phrase}」")
+        # 提交给工作流的字段本身不能被误删
+        for field in ("content_prompt", "video_prompt", "image_prompt", "action_prompt", "camera_prompt"):
+            self.assertIn(field, source)
+
     def test_batch_flow_has_four_steps_only(self) -> None:
         """进度只有 下载 / 备料 / 审核 / 出片 四步：歌词字幕与「整理发布文件」都不占格。
 

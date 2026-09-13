@@ -1533,11 +1533,6 @@ body {
 .batch-progress-panel, .batch-child-panel, .batch-output-panel { margin-top: 14px; padding: 14px; border: 1px solid var(--shell-line); border-radius: 9px; background: #0a081f; }
 /* 本条实际填给工作流的动作/运镜（或迁移提示词）：只读展示 */
 .batch-prompt-panel { margin-top: 14px; padding: 14px; border: 1px solid rgba(55, 216, 230, .25); border-radius: 9px; background: #0a081f; }
-.batch-prompt-list { display: flex; flex-direction: column; gap: 10px; }
-.batch-prompt-list article { min-width: 0; padding: 10px 12px; border: 1px solid var(--shell-line); border-radius: 8px; background: #0d0a24; }
-.batch-prompt-list h4 { margin: 0 0 7px; color: var(--shell-accent); font-size: 11px; font-weight: 650; letter-spacing: .04em; }
-.batch-prompt-list pre { margin: 0; color: #ddd8ea; font-family: inherit; font-size: 12px; line-height: 1.75; white-space: pre-wrap; word-break: break-word; -webkit-user-select: text; user-select: text; }
-.batch-prompt-list .batch-empty { margin: 0; }
 /* 审核时的画布比例选择：审核区里唯一的比例入口 */
 .batch-review-copy > label > .batch-ratio-pick { gap: 6px; }
 .batch-review-copy > label > .batch-ratio-pick i { width: 100%; }
