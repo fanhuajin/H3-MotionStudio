@@ -1881,13 +1881,58 @@ class WorkflowPreparationTests(unittest.TestCase):
                 # 反复调用必须稳定在同一个目录
                 self.assertEqual(batch_worker.publish_folder(item), second)
                 self.assertEqual(len(list(root.iterdir())), 1)
-                # 记录的目录已经不在了（被清掉）→ 用新目录
+                # 记录的目录已经不在了（被清掉）→ 复用同作品号已有的目录，**不新建第三个**
                 item["outputs"] = {"folder": str(root / "gone")}
                 item["ai"]["title"] = "第三版标题"
-                self.assertIn("第三版标题", batch_worker.publish_folder(item).name)
-                # 记录的目录在发布根之外（脏数据）→ 用新目录，不越界写
+                self.assertEqual(batch_worker.publish_folder(item), second)
+                self.assertEqual(len(list(root.iterdir())), 1)
+                # 记录的目录在发布根之外（脏数据）→ 也只认发布根里那一个
                 item["outputs"] = {"folder": str(root.parent / "outside")}
-                self.assertEqual(batch_worker.publish_folder(item).parent, root)
+                self.assertEqual(batch_worker.publish_folder(item), second)
+                self.assertEqual(len(list(root.iterdir())), 1)
+
+    def test_batch_re_added_work_reuses_the_publish_folder(self) -> None:
+        """重新加入队列的**同一条作品**不许再建一套发布目录（用户 2026-09-13）。
+
+        「现在加入队列目录又重复生成文件夹了……如果目录里已经有了最终成片说明已经生成过了……
+        再次加入队列时候不要重复生成文件夹」：新批次的条目还没有 `outputs.folder`，旧实现按
+        「编号_标题_作品号」新建目录，于是同一条作品多出一整套空目录。现在只要发布根里已经有
+        这个作品号的目录就直接复用，**尤其是已经有 `最终成片.mp4` 的那个**（说明这条出过片）。
+        """
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            aweme = "7684126327402778850"
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                # 旧批次留下的目录：已经出过片
+                done = root / f"001_老标题_{aweme}"
+                done.mkdir(parents=True)
+                (done / "最终成片.mp4").write_bytes(b"video")
+                (done / "人物图.png").write_bytes(b"x")
+                # 另一个更晚创建、但没有成片的目录（旧实现造出来的重复目录）
+                newer = root / f"002_新标题_{aweme}"
+                newer.mkdir()
+                (newer / "人物图.png").write_bytes(b"x")
+
+                fresh = {"id": "it9", "index": 2, "kind": "dance", "awemeId": aweme,
+                         "ai": {"title": "新标题"}, "outputs": {}}
+                chosen = batch_worker.publish_folder(fresh)
+                self.assertEqual(chosen, done, "必须复用已经有最终成片的那个目录")
+                self.assertEqual(len(list(root.iterdir())), 2, "不许再新建目录")
+
+                # 只有没成片的目录时也要复用（同样不许新建）
+                (done / "最终成片.mp4").unlink()
+                (done / "人物图.png").unlink()
+                done.rmdir()
+                self.assertEqual(batch_worker.publish_folder(fresh), newer)
+                self.assertEqual(len(list(root.iterdir())), 1)
+
+                # 全新作品（发布根里没有它的目录）才用理想名字
+                stranger = {"id": "it10", "index": 3, "kind": "dance", "awemeId": "7000000000000000000",
+                            "ai": {"title": "全新标题"}, "outputs": {}}
+                created = batch_worker.publish_folder(stranger)
+                self.assertEqual(created.name, "003_全新标题_7000000000000000000")
 
     def test_batch_reuses_an_already_downloaded_source(self) -> None:
         """本地已经有这条作品就直接复用，**不启动下载器、也不提交下载任务**。

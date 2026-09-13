@@ -1275,33 +1275,73 @@ def _ideal_publish_folder(item: dict[str, Any]) -> Path:
     return BATCH_OUTPUT_ROOT / f"{int(item['index']):03d}_{base_name}_{aweme_id}"
 
 
+def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
+    """发布根里**已经属于同一条作品**的目录（之前批次留下的）。
+
+    用户 2026-09-13：「现在加入队列目录又重复生成文件夹了……如果目录里已经有了最终成片
+    说明已经生成过了……再次加入队列时候不要重复生成文件夹」。同一个作品号只允许一个目录：
+    优先复用**已经有 `最终成片.mp4`** 的那个（说明这条出过片），其次复用最新的那个。
+    """
+    aweme = str(item.get("awemeId") or "").strip()
+    if not aweme or not BATCH_OUTPUT_ROOT.is_dir():
+        return None
+    candidates = [
+        path
+        for path in BATCH_OUTPUT_ROOT.iterdir()
+        if path.is_dir() and path.name.endswith(f"_{aweme}")
+    ]
+    if not candidates:
+        return None
+    finished = [path for path in candidates if (path / "最终成片.mp4").is_file()]
+    pool = finished or candidates
+    return max(pool, key=lambda path: path.stat().st_mtime)
+
+
+def _recorded_publish_folder(item: dict[str, Any]) -> Path | None:
+    """`outputs.folder` 里记的目录；不在发布根内（脏数据）就当没有。"""
+    raw = str((item.get("outputs") or {}).get("folder") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    try:
+        path.relative_to(BATCH_OUTPUT_ROOT)
+    except ValueError:
+        return None
+    return path
+
+
 def publish_folder(item: dict[str, Any]) -> Path:
-    """本条目的发布目录：**一个条目只能有一个目录**。
+    """本条作品的发布目录：**一条作品只能有一个目录**。
 
     标题会变（备料时一版、用户上传候选图后 `write_copy` 又改一版），如果每次都按新标题拼
     路径，同一个作品号就会留下好几个目录 —— 2026-09-13 用户实测：「我只开始了两个任务啊
-    文件夹多了好多」。所以优先复用 `outputs.folder` 记下的目录，名字过时了就**改名**过去，
-    改不动就继续用旧目录，**绝不新建第二个**。
+    文件夹多了好多」，后来又发现**重新加入队列**时会再建一套（用户原话：「现在加入队列
+    目录又重复生成文件夹了……如果目录里已经有了最终成片说明已经生成过了……再次加入队列
+    时候不要重复生成文件夹」）。所以规则是：
+
+    1. 发布根里已经有这个作品号的目录 → **直接复用**（优先带 `最终成片.mp4` 的那个）；
+       本条的记录正好是这个目录、只是标题变了，就顺手改名到理想名；
+    2. 没有同作品号的目录、但本条有记录 → 改名到理想名（改不动就用旧的）；
+    3. 都没有 → 用理想名字。
     """
     ideal = _ideal_publish_folder(item)
-    recorded = str((item.get("outputs") or {}).get("folder") or "").strip()
-    if not recorded:
-        return ideal
-    current = Path(recorded)
-    try:
-        current.relative_to(BATCH_OUTPUT_ROOT)
-    except ValueError:
-        return ideal
-    if not current.is_dir():
-        return ideal
-    if current.name == ideal.name:
-        return current
-    try:
-        current.rename(ideal)
-        return ideal
-    except OSError:
-        # 目标已存在（历史遗留的同名目录）或改名失败：继续用旧目录，也不要再建一个
-        return current
+    recorded = _recorded_publish_folder(item)
+    existing = _existing_publish_folder(item)
+    if existing is not None:
+        if recorded is not None and recorded == existing and existing.name != ideal.name:
+            try:
+                existing.rename(ideal)
+                return ideal
+            except OSError:
+                return existing
+        return existing
+    if recorded is not None and recorded.is_dir():
+        try:
+            recorded.rename(ideal)
+            return ideal
+        except OSError:
+            return recorded
+    return ideal
 
 
 def publish_copy_text(ai: dict[str, Any]) -> str:
