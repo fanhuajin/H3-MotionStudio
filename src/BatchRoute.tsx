@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { readJson } from "./api";
+import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
   ArrowClockwise,
   ArrowUUpLeft,
@@ -14,6 +15,7 @@ import {
   PersonSimpleRun,
   Play,
   SpinnerGap,
+  Timer,
   Trash,
   UploadSimple,
   WarningCircle,
@@ -109,6 +111,7 @@ interface BatchItem {
   downloadJobId?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  finishedAt?: string | null;
   /** 源视频文件名（含抖音作品号） */
   sourceName?: string;
   /** 抖音作品号：链接写法不同（短链 / modal_id / 喜欢列表）时唯一能认人的标识 */
@@ -131,6 +134,10 @@ interface BatchState {
   currentItemId?: string | null;
   notice?: string;
   pauseRequested?: boolean;
+  /** 时间戳（ISO）：用来算「已运行多久」 */
+  createdAt?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
   items: BatchItem[];
 }
 
@@ -420,6 +427,9 @@ export function BatchRoute() {
   );
   // 画布比例 / 去除字幕：没开始出片的条目都能改（审核区是主要入口，见 renderSettings）
   const selectedRatio = selected ? itemRatio(selected) : DEFAULT_RATIO.singing;
+  // 出了审核点（已加入队列/出片中/已完成）以后，同一屏信息继续显示，但只读：
+  // 用户 2026-09-13「等待你的确认 的信息在加入队列之后也要展示，只是不允许修改了」。
+  const atReview = selected?.status === "awaiting_review";
   const changeRatio = (ratio: CanvasRatio) => {
     if (!selected || selectedRatio === ratio) return;
     void itemCall("ratio", "POST", { ratio });
@@ -528,6 +538,17 @@ export function BatchRoute() {
       ["最近更新", formatLogTime(selected.updatedAt)],
     ] as Array<[string, string]>;
   }, [selected]);
+
+  // 已运行时间：批次还在跑就实时跳秒；已结束显示总耗时。
+  const batchLive = Boolean(batch && !batch.finishedAt && !["completed", "cancelled", "failed"].includes(batch.status));
+  const batchNowTick = useNowTick(batchLive);
+  const batchElapsedMs = batch ? elapsedMs(batch.startedAt || batch.createdAt, batch.finishedAt, batchNowTick) : null;
+  const batchFinishedLabel = batch?.finishedAt ? `批次总耗时（${formatLogTime(batch.finishedAt)} 结束）` : "";
+
+  // 本条已运行时间：从条目创建算到结束（或此刻）。
+  const itemElapsedMs = selected
+    ? elapsedMs(selected.createdAt, selected.finishedAt, batchNowTick)
+    : null;
 
   // 本条实际会写进工作流的动作/运镜（歌唱）或迁移提示词（跳舞）：只读展示给用户核对。
   const promptBlocks = useMemo(() => {
@@ -662,6 +683,13 @@ export function BatchRoute() {
             <div className="batch-section-head">
               <div><span>制作队列</span><small>{batch.notice}</small></div>
               <div className="batch-head-actions">
+                {/* 已运行时间：批次还在跑就实时跳秒，结束了显示总耗时 */}
+                {batchElapsedMs !== null && (
+                  <span className="batch-timer" title={batchFinishedLabel || "批次已运行时间（含排队）"}>
+                    <Timer weight="fill" /> {formatElapsedMs(batchElapsedMs)}
+                    {batchFinishedLabel ? "（总）" : ""}
+                  </span>
+                )}
                 {batch.status === "paused" ? (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 ) : !["completed", "awaiting_review", "cancelled"].includes(batch.status) ? (
@@ -716,7 +744,16 @@ export function BatchRoute() {
                   <div>
                     <p>第 {selected.index} 条 · {selected.kind === "singing" ? "歌曲视频" : "跳舞视频"}</p>
                     <h2>{selected.title}</h2>
-                    <a href={selected.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
+                    <div className="batch-detail-meta">
+                      <a href={selected.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
+                      {/* 本条已运行时间：跑到哪一步、一共花了多久 */}
+                      {itemElapsedMs !== null && (
+                        <span className="batch-timer" title={selected.finishedAt ? "本条总耗时" : "本条已运行时间（含排队）"}>
+                          <Timer weight="fill" /> {formatElapsedMs(itemElapsedMs)}
+                          {selected.finishedAt ? "（总）" : ""}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="batch-item-actions">
                     {/* 失败 / 已跳过 / 已出片：都能直接再出一版（同一接口，已确认过的只重跑出片） */}
@@ -895,16 +932,18 @@ export function BatchRoute() {
                   </p>
                 )}
 
-                {selected.status === "awaiting_review" && selected.ai && (
+                {/* 这一屏的信息在**加入队列之后也要继续显示**（用户 2026-09-13），
+                    只是出了审核点就不给改了：上传/换图与设置开关只在这里是 awaiting_review 时可用。 */}
+                {selected.ai && (
                   <section className="batch-review">
                     <div className="batch-review-image">
                       <div className="batch-review-label"><ImageSquare /> 候选人物图 · 第 {(selected.revision || 0) + 1} 版</div>
                       {hasImage ? (
                         <img
                           src={`/api/batches/${batch.id}/items/${selected.id}/image?v=${imageToken || selected.revision || 0}`}
-                          alt="待确认的人物图"
+                          alt="候选人物图"
                         />
-                      ) : (
+                      ) : atReview ? (
                         <label
                           className={`batch-dropzone ${dragging ? "over" : ""}`}
                           onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
@@ -929,8 +968,10 @@ export function BatchRoute() {
                             }}
                           />
                         </label>
+                      ) : (
+                        <p className="batch-empty">这一条没有留下候选人物图。</p>
                       )}
-                      {hasImage && (
+                      {hasImage && atReview && (
                         <label className="batch-replace">
                           <UploadSimple /> 换一张
                           <input
@@ -947,8 +988,8 @@ export function BatchRoute() {
                     </div>
                     <div className="batch-review-copy">
                       <div className="batch-review-title">
-                        <span>等待你的确认</span>
-                        <small>按 {selectedRatio} 出片 · 确认前不会启动 ComfyUI</small>
+                        <span>{atReview ? "等待你的确认" : `本条信息（只读）· ${batchStatusLabel(selected.status)}`}</span>
+                        <small>{atReview ? `按 ${selectedRatio} 出片 · 确认前不会启动 ComfyUI` : `按 ${selectedRatio} 出片`}</small>
                       </div>
 
                       {selected.ai.song_name && <p className="batch-song-name">识别歌曲：{selected.ai.song_name}</p>}
@@ -970,17 +1011,19 @@ export function BatchRoute() {
                           ))}
                         </dl>
                       </label>
-                      {renderSettings(selected)}
-                      <div className="batch-review-actions">
-                        <button
-                          className="batch-primary"
-                          disabled={Boolean(busyAction) || !hasImage}
-                          onClick={() => itemCall("confirm")}
-                          title={hasImage ? undefined : "请先添加上这一条的候选人物图"}
-                        >
-                          <Check weight="bold" />加入队列并出片
-                        </button>
-                      </div>
+                      {atReview && renderSettings(selected)}
+                      {atReview && (
+                        <div className="batch-review-actions">
+                          <button
+                            className="batch-primary"
+                            disabled={Boolean(busyAction) || !hasImage}
+                            onClick={() => itemCall("confirm")}
+                            title={hasImage ? undefined : "请先添加上这一条的候选人物图"}
+                          >
+                            <Check weight="bold" />加入队列并出片
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </section>
                 )}
@@ -1091,17 +1134,13 @@ export function BatchRoute() {
                   </section>
                 )}
 
-                {hasOutputs && selected.outputs && (
+                {outputsReady && selected.outputs && (
                   <section className="batch-output-panel">
                     <div className="batch-panel-title">
-                      {/* 审核点就先落了人物图+文案（2026-09-13 用户要求），这时还不能说成片已保存 */}
-                      <span>{outputsReady ? "发布文件已整理" : "发布目录已收到人物图与文案"}</span>
-                      <small>
-                        {selected.warning
-                          || (outputsReady
-                            ? "成片、人物图和发布文案均已保存"
-                            : "最终成片跑完后再补「最终成片.mp4」，人物图与文案已可直接取用")}
-                      </small>
+                      {/* 只有成片真的进了发布目录才显示这一块（用户 2026-09-13：
+                          「发布目录已收到人物图与文案」那句不要、也不要「发布文件还没整理」） */}
+                      <span>发布文件已整理</span>
+                      <small>{selected.warning || "成片、人物图和发布文案均已保存"}</small>
                     </div>
                     <div className="batch-output-grid">
                       {selected.outputs.videoFinal && <a href={`/api/batches/${batch.id}/items/${selected.id}/output/videoFinal`} target="_blank">最终成片</a>}
@@ -1112,18 +1151,6 @@ export function BatchRoute() {
                       <a href={`/api/batches/${batch.id}/items/${selected.id}/output/copy?download=true`}><Copy />发布文案</a>
                     </div>
                     <button className="batch-primary" onClick={openFolder}><FolderOpen />打开文件夹</button>
-                  </section>
-                )}
-
-                {selected.videoJobId && !outputsReady && selected.status !== "deleted" && (
-                  <section className="batch-output-panel">
-                    <div className="batch-panel-title">
-                      <span>发布文件还没整理</span>
-                      <small>成片已经生成但没进发布目录时，点一下补齐（不会重跑生成）</small>
-                    </div>
-                    <button className="batch-primary" onClick={() => itemCall("deliver")} disabled={Boolean(busyAction)}>
-                      {busyAction === "deliver" ? <SpinnerGap className="spin" /> : <FolderOpen />}重新整理发布文件
-                    </button>
                   </section>
                 )}
 
