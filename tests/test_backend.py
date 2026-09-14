@@ -1010,6 +1010,55 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("/api/batches/{batch_id}/items/skip-many", paths)
         self.assertIn("/api/batches/{batch_id}/items/delete-many", paths)
 
+    def test_batch_image_upload_blocks_running_items(self) -> None:
+        """未完成都能编辑，但正在出片/重新备料的条目不能换图（避免图文脱节）。
+
+        2026-09-15 用户：「只要状态是未完成的任务都可以进行编辑，当然正在运行的那条不允许编辑」。
+        """
+        import asyncio
+        import io
+
+        from starlette.datastructures import UploadFile
+
+        from backend import app as app_module
+
+        state = new_batch_state(["https://v.douyin.com/a"], [])
+        item_id = state["items"][0]["id"]
+
+        class StubStore:
+            def __init__(self, payload):
+                self.state = payload
+
+            def get(self, _batch_id):
+                return self.state
+
+        stub = StubStore(state)
+        with patch.object(app_module, "batch_store", stub):
+            for running_status in ("running", "revising"):
+                state["items"][0]["status"] = running_status
+                with self.assertRaises(app_module.HTTPException) as ctx:
+                    asyncio.run(
+                        app_module.upload_batch_item_image(
+                            "b1",
+                            item_id,
+                            UploadFile(file=io.BytesIO(b"fake"), filename="a.png"),
+                        )
+                    )
+                self.assertEqual(ctx.exception.status_code, 409)
+            # 待确认 / 已放行 / 失败 / 已跳过 仍能换图（守卫只拦运行中与已结束）
+            for ok_status in ("awaiting_review", "confirmed", "failed", "skipped"):
+                state["items"][0]["status"] = ok_status
+                # 走到文件落盘这步前先被空文件校验拦下即可证明「没被状态守卫拦」
+                with self.assertRaises(app_module.HTTPException) as ctx:
+                    asyncio.run(
+                        app_module.upload_batch_item_image(
+                            "b1",
+                            item_id,
+                            UploadFile(file=io.BytesIO(b""), filename="a.png"),
+                        )
+                    )
+                self.assertEqual(ctx.exception.status_code, 400)
+
     def test_comfy_stop_endpoint_and_jobless_shutdown(self) -> None:
         """手动关闭 ComfyUI：接口在，且交接用的关闭逻辑能在没有 job 的情况下调用。"""
         import inspect
@@ -1846,19 +1895,20 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 交付仍然要写发布文案
         self.assertIn("发布文案.txt", source)
 
-    def test_batch_queue_rows_show_their_own_time(self) -> None:
-        """每条任务显示**自己的**时间，不显示批次总耗时。
+    def test_batch_only_the_selected_item_shows_its_time(self) -> None:
+        """每条任务不再显示自己的时间，只保留选中/展开那一条的本条耗时。
 
-        用户 2026-09-13 先要「当前任务队列的时间也给下」，随后明确「每一个队列里的任务都是
-        独立的计算时间我不需要看总时间」——所以队列行各有各的时间，队列头部不再有批次计时。
-        排队中的条目必须写「排队」而不是「已用」，否则会让人以为它已经在跑了。
+        2026-09-15 用户：「还有时间你只需统计 本条的时间 我不关心所有任务的时间」——
+        表格行不再带「排队/已用/耗时」列；展开详情头部仍然显示「本条已运行时间（总耗时）」；
+        批次总耗时仍然不显示（2026-09-13 用户也要求过）。
         """
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
-        self.assertIn("const queueTime = (item: BatchItem)", source)
-        self.assertIn("queueTime(item)", source)          # 列表里真的用上了
-        for label in ('"排队"', '"耗时"', '"已用"'):
-            self.assertIn(label, source)
-        # 只要有条目在跑就继续跳秒（批次可能刚收尾）
+        self.assertIn("本条已运行时间", source)
+        self.assertIn("formatElapsedMs(itemElapsedMs)", source)
+        # 表格行不再逐条显示时间
+        self.assertNotIn("queueTime(item)", source)
+        self.assertNotIn("batch-time-cell", source)
+        # 跳秒逻辑保留，让选中条目的计时器实时更新（批次可能刚收尾）
         self.assertIn("const queueLive = visibleItems.some(", source)
         self.assertIn("useNowTick(batchLive || queueLive)", source)
         # 批次总耗时整块去掉（注释里提到这几个字不算）
@@ -1866,6 +1916,26 @@ class WorkflowPreparationTests(unittest.TestCase):
         rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
         self.assertNotIn("batchElapsedMs", rendered)
         self.assertNotIn("批次总耗时", rendered)
+
+    def test_batch_edit_rule_toggle_and_reopen_scope(self) -> None:
+        """未完成（非运行中/已完成）都能直接编辑；再点同一行收起；「回到确认」只给运行中+已完成。
+
+        2026-09-15 用户：「首次点击现在是张开，再次点击要收起」+「只要状态是未完成的任务都
+        可以进行编辑，当然正在运行的那条不允许编辑」；随后确认「回到确认」保留，只给出片中/
+        重新备料与已完成（confirmed/failed/skipped 用直接编辑替代）。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 再点同一行就收起
+        self.assertIn("setSelectedId((current) => (current === itemId ? null : itemId))", source)
+        # 编辑规则：运行中/重新备料/已完成/已删除 不可编辑，其余都能
+        self.assertIn(
+            '!["running", "revising", "completed", "deleted"].includes(selected.status)',
+            source,
+        )
+        # 换图对**所有可编辑**条目开放（不再只限审核点）
+        self.assertIn("{hasImage && editable && (", source)
+        # 「回到确认」只保留给 出片中/重新备料/已完成
+        self.assertIn('["running", "revising", "completed"].includes(selected.status)', source)
 
     def test_batch_selection_stays_on_the_item_you_clicked(self) -> None:
         """点开已完成 / 已跳过的条目不许自己跳走。

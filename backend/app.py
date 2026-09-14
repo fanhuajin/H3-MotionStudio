@@ -944,8 +944,13 @@ async def upload_batch_item_image(
     """
     state = _batch_or_404(batch_id)
     item = _batch_item_or_404(batch_id, item_id)
-    if item.get("status") in {"completed", "deleted"}:
+    status = str(item.get("status") or "")
+    if status in {"completed", "deleted"}:
         raise HTTPException(409, "当前条目已经结束")
+    # 2026-09-15 用户：「只要状态是未完成的任务都可以进行编辑，当然正在运行的那条不允许编辑」——
+    # 出片中/重新备料的条目不能换图（否则成片用的是旧图、文案却按新图重写，图文脱节）
+    if status in {"running", "revising"}:
+        raise HTTPException(409, "当前条目正在出片或重新备料，不能换图（先「停止取消」或「回到确认」）")
     suffix = Path(file.filename or "candidate.png").suffix.lower()
     if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
         raise HTTPException(400, "只支持 PNG / JPG / WEBP 图片")

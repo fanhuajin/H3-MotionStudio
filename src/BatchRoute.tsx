@@ -375,7 +375,8 @@ export function BatchRoute() {
   const followedItemRef = useRef<string | null>(null);
   const selectItem = (itemId: string) => {
     followedItemRef.current = null;   // 用户自己点的，别再来抢
-    setSelectedId(itemId);
+    // 2026-09-15 用户：「首次点击现在是张开，再次点击要收起」——再点同一行就收起
+    setSelectedId((current) => (current === itemId ? null : itemId));
   };
 
   useEffect(() => {
@@ -542,13 +543,16 @@ export function BatchRoute() {
   };
 
   const hasImage = Boolean(selected?.ai?.reference_image_path);
-  // 用户 2026-09-14：「未开始前的任务都允许修改」——没开始出片的条目都能改比例/去除字幕
-  const settingsEditable = Boolean(
-    selected?.ai && !["running", "revising", "completed", "deleted"].includes(selected.status),
+  // 2026-09-15 用户：「只要状态是未完成的任务都可以进行编辑，当然正在运行的那条不允许编辑」——
+  // 未完成的条目（pending / awaiting_review / confirmed / failed / skipped）都能直接改画布比例、
+  // 去除字幕、换候选图；出片中/重新备料/已完成/已删除 不能编辑。
+  const editable = Boolean(
+    selected && !["running", "revising", "completed", "deleted"].includes(selected.status),
   );
-  // 「回到确认」：过了审核点的条目（含正在出片，会先安全取消）都能退回去重做
+  // 「回到确认」只保留给「正在出片/重新备料」与「已完成」（2026-09-15 用户确认）：
+  // confirmed / failed / skipped 已经能直接编辑，不需要再退回审核点重来。
   const canReopen = Boolean(
-    selected?.ai && !["awaiting_review", "deleted"].includes(selected.status),
+    selected?.ai && ["running", "revising", "completed"].includes(selected.status),
   );
   // 「替换源视频」：没开始出片（pending / awaiting_review / confirmed / failed / skipped）都能换，
   // 和改比例同一条规则；正在出片或已经出片要先「取消出片」/「回到确认」。
@@ -670,7 +674,8 @@ export function BatchRoute() {
 
   // 已运行时间：批次还在跑就实时跳秒；已结束显示总耗时。
   const batchLive = Boolean(batch && !batch.finishedAt && !["completed", "cancelled", "failed"].includes(batch.status));
-  // 队列里每一条也要有时间，所以只要还有条目在跑/已放行就继续跳秒（批次可能刚收尾）
+  // 只保留「选中/展开那一条」的本条计时器（2026-09-15 用户：「你只需统计 本条的时间 我不关心
+  // 所有任务的时间」——表格行不再逐条显示时间）；只要还有条目在跑/已放行就继续跳秒（批次可能刚收尾）。
   const queueLive = visibleItems.some(
     (item) => !item.finishedAt && ["running", "revising", "confirmed"].includes(item.status),
   );
@@ -680,21 +685,6 @@ export function BatchRoute() {
   const itemElapsedMs = selected
     ? elapsedMs(selected.createdAt, selected.finishedAt, batchNowTick)
     : null;
-
-  /**
-   * 表格里那条的时间：排队中写「排队」（还没开始，别让人以为在跑）、
-   * 正在跑写「已用」、结束写「耗时」。都从加入队列算起。
-   */
-  const queueTime = (item: BatchItem): string => {
-    const ms = elapsedMs(item.createdAt, item.finishedAt, batchNowTick);
-    if (ms === null) return "";
-    const label = item.status === "pending"
-      ? "排队"
-      : item.finishedAt
-        ? "耗时"
-        : "已用";
-    return `${label} ${formatElapsedMs(ms)}`;
-  };
 
   const uploadImage = async (file: File) => {
     if (!batch || !selected) return;
@@ -1024,7 +1014,7 @@ export function BatchRoute() {
               ) : (
                 <p className="batch-empty">这一条没有留下候选人物图。</p>
               )}
-              {hasImage && atReview && (
+              {hasImage && editable && (
                 <label className="batch-replace">
                   <UploadSimple /> 换一张
                   <input
@@ -1041,7 +1031,7 @@ export function BatchRoute() {
             </div>
             <div className="batch-review-copy">
               <div className="batch-review-title">
-                <span>{atReview ? "等待你的确认" : `本条信息（只读）· ${batchStatusLabel(item.status)}`}</span>
+                <span>{atReview ? "等待你的确认" : `本条信息 · ${batchStatusLabel(item.status)}${editable ? "" : "（只读）"}`}</span>
                 <small>{atReview ? `按 ${selectedRatio} 出片 · 确认前不会启动 ComfyUI` : `按 ${selectedRatio} 出片`}</small>
               </div>
 
@@ -1091,7 +1081,7 @@ export function BatchRoute() {
           </section>
         )}
 
-        {item.ai && item.status !== "awaiting_review" && settingsEditable && (
+        {item.status !== "awaiting_review" && editable && (
           <section className="batch-prompt-panel">
             <div className="batch-panel-title">
               <span>出片前设置</span>
@@ -1353,14 +1343,13 @@ export function BatchRoute() {
                     <th>任务</th>
                     <th>状态</th>
                     <th>比例</th>
-                    <th>时间</th>
                     <th className="right">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredItems.length === 0 ? (
                     <tr>
-                      <td colSpan={6}>
+                      <td colSpan={5}>
                         <p className="batch-empty">这个状态下还没有任务。</p>
                       </td>
                     </tr>
@@ -1402,7 +1391,6 @@ export function BatchRoute() {
                             )}
                           </td>
                           <td className="batch-ratio-cell">{itemRatio(item)}</td>
-                          <td className="batch-time-cell">{queueTime(item)}</td>
                           <td className="batch-ops-cell" onClick={(event) => event.stopPropagation()}>
                             <div className="batch-row-ops">
                               {statusAction(item)}
@@ -1433,7 +1421,7 @@ export function BatchRoute() {
                         </tr>
                         {selectedId === item.id && (
                           <tr className="batch-expanded-row">
-                            <td colSpan={6}>{renderSelectedDetail()}</td>
+                            <td colSpan={5}>{renderSelectedDetail()}</td>
                           </tr>
                         )}
                       </Fragment>

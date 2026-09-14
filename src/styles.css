@@ -1486,7 +1486,6 @@ body {
 .batch-status.skipped { color: #9d95b5; opacity: .7; }
 .batch-status.failed { border-color: rgba(255, 108, 137, .45); color: #ff9caf; }
 .batch-ratio-cell { white-space: nowrap; color: #c8c3dd; font-size: 11px; }
-.batch-time-cell { white-space: nowrap; color: var(--shell-muted); font-size: 11px; }
 .batch-ops-cell { white-space: nowrap; }
 .batch-row-ops { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .batch-row-ops button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; border: 1px solid #44385f; border-radius: 7px; color: #cbc5da; background: #15102c; font-size: 11px; cursor: pointer; transition: .16s ease; }
