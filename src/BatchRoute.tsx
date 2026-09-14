@@ -680,8 +680,9 @@ export function BatchRoute() {
 
   // 已运行时间：批次还在跑就实时跳秒；已结束显示总耗时。
   const batchLive = Boolean(batch && !batch.finishedAt && !["completed", "cancelled", "failed"].includes(batch.status));
-  // 只保留「选中/展开那一条」的本条计时器（2026-09-15 用户：「你只需统计 本条的时间 我不关心
-  // 所有任务的时间」——表格行不再逐条显示时间）；只要还有条目在跑/已放行就继续跳秒（批次可能刚收尾）。
+  // 时间只统计「本条」（2026-09-15 用户：「你只需统计 本条的时间 我不关心所有任务的时间」）：
+  // 表格里只给**正在处理的那一条**（= batch.currentItemId，且状态在 备料中/出片中/重新备料）显示
+  // 「已用 X」，其它任务不显示；展开详情头部另有「本条已运行时间」。跳秒逻辑保留（批次可能刚收尾）。
   const queueLive = visibleItems.some(
     (item) => !item.finishedAt && ["running", "revising", "confirmed"].includes(item.status),
   );
@@ -691,6 +692,11 @@ export function BatchRoute() {
   const itemElapsedMs = selected
     ? elapsedMs(selected.createdAt, selected.finishedAt, batchNowTick)
     : null;
+  /** 表格行里「本条进行中」那条的已用时间（从加入队列算起）。 */
+  const itemElapsedText = (item: BatchItem): string => {
+    const ms = elapsedMs(item.createdAt, item.finishedAt, batchNowTick);
+    return ms === null ? "" : formatElapsedMs(ms);
+  };
 
   const uploadImage = async (file: File) => {
     if (!batch || !selected) return;
@@ -1395,6 +1401,12 @@ export function BatchRoute() {
                             {item.childJob?.currentSegment && item.childJob.estimatedSegments && (
                               <small>分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
                             )}
+                            {/* 只给「本条进行中」的那一条显示已用时间（2026-09-15 用户：只统计本条的时间） */}
+                            {batch?.status === "running"
+                              && item.id === batch?.currentItemId
+                              && ["pending", "running", "revising"].includes(item.status) && (
+                                <small className="batch-elapsed"><Timer weight="fill" />已用 {itemElapsedText(item)}</small>
+                              )}
                           </td>
                           <td className="batch-ratio-cell">{itemRatio(item)}</td>
                           <td className="batch-ops-cell" onClick={(event) => event.stopPropagation()}>

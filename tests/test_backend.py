@@ -1895,20 +1895,25 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 交付仍然要写发布文案
         self.assertIn("发布文案.txt", source)
 
-    def test_batch_only_the_selected_item_shows_its_time(self) -> None:
-        """每条任务不再显示自己的时间，只保留选中/展开那一条的本条耗时。
+    def test_batch_only_the_in_progress_item_shows_its_time(self) -> None:
+        """表格里只给「本条进行中」的那一条显示已用时间，其它任务不显示。
 
-        2026-09-15 用户：「还有时间你只需统计 本条的时间 我不关心所有任务的时间」——
-        表格行不再带「排队/已用/耗时」列；展开详情头部仍然显示「本条已运行时间（总耗时）」；
-        批次总耗时仍然不显示（2026-09-13 用户也要求过）。
+        2026-09-15 用户：「你只需统计 本条的时间 我不关心所有任务的时间」——表格不再给每条
+        任务都显示时间，只给正在处理的那一条（= `batch.currentItemId` 且状态为 备料中/出片中/
+        重新备料）显示「已用 X」；展开详情头部另有「本条已运行时间（总耗时）」；批次总耗时仍然
+        不显示（2026-09-13 用户也要求过）。
         """
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
         self.assertIn("本条已运行时间", source)
         self.assertIn("formatElapsedMs(itemElapsedMs)", source)
-        # 表格行不再逐条显示时间
+        # 表格里只给「本条进行中」那一条显示已用时间
+        self.assertIn("已用 {itemElapsedText(item)}", source)
+        self.assertIn('["pending", "running", "revising"].includes(item.status)', source)
+        self.assertIn("item.id === batch?.currentItemId", source)
+        # 不再给每条任务都显示时间
         self.assertNotIn("queueTime(item)", source)
         self.assertNotIn("batch-time-cell", source)
-        # 跳秒逻辑保留，让选中条目的计时器实时更新（批次可能刚收尾）
+        # 跳秒逻辑保留，让计时器实时更新（批次可能刚收尾）
         self.assertIn("const queueLive = visibleItems.some(", source)
         self.assertIn("useNowTick(batchLive || queueLive)", source)
         # 批次总耗时整块去掉（注释里提到这几个字不算）

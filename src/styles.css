@@ -1478,6 +1478,8 @@ body {
 .batch-kind.dance { border: 1px solid rgba(180, 132, 255, .34); color: #c9abff; background: rgba(140, 90, 255, .12); }
 .batch-item-source { display: block; max-width: 520px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8d86a6; font-size: 10px; }
 .batch-status-cell small { display: block; margin-top: 3px; color: var(--shell-muted); font-size: 9px; }
+.batch-status-cell .batch-elapsed { display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; color: #8ceaf6; font-size: 10px; }
+.batch-status-cell .batch-elapsed svg { width: 11px; height: 11px; color: var(--shell-accent); }
 .batch-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid #3a3152; border-radius: 999px; color: #a89fc2; background: rgba(16, 12, 39, .8); font-size: 10px; white-space: nowrap; }
 .batch-status.awaiting_review { border-color: rgba(55, 216, 230, .45); color: #8ceaf6; }
 .batch-status.running, .batch-status.revising { border-color: rgba(55, 216, 230, .4); color: #66e4ee; }
