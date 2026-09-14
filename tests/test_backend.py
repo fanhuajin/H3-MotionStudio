@@ -1803,6 +1803,61 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("评论区", fallback)
         self.assertTrue(fallback.strip())
 
+    def test_batch_dance_copy_never_says_cover_song(self) -> None:
+        """跳舞视频的标题 / 简介 / 标签里不许出现「翻唱」这类唱歌用词。
+
+        2026-09-15 用户：「正常跳舞视频都是舞蹈，手势舞之类的 我看你现在的简介或者标题跳舞
+        都会写上翻唱 这是不对的」。根因是 `copy_prompt` 没有类型参数，跳舞也走「歌曲」那套
+        背景与要求；这里同时守住「提示词按类型分开」与「落盘前确定性清掉」两层。
+        """
+        # ① 提示词：跳舞分支明确禁止翻唱，唱歌分支保留原来的「歌曲」背景
+        dance_prompt = batch_ai.copy_prompt(kind="dance", song_name="", song_mood="", description="手势舞")
+        self.assertIn("不是唱歌视频", dance_prompt)
+        self.assertIn("严禁", dance_prompt)
+        self.assertIn("翻唱", dance_prompt)             # 作为**禁止项**出现在提示词里
+        self.assertNotIn("歌曲：《", dance_prompt)       # 跳舞不再用「歌曲」背景
+        singing_prompt = batch_ai.copy_prompt(
+            kind="singing", song_name="爱如潮水", song_mood="抒情", description=""
+        )
+        self.assertIn("歌曲：《爱如潮水》", singing_prompt)
+        self.assertNotIn("不是唱歌视频", singing_prompt)
+        # 预审提示词同样带类型守则
+        dance_preflight = batch_ai.preflight_prompt(kind="dance", duration=20.0, description="", tags=[])
+        self.assertIn("不是唱歌视频", dance_preflight)
+
+        # ② 落盘兜底：模型/源作品给出的「翻唱」标题、简介、标签都被就地纠正
+        result = {
+            "title": "《爱如潮水》翻唱",
+            "introduction": "《爱如潮水》翻唱｜戴上耳机听更清楚🎧",
+            "tags": ["翻唱", "手势舞"],
+        }
+        filled = batch_ai.ensure_copy_fields(
+            result, kind="dance", description="手势舞 #热门", source_tags=["翻唱"]
+        )
+        self.assertNotIn("翻唱", result["title"])
+        self.assertNotIn("翻唱", result["introduction"])
+        self.assertNotIn("翻唱", "".join(result["tags"]))
+        self.assertIn("标题", filled)
+        self.assertIn("简介", filled)
+        self.assertEqual(len(result["tags"]), 5)
+
+        # 跳过的条目在读取路径上也会自愈（batch_store._normalize → _backfill_copy_fields）
+        self.assertTrue(batch_ai.has_singing_wording("《X》翻唱"))
+
+        # ③ 降级标题不再写死「翻唱作品」
+        fallback = batch_ai.fallback_result(kind="dance", description="", tags=[])
+        self.assertNotIn("翻唱", fallback["title"])
+        self.assertTrue(fallback["title"].strip())
+
+        # ④ 唱歌条目不受影响：「翻唱」照旧保留
+        keep = {"title": "翻唱《爱如潮水》", "introduction": "《爱如潮水》翻唱🎧", "tags": ["翻唱"]}
+        batch_ai.ensure_copy_fields(keep, kind="singing", description="", source_tags=["翻唱"])
+        self.assertIn("翻唱", keep["tags"])
+        self.assertEqual(batch_ai._clean_tags(["翻唱"], kind="singing"), ["翻唱"])
+        self.assertEqual(batch_ai._clean_tags(["翻唱"], kind="dance"), [])
+        # 「舞蹈翻跳」是舞蹈自己的说法，不能被误伤
+        self.assertEqual(batch_ai._clean_tags(["舞蹈翻跳"], kind="dance"), ["舞蹈翻跳"])
+
     def test_batch_item_title_follows_the_published_title(self) -> None:
         """条目标题只认发布标题 `ai.title`（用户 2026-09-13：「批量生成任务 4 为什么标题不一致」）。
 
@@ -1943,9 +1998,11 @@ class WorkflowPreparationTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
         # 再点同一行就收起
         self.assertIn("setSelectedId((current) => (current === itemId ? null : itemId))", source)
-        # 收起后（selectedId 清空）不会被自动跟随抢回去展开
-        self.assertIn("userInteractedRef", source)
-        self.assertIn("selectedId === null && userInteractedRef.current", source)
+        # 详情完全手动：没有自动跟随 / 自动展开，启动时列表全收起
+        self.assertNotIn("followedItemRef", source)
+        self.assertNotIn("userInteractedRef", source)
+        self.assertNotIn("setSelectedId(batch.currentItemId)", source)
+        self.assertNotIn("setSelectedId(state.currentItemId", source)
         # 编辑规则：运行中/重新备料/已完成/已删除 不可编辑，其余都能
         self.assertIn(
             '!["running", "revising", "completed", "deleted"].includes(selected.status)',
@@ -1956,20 +2013,28 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 「回到确认」只保留给 出片中/重新备料/已完成
         self.assertIn('["running", "revising", "completed"].includes(selected.status)', source)
 
-    def test_batch_selection_stays_on_the_item_you_clicked(self) -> None:
-        """点开已完成 / 已跳过的条目不许自己跳走。
+    def test_batch_detail_is_manual_only(self) -> None:
+        """详情只由用户点开：启动时全收起、不自动跟随当前条目、标签可以自由切换。
 
-        用户 2026-09-13：「取消出片之后为什么点击不了了 一点就跳转到了其他的」——旧逻辑只要
-        选中项的 status 是 completed/skipped/deleted，就把选中项强行改成 `currentItemId`，
-        于是刚取消出片（→ skipped）的那一条根本点不开，已出片的条目也看不了。
-        现在只有「选中的条目已不存在/已删除」或「本来就是自动跟随」时才跳。
+        用户 2026-09-15：「现在批量默认展开详情的时间切换不了」+「我希望启动页面的时候
+        列表默认都是收起来的 由我自己点击要查看哪个」——旧的两套自动行为（跟随 `currentItemId`
+        自动展开、以及状态变化时把标签切回选中条目所在状态）正是「切换不了」的根因：
+        点开别的标签会被立刻切回去，收起也会被重新展开。
         """
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 点行 = 展开 / 再点 = 收起
         self.assertIn("const selectItem = (itemId: string)", source)
         self.assertIn("onClick={() => selectItem(item.id)}", source)
-        self.assertIn("followedItemRef", source)
-        self.assertIn('const unusable = !target || target.status === "deleted";', source)
-        self.assertNotIn('["completed", "skipped", "deleted"].includes(currentSelection.status)', source)
+        self.assertIn("setSelectedId((current) => (current === itemId ? null : itemId))", source)
+        # 不再有任何「自动选中 currentItemId」的路径
+        self.assertNotIn("followedItemRef", source)
+        self.assertNotIn("setSelectedId(batch.currentItemId)", source)
+        self.assertNotIn("setSelectedId(state.currentItemId", source)
+        # 不再因为「选中的条目不属于当前标签」就把标签切回去
+        self.assertNotIn("tabForStatus", source)
+        self.assertIn("const switchTab = (id: TabId) => {", source)
+        # 选中项是空（全收起）时不该自动展开任何一条
+        self.assertIn("const [selectedId, setSelectedId] = useState<string | null>(null);", source)
 
     def test_batch_page_hides_the_prompt_blocks(self) -> None:
         """「已填写的迁移提示词 / 动作与运镜」整块不再展示。

@@ -974,6 +974,7 @@ async def upload_batch_item_image(
     if batch_ai.configured():
         try:
             copy = await batch_ai.write_copy(
+                kind=str(item.get("kind") or "singing"),
                 candidate_image=target,
                 song_name=str(ai.get("song_name") or ""),
                 song_mood=str(ai.get("song_mood") or ""),

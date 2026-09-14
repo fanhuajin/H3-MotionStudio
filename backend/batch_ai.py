@@ -340,6 +340,16 @@ content_prompt / video_prompt / image_prompt 返回空字符串，remove_subtitl
 action_prompt / camera_prompt 返回空字符串。"""
     )
 
+    # 文案类型守则：跳舞条目绝不能出现「翻唱」这类唱歌用词（2026-09-15 用户实测标题/简介写成翻唱）
+    copy_guard = (
+        "- **本条是跳舞视频（舞蹈 / 手势舞 / 卡点舞等），不是唱歌视频**：标题与简介里严禁出现"
+        "「翻唱」「原唱」「演唱」「歌声」这类唱歌用词（用户明确说过「正常跳舞视频都是舞蹈，"
+        "手势舞之类的 我看你现在的简介或者标题跳舞都会写上翻唱 这是不对的」），改用 舞种 / 编舞 / "
+        "卡点 / 律动 / 跳给你看 这类说法；\n"
+        if kind == "dance"
+        else "- 本条是唱歌视频：文案围绕这首歌的表达来写（可以出现「翻唱」这类唱歌用词）；\n"
+    )
+
     adjustment = ""
     if feedback:
         adjustment = f"""
@@ -373,7 +383,7 @@ action_prompt / camera_prompt 返回空字符串。"""
 
 二、发布文案（**发布用文案，不是画面说明**）
 产出会由内容创作者直接发到抖音，**读者看不到图**，所以文案要能勾住人而不是描述画面：
-- **禁止客观描述句**：不许出现「画面中 / 图中 / 一位…的女子 / 身穿… / 站在…前 / 光线映出」这类陈述；
+{copy_guard}- **禁止客观描述句**：不许出现「画面中 / 图中 / 一位…的女子 / 身穿… / 站在…前 / 光线映出」这类陈述；
 - title：原创、可直接发布的中文标题（≤20 字），带钩子或情绪，参考原文风格但不要照抄
 - introduction：一到两句**创作者口吻**的发布简介 = 一句第一人称的情绪或态度，可带 1~2 个 emoji；
   **不许互动喊话、不许向观众提问**（「评论区告诉我」「你想听我唱哪句」「你听到第几秒」「点赞关注」
@@ -391,32 +401,59 @@ action_prompt / camera_prompt 返回空字符串。"""
 
 def copy_prompt(
     *,
+    kind: str = "singing",
     song_name: str,
     song_mood: str,
     description: str,
     feedback: str = "",
 ) -> str:
+    """发布文案提示词。
+
+    **必须按类型分开写**：跳舞条目以前也走「歌曲」那一套背景与要求（提示词里直接写
+    「歌曲：《…》」），模型于是把舞蹈 / 手势舞也写成「翻唱」——用户 2026-09-15：
+    「正常跳舞视频都是舞蹈，手势舞之类的 我看你现在的简介或者标题跳舞都会写上翻唱 这是不对的」。
+    """
     adjustment = ""
     if feedback:
         adjustment = f"\n\n用户的修改意见（必须满足）：{feedback}\n"
+    if kind == "dance":
+        type_rule = """**本条是跳舞视频**（舞蹈 / 手势舞 / 卡点舞等），**不是唱歌视频**：
+- 严禁出现「翻唱」「原唱」「演唱」「歌声」「唱给你听」这类唱歌用词 —— 本条不唱歌，也不写翻唱；
+- 用舞蹈的说法：舞种 / 编舞 / 卡点 / 律动 / 动作 / 跳给你看 等；
+- 不要复述画面，也不要写和观众互动的喊话。"""
+        background = (
+            f"背景音乐：《{song_name or '未识别'}》（跳舞视频不需要识别歌名，这里只作氛围参考）\n"
+            f"原作品描述：{description or '（没有拿到）'}"
+        )
+        tags_rule = "题材 / 舞种 / 穿搭造型 / 氛围 / 情绪"
+        subject = "画面和这支舞"
+    else:
+        type_rule = "**本条是唱歌视频**：围绕这首歌的表达来写文案（可以出现「翻唱」这类唱歌用词）。"
+        background = (
+            f"歌曲：《{song_name or '未识别'}》\n"
+            f"歌曲情绪与氛围：{song_mood or '未知'}\n"
+            f"原作品描述：{description or '（没有拿到）'}"
+        )
+        tags_rule = "题材 / 曲风 / 穿搭造型 / 氛围 / 情绪"
+        subject = "画面和歌曲"
     return f"""这是本地批量制作中的发布文案环节。**第一张图就是本条最终要发布的人物图**。
 
 请写**内容创作者的发布文案**：它会直接发到抖音，读者看不到图，所以文案要勾住人，而不是描述画面。
 画面只用来保证「不写图里没有的东西」，不要把画面内容复述一遍。
 
+{type_rule}
+
 可参考的背景信息（只作参考，画面是事实依据）：
-歌曲：《{song_name or "未识别"}》
-歌曲情绪与氛围：{song_mood or "未知"}
-原作品描述：{description or "（没有拿到）"}
+{background}
 
 要求：
 - title：原创、可直接发布的中文标题（≤20 字），带钩子或情绪，不要照抄原作品描述
 - introduction：一到两句**创作者口吻**的发布简介 = 一句第一人称的情绪/态度，可带 1~2 个 emoji；
   **不许互动喊话、不许向观众提问**（「评论区告诉我」「你想听我唱哪句」「你听到第几秒」「点赞关注」
   「看到最后别走开」这类一律禁止，用户明确说过「不要这种话」）；
-  必须与画面和歌曲对得上（不要写画面里没有的颜色、道具或场景），但**绝对不要复述画面**
+  必须与{subject}对得上（不要写画面里没有的颜色、道具或场景），但**绝对不要复述画面**
   （不许出现「图中 / 身穿 / 站在…前 / 光线映出」这类描述句）——文案是用来表达自己的，不是画面说明
-- tags：恰好 5 个不带 # 的中文标签，按内容创作者的用法挑（题材 / 曲风或舞种 / 穿搭造型 / 氛围 / 情绪），
+- tags：恰好 5 个不带 # 的中文标签，按内容创作者的用法挑（{tags_rule}），
   不多不少，不要出现「画面」「描述」「评论区」这类无意义词
 
 只返回符合给定 JSON schema 的 JSON。{adjustment}"""
@@ -424,6 +461,7 @@ def copy_prompt(
 
 async def write_copy(
     *,
+    kind: str = "singing",
     candidate_image: Path,
     song_name: str = "",
     song_mood: str = "",
@@ -435,12 +473,18 @@ async def write_copy(
     预审的分析只能看到源视频的联系表，看不到之后生成的候选图；两者一旦不一致
     （实测出图换成黑发水晶场景，文案却还在写「粉色氛围」），文案就会和画面脱节。
     所以文案必须在出图之后、以图为依据再写一次。
+
+    `kind` 必须传：跳舞条目要走跳舞的提示词，否则模型会把它写成「翻唱」。
     """
     schema = json.loads(COPY_SCHEMA.read_text(encoding="utf-8"))
     schema.pop("$schema", None)
     content: list[dict[str, Any]] = [
         {"type": "text", "text": copy_prompt(
-            song_name=song_name, song_mood=song_mood, description=description, feedback=feedback
+            kind=kind,
+            song_name=song_name,
+            song_mood=song_mood,
+            description=description,
+            feedback=feedback,
         )},
         {"type": "image_url", "image_url": {"url": _data_url(Path(candidate_image)), "detail": "high"}},
     ]
@@ -516,14 +560,20 @@ async def analyze(
     )
 
 
-def _clean_tags(values: Any) -> list[str]:
-    """去掉 #、空白与重复，剔掉占位词与「互动喊话」类标签（用户明确不要）。"""
+def _clean_tags(values: Any, *, kind: str = "singing") -> list[str]:
+    """去掉 #、空白与重复，剔掉占位词与「互动喊话」类标签（用户明确不要）。
+
+    跳舞条目额外剔掉「翻唱」这类唱歌专用标签（2026-09-15 用户：「我看你现在的简介或者标题
+    跳舞都会写上翻唱 这是不对的」）。`kind` 默认 singing，唱歌条目照旧保留「翻唱」。
+    """
     cleaned: list[str] = []
     for value in values or []:
         name = str(value or "").strip().lstrip("#").strip()
         if not name or name in cleaned or name in PLACEHOLDER_VALUES:
             continue
         if any(marker in name for marker in INTERACTION_MARKERS):
+            continue
+        if kind == "dance" and has_singing_wording(name):
             continue
         cleaned.append(name)
     return cleaned
@@ -596,6 +646,40 @@ TAG_POOL: dict[str, list[str]] = {
 }
 
 
+# 唱歌专用的用词：**跳舞条目里一个都不许出现**（2026-09-15 用户：「正常跳舞视频都是舞蹈，
+# 手势舞之类的 我看你现在的简介或者标题跳舞都会写上翻唱 这是不对的」）。根因是 `copy_prompt`
+# 以前没有类型参数、跳舞也走「歌曲」那套要求；除了按类型改提示词，落盘前还有这道确定性兜底
+# （模型不听话时也兜得住）。注意「翻跳」是舞蹈自己的说法（舞蹈翻跳），不在禁用列表里。
+SINGING_ONLY_MARKERS = ("翻唱", "原唱", "演唱", "歌声", "唱歌", "唱给你听", "开口跪")
+DANCE_FALLBACK_TITLE = "跳舞日常"
+
+
+def has_singing_wording(*texts: Any) -> bool:
+    """这些文案里是否混了唱歌专用词（只用来判断跳舞条目要不要清理）。"""
+    return any(
+        marker in str(text or "")
+        for text in texts
+        for marker in SINGING_ONLY_MARKERS
+    )
+
+
+def _strip_singing_wording(text: str) -> str:
+    """清掉标题里的唱歌用词，并把留下的多余分隔符收拾干净（「《X》翻唱」→「《X》」）。"""
+    cleaned = str(text or "")
+    for marker in SINGING_ONLY_MARKERS:
+        cleaned = cleaned.replace(marker, "")
+    cleaned = re.sub(r"[｜|·・\-—–~～,，、;；:：]+", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" 　")
+
+
+def _dance_title(description: str = "") -> str:
+    """跳舞条目的兜底标题：用源作品文案第一行（同样要清掉唱歌用词），没有就写「跳舞日常」。"""
+    headline = ""
+    if description:
+        headline = str(description).strip().splitlines()[0].split("#")[0].strip()
+    return _strip_singing_wording(headline)[:40] or DANCE_FALLBACK_TITLE
+
+
 def compose_introduction(
     kind: str,
     *,
@@ -641,6 +725,12 @@ def sanitize_introduction(
         return compose_introduction(
             kind, song_name=song_name, song_mood=song_mood, description=description
         )
+    # 跳舞条目的简介里混了唱歌用词（「《X》翻唱｜戴上耳机听更清楚🎧」）：整句退回跳舞兜底，
+    # 不做半截缝补 —— 否则会留下「《X》，戴上耳机听更清楚」这种还是唱歌味的句子。
+    if kind == "dance" and has_singing_wording(cleaned):
+        return compose_introduction(
+            kind, song_name=song_name, song_mood=song_mood, description=description
+        )
     cuts = [cleaned.find(marker) for marker in INTERACTION_MARKERS if marker in cleaned]
     if cuts:
         cleaned = cleaned[: min(cuts)]
@@ -677,6 +767,15 @@ def ensure_copy_fields(
     多了截断——先保留模型/源作品给的，再补通用的。
     """
     filled: list[str] = []
+    # 跳舞条目的标题里混了唱歌用词（模型把「《X》翻唱」写进舞蹈条目的标题）：清掉；
+    # 清完不成句就退回源作品文案 / 跳舞兜底标题（用户 2026-09-15：「跳舞都会写上翻唱 这是不对的」）。
+    if kind == "dance":
+        title = str(result.get("title") or "").strip()
+        # **只在真的混了唱歌用词时才动标题** —— 否则会把正常标题的标点也一起规整掉
+        # （实测「这支没人听过的曲子，我跳了很久」被改成空格分隔）。
+        if title and has_singing_wording(title):
+            result["title"] = _strip_singing_wording(title) or _dance_title(description)
+            filled.append("标题")
     intro = sanitize_introduction(
         str(result.get("introduction") or ""),
         kind=kind,
@@ -687,16 +786,19 @@ def ensure_copy_fields(
     if intro != str(result.get("introduction") or "").strip():
         filled.append("简介")
     result["introduction"] = intro
-    tags = _clean_tags(result.get("tags"))
+    tags = _clean_tags(result.get("tags"), kind=kind)
     if len(tags) != 5:
         for candidate in [
             str(result.get("song_name") or ""),
-            *_clean_tags(source_tags),
+            *_clean_tags(source_tags, kind=kind),
             *TAG_POOL.get(kind, TAG_POOL["singing"]),
         ]:
             name = str(candidate or "").strip().lstrip("#").strip()
-            if name and name not in tags and name not in PLACEHOLDER_VALUES:
-                tags.append(name)
+            if not name or name in tags or name in PLACEHOLDER_VALUES:
+                continue
+            if kind == "dance" and has_singing_wording(name):
+                continue
+            tags.append(name)
             if len(tags) == 5:
                 break
         filled.append("标签")
@@ -724,7 +826,12 @@ def fallback_result(*, kind: str, description: str, tags: list[str]) -> dict[str
     `tags` 直接取源作品标签（可能一个都没有），确认页就会出现空简介/空标签。
     """
     headline = (description or "").strip().splitlines()[0] if description else ""
-    headline = headline.split("#")[0].strip() or "翻唱作品"
+    # 降级标题按类型给兜底：跳舞条目绝不能写死成「翻唱作品」
+    # （2026-09-15 用户：「正常跳舞视频都是舞蹈，手势舞之类的 我看你现在的简介或者标题跳舞都会写上翻唱」）。
+    if kind == "dance":
+        headline = _dance_title(headline)
+    else:
+        headline = headline.split("#")[0].strip() or "翻唱作品"
     result: dict[str, Any] = {
         "song_name": "",
         "song_mood": "",

@@ -1144,6 +1144,7 @@ async def _prepare_review_work(
         )
         try:
             copy = await batch_ai.write_copy(
+                kind=str(item.get("kind") or "singing"),
                 candidate_image=Path(str(result["reference_image_path"])),
                 song_name=str(result.get("song_name") or ""),
                 song_mood=str(result.get("song_mood") or ""),

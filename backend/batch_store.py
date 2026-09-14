@@ -71,20 +71,21 @@ class BatchStore:
 
     @staticmethod
     def _backfill_copy_fields(state: dict[str, Any]) -> None:
-        """已经备过料、但简介/标签是空的条目就地补一份（纯本地，不调模型）。
+        """就地补全 / 纠正条目的发布文案（纯本地，不调模型）。
 
         用户 2026-09-13：官方文本模型 429 打满（要等约 10 小时）时预审降级，
         确认页出现**空简介 + 空标签**（实测 #3 就是 `intro='' tags=[]`）——用户要求
         「流程中简介和标签没有的话自动生成」。放在读取路径上，历史条目也会自愈；
         之后模型（或用户上传图触发的 `write_copy`）给出真文案时会正常覆盖。
+
+        2026-09-15 追加：跳舞条目被写成「翻唱」这类唱歌用词时同样在读取路径自愈
+        （用户：「我看你现在的简介或者标题跳舞都会写上翻唱 这是不对的」），所以这里
+        **每次都过一遍** `ensure_copy_fields`（纯字符串运算、幂等），不再因为「简介和标签
+        都齐了」就跳过。
         """
         for item in state.get("items") or []:
             ai = item.get("ai")
             if not isinstance(ai, dict) or not ai:
-                continue
-            if str(ai.get("introduction") or "").strip() and len(
-                batch_ai._clean_tags(ai.get("tags"))
-            ) == 5:
                 continue
             metadata = item.get("sourceMetadata") or {}
             try:
@@ -117,8 +118,10 @@ class BatchStore:
     def _normalize(self, state: dict[str, Any]) -> None:
         self._renumber(state)
         self._prune_milestones(state)
-        self._sync_titles(state)
+        # 先补/纠正文案（跳舞条目的「翻唱」在这里被清掉，可能改 `ai.title`），再同步条目标题，
+        # 否则同一条会读出两个标题（`old` 版顺序是先 sync 再 backfill）。
         self._backfill_copy_fields(state)
+        self._sync_titles(state)
 
     def _init_db(self) -> None:
         with self._connect() as connection:

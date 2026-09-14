@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { readJson } from "./api";
 import { formatElapsedMs, useNowTick } from "./jobTime";
 import {
@@ -314,14 +314,6 @@ const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
   completed: (item) => item.status === "completed",
   all: () => true,
 };
-function tabForStatus(status: string): TabId {
-  if (status === "awaiting_review") return "awaiting_review";
-  if (status === "pending" || status === "revising") return "preparing";
-  if (status === "confirmed" || status === "running") return "rendering";
-  if (status === "skipped") return "skipped";
-  if (status === "failed") return "failed";
-  return "completed";
-}
 
 export function BatchRoute() {
   const initial = useMemo(readInputDraft, []);
@@ -395,51 +387,13 @@ export function BatchRoute() {
     };
   }, [batch?.id]);
 
-  // 自动跟随「当前正在处理的条目」只发生在**用户没有自己点**的时候：
-  // 用户 2026-09-13 实测「取消出片之后为什么点击不了了 一点就跳转到了其他的」——旧逻辑
-  // 只要选中项的 status 是 completed/skipped 就强行跳回 currentItemId，于是刚取消出片
-  // （→ skipped）的条目根本点不开，已完成的条目也看不了。`followedItemRef` 记住「上一次是
-  // 自动选中的那一条」：只有还在跟随并且它确实不是当前条目时，才继续跟着走。
-  const followedItemRef = useRef<string | null>(null);
-  // 用户是否自己点过/收起过：收起后 `selectedId` 会被清成 null，和「还没选过」分不开，
-  // 必须记住「用户已经接管」，否则一收起又被自动跟随 effect 抢回去展开（2026-09-15 实测）。
-  const userInteractedRef = useRef(false);
+  // 详情**完全由用户自己点开**（2026-09-15 用户：「我希望启动页面的时候 列表默认都是收起来的
+  // 由我自己点击要查看哪个」）：不再自动跟随「当前条目」、也不再在状态变化时抢着切换标签 ——
+  // 那两套自动行为正是「默认展开后标签切换不了 / 点开又被抢走」的根因。
   const selectItem = (itemId: string) => {
-    followedItemRef.current = null;   // 用户自己点的，别再来抢
-    userInteractedRef.current = true;
     // 2026-09-15 用户：「首次点击现在是张开，再次点击要收起」——再点同一行就收起
     setSelectedId((current) => (current === itemId ? null : itemId));
   };
-
-  useEffect(() => {
-    if (!batch?.currentItemId) return;
-    const target = batch.items.find((item) => item.id === selectedId);
-    // 只有「选中的条目已经不存在/已删除」或者「本来就是自动跟随」时才自动跳；
-    // 用户自己点开的条目（哪怕是 completed / skipped）一律留在原地。
-    const unusable = !target || target.status === "deleted";
-    const following = followedItemRef.current !== null && followedItemRef.current === selectedId;
-    // 用户自己收起过（selectedId 被清空）：不要再自动抢回去展开
-    if (selectedId === null && userInteractedRef.current) return;
-    if (!unusable && !following) return;
-    if (selectedId === batch.currentItemId) return;
-    const current = batch.items.find((item) => item.id === batch.currentItemId);
-    if (!current) return;
-    followedItemRef.current = batch.currentItemId;
-    setSelectedId(batch.currentItemId);
-    // 跟随发生时顺手把标签切到当前条目所在的状态，别让它在别的标签里「消失」
-    if (activeTab !== "all" && !TAB_MATCH[activeTab](current)) {
-      setActiveTab(tabForStatus(current.status));
-    }
-  }, [batch?.currentItemId, batch?.items, selectedId, activeTab]);
-
-  // 用户对展开的这条做了操作、状态变了以后，别让它从当前标签里消失：
-  // 比如在「待确认」里点了「确认并出片」→ 它变成 confirmed → 自动切到「出片中」。
-  useEffect(() => {
-    if (!selected || selected.status === "deleted") return;
-    if (activeTab !== "all" && !TAB_MATCH[activeTab](selected)) {
-      setActiveTab(tabForStatus(selected.status));
-    }
-  }, [selected?.id, selected?.status, activeTab]);
 
   // 换条目就收起「替换源视频」表单，免得把 A 条的链接写到 B 条上
   useEffect(() => {
@@ -448,7 +402,6 @@ export function BatchRoute() {
   }, [selectedId]);
 
   const switchTab = (id: TabId) => {
-    followedItemRef.current = null;   // 切标签也是用户自己接管，不再自动跳
     setActiveTab(id);
   };
 
@@ -478,10 +431,8 @@ export function BatchRoute() {
       if (!response.ok) throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
       const state = await readJson<BatchState>(response, append ? "加入队列失败" : "创建队列失败");
       setBatch(state);
-      if (!append) {
-        followedItemRef.current = state.currentItemId ?? null;
-        setSelectedId(state.currentItemId ?? null);
-      }
+      // 新建批次也不自动展开任何一条：列表默认全收起，由用户自己点开要看的那条
+      // （2026-09-15 用户：「启动页面的时候 列表默认都是收起来的 由我自己点击要查看哪个」）。
       // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
       if (append && (state.items?.length || 0) <= (batch?.items.length || 0)) {
         setNotice("这些链接都已经在队列里了（重复链接自动跳过），这次没有新增任务。");
