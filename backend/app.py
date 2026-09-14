@@ -30,9 +30,11 @@ from .batch_worker import (
     MAX_LOCAL_SOURCE_BYTES,
     append_batch_items,
     cancel_item_work,
+    cancel_pending_shutdown,
     confirm_batch_items,
     deliver_item_now,
     deliver_review_materials,
+    ensure_shutdown_watcher,
     image_ratio_note,
     item_ratio,
     mark_items_deleted,
@@ -43,11 +45,15 @@ from .batch_worker import (
     replace_item_source_file,
     request_review_adjustment,
     reset_review_row,
+    resume_shutdown_watch,
     run_batch,
     salvage_abandoned_items,
+    set_batch_shutdown_on_complete,
     set_item_migrate_mode,
     set_item_ratio,
     set_item_remove_subtitles,
+    shutdown_disabled,
+    shutdown_status,
     stage_media,
 )
 from .douyin_mirror import all_jobs as mirror_jobs
@@ -266,6 +272,9 @@ async def lifespan(_: FastAPI):
             finishedAt=now_iso(),
         )
     sweep_task = asyncio.create_task(_douyin_housekeeping())
+    # 本地服务重启后恢复「全部完成后自动关机」的看护：批次可能早就跑完了，
+    # 重启前挂的关机记录也可能还在（Windows 的倒计时不随我们重启消失）。
+    resume_shutdown_watch()
     try:
         yield
     finally:
@@ -311,6 +320,14 @@ class BatchCreateRequest(BaseModel):
     danceRatio: str | None = None
     # 加入队列后是否立即开跑（页面就是这种：点「加入队列」直接开始准备）
     autoStart: bool = False
+    # 整批跑完后是否自动关机（页面开关，默认关闭）
+    shutdownOnComplete: bool = False
+
+
+class BatchShutdownRequest(BaseModel):
+    """「所有任务完成后自动关机」开关（批次级，默认关闭）。"""
+
+    enabled: bool
 
 
 class BatchItemRatioRequest(BaseModel):
@@ -463,8 +480,11 @@ async def create_batch(request: BatchCreateRequest):
         dance_ratio = normalize_batch_ratio(request.danceRatio, "dance")
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    state = new_batch_state(singing, dance, singing_ratio, dance_ratio)
+    state = new_batch_state(singing, dance, singing_ratio, dance_ratio, request.shutdownOnComplete)
     batch_store.create(state)
+    if request.shutdownOnComplete:
+        # 开关在建批次时就已经打开：立刻挂上看护任务（批次跑完那一刻才真的排关机）
+        ensure_shutdown_watcher()
     if request.autoStart:
         # 点「加入队列」直接开跑：预热 ComfyUI 后按队列逐条准备（下载 → 出图/文案 → 等确认）
         spawn(_prewarm_comfy())
@@ -558,6 +578,35 @@ async def resume_batch(batch_id: str):
     if state.get("status") == "completed":
         raise HTTPException(409, "批次已经完成")
     return _resume_batch(batch_id, "批次已继续运行。")
+
+
+@app.post("/api/batches/{batch_id}/shutdown-on-complete")
+async def set_shutdown_on_complete(batch_id: str, request: BatchShutdownRequest):
+    """「所有任务完成后自动关机」开关（批次级，**默认关闭**）。
+
+    打开后只是挂上看护任务：真的排关机必须等批次里**没有任何条目还要处理**（排队 / 等你确认 /
+    已放行待出片 / 出片中都不算完成），并且至少有一条真的出完了片。倒计时期间（默认 60 秒）
+    随时可以「取消关机」，见 `POST /api/system/shutdown/cancel`。
+    """
+    _batch_or_404(batch_id)
+    try:
+        return set_batch_shutdown_on_complete(batch_id, bool(request.enabled))
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@app.get("/api/system/shutdown")
+async def get_shutdown_status():
+    """页面顶部的关机倒计时：有没有在倒计时、还剩多少秒。"""
+    return JSONResponse(shutdown_status(), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/system/shutdown/cancel")
+async def cancel_shutdown():
+    """撤销已经排好的自动关机（`shutdown /a`）。"""
+    return JSONResponse(
+        cancel_pending_shutdown(notice="已取消自动关机。"), headers={"Cache-Control": "no-store"}
+    )
 
 
 @app.post("/api/batches/{batch_id}/cancel")

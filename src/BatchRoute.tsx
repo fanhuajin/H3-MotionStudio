@@ -13,6 +13,7 @@ import {
   MusicNotes,
   PersonSimpleRun,
   Play,
+  Power,
   SpinnerGap,
   Timer,
   Trash,
@@ -183,11 +184,28 @@ interface BatchState {
   currentItemId?: string | null;
   notice?: string;
   pauseRequested?: boolean;
+  /** 整批跑完后是否自动关机（页面开关，**默认关闭**） */
+  shutdownOnComplete?: boolean;
   /** 时间戳（ISO）：用来算「已运行多久」 */
   createdAt?: string;
   startedAt?: string | null;
   finishedAt?: string | null;
   items: BatchItem[];
+}
+
+/**
+ * 已经排好的自动关机（`GET /api/system/shutdown`）。
+ *
+ * 倒计时用后端给的 `executeAt`（epoch 秒）在本地每秒重算，所以数字会真的跳；
+ * `secondsLeft` 只在 `executeAt` 缺失时兜底。
+ */
+interface ShutdownStatus {
+  pending: boolean;
+  disabled?: boolean;
+  delaySeconds?: number;
+  batchId?: string | null;
+  executeAt?: number;
+  secondsLeft?: number;
 }
 
 type CanvasRatio = "4:3" | "9:16";
@@ -299,6 +317,9 @@ function readInputDraft() {
     // 开关：关掉的一类既不展示输入框，也不会被提交执行；默认两类都开着。
     singingOn: parsed.singingOn !== false,
     danceOn: parsed.danceOn !== false,
+    // 「全部完成后自动关机」：**默认关闭**（2026-09-15 用户：「默认关闭」）。
+    // 还没建批次时先记在本地，点「准备任务」时随批次一起提交。
+    shutdownOn: parsed.shutdownOn === true,
   };
 }
 
@@ -361,6 +382,9 @@ export function BatchRoute() {
   const [dance, setDance] = useState(initial.dance);
   const [singingOn, setSingingOn] = useState(initial.singingOn);
   const [danceOn, setDanceOn] = useState(initial.danceOn);
+  // 「全部完成后自动关机」（默认关闭）：有批次时以批次上的值为准，没有批次时用本地草稿
+  const [shutdownOn, setShutdownOn] = useState(initial.shutdownOn);
+  const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 状态筛选标签只要两档：**默认「未完成」**（2026-09-15 用户：「除了已经完成的其他的都算未完成的」）
@@ -406,8 +430,30 @@ export function BatchRoute() {
   }, [loadLatest]);
 
   useEffect(() => {
-    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn }));
-  }, [singing, dance, singingOn, danceOn]);
+    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn, shutdownOn }));
+  }, [singing, dance, singingOn, danceOn, shutdownOn]);
+
+  /**
+   * 自动关机状态：单独轮询（批次轮询 3.5 秒一次，这里 5 秒一次足够）。
+   * 倒计时数字由 `executeAt` + 每秒 tick 在本地算，所以不依赖这个轮询的频率。
+   */
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch("/api/system/shutdown", { cache: "no-store" })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: ShutdownStatus | null) => {
+          if (alive && data) setShutdown(data);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = window.setInterval(load, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!batch?.id) return;
@@ -464,9 +510,13 @@ export function BatchRoute() {
       const append = Boolean(batch && batch.status !== "cancelled");
       const autoStart = !(batch && (batch.status === "paused" || batch.pauseRequested));
       target = append ? `/api/batches/${batch!.id}/items` : "/api/batches";
+      // 新建批次时把「全部完成后自动关机」一起提交（追加时该开关已经挂在批次上，由开关接口改）
+      const payload = append
+        ? { singingUrls, danceUrls, autoStart }
+        : { singingUrls, danceUrls, autoStart, shutdownOnComplete: shutdownOn };
       const response = await fetch(target, {        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ singingUrls, danceUrls, autoStart }),
+        body: JSON.stringify(payload),
       });
       if (!response.ok) throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
       const state = await readJson<BatchState>(response, append ? "加入队列失败" : "创建队列失败");
@@ -566,6 +616,57 @@ export function BatchRoute() {
       .catch((reason) => setError(`${reason instanceof Error ? reason.message : String(reason)}　〔POST ${endpoint}〕`))
       .finally(() => setBusyAction(""));
   };
+
+  /**
+   * 「全部完成后自动关机」开关（默认关闭）。
+   *
+   * 有批次时以**批次上的值**为准（服务端持久化，重启和换页面都还在），没有批次时先记在本地，
+   * 点「准备任务」时随批次一起提交。关掉开关会把已经排好的关停一并撤销。
+   */
+  const toggleShutdownOnComplete = () => {
+    const next = !(batch ? Boolean(batch.shutdownOnComplete) : shutdownOn);
+    setShutdownOn(next);
+    if (!batch) return;
+    void call("shutdown-on-complete", "POST", { enabled: next }).then(() => {
+      fetch("/api/system/shutdown", { cache: "no-store" })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: ShutdownStatus | null) => data && setShutdown(data))
+        .catch(() => undefined);
+    });
+  };
+
+  /** 撤销已经排好的自动关机（倒计时里点「取消关机」）。 */
+  const cancelShutdown = async () => {
+    setBusyAction("shutdown-cancel");
+    setError("");
+    try {
+      const response = await fetch("/api/system/shutdown/cancel", { method: "POST" });
+      if (!response.ok) throw new Error(await responseMessage(response, "取消关机失败"));
+      setShutdown({ pending: false });
+      await loadLatest();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(`${message}　〔POST /api/system/shutdown/cancel〕`);
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  // 开关显示的永远是**当前批次**的值（没批次才用本地草稿）
+  const shutdownSwitchOn = batch ? Boolean(batch.shutdownOnComplete) : shutdownOn;
+  // 倒计时每秒跳：后端只给时间戳，剩几秒在本地算
+  const shutdownTick = useNowTick(Boolean(shutdown.pending));
+  const shutdownSecondsLeft = shutdown.pending
+    ? Math.max(
+        0,
+        Math.ceil(
+          (typeof shutdown.executeAt === "number"
+            ? shutdown.executeAt
+            : shutdownTick / 1000 + Number(shutdown.secondsLeft || 0)) - shutdownTick / 1000,
+        ),
+      )
+    : 0;
+  const shutdownDelaySeconds = Number(shutdown.delaySeconds || 60);
 
   const hasImage = Boolean(selected?.ai?.reference_image_path);
   // 2026-09-15 用户：「只要状态是未完成的任务都可以进行编辑，当然正在运行的那条不允许编辑」——
@@ -1355,6 +1456,25 @@ export function BatchRoute() {
             )}
           </label>
         </div>
+        <div className="batch-shutdown-row">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={shutdownSwitchOn}
+            className={`batch-switch ${shutdownSwitchOn ? "on" : ""}`}
+            disabled={Boolean(busyAction)}
+            onClick={toggleShutdownOnComplete}
+          >
+            <i />{shutdownSwitchOn ? "已开启" : "已关闭"}
+          </button>
+          <span>
+            <b><Power weight="fill" /> 全部完成后自动关机</b>
+            <small>
+              所有条目都做完（没有排队、等你确认、待出片或出片中的）才会关机；关机前留 {shutdownDelaySeconds} 秒倒计时，
+              随时可以点「取消关机」撤销。默认关闭。
+            </small>
+          </span>
+        </div>
         <div className="batch-input-actions">
           <p><ListChecks /> 重复链接会自动跳过；备好料就停下来等你确认，点「确认并出片」才真正出片。</p>
           <div className="batch-input-buttons">
@@ -1373,6 +1493,24 @@ export function BatchRoute() {
 
       {error && <div className="batch-alert"><WarningCircle weight="fill" />{error}</div>}
       {!error && notice && <div className="batch-alert info"><ListChecks weight="fill" />{notice}</div>}
+
+      {/* 关机倒计时：这是**会真的关机**的状态，必须显眼并且能一键撤销 */}
+      {shutdown.pending && (
+        <div className="batch-alert shutdown">
+          <Power weight="fill" />
+          <span>
+            所有任务已完成，<b>{shutdownSecondsLeft}</b> 秒后自动关机。
+            <small>还有任务要处理的话现在点右边就能撤销。</small>
+          </span>
+          <button
+            className="batch-primary small"
+            disabled={Boolean(busyAction)}
+            onClick={() => void cancelShutdown()}
+          >
+            <X />取消关机
+          </button>
+        </div>
+      )}
 
       {batch && (
         <section className="batch-workspace">

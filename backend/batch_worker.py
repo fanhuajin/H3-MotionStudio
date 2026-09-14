@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -35,6 +36,9 @@ from .settings import (
     normalize_batch_ratio,
 )
 from .store import now_iso, store
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 IDENTITY_PATH = Path(r"E:\AI_Assets\PortraitIdentity\本人固定参考.png")
@@ -184,11 +188,14 @@ def new_batch_state(
     dance_urls: list[str],
     singing_ratio: str | None = None,
     dance_ratio: str | None = None,
+    shutdown_on_complete: bool = False,
 ) -> dict[str, Any]:
     """新建批次。比例是**条目级**字段：歌曲默认 4:3、跳舞默认 9:16，用户在页面里逐条可改。
 
     `singing_ratio` / `dance_ratio` 只是建批次时给整组链接的默认值（页面上的分组选择），
     之后每条都独立保存自己的 `ratio`，运行时以条目自己的值为准。
+
+    `shutdown_on_complete`：整批跑完后是否自动关机，**默认关闭**（2026-09-15 用户要求）。
     """
     created = now_iso()
     batch_id = uuid.uuid4().hex
@@ -215,6 +222,8 @@ def new_batch_state(
         "currentItemId": items[0]["id"] if items else None,
         "pauseRequested": False,
         "runnerActive": False,
+        # 整批跑完后是否自动关机：**默认关闭**，用户在批量页的开关里打开（2026-09-15）
+        "shutdownOnComplete": bool(shutdown_on_complete),
         "notice": "任务已创建，准备处理第 1 条。" if items else "没有任务。",
         "items": items,
     }
@@ -2396,3 +2405,347 @@ def request_review_adjustment(batch_id: str, item_id: str, feedback: str, mode: 
         runnerActive=False,
         notice="正在按你的修改意见调整候选结果。",
     )
+
+
+# ---------------------------------------------------------------------------
+# 「所有任务完成后自动关机」
+#
+# 用户 2026-09-15：「在批量制作那边可以帮我加个开关吗 是否所有任务完成后关机 …
+# 默认关闭」。设计取「安全优先」：
+#
+# * **什么时候才关**：批次里**没有任何条目还在推进**（排队 / 等你确认 / 已放行待出片 /
+#   出片中 / 重新备料都算没完成），并且**至少有一条真的出完了片**、本进程也没有任何
+#   runner / 出片 / 备料任务在跑。所以「有 3 条还在等你确认」不会把机器关掉，跑完的
+#   那一刻才会。
+# * **不会突然黑屏**：先由 Windows 自己倒计时（默认 60 秒，`H3_SHUTDOWN_DELAY_SECONDS`
+#   可调），页面顶部同时显示倒计时和「取消关机」。
+# * **倒计时期间也能反悔**：看护任务每秒级复查（每 10 秒一跳），只要又冒出新任务（用户
+#   追加链接、又确认了一条）或者关掉了开关，立刻 `shutdown /a` 撤销。
+# * `H3_AUTO_SHUTDOWN=0` 是硬开关：这台机器永不自动关机（测试与「不想被关」时用）。
+# ---------------------------------------------------------------------------
+
+SHUTDOWN_FLAG = "shutdownOnComplete"
+# 把这些状态视为「这一条已经结束、不需要再等它」；只要还有别的状态就是不完整。
+SHUTDOWN_DONE_STATUSES = {"completed", "skipped", "failed", "deleted"}
+SHUTDOWN_POLL_SECONDS = 10.0
+SHUTDOWN_DEFAULT_DELAY_SECONDS = 60
+SHUTDOWN_MIN_DELAY_SECONDS = 10
+SHUTDOWN_MAX_DELAY_SECONDS = 3600
+SHUTDOWN_DISABLED_VALUES = {"0", "false", "no", "off", "disabled"}
+# 关机提示语由 Windows 弹窗显示，非 ASCII 在无控制台的子进程里容易变乱码，固定用英文。
+SHUTDOWN_COMMENT = "H3-MotionStudio: all batch tasks finished, shutting down."
+PENDING_SHUTDOWN_PATH = DATA_DIR / "pending-shutdown.json"
+
+_shutdown_task: asyncio.Task | None = None
+
+
+def shutdown_disabled() -> bool:
+    """硬开关：`H3_AUTO_SHUTDOWN=0` 时这台机器永不自动关机。"""
+    return str(env_value("H3_AUTO_SHUTDOWN") or "").strip().lower() in SHUTDOWN_DISABLED_VALUES
+
+
+def shutdown_delay_seconds() -> int:
+    """关机前的倒计时秒数（留出按「取消关机」的时间），默认 60 秒。"""
+    raw = str(env_value("H3_SHUTDOWN_DELAY_SECONDS") or "").strip()
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        value = SHUTDOWN_DEFAULT_DELAY_SECONDS
+    return max(SHUTDOWN_MIN_DELAY_SECONDS, min(SHUTDOWN_MAX_DELAY_SECONDS, value))
+
+
+def _read_pending_shutdown() -> dict[str, Any] | None:
+    """已经排好的关停（`data/pending-shutdown.json`）。文件没了就返回 None。"""
+    try:
+        record = json.loads(PENDING_SHUTDOWN_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or not record.get("executeAt"):
+        return None
+    return record
+
+
+def _write_pending_shutdown(record: dict[str, Any] | None) -> None:
+    try:
+        if record is None:
+            PENDING_SHUTDOWN_PATH.unlink(missing_ok=True)
+            return
+        PENDING_SHUTDOWN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PENDING_SHUTDOWN_PATH.write_text(
+            json.dumps(record, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        logger.warning("自动关机状态写入失败", exc_info=True)
+
+
+def shutdown_unfinished_items(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """还没处理完的条目（有它们就不关机）。"""
+    return [
+        item
+        for item in state.get("items") or []
+        if str(item.get("status") or "") not in SHUTDOWN_DONE_STATUSES
+    ]
+
+
+def batch_ready_for_shutdown(state: dict[str, Any]) -> bool:
+    """这个批次是不是「真的全部做完了」——只有它为真才会排关机。"""
+    if not state.get(SHUTDOWN_FLAG):
+        return False
+    items = state.get("items") or []
+    if not items or shutdown_unfinished_items(state):
+        return False
+    # 至少有一条真的出完片：全是「失败 / 跳过」时更像是出了故障，不关机器（用户回来还要处理）。
+    return any(str(item.get("status") or "") == "completed" for item in items)
+
+
+def work_in_flight() -> bool:
+    """本进程里还有没有在跑的东西（runner / 出片 / 备料 / 补交成片）。"""
+    return bool(_RUNNING_BATCHES or _VIDEO_TASKS or _ITEM_TASKS or _SALVAGE_TASKS)
+
+
+def _flagged_states() -> list[dict[str, Any]]:
+    try:
+        return batch_store.flagged_for_shutdown()
+    except Exception:  # noqa: BLE001 - 看护任务不能因为一次读库失败就崩
+        logger.warning("读取「自动关机」批次失败", exc_info=True)
+        return []
+
+
+def _no_window_kwargs() -> dict[str, Any]:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return {"creationflags": flags} if flags else {}
+
+
+def launch_shutdown(seconds: int) -> bool:
+    """交给 Windows 自己倒计时关机（这期间 `shutdown /a` 可以撤销）。"""
+    args = [
+        shutil.which("shutdown") or "shutdown",
+        "/s",
+        "/t",
+        str(int(seconds)),
+        "/c",
+        SHUTDOWN_COMMENT,
+    ]
+    try:
+        subprocess.Popen(
+            args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **_no_window_kwargs()
+        )
+    except OSError:
+        logger.warning("调用系统关机失败", exc_info=True)
+        return False
+    return True
+
+
+def abort_shutdown() -> bool:
+    """撤销系统已经排好的关停（没有在倒计时时返回 False）。"""
+    try:
+        result = subprocess.run(
+            [shutil.which("shutdown") or "shutdown", "/a"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            **_no_window_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def shutdown_status() -> dict[str, Any]:
+    """给页面的只读状态：有没有在倒计时、还剩多少秒、哪个批次触发的。"""
+    record = _read_pending_shutdown()
+    base: dict[str, Any] = {
+        "pending": False,
+        "disabled": shutdown_disabled(),
+        "delaySeconds": shutdown_delay_seconds(),
+    }
+    if not record:
+        return base
+    execute_at = float(record.get("executeAt") or 0)
+    base.update(
+        {
+            "pending": True,
+            "batchId": record.get("batchId"),
+            "seconds": record.get("seconds"),
+            # 时间戳交给页面自己算，倒计时才能每秒跳（服务端时钟与本机一致）
+            "executeAt": execute_at,
+            "secondsLeft": max(0.0, execute_at - time.time()),
+        }
+    )
+    return base
+
+
+def schedule_shutdown(state: dict[str, Any]) -> dict[str, Any]:
+    """排一次自动关机（已经排过就不重复排）。"""
+    existing = _read_pending_shutdown()
+    if existing:
+        return existing
+    seconds = shutdown_delay_seconds()
+    now = time.time()
+    if not launch_shutdown(seconds):
+        return {}
+    record = {
+        "batchId": str(state.get("id") or ""),
+        "seconds": seconds,
+        "scheduledAt": now,
+        "scheduledAtIso": now_iso(),
+        "executeAt": now + seconds,
+    }
+    _write_pending_shutdown(record)
+    batch_id = str(state.get("id") or "")
+    if batch_id:
+        batch_store.update(
+            batch_id,
+            notice=f"全部条目已完成，{seconds} 秒后自动关机；点「取消关机」可以撤销。",
+        )
+    logger.info("批量任务已全部完成，将在 %s 秒后自动关机", seconds)
+    return record
+
+
+def cancel_pending_shutdown(*, notice: str | None = None) -> dict[str, Any]:
+    """撤销自动关机（用户点「取消关机」，或看护任务发现又有新任务）。"""
+    record = _read_pending_shutdown()
+    if not record:
+        return {"pending": False, "cancelled": False}
+    _write_pending_shutdown(None)
+    aborted = abort_shutdown()
+    batch_id = str(record.get("batchId") or "")
+    if notice and batch_id:
+        try:
+            batch_store.update(batch_id, notice=notice)
+        except KeyError:
+            pass
+    logger.info("自动关机已取消（abort=%s）", aborted)
+    return {"pending": False, "cancelled": True, "batchId": batch_id or None}
+
+
+def _clear_shutdown_flag(batch_id: str) -> None:
+    """把某个批次的自动关机开关关掉（记录不存在 / 批次早没了都当无事发生）。"""
+    if not batch_id:
+        return
+    try:
+        state = batch_store.get(batch_id)
+        if state and state.get(SHUTDOWN_FLAG):
+            batch_store.update(batch_id, **{SHUTDOWN_FLAG: False})
+    except KeyError:
+        pass
+
+
+def _consume_pending_shutdown() -> None:
+    """收掉「已经到点」的关停记录，并把触发它的那个批次的开关一并关掉。
+
+    **必须连开关一起关**：只删记录的话，下一次启动时这条早已跑完的批次还在标记里，
+    看护任务会再排一次关机 —— 用户第二天刚开机就又被关掉（设计时特意避开的坑）。
+    """
+    record = _read_pending_shutdown()
+    _write_pending_shutdown(None)
+    _clear_shutdown_flag(str((record or {}).get("batchId") or ""))
+
+
+def shutdown_tick() -> str:
+    """看护任务的一跳：返回 `idle` 表示没事可做（看护任务可以退出）。
+
+    `idle` / `waiting`（还没跑完，继续等）/ `scheduled`（已在倒计时或刚排上）。
+    """
+    record = _read_pending_shutdown()
+    if record:
+        if float(record.get("executeAt") or 0) <= time.time():
+            # Windows 那边已经到点执行（或被别的程序拦下）：收掉记录与开关，看护任务可以收工
+            _consume_pending_shutdown()
+            return "idle"
+        # 倒计时期间又冒出新任务（追加链接 / 又确认了一条 / 关掉了开关）：立刻撤销，
+        # 否则用户会看着机器在还有活没干完的时候关掉。
+        if work_in_flight() or any(
+            not batch_ready_for_shutdown(state) for state in _flagged_states()
+        ):
+            cancel_pending_shutdown(notice="检测到还有任务要处理，已取消自动关机。")
+            return "waiting" if _flagged_states() else "idle"
+        return "scheduled"
+    if shutdown_disabled():
+        return "idle"
+    states = _flagged_states()
+    if not states:
+        return "idle"
+    if work_in_flight():
+        return "waiting"
+    for state in states:
+        if batch_ready_for_shutdown(state):
+            schedule_shutdown(state)
+            return "scheduled"
+    return "waiting"
+
+
+async def shutdown_watcher() -> None:
+    """只负责「整批跑完了没有」：批次 runner 退出后由它把关机排上。"""
+    while True:
+        await asyncio.sleep(SHUTDOWN_POLL_SECONDS)
+        try:
+            result = shutdown_tick()
+        except Exception:  # noqa: BLE001 - 看护任务绝不能因为一次异常就死掉
+            logger.warning("自动关机看护失败", exc_info=True)
+            continue
+        if result == "idle":
+            return
+
+
+def ensure_shutdown_watcher() -> None:
+    global _shutdown_task
+    if _shutdown_task is not None and not _shutdown_task.done():
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # 没有事件循环（同步调用 / 单元测试）：不起看护任务，逻辑本身仍可单独测
+        return
+    _shutdown_task = asyncio.create_task(shutdown_watcher())
+
+
+def resume_shutdown_watch() -> None:
+    """本地服务重启后恢复看护。
+
+    - 已经在倒计时的那一次照常看着（`data/pending-shutdown.json` 还在且没到点）：Windows 的
+      倒计时不会因为后端重启而消失，重启后仍然要能撤销它；
+    - 开关还开着、**还没跑完**的批次继续等它跑完（重启不影响「跑完就关」这个承诺）；
+    - 开关开着但**早就跑完**的批次只把开关关掉，**绝不重新排一次关机** —— 否则第二天开机
+      后看护任务会立刻把机器再关一次（这正是 `_consume_pending_shutdown` 要一起清开关的原因）。
+    """
+    if shutdown_disabled():
+        return
+    record = _read_pending_shutdown()
+    if record:
+        if float(record.get("executeAt") or 0) > time.time():
+            ensure_shutdown_watcher()
+        else:
+            _consume_pending_shutdown()
+    pending_work = False
+    for state in _flagged_states():
+        if batch_ready_for_shutdown(state):
+            _clear_shutdown_flag(str(state.get("id") or ""))
+        else:
+            pending_work = True
+    if pending_work:
+        ensure_shutdown_watcher()
+
+
+def set_batch_shutdown_on_complete(batch_id: str, enabled: bool) -> dict[str, Any]:
+    """打开 / 关闭「所有任务完成后自动关机」（批次级，默认关闭）。"""
+    state = batch_store.get(batch_id)
+    if state is None:
+        raise KeyError(batch_id)
+    if enabled and shutdown_disabled():
+        raise ValueError("本机已禁用自动关机（环境变量 H3_AUTO_SHUTDOWN=0）")
+    if not enabled:
+        # 关掉开关时把已经排好的关停一起撤销，避免「我明明关了它还是关了」
+        record = _read_pending_shutdown()
+        if record and str(record.get("batchId") or "") == batch_id:
+            cancel_pending_shutdown(notice="已关闭「全部完成后自动关机」，本次关机已取消。")
+    state = batch_store.update(batch_id, **{SHUTDOWN_FLAG: bool(enabled)})
+    if enabled:
+        ensure_shutdown_watcher()
+        # 打开开关时批次可能早就跑完了（事后才开）：立刻评估一次，不用等下一个轮询
+        try:
+            shutdown_tick()
+        except Exception:  # noqa: BLE001 - 评估失败不能影响开关本身
+            logger.warning("自动关机评估失败", exc_info=True)
+        state = batch_store.get(batch_id) or state
+    return state

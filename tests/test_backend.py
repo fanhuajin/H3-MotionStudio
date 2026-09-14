@@ -57,12 +57,42 @@ _PUBLISH_ROOT_PATCH = patch(
     "backend.batch_worker.BATCH_OUTPUT_ROOT", Path(_TEST_PUBLISH_ROOT.name) / "发布成品"
 )
 
+# 测试**绝不许真的关机**（2026-09-15 新加的「全部完成后自动关机」）：整个测试模块把
+# 「调用系统关机 / 撤销关机」换成记录桩，任何用例都不可能碰到真正的 `shutdown.exe`；
+# 想断言命令行的那条用例用下面保存的真实实现 + patch(subprocess.Popen)（依旧不会真关）。
+from backend import batch_worker as _batch_worker_module  # noqa: E402
+
+_REAL_LAUNCH_SHUTDOWN = _batch_worker_module.launch_shutdown
+_REAL_ABORT_SHUTDOWN = _batch_worker_module.abort_shutdown
+_SHUTDOWN_CALLS: list[int] = []
+_ABORT_CALLS: list[str] = []
+
+
+def _stub_launch_shutdown(seconds: int) -> bool:
+    _SHUTDOWN_CALLS.append(int(seconds))
+    return True
+
+
+def _stub_abort_shutdown() -> bool:
+    _ABORT_CALLS.append("abort")
+    return True
+
+
+_SHUTDOWN_SAFETY_PATCHES = (
+    patch.object(_batch_worker_module, "launch_shutdown", _stub_launch_shutdown),
+    patch.object(_batch_worker_module, "abort_shutdown", _stub_abort_shutdown),
+)
+
 
 def setUpModule() -> None:
     _PUBLISH_ROOT_PATCH.start()
+    for patcher in _SHUTDOWN_SAFETY_PATCHES:
+        patcher.start()
 
 
 def tearDownModule() -> None:
+    for patcher in reversed(_SHUTDOWN_SAFETY_PATCHES):
+        patcher.stop()
     _PUBLISH_ROOT_PATCH.stop()
     _TEST_PUBLISH_ROOT.cleanup()
 
@@ -3887,6 +3917,246 @@ class DouyinMirrorTests(unittest.TestCase):
         self.assertIn("重新提交", settled["error"])
         self.assertEqual(_settle_stale(stale, live_ids={"a"})["status"], "running")
         self.assertEqual(_settle_stale({"job_id": "c", "status": "success"}, None)["status"], "success")
+
+
+class BatchShutdownTests(unittest.TestCase):
+    """「所有任务完成后自动关机」开关（2026-09-15 用户要求，**默认关闭**）。
+
+    这一组用例全部只走记录桩（见 `_SHUTDOWN_SAFETY_PATCHES`），永远不会真的关机。
+    """
+
+    def setUp(self) -> None:
+        from backend import batch_store as batch_store_module
+
+        self.folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.folder.cleanup)
+        self.pending = Path(self.folder.name) / "pending-shutdown.json"
+        patcher = patch.object(_batch_worker_module, "PENDING_SHUTDOWN_PATH", self.pending)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        original = batch_store_module.DB_PATH
+        batch_store_module.DB_PATH = Path(self.folder.name) / "queue.db"
+        self.addCleanup(setattr, batch_store_module, "DB_PATH", original)
+        _SHUTDOWN_CALLS.clear()
+        _ABORT_CALLS.clear()
+
+    def _store(self):
+        from backend.batch_store import BatchStore
+
+        return BatchStore()
+
+    def _finished_state(self, store, count: int = 2):
+        urls = [f"https://v.douyin.com/{index}" for index in range(count)]
+        state = new_batch_state(urls, [], shutdown_on_complete=True)
+        store.create(state)
+        for item in state["items"][:-1]:
+            store.mutate_item(state["id"], item["id"], lambda row: row.update(status="completed"))
+        return store.get(state["id"])
+
+    def test_batch_shutdown_defaults_off_and_is_toggleable(self) -> None:
+        from backend import batch_worker
+
+        store = self._store()
+        state = new_batch_state(["https://v.douyin.com/a"], [])
+        # 默认关闭：新建批次与老批次都不能自己打开
+        self.assertFalse(state["shutdownOnComplete"])
+        store.create(state)
+        with patch.object(batch_worker, "batch_store", store):
+            opened = batch_worker.set_batch_shutdown_on_complete(state["id"], True)
+            self.assertTrue(opened["shutdownOnComplete"])
+            closed = batch_worker.set_batch_shutdown_on_complete(state["id"], False)
+            self.assertFalse(closed["shutdownOnComplete"])
+            self.assertFalse(store.get(state["id"])["shutdownOnComplete"])
+
+        # 硬开关 H3_AUTO_SHUTDOWN=0：这台机器永不自动关机
+        with patch.object(
+            batch_worker,
+            "env_value",
+            lambda name, default="": "0" if name == "H3_AUTO_SHUTDOWN" else default,
+        ):
+            self.assertTrue(batch_worker.shutdown_disabled())
+            self.assertEqual(batch_worker.shutdown_tick(), "idle")
+            with patch.object(batch_worker, "batch_store", store):
+                with self.assertRaises(ValueError):
+                    batch_worker.set_batch_shutdown_on_complete(state["id"], True)
+
+    def test_batch_shutdown_waits_until_every_item_is_done(self) -> None:
+        """只要有条目还在排队 / 等你确认 / 待出片 / 出片，就不许关机。"""
+        from backend import batch_worker
+
+        store = self._store()
+        state = self._finished_state(store)
+        last_id = state["items"][-1]["id"]
+        with patch.object(batch_worker, "batch_store", store):
+            for blocked in ("pending", "awaiting_review", "confirmed", "running", "revising"):
+                store.mutate_item(
+                    state["id"], last_id, lambda row, value=blocked: row.update(status=value)
+                )
+                self.assertEqual(batch_worker.shutdown_tick(), "waiting")
+                self.assertFalse(batch_worker.shutdown_status()["pending"])
+                self.assertEqual(_SHUTDOWN_CALLS, [])
+            # 全部落在「已完成 / 已跳过 / 已失败」且至少有一条真的出完片 → 排关机
+            store.mutate_item(
+                state["id"], last_id, lambda row: row.update(status="completed")
+            )
+            self.assertEqual(batch_worker.shutdown_tick(), "scheduled")
+            self.assertTrue(batch_worker.shutdown_status()["pending"])
+            self.assertEqual(_SHUTDOWN_CALLS, [batch_worker.shutdown_delay_seconds()])
+            # 已经排过就不再重复调用系统关机
+            self.assertEqual(batch_worker.shutdown_tick(), "scheduled")
+            self.assertEqual(len(_SHUTDOWN_CALLS), 1)
+            # 页面上要能看到倒计时还剩多少秒与是哪个批次触发的
+            status = batch_worker.shutdown_status()
+            self.assertEqual(status["batchId"], state["id"])
+            self.assertGreater(status["secondsLeft"], 0)
+            self.assertEqual(
+                store.get(state["id"])["notice"],
+                f"全部条目已完成，{batch_worker.shutdown_delay_seconds()} 秒后自动关机；点「取消关机」可以撤销。",
+            )
+
+    def test_batch_shutdown_never_fires_on_a_batch_that_only_failed(self) -> None:
+        """全是「失败 / 跳过」时不关机：那更像出了故障，用户还要回来处理。"""
+        from backend import batch_worker
+
+        store = self._store()
+        state = new_batch_state(["https://v.douyin.com/a"], [], shutdown_on_complete=True)
+        store.create(state)
+        store.mutate_item(
+            state["id"], state["items"][0]["id"], lambda row: row.update(status="failed")
+        )
+        with patch.object(batch_worker, "batch_store", store):
+            self.assertEqual(batch_worker.shutdown_tick(), "waiting")
+            self.assertFalse(batch_worker.shutdown_status()["pending"])
+        self.assertEqual(_SHUTDOWN_CALLS, [])
+
+    def test_batch_shutdown_is_revoked_when_new_work_appears(self) -> None:
+        """倒计时期间又冒出新任务（追加链接 / 又确认了一条）→ 立刻撤销关机。"""
+        from backend import batch_worker
+
+        store = self._store()
+        state = self._finished_state(store)
+        store.mutate_item(
+            state["id"], state["items"][-1]["id"], lambda row: row.update(status="completed")
+        )
+        with patch.object(batch_worker, "batch_store", store):
+            self.assertEqual(batch_worker.shutdown_tick(), "scheduled")
+            self.assertTrue(_SHUTDOWN_CALLS and batch_worker.shutdown_status()["pending"])
+
+            def add_pending(row):
+                row["items"] = list(row["items"]) + [
+                    {
+                        "id": "late-item",
+                        "index": 3,
+                        "kind": "dance",
+                        "url": "https://v.douyin.com/late",
+                        "status": "pending",
+                        "stage": "queued",
+                        "milestones": [],
+                    }
+                ]
+
+            store.mutate(state["id"], add_pending)
+            self.assertEqual(batch_worker.shutdown_tick(), "waiting")
+            self.assertFalse(batch_worker.shutdown_status()["pending"])
+            self.assertFalse(self.pending.exists())
+            self.assertTrue(_ABORT_CALLS)
+
+            # 用户自己点「取消关机」同样撤销
+            store.mutate_item(state["id"], "late-item", lambda row: row.update(status="completed"))
+            batch_worker.shutdown_tick()
+            self.assertTrue(batch_worker.shutdown_status()["pending"])
+            batch_worker.cancel_pending_shutdown(notice="已取消自动关机。")
+            self.assertFalse(batch_worker.shutdown_status()["pending"])
+            self.assertEqual(store.get(state["id"])["notice"], "已取消自动关机。")
+
+    def test_batch_shutdown_does_not_fire_while_work_is_in_flight(self) -> None:
+        """runner / 出片任务还在跑（哪怕条目状态看着已经收尾）也不许排关机。"""
+        from backend import batch_worker
+
+        store = self._store()
+        state = self._finished_state(store)
+        store.mutate_item(state["id"], state["items"][-1]["id"], lambda row: row.update(status="completed"))
+        with patch.object(batch_worker, "batch_store", store), patch.object(
+            batch_worker, "_RUNNING_BATCHES", {state["id"]}
+        ):
+            self.assertEqual(batch_worker.shutdown_tick(), "waiting")
+            self.assertFalse(batch_worker.shutdown_status()["pending"])
+        self.assertEqual(_SHUTDOWN_CALLS, [])
+
+    def test_batch_shutdown_command_is_a_windows_countdown(self) -> None:
+        """真正下发的命令必须是 Windows 的 `shutdown /s /t N`（用真实实现 + Popen 桩验证）。"""
+        calls: list[list[str]] = []
+        with patch.object(
+            _batch_worker_module.subprocess, "Popen", lambda args, **kwargs: calls.append(args)
+        ):
+            self.assertTrue(_REAL_LAUNCH_SHUTDOWN(45))
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertTrue(argv[0].lower().endswith("shutdown.exe") or argv[0].lower() == "shutdown")
+        self.assertIn("/s", argv)
+        self.assertEqual(argv[argv.index("/t") + 1], "45")
+
+    def test_batch_shutdown_is_not_rearmed_after_a_reboot(self) -> None:
+        """关过一次之后不能再关第二次：重启后发现早跑完的批次要把开关收掉。
+
+        坑：开关留在已完成的批次上，服务重启时看护任务会立刻**再排一次关机**，
+        用户第二天刚开机就又被关掉。`resume_shutdown_watch()` 必须只关开关、不排关机。
+        """
+        from backend import batch_worker
+
+        store = self._store()
+        state = self._finished_state(store)
+        store.mutate_item(state["id"], state["items"][-1]["id"], lambda row: row.update(status="completed"))
+        with patch.object(batch_worker, "batch_store", store):
+            self.assertEqual(batch_worker.shutdown_tick(), "scheduled")
+            # 到点后收记录（Windows 那边真的关了一次）
+            self.pending.write_text(
+                json.dumps({"batchId": state["id"], "executeAt": 1, "seconds": 60}),
+                encoding="utf-8",
+            )
+            self.assertEqual(batch_worker.shutdown_tick(), "idle")
+            self.assertFalse(self.pending.exists())
+            self.assertFalse(store.get(state["id"])["shutdownOnComplete"])
+
+            # 再来一次重启：早跑完的批次不会重新排关机（开关已经被收掉了）
+            _SHUTDOWN_CALLS.clear()
+            batch_worker.resume_shutdown_watch()
+            self.assertEqual(batch_worker.shutdown_tick(), "idle")
+            self.assertEqual(_SHUTDOWN_CALLS, [])
+
+            # 开关还开着、批次还没跑完的：重启后继续等着，跑完才关
+            store.update(state["id"], shutdownOnComplete=True)
+            store.mutate_item(
+                state["id"], state["items"][-1]["id"], lambda row: row.update(status="pending")
+            )
+            batch_worker.resume_shutdown_watch()
+            self.assertEqual(batch_worker.shutdown_tick(), "waiting")
+            self.assertEqual(_SHUTDOWN_CALLS, [])
+            store.mutate_item(
+                state["id"], state["items"][-1]["id"], lambda row: row.update(status="completed")
+            )
+            self.assertEqual(batch_worker.shutdown_tick(), "scheduled")
+            self.assertEqual(len(_SHUTDOWN_CALLS), 1)
+
+    def test_batch_shutdown_endpoints_and_ui_are_wired(self) -> None:
+        from backend.app import app
+
+        paths = {getattr(route, "path", "") for route in app.routes}
+        self.assertIn("/api/batches/{batch_id}/shutdown-on-complete", paths)
+        self.assertIn("/api/system/shutdown", paths)
+        self.assertIn("/api/system/shutdown/cancel", paths)
+
+        root = Path(__file__).parents[1]
+        ui = (root / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 开关默认关闭、文案说清什么时候才关、能取消
+        self.assertIn("全部完成后自动关机", ui)
+        self.assertIn("shutdownOn", ui)
+        self.assertIn("shutdownOnComplete", ui)
+        self.assertIn("shutdown-on-complete", ui)
+        self.assertIn("/api/system/shutdown", ui)
+        self.assertIn("取消关机", ui)
+        worker = (root / "backend" / "batch_worker.py").read_text(encoding="utf-8")
+        self.assertIn('"shutdownOnComplete": bool(shutdown_on_complete)', worker)
 
 
 if __name__ == "__main__":

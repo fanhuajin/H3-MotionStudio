@@ -1430,6 +1430,12 @@ body {
 .batch-input-actions { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 15px; padding-top: 14px; border-top: 1px solid var(--shell-line); }
 .batch-input-actions p { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--shell-muted); font-size: 11px; }
 .batch-input-actions p svg { color: var(--shell-accent); }
+/* 「全部完成后自动关机」开关（默认关闭）：一眼看清什么时候才关、能不能撤销 */
+.batch-shutdown-row { display: flex; align-items: flex-start; gap: 11px; margin-top: 14px; padding: 11px 13px; border: 1px solid var(--shell-line); border-radius: 9px; background: rgba(16, 12, 38, .72); }
+.batch-shutdown-row > span { display: flex; flex-direction: column; gap: 3px; }
+.batch-shutdown-row b { display: inline-flex; align-items: center; gap: 6px; color: #ded8ec; font-size: 12px; font-weight: 700; }
+.batch-shutdown-row b svg { width: 15px; height: 15px; color: var(--shell-muted); }
+.batch-shutdown-row small { color: var(--shell-muted); font-size: 11px; line-height: 1.6; }
 .batch-primary, .batch-secondary, .batch-item-actions button, .batch-section-head button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; border-radius: 7px; cursor: pointer; transition: .18s ease; }.batch-primary { min-height: 39px; padding: 0 16px; border: 1px solid var(--shell-accent); color: #061316; background: var(--shell-accent); font-size: 12px; font-weight: 700; }
 .batch-primary:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
 .batch-primary:disabled { cursor: not-allowed; opacity: .42; }
@@ -1437,6 +1443,12 @@ body {
 .batch-alert { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0; padding: 11px 13px; border: 1px solid rgba(255, 108, 137, .34); border-radius: 8px; color: #ffc0cc; background: rgba(71, 18, 39, .38); font-size: 12px; line-height: 1.6; }
 .batch-alert svg { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px; }
 .batch-alert.info { border-color: rgba(255, 199, 108, .34); color: #ffdca6; background: rgba(71, 52, 18, .38); }
+/* 关机倒计时：真会关机，做成醒目的一条并带「取消关机」 */
+.batch-alert.shutdown { align-items: center; justify-content: space-between; gap: 14px; border-color: rgba(255, 138, 92, .48); color: #ffd0b4; background: rgba(78, 32, 16, .5); }
+.batch-alert.shutdown > span { display: flex; flex-direction: column; flex: 1 1 auto; gap: 2px; }
+.batch-alert.shutdown b { color: #fff1e2; font-size: 15px; }
+.batch-alert.shutdown small { color: #e6b795; font-size: 11px; }
+.batch-alert.shutdown button { flex: 0 0 auto; }
 .batch-workspace { display: block; }
 
 /* 后台表格交互（2026-09-15）：状态筛选标签 + 表格化任务列表 + 批量操作 + 行内展开详情 */

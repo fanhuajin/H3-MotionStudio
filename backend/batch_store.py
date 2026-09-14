@@ -342,6 +342,28 @@ class BatchStore:
                     found.append({**item, "_batchId": state.get("id")})
         return found
 
+    def flagged_for_shutdown(self) -> list[dict[str, Any]]:
+        """找**打开了「全部完成后自动关机」**的批次（跨状态查，已完成/失败/暂停都算）。
+
+        关机看护任务每 10 秒扫一次：只看状态会漏掉「刚刚跑完、状态已经变成 completed」的批次，
+        所以直接按 state_json 里的标记找（与 `items_for_aweme` 同一套做法）。
+        """
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM batches WHERE state_json LIKE ?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT 20",
+                ('%"shutdownOnComplete": true%',),
+            ).fetchall()
+        states: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                state = json.loads(row["state_json"])
+            except (TypeError, ValueError):
+                continue
+            self._normalize(state)
+            states.append(state)
+        return states
+
     def subscribe(self, batch_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=5)
         self._subscribers.setdefault(batch_id, set()).add(queue)
