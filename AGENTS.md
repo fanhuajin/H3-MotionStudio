@@ -10,6 +10,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 ## Product decisions
 
+- **启动项目默认进入「批量制作」**（2026-09 用户：「启动项目的时候 进入影动生成默认选择批量制作」）：影动生成工作台根路径 `/` 现在渲染 `BatchRoute`，侧边栏「批量制作」在 `/` 上也高亮为默认选中项；**歌曲生成独立到 `/singing` 路由**（`MotionStudioRoute`），侧边栏「歌曲生成」链接改为 `/singing`，后端 `app.py` 新增 `/singing` 的 SPA 回退（`_spa_index()` + no-store，`test_spa_entry_is_never_cached` 已把 `/singing` 纳入）。`/batch` 与 `/` 显示同一批量页面；未知路径兜底也渲染批量页。`src/PortraitRoute.tsx` 的 4:3 定妆交接目标同步改为 `/singing`。
+
 - 人物定妆功能当前保留实现与素材，但从侧边栏隐藏并关闭 `/portrait` 前端路由；API 暂不删除，便于以后恢复。
 
 - 歌词字幕功能（2026-09-10 用户反馈「效果太差」）同样从侧边栏隐藏并关闭 `/lyrics` 前端路由：`src/App.tsx` 移除入口与路由分支、后端删除 `/lyrics` 的 SPA 回退（直接访问返回 404），但 `src/LyricRoute.tsx` 与 `/api/lyrics/*`、`POST /api/jobs/lyrics`、`pipeline.run_lyrics_job` 全部保留，便于以后恢复；**批量制作里的「生成歌词字幕版」步骤也已在 2026-09-14 彻底去掉**（见下方批量交付条目）。

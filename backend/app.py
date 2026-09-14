@@ -2308,6 +2308,10 @@ if dist_dir.is_dir():
     async def batch_frontend():
         return _spa_index()
 
+    @app.get("/singing", include_in_schema=False)
+    async def singing_frontend():
+        return _spa_index()
+
     @app.get("/upscale", include_in_schema=False)
     async def upscale_frontend():
         return _spa_index()

@@ -915,6 +915,9 @@ export function App() {
   const isUpscaleRoute = path === "/upscale";
   const isRvcRoute = path === "/rvc";
   const isBatchRoute = path === "/batch";
+  const isSingingRoute = path === "/singing";
+  // 影动生成工作台根路径 `/`：进入默认选择「批量制作」（2026-09 用户：「启动项目的时候
+  // 进入影动生成默认选择批量制作」）；歌曲生成独立到 `/singing`。
   const isWorkspaceRoute = path === "";
 
   return (
@@ -955,15 +958,15 @@ export function App() {
           ) : (
             <>
               <p className="sidebar-section-label">创作与管理</p>
-              <a className={isBatchRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
+              <a className={isBatchRoute || isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
                 <ListChecks />
                 <span>批量制作</span>
-                {isBatchRoute && <i />}
+                {(isBatchRoute || isWorkspaceRoute) && <i />}
               </a>
-              <a className={isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/">
+              <a className={isSingingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/singing">
                 <MusicNotes weight="fill" />
                 <span>歌曲生成</span>
-                {isWorkspaceRoute && <i />}
+                {isSingingRoute && <i />}
               </a>
               <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
                 <PersonSimpleRun />
@@ -996,7 +999,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isBatchRoute ? <BatchRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : <MotionStudioRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : <BatchRoute />}
       </div>
     </div>
   );

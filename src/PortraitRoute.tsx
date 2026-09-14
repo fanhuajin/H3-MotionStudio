@@ -72,7 +72,7 @@ export function PortraitRoute() {
   async function handoff() {
     if (!result) return;
     sessionStorage.setItem("h3-motionstudio:portrait-handoff", JSON.stringify({ url: result.url, name: result.name, mode }));
-    window.location.href = mode === "4:3" ? "/" : "/migrate";
+    window.location.href = mode === "4:3" ? "/singing" : "/migrate";
   }
 
   return <main className="portrait-route">

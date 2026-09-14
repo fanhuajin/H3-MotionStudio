@@ -2616,7 +2616,7 @@ class WorkflowPreparationTests(unittest.TestCase):
 
         from backend import app as app_module
 
-        for path in ("/batch", "/migrate", "/douyin", "/upscale", "/rvc"):
+        for path in ("/batch", "/singing", "/migrate", "/douyin", "/upscale", "/rvc"):
             route = next(route for route in app_module.app.routes if getattr(route, "path", "") == path)
             response = asyncio.run(route.endpoint())
             self.assertEqual(response.headers.get("cache-control"), "no-store", path)
