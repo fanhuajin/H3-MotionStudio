@@ -2077,16 +2077,33 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("已用", rendered)
         self.assertNotIn("用时 {", rendered)
 
-    def test_batch_status_tabs_put_all_first_and_default(self) -> None:
-        """「全部」排在最前，并且是默认标签（2026-09-15 用户：「全部默认放到最前面」）。"""
+    def test_batch_status_tabs_are_only_open_and_completed(self) -> None:
+        """标签只要两档「未完成 / 已完成」，默认「未完成」；细状态仍保留在行内徽章上。
+
+        2026-09-15 用户：「其实状态我不关注其他的内容我只关注还未完成的 和已经完成的。
+        除了已经完成的其他的都算未完成的」——所以不再有 待确认/备料中/出片中/已跳过/已失败 这些
+        筛选标签，但**行内状态徽章照旧**显示细状态（否则在「未完成」里认不出卡在哪一步）。
+        """
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
-        # 第一个标签就是「全部」，且默认选中它
-        self.assertIn('const TABS: Array<{ id: TabId; label: string }> = [\n  { id: "all", label: "全部" },', source)
-        self.assertIn('useState<TabId>("all")', source)
-        # 标签顺序：全部 → 待确认 → 备料中 → 出片中 → 已跳过 → 已失败 → 已完成
-        order = ["全部", "待确认", "备料中", "出片中", "已跳过", "已失败", "已完成"]
-        positions = [source.index(f'label: "{name}"') for name in order]
-        self.assertEqual(positions, sorted(positions), "标签顺序不对")
+        # 只有两个标签，且默认「未完成」
+        self.assertIn('type TabId = "open" | "completed";', source)
+        self.assertIn('{ id: "open", label: "未完成" }', source)
+        self.assertIn('{ id: "completed", label: "已完成" }', source)
+        self.assertIn('useState<TabId>("open")', source)
+        # 「未完成」= 除 completed 以外的一切（含已跳过 / 已失败）
+        self.assertIn('open: (item) => item.status !== "completed",', source)
+        self.assertIn('completed: (item) => item.status === "completed",', source)
+        # 细状态没有被删掉：行内徽章仍按 item.status 显示
+        self.assertIn("batchStatusLabel(item.status)", source)
+        # 旧的细标签不该再出现在 TABS 里
+        for gone in (
+            '{ id: "preparing"',
+            '{ id: "rendering"',
+            '{ id: "skipped"',
+            '{ id: "failed"',
+            '{ id: "all"',
+        ):
+            self.assertNotIn(gone, source)
 
     def test_batch_edit_rule_toggle_and_reopen_scope(self) -> None:
         """未完成（非运行中/已完成）都能直接编辑；再点同一行收起；「回到确认」只给运行中+已完成。
