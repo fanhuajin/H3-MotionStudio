@@ -45,6 +45,7 @@ from .batch_worker import (
     reset_review_row,
     run_batch,
     salvage_abandoned_items,
+    set_item_migrate_mode,
     set_item_ratio,
     set_item_remove_subtitles,
     stage_media,
@@ -320,6 +321,12 @@ class BatchItemSubtitlesRequest(BaseModel):
     """跳舞条目的「是否去除字幕」开关。"""
 
     removeSubtitles: bool
+
+
+class BatchItemMigrateModeRequest(BaseModel):
+    """跳舞条目的迁移模式：animation=动作迁移（默认）/ replacement=人物替换。"""
+
+    mode: str
 
 
 class BatchAppendRequest(BaseModel):
@@ -659,6 +666,23 @@ async def set_batch_item_remove_subtitles(
     _batch_item_or_404(batch_id, item_id)
     try:
         return set_item_remove_subtitles(batch_id, item_id, request.removeSubtitles)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/migrate-mode")
+async def set_batch_item_migrate_mode(
+    batch_id: str, item_id: str, request: BatchItemMigrateModeRequest
+):
+    """跳舞条目：改「迁移模式」（动作迁移 / 人物替换）。
+
+    用户 2026-09-15：「跳舞可以选择人物迁移吗 现在是动作迁移 生成的效果不好我想看下人物迁移会是
+    什么效果」——批量提交跳舞任务时以前把 mode 写死成 animation，现在逐条可选；规则与画布比例
+    一致（没开始出片就能改），出片时原样提交给迁移工作流（节点 #353：false=动作迁移 / true=人物替换）。
+    """
+    _batch_item_or_404(batch_id, item_id)
+    try:
+        return set_item_migrate_mode(batch_id, item_id, request.mode)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
 

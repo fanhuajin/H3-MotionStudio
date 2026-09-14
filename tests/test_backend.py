@@ -1148,6 +1148,71 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_batch_dance_migration_mode_can_be_chosen(self) -> None:
+        """跳舞条目可选「动作迁移 / 人物替换」，出片时按所选模式提交。
+
+        2026-09-15 用户：「跳舞可以选择人物迁移吗 现在是动作迁移 生成的效果不好我想看下人物迁移
+        会是什么效果」——以前 `_post_video_job` 把迁移模式**写死成 animation**。
+        """
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state([], ["https://www.douyin.com/video/7000000000000000001"])
+                item_id = state["items"][0]["id"]
+                store.create(state)
+                store.mutate_item(
+                    state["id"],
+                    item_id,
+                    lambda row: row.update(status="awaiting_review", ai={"title": "t"}),
+                )
+                with patch.object(batch_worker, "batch_store", store):
+                    result = batch_worker.set_item_migrate_mode(state["id"], item_id, "replacement")
+                self.assertEqual(result["items"][0]["ai"]["migrate_mode"], "replacement")
+                with patch.object(batch_worker, "batch_store", store):
+                    batch_worker.set_item_migrate_mode(state["id"], item_id, "animation")
+                self.assertEqual(
+                    store.get(state["id"])["items"][0]["ai"]["migrate_mode"], "animation"
+                )
+
+                # 非法值 / 已出片 / 唱歌条目都拒绝
+                with patch.object(batch_worker, "batch_store", store):
+                    with self.assertRaises(ValueError):
+                        batch_worker.set_item_migrate_mode(state["id"], item_id, "person")
+                store.mutate_item(state["id"], item_id, lambda row: row.update(status="completed"))
+                with patch.object(batch_worker, "batch_store", store):
+                    with self.assertRaises(ValueError):
+                        batch_worker.set_item_migrate_mode(state["id"], item_id, "replacement")
+
+                singing = new_batch_state(["https://v.douyin.com/a"], [])
+                store.create(singing)
+                with patch.object(batch_worker, "batch_store", store):
+                    with self.assertRaises(ValueError):
+                        batch_worker.set_item_migrate_mode(
+                            singing["id"], singing["items"][0]["id"], "replacement"
+                        )
+
+                # 出片提交按条目所选模式（不再写死 animation）
+                source = (Path(__file__).parents[1] / "backend" / "batch_worker.py").read_text(
+                    encoding="utf-8"
+                )
+                self.assertNotIn('"mode": "animation"', source)
+                self.assertIn('"mode": migrate_mode', source)
+
+                from backend.app import app
+
+                self.assertIn(
+                    "/api/batches/{batch_id}/items/{item_id}/migrate-mode",
+                    {getattr(route, "path", "") for route in app.routes},
+                )
+            finally:
+                batch_store_module.DB_PATH = original
+
     def test_comfy_stop_endpoint_and_jobless_shutdown(self) -> None:
         """手动关闭 ComfyUI：接口在，且交接用的关闭逻辑能在没有 job 的情况下调用。"""
         import inspect

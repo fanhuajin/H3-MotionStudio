@@ -118,6 +118,8 @@ interface BatchAI {
   video_prompt?: string;
   image_prompt?: string;
   remove_subtitles?: boolean;
+  /** 跳舞条目的迁移模式：`animation`=动作迁移（默认）/ `replacement`=人物替换 */
+  migrate_mode?: MigrateMode;
 }
 
 interface ChildJob {
@@ -189,6 +191,17 @@ interface BatchState {
 }
 
 type CanvasRatio = "4:3" | "9:16";
+
+/** 跳舞条目的迁移模式（对应 `/api/jobs/migrate` 的 `mode`，工作流节点 #353）。 */
+type MigrateMode = "animation" | "replacement";
+const MIGRATE_MODE_LABEL: Record<MigrateMode, string> = {
+  animation: "动作迁移",
+  replacement: "人物替换",
+};
+const MIGRATE_MODE_NOTE: Record<MigrateMode, string> = {
+  animation: "把源视频的动作迁移到候选图的人身上",
+  replacement: "保留源视频场景，把里面的人物换成候选图的人",
+};
 
 const INPUT_KEY = "h3-motionstudio:batch-input:v2";
 const LEGACY_INPUT_KEY = "h3-motionstudio:batch-input:v1";
@@ -585,11 +598,21 @@ export function BatchRoute() {
     if (!selected || selectedSubtitles === value) return;
     void itemCall("remove-subtitles", "POST", { removeSubtitles: value });
   };
+  // 迁移模式：动作迁移（默认）/ 人物替换 —— 2026-09-15 用户想试人物替换的效果
+  const selectedMigrateMode: MigrateMode =
+    selected?.ai?.migrate_mode === "replacement" ? "replacement" : "animation";
+  const changeMigrateMode = (mode: MigrateMode) => {
+    if (!selected || selectedMigrateMode === mode) return;
+    void itemCall("migrate-mode", "POST", { mode });
+  };
 
   /** 出片前的两个设置（画布比例 + 跳舞条目的去除字幕）：审核区与「出片前设置」面板共用。 */
   const renderSettings = (item: BatchItem) => {
     const ratio = itemRatio(item);
     const subtitles = Boolean(item.ai?.remove_subtitles);
+    // 迁移模式：老条目没有这个字段 → 按默认「动作迁移」显示（与出片时提交的默认值一致）
+    const migrateMode: MigrateMode =
+      item.ai?.migrate_mode === "replacement" ? "replacement" : "animation";
     return (
       <>
         <label>
@@ -629,6 +652,27 @@ export function BatchRoute() {
                 </button>
               ))}
               <i>{subtitles ? "出片前先跑一遍 ProPainter 去字幕" : "直接用源视频驱动，不去字幕"}</i>
+            </div>
+          </label>
+        )}
+        {item.kind === "dance" && (
+          <label>
+            <span>迁移模式</span>
+            <div className="batch-ratio-pick" role="radiogroup" aria-label="这一条的迁移模式">
+              {(["animation", "replacement"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={migrateMode === value}
+                  className={migrateMode === value ? "selected" : ""}
+                  disabled={Boolean(busyAction)}
+                  onClick={() => changeMigrateMode(value)}
+                >
+                  {MIGRATE_MODE_LABEL[value]}
+                </button>
+              ))}
+              <i>{MIGRATE_MODE_NOTE[migrateMode]}</i>
             </div>
           </label>
         )}

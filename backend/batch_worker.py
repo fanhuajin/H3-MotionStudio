@@ -1298,10 +1298,15 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
         }
         endpoint = "/api/jobs"
     else:
+        # 迁移模式：默认「动作迁移」，可在审核点改成「人物替换」（2026-09-15 用户：「跳舞可以选择
+        # 人物迁移吗 现在是动作迁移 生成的效果不好我想看下人物迁移会是什么效果」）。
+        migrate_mode = str(ai.get("migrate_mode") or "animation")
+        if migrate_mode not in {"animation", "replacement"}:
+            migrate_mode = "animation"
         data = {
             "ratio": ratio,
             "remove_subtitles": "1" if ai.get("remove_subtitles") else "0",
-            "mode": "animation",
+            "mode": migrate_mode,
             "content_prompt": str(ai.get("content_prompt") or ""),
             "video_prompt": str(ai.get("video_prompt") or ""),
             "image_prompt": str(ai.get("image_prompt") or ""),
@@ -1771,6 +1776,38 @@ def set_item_remove_subtitles(batch_id: str, item_id: str, value: bool) -> dict[
         batch_id,
         item_id,
         "已改为：先跑一遍去字幕再迁移。" if value else "已改为：直接用源视频驱动，不去字幕。",
+    )
+    return batch_store.get(batch_id) or {}
+
+def set_item_migrate_mode(batch_id: str, item_id: str, mode: str) -> dict[str, Any]:
+    """跳舞条目的「迁移模式」：动作迁移（默认）/ 人物替换，规则与画布比例完全一致。
+
+    用户 2026-09-15：「跳舞可以选择人物迁移吗 现在是动作迁移 生成的效果不好我想看下人物迁移会是
+    什么效果」——以前批量提交跳舞任务时把 `mode` **写死成 animation**，现在逐条可选，出片时原样
+    提交给迁移工作流（`backend/workflows.py` 节点 #353：false=动作迁移、true=人物替换）。
+    这只是**提交时**的选择：候选图、文案、提示词都不用重做，所以没开始出片就能随时改。
+    """
+    target = str(mode or "").strip()
+    if target not in {"animation", "replacement"}:
+        raise ValueError("迁移模式只支持「动作迁移」或「人物替换」")
+    item = _item(batch_id, item_id)
+    if str(item.get("kind") or "") != "dance":
+        raise ValueError("只有跳舞条目有「迁移模式」")
+    if not item_settings_editable(item):
+        raise ValueError("这一条正在出片或已经完成，请先点「回到确认」再改迁移模式")
+    ai = dict(item.get("ai") or {})
+    ai["migrate_mode"] = target
+
+    def apply(row: dict[str, Any]) -> None:
+        row["ai"] = ai
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(
+        batch_id,
+        item_id,
+        "迁移模式已改为：人物替换（保留源视频场景，把人物换成候选图的人）。"
+        if target == "replacement"
+        else "迁移模式已改为：动作迁移（把源视频的动作迁移到候选图的人身上）。",
     )
     return batch_store.get(batch_id) or {}
 
