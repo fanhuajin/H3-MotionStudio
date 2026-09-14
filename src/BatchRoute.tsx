@@ -373,8 +373,12 @@ export function BatchRoute() {
   // （→ skipped）的条目根本点不开，已完成的条目也看不了。`followedItemRef` 记住「上一次是
   // 自动选中的那一条」：只有还在跟随并且它确实不是当前条目时，才继续跟着走。
   const followedItemRef = useRef<string | null>(null);
+  // 用户是否自己点过/收起过：收起后 `selectedId` 会被清成 null，和「还没选过」分不开，
+  // 必须记住「用户已经接管」，否则一收起又被自动跟随 effect 抢回去展开（2026-09-15 实测）。
+  const userInteractedRef = useRef(false);
   const selectItem = (itemId: string) => {
     followedItemRef.current = null;   // 用户自己点的，别再来抢
+    userInteractedRef.current = true;
     // 2026-09-15 用户：「首次点击现在是张开，再次点击要收起」——再点同一行就收起
     setSelectedId((current) => (current === itemId ? null : itemId));
   };
@@ -386,6 +390,8 @@ export function BatchRoute() {
     // 用户自己点开的条目（哪怕是 completed / skipped）一律留在原地。
     const unusable = !target || target.status === "deleted";
     const following = followedItemRef.current !== null && followedItemRef.current === selectedId;
+    // 用户自己收起过（selectedId 被清空）：不要再自动抢回去展开
+    if (selectedId === null && userInteractedRef.current) return;
     if (!unusable && !following) return;
     if (selectedId === batch.currentItemId) return;
     const current = batch.items.find((item) => item.id === batch.currentItemId);

@@ -1927,6 +1927,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
         # 再点同一行就收起
         self.assertIn("setSelectedId((current) => (current === itemId ? null : itemId))", source)
+        # 收起后（selectedId 清空）不会被自动跟随抢回去展开
+        self.assertIn("userInteractedRef", source)
+        self.assertIn("selectedId === null && userInteractedRef.current", source)
         # 编辑规则：运行中/重新备料/已完成/已删除 不可编辑，其余都能
         self.assertIn(
             '!["running", "revising", "completed", "deleted"].includes(selected.status)',
