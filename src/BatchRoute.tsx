@@ -718,7 +718,7 @@ export function BatchRoute() {
 
   // 本条实际用时：只算真正干活的阶段（下载 / 备料 / 出片），不含排队与等你确认。
   const itemElapsedMs = selected ? itemActiveMs(selected, batchNowTick) : null;
-  /** 表格行里「本条进行中」那条的已用时间（同上：只算真正干活的时间）。 */
+  /** 表格行里「本条进行中」那条的实际用时（同上：只算真正干活的时间）。 */
   const itemElapsedText = (item: BatchItem): string => {
     const ms = itemActiveMs(item, batchNowTick);
     return ms === null ? "" : formatElapsedMs(ms);
@@ -847,10 +847,10 @@ export function BatchRoute() {
             <h2>{itemTitle(selected)}</h2>
             <div className="batch-detail-meta">
               <a href={item.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
-              {/* 本条实际用时：只算下载 / 备料 / 出片，不含排队与等你确认 */}
+              {/* 本条实际用时：只算下载 / 备料 / 出片，不含排队与等你确认（只显示时间，不加标签字） */}
               {itemElapsedMs !== null && (
                 <span className="batch-timer" title="本条实际用时（只算下载 / 备料 / 出片，不含排队与等你确认）">
-                  <Timer weight="fill" /> 用时 {formatElapsedMs(itemElapsedMs)}
+                  <Timer weight="fill" /> {formatElapsedMs(itemElapsedMs)}
                 </span>
               )}
             </div>
@@ -1426,12 +1426,12 @@ export function BatchRoute() {
                             {item.childJob?.currentSegment && item.childJob.estimatedSegments && (
                               <small>分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
                             )}
-                            {/* 只给「本条进行中」的那一条显示已用时间（实际干活时间，不含排队/等确认） */}
+                            {/* 只给「本条进行中」的那一条显示时间（实际干活时间，不含排队/等确认）；不要「已用」这类标签字 */}
                             {batch?.status === "running"
                               && item.id === batch?.currentItemId
                               && ["pending", "running", "revising"].includes(item.status)
                               && itemElapsedText(item) && (
-                                <small className="batch-elapsed"><Timer weight="fill" />已用 {itemElapsedText(item)}</small>
+                                <small className="batch-elapsed"><Timer weight="fill" />{itemElapsedText(item)}</small>
                               )}
                           </td>
                           <td className="batch-ratio-cell">{itemRatio(item)}</td>

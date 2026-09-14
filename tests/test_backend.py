@@ -1914,8 +1914,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 不再从「加入队列的那一刻」算起（22 小时的根因）
         self.assertNotIn("elapsedMs(selected.createdAt", source)
         self.assertNotIn("elapsedMs(item.createdAt", source)
-        # 表格里只给「本条进行中」那一条显示已用时间
-        self.assertIn("已用 {itemElapsedText(item)}", source)
+        # 表格里只给「本条进行中」那一条显示时间（只要时间本身，不加「已用 / 用时」这类标签字）
+        self.assertIn("{itemElapsedText(item)}", source)
         self.assertIn('["pending", "running", "revising"].includes(item.status)', source)
         self.assertIn("item.id === batch?.currentItemId", source)
         # 不再给每条任务都显示时间
@@ -1929,6 +1929,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
         self.assertNotIn("batchElapsedMs", rendered)
         self.assertNotIn("批次总耗时", rendered)
+        # 时间只显示数字，不写「已用 / 用时」这类标签（2026-09-15 用户：「不需要已用两个字」）
+        self.assertNotIn("已用", rendered)
+        self.assertNotIn("用时 {", rendered)
 
     def test_batch_edit_rule_toggle_and_reopen_scope(self) -> None:
         """未完成（非运行中/已完成）都能直接编辑；再点同一行收起；「回到确认」只给运行中+已完成。
