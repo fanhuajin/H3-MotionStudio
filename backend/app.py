@@ -1114,9 +1114,20 @@ async def batch_item_stage(batch_id: str, item_id: str, key: str, download: bool
     path = Path(raw)
     if not raw or not path.is_file():
         raise HTTPException(404, "该阶段的产物还不存在")
+    # 源视频预览要能直接在浏览器里播：本机选的视频可能是 HEVC 等浏览器不支持的编码，
+    # 这里按需转一份 H.264 副本（出片链路仍然用用户给的原文件；抖音源本来就是 H.264，不会重转）。
+    if key == "source" and not download:
+        preview = DATA_DIR / "batch-source-previews" / f"{batch_id}-{item_id}.mp4"
+        path = await ensure_web_playable_at(path, preview)
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    # inline：让浏览器直接播放/预览，而不是触发下载
-    return FileResponse(path, media_type=media_type, filename=path.name if download else None)
+    # inline：让浏览器直接播放/预览，而不是触发下载。**必须 no-store**：换了源视频之后
+    # 浏览器若还在放缓存里的旧视频，用户会以为没换成功（2026-09-15 用户实测反馈）。
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=path.name if download else None,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/batches/{batch_id}/items/{item_id}/material/{key}")

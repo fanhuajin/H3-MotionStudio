@@ -144,6 +144,8 @@ interface BatchItem {
   sourceName?: string;
   /** 抖音作品号：链接写法不同（短链 / modal_id / 喜欢列表）时唯一能认人的标识 */
   awemeId?: string;
+  /** 源视频来源：`douyin`=抖音下载（默认）/ `local`=本机选择的文件 */
+  sourceOrigin?: string;
   /** 源作品自己的文案（`desc` 第一行就是用户在抖音上看到的那句话） */
   sourceMetadata?: { desc?: string; tags?: string[] } | null;
   videoJobId?: string | null;
@@ -236,6 +238,20 @@ function styleSourceLabel(value?: string): string {
  */
 function itemTitle(item: BatchItem): string {
   return String(item.ai?.title || "").trim() || item.title || `第 ${item.index} 条`;
+}
+
+/**
+ * 「本条源视频」卡片右上角那行：这条源视频是抖音下载的还是本机选的文件。
+ *
+ * 本机换源之后，旧的抖音作品号与源作品文案已经不再成立，必须显示「本机视频」，
+ * 否则用户看不出替换到底成功没有（2026-09-15 用户：「本条源视频 那边的内容也替换一下
+ * 不然我不知道是否修改成功了」）。
+ */
+function sourceOriginLabel(item: BatchItem): string {
+  if (item.sourceOrigin === "local") return " · 本机视频";
+  if (item.awemeId) return ` · 抖音作品号 ${item.awemeId}`;
+  if (item.sourcePath) return " · 本机视频";
+  return " · 还没下载";
 }
 
 function readInputDraft() {
@@ -891,7 +907,7 @@ export function BatchRoute() {
             <div className="batch-source-head">
               <small>
                 {item.kind === "singing" ? "唱歌条目" : "跳舞条目"}
-                {item.awemeId ? ` · 抖音作品号 ${item.awemeId}` : " · 还没下载"}
+                {sourceOriginLabel(item)}
               </small>
               {canReplaceSource && (
                 <button
@@ -927,7 +943,10 @@ export function BatchRoute() {
                   ? "出片时按这条视频的画面与音轨生成"
                   : "出片时按这条视频的动作做迁移"}
               </em>
-              <a href={item.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
+              {/* 本机换源后没有抖音出处了，不显示「打开抖音原链接」，免得用户以为没换成功 */}
+              {item.sourceOrigin !== "local" && (
+                <a href={item.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
+              )}
             </div>
           </div>
 

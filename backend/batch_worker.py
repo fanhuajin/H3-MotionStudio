@@ -585,6 +585,7 @@ async def _adopt_existing_source(batch_id: str, item_id: str, cached: Path) -> P
         item_id,
         sourcePath=str(source.resolve()),
         sourceName=source.name,
+        sourceOrigin="douyin",
         awemeId=aweme_id,
         sourceMetadata=metadata,
         title=title[:80],
@@ -651,6 +652,7 @@ async def _download(batch_id: str, item_id: str) -> Path:
             item_id,
             sourcePath=str(source.resolve()),
             sourceName=source.name,
+            sourceOrigin="douyin",
             awemeId=aweme_id,
             sourceMetadata=metadata,
             title=title[:80],
@@ -2180,6 +2182,7 @@ def replace_item_source(
             stageMedia={},
             sourcePath="",
             sourceName="",
+            sourceOrigin="douyin",
             awemeId="",
             sourceMetadata={},
             downloadJobId=None,
@@ -2225,8 +2228,14 @@ def replace_item_source_file(batch_id: str, item_id: str, source: Path) -> dict[
 
     用户 2026-09-15：「替换源视频可以让我进行本地选择」+「其他内容都不需要改变只需要改变视频
     而且，所有定义好的内容都不需要变」——与换抖音链接（`replace_item_source`：清空重备料）不同，
-    这条路**只改 `sourcePath` / `sourceName`**：标题、简介、标签、候选人物图、画布比例与去除字幕、
-    动作或迁移提示词、里程碑与当前状态、发布目录记录全部原样保留，出片时只是换一个视频去驱动。
+    这条路**不动任何生成结果**：标题、简介、标签、候选人物图、画布比例与去除字幕、动作或迁移
+    提示词、里程碑与当前状态、发布目录记录全部原样保留。
+
+    但**「本条源视频」卡片的身份信息必须跟着换**（用户 2026-09-15：「本条源视频 那边的内容也
+    替换一下 不然我不知道是否修改成功了」）：源文件换成本机视频后，旧的「抖音作品号」与
+    「源作品文案」就不再成立，所以这里把它们清掉并打上 `sourceOrigin="local"`，
+    页面据此显示「本机视频」、隐藏「打开抖音原链接」。`item.url` 保留（它是队列身份与
+    源文件丢失时的回退下载地址）。
     """
     item = _item(batch_id, item_id)
     status = str(item.get("status") or "")
@@ -2239,10 +2248,14 @@ def replace_item_source_file(batch_id: str, item_id: str, source: Path) -> dict[
         raise ValueError("没有收到可用的视频文件")
 
     def apply(row: dict[str, Any]) -> None:
-        # **只动这两项**：`ai`（标题/简介/标签/候选图/提示词）、里程碑、outputs、比例、
-        # 状态全部保持原样 —— 用户明确要求「所有定义好的内容都不需要变」。
+        # **不动任何生成结果**：`ai`（标题/简介/标签/候选图/提示词）、里程碑、outputs、比例、
+        # 状态全部保持原样。只换源视频本身 + 换掉不再成立的「抖音身份」（作品号 / 源作品文案）。
         row["sourcePath"] = str(target)
         row["sourceName"] = target.name
+        row["sourceOrigin"] = "local"
+        row["awemeId"] = ""
+        row["sourceMetadata"] = {}
+        row["downloadJobId"] = None
         row["warning"] = None
 
     batch_store.mutate_item(batch_id, item_id, apply)

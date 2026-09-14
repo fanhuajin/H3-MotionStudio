@@ -1087,6 +1087,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                         stage="review",
                         sourcePath="E:/old/source.mp4",
                         sourceName="old-source.mp4",
+                        awemeId="7000000000000000001",
+                        sourceMetadata={"desc": "旧的源作品文案", "tags": ["旧的"]},
                         ratio="9:16",
                         ai={
                             "title": "已经定好的标题",
@@ -1102,9 +1104,14 @@ class WorkflowPreparationTests(unittest.TestCase):
                     batch_worker.replace_item_source_file(state["id"], item_id, video)
 
                 item = store.get(state["id"])["items"][0]
-                # 只换了视频文件
+                # 源视频本身换成这个本机文件，并打上「本机视频」标记
                 self.assertEqual(item["sourcePath"], str(video))
                 self.assertEqual(item["sourceName"], "local.mp4")
+                self.assertEqual(item["sourceOrigin"], "local")
+                # 旧的抖音身份不再成立 → 必须清掉，否则「本条源视频」卡片显示的还是旧视频信息
+                # （2026-09-15 用户：「本条源视频 那边的内容也替换一下 不然我不知道是否修改成功了」）
+                self.assertEqual(item["awemeId"], "")
+                self.assertEqual(item.get("sourceMetadata") or {}, {})
                 # 其余内容一律原样
                 self.assertEqual(item["status"], "awaiting_review")
                 self.assertEqual(item["ratio"], "9:16")
@@ -1131,6 +1138,13 @@ class WorkflowPreparationTests(unittest.TestCase):
                     "/api/batches/{batch_id}/items/{item_id}/source-file",
                     {getattr(route, "path", "") for route in app.routes},
                 )
+                # 前端「本条源视频」卡片也要跟着变：显示「本机视频」、隐藏「打开抖音原链接」
+                ui = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn("function sourceOriginLabel(item: BatchItem)", ui)
+                self.assertIn('return " · 本机视频";', ui)
+                self.assertIn('{item.sourceOrigin !== "local" && (', ui)
             finally:
                 batch_store_module.DB_PATH = original
 
