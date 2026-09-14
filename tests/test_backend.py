@@ -854,6 +854,162 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_batch_items_can_be_reordered(self) -> None:
+        """后台表格化后支持上移/下移调处理顺序；运行中/已完成的条目锁死不能动。"""
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(
+                    ["https://v.douyin.com/a", "https://v.douyin.com/b", "https://v.douyin.com/c"],
+                    ["https://v.douyin.com/d"],
+                )
+                store.create(state)
+                ids = [item["id"] for item in state["items"]]
+
+                def order():
+                    return [
+                        item["id"]
+                        for item in store.get(state["id"])["items"]
+                        if item["status"] != "deleted"
+                    ]
+
+                with patch.object(batch_worker, "batch_store", store):
+                    # 把第 3 条上移 → 变成第 2 条，编号跟着重新排
+                    batch_worker.move_batch_item(state["id"], ids[2], "up")
+                    self.assertEqual(order(), [ids[0], ids[2], ids[1], ids[3]])
+                    after = store.get(state["id"])
+                    self.assertEqual([item["index"] for item in after["items"]], [1, 2, 3, 4])
+
+                    # 队首再上移是 no-op，不报错也不动
+                    batch_worker.move_batch_item(state["id"], ids[0], "up")
+                    self.assertEqual(order(), [ids[0], ids[2], ids[1], ids[3]])
+
+                    # 下移回到原位
+                    batch_worker.move_batch_item(state["id"], ids[0], "down")
+                    self.assertEqual(order(), [ids[2], ids[0], ids[1], ids[3]])
+
+                    # 已出片的条目不能调
+                    store.mutate_item(
+                        state["id"], ids[3], lambda row: row.update(status="completed")
+                    )
+                    with self.assertRaises(ValueError):
+                        batch_worker.move_batch_item(state["id"], ids[3], "up")
+            finally:
+                batch_store_module.DB_PATH = original
+
+    def test_batch_confirm_many_only_releases_ready_items(self) -> None:
+        """批量确认：只有「待确认 + 已有候选图」的条目被放行，其余逐个说明原因。"""
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(
+                    ["https://v.douyin.com/a", "https://v.douyin.com/b", "https://v.douyin.com/c"],
+                    [],
+                )
+                store.create(state)
+                ids = [item["id"] for item in state["items"]]
+
+                # 都备好料、有候选图 → 都能批量确认（出片仍一条一条排队）
+                for i, item_id in enumerate(ids):
+                    store.mutate_item(
+                        state["id"],
+                        item_id,
+                        lambda row, img=f"E:/tmp/cand{i}.png": row.update(
+                            status="awaiting_review",
+                            ai={"title": "t", "reference_image_path": img},
+                        ),
+                    )
+                with patch.object(batch_worker, "batch_store", store):
+                    result = batch_worker.confirm_batch_items(state["id"], ids)
+                self.assertEqual(result["confirmed"], ids)
+                self.assertEqual(result["skipped"], [])
+                self.assertTrue(
+                    all(item["status"] == "confirmed" for item in store.get(state["id"])["items"])
+                )
+
+                # 缺候选图 / 不在待确认状态 → 不放行，原因写清楚
+                for item in store.get(state["id"])["items"]:
+                    store.mutate_item(
+                        state["id"], item["id"], lambda row: row.update(
+                            status="awaiting_review", ai={"title": "t"}
+                        )
+                    )
+                store.mutate_item(state["id"], ids[1], lambda row: row.update(status="confirmed"))
+                store.mutate_item(
+                    state["id"],
+                    ids[2],
+                    lambda row: row.update(ai={"title": "t", "reference_image_path": "E:/tmp/cand2.png"}),
+                )
+                with patch.object(batch_worker, "batch_store", store):
+                    result = batch_worker.confirm_batch_items(state["id"], ids)
+                self.assertEqual(result["confirmed"], [ids[2]])
+                reasons = {entry["id"]: entry["reason"] for entry in result["skipped"]}
+                self.assertEqual(reasons[ids[0]], "还没有候选人物图")
+                self.assertEqual(reasons[ids[1]], "不在待确认状态")
+            finally:
+                batch_store_module.DB_PATH = original
+
+    def test_batch_skip_and_delete_many(self) -> None:
+        """批量跳过/删除：没在出片的直接落 skipped/deleted，已结束的拒绝。"""
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(
+                    ["https://v.douyin.com/a", "https://v.douyin.com/b", "https://v.douyin.com/c"],
+                    [],
+                )
+                store.create(state)
+                ids = [item["id"] for item in state["items"]]
+                store.mutate_item(state["id"], ids[0], lambda row: row.update(status="awaiting_review"))
+                store.mutate_item(state["id"], ids[1], lambda row: row.update(status="confirmed"))
+                store.mutate_item(state["id"], ids[2], lambda row: row.update(status="completed"))
+
+                with patch.object(batch_worker, "batch_store", store):
+                    skipped = batch_worker.mark_items_skipped(state["id"], ids)
+                self.assertEqual(skipped["marked"], [ids[0], ids[1]])
+                self.assertEqual(skipped["rejected"], [{"id": ids[2], "reason": "已经结束"}])
+                after = {item["id"]: item["status"] for item in store.get(state["id"])["items"]}
+                self.assertEqual(after[ids[0]], "skipped")
+                self.assertEqual(after[ids[1]], "skipped")
+                self.assertEqual(after[ids[2]], "completed")
+
+                with patch.object(batch_worker, "batch_store", store):
+                    deleted = batch_worker.mark_items_deleted(state["id"], ids[:1])
+                self.assertEqual(deleted["marked"], [ids[0]])
+                self.assertEqual(
+                    store.get(state["id"])["items"][0]["status"], "deleted"
+                )
+            finally:
+                batch_store_module.DB_PATH = original
+
+    def test_batch_table_endpoints_are_registered(self) -> None:
+        """后台表格化的批量接口（重排序 + 批量确认/跳过/删除）必须都注册在 app 上。"""
+        from backend.app import app
+
+        paths = {getattr(route, "path", "") for route in app.routes}
+        self.assertIn("/api/batches/{batch_id}/items/{item_id}/move", paths)
+        self.assertIn("/api/batches/{batch_id}/items/confirm-many", paths)
+        self.assertIn("/api/batches/{batch_id}/items/skip-many", paths)
+        self.assertIn("/api/batches/{batch_id}/items/delete-many", paths)
+
     def test_comfy_stop_endpoint_and_jobless_shutdown(self) -> None:
         """手动关闭 ComfyUI：接口在，且交接用的关闭逻辑能在没有 job 的情况下调用。"""
         import inspect

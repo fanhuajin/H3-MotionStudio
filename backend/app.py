@@ -29,10 +29,14 @@ from .batch_worker import (
     IDENTITY_PATH,
     append_batch_items,
     cancel_item_work,
+    confirm_batch_items,
     deliver_item_now,
     deliver_review_materials,
     image_ratio_note,
     item_ratio,
+    mark_items_deleted,
+    mark_items_skipped,
+    move_batch_item,
     new_batch_state,
     replace_item_source,
     request_review_adjustment,
@@ -336,6 +340,18 @@ class BatchItemSourceRequest(BaseModel):
 class BatchAdjustRequest(BaseModel):
     feedback: str
     mode: str = "both"
+
+
+class BatchItemMoveRequest(BaseModel):
+    """队列里上移 / 下移一条还没开始的条目（调处理顺序）。"""
+
+    direction: str
+
+
+class BatchItemIdsRequest(BaseModel):
+    """批量操作：一次确认 / 跳过 / 删除多条条目（出片仍严格一条一条）。"""
+
+    itemIds: list[str] = Field(default_factory=list)
 
 
 def _batch_or_404(batch_id: str) -> dict[str, Any]:
@@ -828,6 +844,81 @@ async def delete_batch_item(batch_id: str, item_id: str):
                     milestone["status"] = "skipped"
         batch_store.mutate_item(batch_id, item_id, mark_deleted)
     return _wake_batch(batch_id, "条目已删除。")
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/move")
+async def move_batch_item_endpoint(batch_id: str, item_id: str, request: BatchItemMoveRequest):
+    """队列里上移 / 下移一条还没开始的条目（调的是处理顺序，出片严格按队列顺序跑）。
+
+    用户 2026-09-15：批量页改成后台表格交互后要能自己调整顺序。正在出片 / 已经出片的
+    条目锁死不能动（动了会打乱正在跑的链子），`move_batch_item` 会直接报 400。
+    """
+    try:
+        return move_batch_item(batch_id, item_id, request.direction)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@app.post("/api/batches/{batch_id}/items/confirm-many")
+async def confirm_batch_items_endpoint(batch_id: str, request: BatchItemIdsRequest):
+    """批量确认：一次放行多条「等待确认」且已有候选人物图的条目。
+
+    用户 2026-09-15：批量页批量勾选后一键确认。放行只是排队等出片（出片仍严格一条一条），
+    缺候选图 / 不在待确认状态的条目不会放行，原因写进 notice 让页面提示。
+    """
+    _batch_or_404(batch_id)
+    if not request.itemIds:
+        raise HTTPException(400, "请先勾选要确认的条目")
+    result = confirm_batch_items(batch_id, request.itemIds)
+    confirmed = int(result.get("confirmed") and len(result["confirmed"]) or 0)
+    skipped = result.get("skipped") or []
+    if not confirmed:
+        reason = (skipped[0].get("reason") if skipped else "没有可确认的条目")
+        return batch_store.update(batch_id, notice=f"没有可确认的条目：{reason}。")
+    note = f"已确认 {confirmed} 条，正在按顺序出片。"
+    if skipped:
+        note += f"（{len(skipped)} 条未放行：{skipped[0].get('reason')}）"
+    return _resume_batch(batch_id, note)
+
+
+@app.post("/api/batches/{batch_id}/items/skip-many")
+async def skip_batch_items_endpoint(batch_id: str, request: BatchItemIdsRequest):
+    """批量跳过：没在出片的直接跳过；正在出片的请求安全取消，落定后自动落为已跳过。"""
+    _batch_or_404(batch_id)
+    if not request.itemIds:
+        raise HTTPException(400, "请先勾选要跳过的条目")
+    result = mark_items_skipped(batch_id, request.itemIds)
+    marked = int(result.get("marked") and len(result["marked"]) or 0)
+    busy = result.get("busy") or []
+    note = f"已跳过 {marked} 条。"
+    if busy:
+        note += f" 其中 {len(busy)} 条正在出片，已请求安全取消，稍后自动落为已跳过（成片已生成的会保留）。"
+    return _wake_batch(batch_id, note)
+
+
+@app.post("/api/batches/{batch_id}/items/delete-many")
+async def delete_batch_items_endpoint(batch_id: str, request: BatchItemIdsRequest):
+    """批量删除：没在出片的直接删除；正在出片的先安全取消子任务，成片已生成的照常抢救进发布目录。"""
+    _batch_or_404(batch_id)
+    if not request.itemIds:
+        raise HTTPException(400, "请先勾选要删除的条目")
+    result = mark_items_deleted(batch_id, request.itemIds)
+    marked = int(result.get("marked") and len(result["marked"]) or 0)
+    busy = result.get("busy") or []
+    for item_id in busy:
+        item = _batch_item_or_404(batch_id, item_id)
+        child = item.get("childJob") or {}
+        child_id = child.get("id")
+        if child_id and child.get("status") in {"queued", "running", "cancelling"}:
+            try:
+                await cancel_job(str(child_id))
+            except HTTPException as error:
+                if error.status_code not in {404, 409}:
+                    raise
+    note = f"已删除 {marked} 条。"
+    if busy:
+        note += f" 其中 {len(busy)} 条正在出片，已请求安全取消，已生成的成片会保留。"
+    return _wake_batch(batch_id, note)
 
 
 @app.get("/api/batches/{batch_id}/items/{item_id}/image")

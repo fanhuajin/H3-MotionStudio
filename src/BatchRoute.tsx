@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readJson } from "./api";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
   ArrowClockwise,
   ArrowUUpLeft,
+  CaretDown,
+  CaretUp,
   Check,
   Circle,
   ImageSquare,
@@ -236,7 +238,7 @@ function batchStatusLabel(status: string) {
     pending: "排队中",
     running: "正在处理",
     revising: "正在调整",
-    awaiting_review: "等待确认",
+    awaiting_review: "待确认",
     confirmed: "已确认",
     paused: "已暂停",
     failed: "需要重试",
@@ -253,11 +255,44 @@ function stepIcon(status: StepStatus) {
   return <Circle />;
 }
 
-function responseMessage(response: Response, fallback: string): Promise<string> {  // 交给统一的 readJson：后端 500 现在也是 JSON（{"detail": ...}），且绝不会把
+function responseMessage(response: Response, fallback: string): Promise<string> {
+  // 交给统一的 readJson：后端 500 现在也是 JSON（{"detail": ...}），且绝不会把
   // "Unexpected token 'I'..." 这种解析错误当成给用户看的提示。
   return readJson<{ detail?: string }>(response, fallback)
     .then(() => fallback)
     .catch((reason) => (reason instanceof Error ? reason.message : fallback));
+}
+
+/**
+ * 状态筛选标签（后台表格交互）：默认落在「待确认」，已完成条目归档到「已完成」。
+ * 2026-09-15 用户：「现在完成的任务还在队列里 其实完成的任务应该去完成的列表才对」。
+ */
+type TabId = "awaiting_review" | "preparing" | "rendering" | "skipped" | "failed" | "completed" | "all";
+const TABS: Array<{ id: TabId; label: string }> = [
+  { id: "awaiting_review", label: "待确认" },
+  { id: "preparing", label: "备料中" },
+  { id: "rendering", label: "出片中" },
+  { id: "skipped", label: "已跳过" },
+  { id: "failed", label: "已失败" },
+  { id: "completed", label: "已完成" },
+  { id: "all", label: "全部" },
+];
+const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
+  awaiting_review: (item) => item.status === "awaiting_review",
+  preparing: (item) => ["pending", "revising"].includes(item.status),
+  rendering: (item) => ["confirmed", "running"].includes(item.status),
+  skipped: (item) => item.status === "skipped",
+  failed: (item) => item.status === "failed",
+  completed: (item) => item.status === "completed",
+  all: () => true,
+};
+function tabForStatus(status: string): TabId {
+  if (status === "awaiting_review") return "awaiting_review";
+  if (status === "pending" || status === "revising") return "preparing";
+  if (status === "confirmed" || status === "running") return "rendering";
+  if (status === "skipped") return "skipped";
+  if (status === "failed") return "failed";
+  return "completed";
 }
 
 export function BatchRoute() {
@@ -268,6 +303,10 @@ export function BatchRoute() {
   const [danceOn, setDanceOn] = useState(initial.danceOn);
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 状态筛选标签：默认「待确认」，已完成条目归档到「已完成」。
+  const [activeTab, setActiveTab] = useState<TabId>("awaiting_review");
+  // 批量操作勾选：后台表格交互（2026-09-15 用户要求批量确认/跳过/删除）。
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busyAction, setBusyAction] = useState("");
   const [error, setError] = useState("");
   // 中性提示（比如「这次没有新增任务」）：不是错误，但必须让人看见
@@ -283,12 +322,13 @@ export function BatchRoute() {
   const [loaded, setLoaded] = useState(false);
 
   const visibleItems = useMemo(() => batch?.items.filter((item) => item.status !== "deleted") || [], [batch]);
+  // 当前标签下显示的条目；展开的详情行也只在当前标签里渲染。
+  const filteredItems = useMemo(() => visibleItems.filter(TAB_MATCH[activeTab]), [visibleItems, activeTab]);
   const selected = useMemo(
-    () => visibleItems.find((item) => item.id === selectedId)
-      || visibleItems.find((item) => item.id === batch?.currentItemId)
-      || visibleItems[0],
-    [visibleItems, selectedId, batch?.currentItemId],
+    () => visibleItems.find((item) => item.id === selectedId) || null,
+    [visibleItems, selectedId],
   );
+  const tabCount = (id: TabId) => visibleItems.filter(TAB_MATCH[id]).length;
 
   const loadLatest = useCallback(async () => {
     try {
@@ -327,7 +367,7 @@ export function BatchRoute() {
     };
   }, [batch?.id]);
 
-  // 自动跟随「当前正在处理的条目」只发生在**用户没有自己选**的时候：
+  // 自动跟随「当前正在处理的条目」只发生在**用户没有自己点**的时候：
   // 用户 2026-09-13 实测「取消出片之后为什么点击不了了 一点就跳转到了其他的」——旧逻辑
   // 只要选中项的 status 是 completed/skipped 就强行跳回 currentItemId，于是刚取消出片
   // （→ skipped）的条目根本点不开，已完成的条目也看不了。`followedItemRef` 记住「上一次是
@@ -347,15 +387,35 @@ export function BatchRoute() {
     const following = followedItemRef.current !== null && followedItemRef.current === selectedId;
     if (!unusable && !following) return;
     if (selectedId === batch.currentItemId) return;
+    const current = batch.items.find((item) => item.id === batch.currentItemId);
+    if (!current) return;
     followedItemRef.current = batch.currentItemId;
     setSelectedId(batch.currentItemId);
-  }, [batch?.currentItemId, batch?.items, selectedId]);
+    // 跟随发生时顺手把标签切到当前条目所在的状态，别让它在别的标签里「消失」
+    if (activeTab !== "all" && !TAB_MATCH[activeTab](current)) {
+      setActiveTab(tabForStatus(current.status));
+    }
+  }, [batch?.currentItemId, batch?.items, selectedId, activeTab]);
+
+  // 用户对展开的这条做了操作、状态变了以后，别让它从当前标签里消失：
+  // 比如在「待确认」里点了「确认并出片」→ 它变成 confirmed → 自动切到「出片中」。
+  useEffect(() => {
+    if (!selected || selected.status === "deleted") return;
+    if (activeTab !== "all" && !TAB_MATCH[activeTab](selected)) {
+      setActiveTab(tabForStatus(selected.status));
+    }
+  }, [selected?.id, selected?.status, activeTab]);
 
   // 换条目就收起「替换源视频」表单，免得把 A 条的链接写到 B 条上
   useEffect(() => {
     setReplacingSource(false);
     setReplaceUrl("");
   }, [selectedId]);
+
+  const switchTab = (id: TabId) => {
+    followedItemRef.current = null;   // 切标签也是用户自己接管，不再自动跳
+    setActiveTab(id);
+  };
 
   // 「准备任务」：把填好的链接交给后端，并立即开始准备
   // （下载抖音视频 → 生成人物图与发布文案 → 停在等确认）。
@@ -429,6 +489,56 @@ export function BatchRoute() {
   const itemCall = async (action: string, method = "POST", body?: object) => {
     if (!selected || !batch) return;
     await call(`items/${selected.id}${action ? `/${action}` : ""}`, method, body);
+  };
+
+  /** 表格行里的单条操作：不要求是当前展开的那一条。 */
+  const itemCallFor = async (item: BatchItem, action: string, method = "POST", body?: object) => {
+    if (!batch) return;
+    await call(`items/${item.id}${action ? `/${action}` : ""}`, method, body);
+  };
+
+  /** 批量操作：勾选后一次确认 / 跳过 / 删除（后端逐个校验，出片仍一条一条来）。 */
+  const batchOp = async (action: "confirm-many" | "skip-many" | "delete-many", confirmText?: string) => {
+    if (!batch || selectedIds.size === 0) return;
+    if (confirmText && !window.confirm(confirmText.replace("N", String(selectedIds.size)))) return;
+    const endpoint = `/api/batches/${batch.id}/items/${action}`;
+    setBusyAction(action);
+    setError("");
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemIds: [...selectedIds] }),
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "批量操作失败"));
+      setBatch(await readJson<BatchState>(response, "批量操作失败"));
+      setSelectedIds(new Set());
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(`${message}　〔POST ${endpoint}〕`);
+    } finally {
+      setBusyAction("");
+    }
+  };
+
+  /** 队列里上移 / 下移（调处理顺序，出片严格按队列顺序跑）。 */
+  const moveItem = (itemId: string, direction: "up" | "down") => {
+    if (!batch) return;
+    const endpoint = `/api/batches/${batch.id}/items/${itemId}/move`;
+    setBusyAction(`move-${itemId}`);
+    setError("");
+    fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction }),
+    })
+      .then((response) => {
+        if (!response.ok) return responseMessage(response, "调整顺序失败").then((message) => { throw new Error(message); });
+        return readJson<BatchState>(response, "调整顺序失败");
+      })
+      .then(setBatch)
+      .catch((reason) => setError(`${reason instanceof Error ? reason.message : String(reason)}　〔POST ${endpoint}〕`))
+      .finally(() => setBusyAction(""));
   };
 
   const hasImage = Boolean(selected?.ai?.reference_image_path);
@@ -530,34 +640,33 @@ export function BatchRoute() {
     return STAGE_LABELS.filter(([key]) => available.has(key));
   }, [selected]);
 
-  // 「等待你的确认」那一屏要把后端掌握的**全部**信息摊开：识别歌曲/情绪、造型来源判断、
-  // 作品号、源作品文案、候选图来源与版本、比例与放行状态、时间线与标识。
-  // 用户 2026-09-13：「报所有可以展示的信息都展示出来」「是指等待你的确认里的信息」。
-  // **不要条目日志**（同日追加：「信息展示 条目日志不要」）——日志留在后端/接口里排查用。
-  const reviewFacts = useMemo(() => {
-    if (!selected?.ai) return [] as Array<[string, string]>;
-    const ai = selected.ai;
+  // 「等待你的确认」那一屏要把后端掌握的**全部**信息摊开；但排障用的技术字段（条目 id、
+  // 下载/视频子任务、源文件路径）收进「高级信息」折叠区，不再一上来就堆满一屏
+  // （2026-09-15 用户：「信息展示太杂」）。
+  const reviewCoreFacts = (ai: BatchAI, item: BatchItem): Array<[string, string]> => {
     const image = String(ai.reference_image_path || "");
     return [
-      ["类型", selected.kind === "singing" ? "唱歌视频" : "跳舞视频"],
-      ["状态", `${batchStatusLabel(selected.status)} · ${selected.stage}`],
-      ["抖音作品号", String(selected.awemeId || "")],
-      ["源作品文案", sourceCaption(selected)],
-      ["源文件名", String(selected.sourceName || "")],
+      ["类型", item.kind === "singing" ? "唱歌视频" : "跳舞视频"],
+      ["状态", `${batchStatusLabel(item.status)} · ${item.stage}`],
+      ["抖音作品号", String(item.awemeId || "")],
+      ["源作品文案", sourceCaption(item)],
+      ["源文件名", String(item.sourceName || "")],
       ["识别歌曲", String(ai.song_name || "")],
       ["歌曲情绪", String(ai.song_mood || "")],
       ["造型来源", styleSourceLabel(ai.style_source)],
       ["候选人物图", image ? image.split(/[\\/]/).pop() || image : "还没有（等你上传 GPT 生成的图）"],
-      ["候选图版本", `第 ${(selected.revision || 0) + 1} 版`],
-      ["审核放行", selected.status === "awaiting_review" ? "还没放行" : "已放行"],
-      ["条目 id", selected.id],
-      ["下载子任务", String(selected.downloadJobId || "")],
-      ["视频子任务", String(selected.videoJobId || "")],
-      ["源文件路径", String(selected.sourcePath || "")],
-      ["创建时间", formatLogTime(selected.createdAt)],
-      ["最近更新", formatLogTime(selected.updatedAt)],
+      ["候选图版本", `第 ${(item.revision || 0) + 1} 版`],
+      ["审核放行", item.status === "awaiting_review" ? "还没放行" : "已放行"],
+      ["创建时间", formatLogTime(item.createdAt)],
     ] as Array<[string, string]>;
-  }, [selected]);
+  };
+  const reviewAdvancedFacts = (item: BatchItem): Array<[string, string]> => [
+    ["条目 id", item.id],
+    ["下载子任务", String(item.downloadJobId || "")],
+    ["视频子任务", String(item.videoJobId || "")],
+    ["源文件路径", String(item.sourcePath || "")],
+    ["最近更新", formatLogTime(item.updatedAt)],
+  ];
 
   // 已运行时间：批次还在跑就实时跳秒；已结束显示总耗时。
   const batchLive = Boolean(batch && !batch.finishedAt && !["completed", "cancelled", "failed"].includes(batch.status));
@@ -573,7 +682,7 @@ export function BatchRoute() {
     : null;
 
   /**
-   * 队列里那条的时间：排队中写「排队」（还没开始，别让人以为在跑）、
+   * 表格里那条的时间：排队中写「排队」（还没开始，别让人以为在跑）、
    * 正在跑写「已用」、结束写「耗时」。都从加入队列算起。
    */
   const queueTime = (item: BatchItem): string => {
@@ -611,6 +720,468 @@ export function BatchRoute() {
   const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
 
+  // —— 批量操作（勾选） ——
+  const allChecked = filteredItems.length > 0 && filteredItems.every((item) => selectedIds.has(item.id));
+  const toggleSelect = (itemId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) next.delete(itemId); else next.add(itemId);
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allChecked) filteredItems.forEach((item) => next.delete(item.id));
+      else filteredItems.forEach((item) => next.add(item.id));
+      return next;
+    });
+  };
+  const selectedItems = visibleItems.filter((item) => selectedIds.has(item.id));
+  const anyConfirmable = selectedItems.some(
+    (item) => item.status === "awaiting_review" && Boolean(item.ai?.reference_image_path),
+  );
+  const anySkippable = selectedItems.some(
+    (item) => !["completed", "skipped", "deleted"].includes(item.status),
+  );
+  const anyDeletable = selectedItems.some((item) => item.status !== "deleted");
+
+  // —— 表格行里按状态给的操作按钮（每行只给最该做的 1~2 个动作） ——
+  const statusAction = (item: BatchItem) => {
+    if (item.status === "awaiting_review") {
+      return (
+        <>
+          <button
+            className="batch-primary small"
+            disabled={Boolean(busyAction) || !item.ai?.reference_image_path}
+            onClick={() => void itemCallFor(item, "confirm")}
+            title={item.ai?.reference_image_path ? undefined : "先添加上这一条的候选人物图"}
+          >
+            <Check weight="bold" />确认并出片
+          </button>
+          <button onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>
+        </>
+      );
+    }
+    if (item.status === "pending") {
+      return <button onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>;
+    }
+    if (["confirmed", "running", "revising"].includes(item.status)) {
+      return (
+        <button
+          className="danger"
+          onClick={() => {
+            const message = renderingNow(item)
+              ? "停止这一条当前的出片？已经生成到一半的进度会作废，取消后可以点「重新开始」再出片。"
+              : "这一条还没开始出片，停止这次放行不会动到其它条目。停止后可以点「重新开始」。";
+            if (window.confirm(message)) void itemCallFor(item, "skip");
+          }}
+          title="停止这一条当前的生成/出片；取消后可以重新开始"
+        >
+          <X weight="bold" />停止取消
+        </button>
+      );
+    }
+    if (item.status === "failed") {
+      return <button onClick={() => void itemCallFor(item, "retry")}><ArrowClockwise />重试</button>;
+    }
+    if (["skipped", "completed"].includes(item.status)) {
+      return (
+        <button
+          onClick={() => {
+            if (
+              item.status !== "completed"
+              || window.confirm("再出一版？会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。")
+            ) {
+              void itemCallFor(item, "retry");
+            }
+          }}
+          title={item.ai?.reference_image_path ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
+        >
+          <ArrowClockwise />重新开始
+        </button>
+      );
+    }
+    return null;
+  };
+
+  // —— 展开行的完整详情 ——
+  const renderSelectedDetail = () => {
+    if (!selected) return null;
+    const item = selected;
+    const reviewCore = reviewCoreFacts(item.ai!, item);
+    const reviewAdvanced = reviewAdvancedFacts(item);
+    return (
+      <div className="batch-expanded">
+        <div className="batch-detail-head">
+          <div>
+            <p>第 {item.index} 条 · {item.kind === "singing" ? "歌曲视频" : "跳舞视频"}</p>
+            <h2>{itemTitle(selected)}</h2>
+            <div className="batch-detail-meta">
+              <a href={item.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
+              {/* 本条已运行时间：跑到哪一步、一共花了多久 */}
+              {itemElapsedMs !== null && (
+                <span className="batch-timer" title={item.finishedAt ? "本条总耗时" : "本条已运行时间（含排队）"}>
+                  <Timer weight="fill" /> {formatElapsedMs(itemElapsedMs)}
+                  {item.finishedAt ? "（总）" : ""}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="batch-item-actions">
+            {/* 失败 / 已跳过 / 已出片：都能直接再出一版（同一接口，已确认过的只重跑出片） */}
+            {["failed", "skipped", "completed"].includes(item.status) && (
+              <button
+                onClick={() => {
+                  if (
+                    item.status !== "completed"
+                    || window.confirm("再出一版？会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。")
+                  ) {
+                    void itemCall("retry");
+                  }
+                }}
+                title={hasImage ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
+              >
+                <ArrowClockwise />
+                {item.status === "failed" ? "重试" : "重新开始"}
+              </button>
+            )}
+            {canReopen && (
+              <button
+                onClick={() => {
+                  // 只有真的在出片的条目才会作废进度；`confirmed`（已放行、还没轮到）
+                  // 退回去只是把放行作废，不碰任何正在跑的生成，不用吓唬用户。
+                  if (
+                    !renderingNow(item)
+                    || window.confirm("这一条正在出片。回到确认会先取消当前出片（已生成到一半的进度作废），确定吗？")
+                  ) {
+                    void itemCall("reopen-review");
+                  }
+                }}
+                title={
+                  renderingNow(item)
+                    ? "回到「等待你的确认」：会先安全取消这一条当前的出片"
+                    : "回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认（不会影响其它条目）"
+                }
+              >
+                <ArrowUUpLeft />回到确认
+              </button>
+            )}
+            <button
+              className="danger"
+              onClick={() => {
+                if (window.confirm(`删除第 ${item.index} 条？正在跑的步骤会被安全取消，已生成的文件会保留。`)) {
+                  void itemCall("", "DELETE");
+                }
+              }}
+            >
+              <Trash />删除这一条
+            </button>
+          </div>
+        </div>
+
+        {/* 本条对应的源视频：确认前必须先能认出「这是哪条抖音视频」。
+            条目上的标题是模型重起的发布标题，源作品文案 + 可播放源片 + 作品号才认得出。
+            认出来不对就地替换（用户 2026-09-13：「要有让我可以替换的操作」）。 */}
+        <section className="batch-source-panel">
+          <div className="batch-panel-title">
+            <span>本条源视频</span>
+            <div className="batch-source-head">
+              <small>
+                {item.kind === "singing" ? "唱歌条目" : "跳舞条目"}
+                {item.awemeId ? ` · 抖音作品号 ${item.awemeId}` : " · 还没下载"}
+              </small>
+              {canReplaceSource && (
+                <button
+                  onClick={() => {
+                    setReplaceKind(item.kind);
+                    setReplaceUrl("");
+                    setReplacingSource((open) => !open);
+                  }}
+                >
+                  <ArrowClockwise />{replacingSource ? "收起" : "替换源视频"}
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="batch-source-body">
+            {item.sourcePath ? (
+              <video
+                key={item.sourcePath}
+                src={`/api/batches/${batch!.id}/items/${item.id}/stage/source`}
+                controls
+                preload="metadata"
+              />
+            ) : (
+              <div className="batch-source-empty">还没下载源视频<br />下载完成后这里可以直接播放核对</div>
+            )}
+            <div className="batch-source-meta">
+              <strong title={sourceCaption(item)}>
+                {sourceCaption(item) || "这一条还没有下载源视频"}
+              </strong>
+              {item.sourceName && <small title={item.sourceName}>{item.sourceName}</small>}
+              <em>
+                {item.kind === "singing"
+                  ? "出片时按这条视频的画面与音轨生成"
+                  : "出片时按这条视频的动作做迁移"}
+              </em>
+              <a href={item.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
+            </div>
+          </div>
+
+          {replacingSource && (
+            <div className="batch-source-replace">
+              <label>
+                <span>换成哪条抖音链接</span>
+                <textarea
+                  rows={2}
+                  value={replaceUrl}
+                  onChange={(event) => setReplaceUrl(event.target.value)}
+                  placeholder="粘贴抖音分享链接，或 www.douyin.com/video/作品号"
+                />
+              </label>
+              <div className="batch-source-kind">
+                <span>类型</span>
+                {(["singing", "dance"] as const).map((value) => (
+                  <button
+                    key={value}
+                    className={replaceKind === value ? "active" : ""}
+                    onClick={() => setReplaceKind(value)}
+                  >
+                    {value === "singing" ? "唱歌视频" : "跳舞视频"}
+                  </button>
+                ))}
+              </div>
+              <p className="field-note">
+                替换后这一条会作废按旧视频做的分析、出图提示词与文案，重新下载并备料，然后停在「等待你的确认」。
+                {replaceKind !== item.kind
+                  ? ` 类型改成${replaceKind === "singing" ? "唱歌视频" : "跳舞视频"}，画布比例回到该类型默认值。`
+                  : ""}
+              </p>
+              <div className="batch-review-actions">
+                <button onClick={() => setReplacingSource(false)}>取消</button>
+                <button
+                  className="batch-primary"
+                  disabled={!replaceUrl.trim() || Boolean(busyAction)}
+                  onClick={async () => {
+                    await itemCall("source", "POST", { url: replaceUrl.trim(), kind: replaceKind });
+                    setReplaceUrl("");
+                    setReplacingSource(false);
+                  }}
+                >
+                  {busyAction.endsWith("/source") ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
+                  替换并重新备料
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {item.status === "pending" && (
+          <p className="field-note">
+            {batch?.status === "paused" || batch?.pauseRequested
+              ? "这一条还在排队：批次处于暂停，点表格上方的「继续」后才会开始（下载抖音视频 → 生成人物图素材与发布文案 → 停下来等你确认）。"
+              : "这一条还在排队：轮到它就会自动下载抖音视频、生成人物图素材与发布文案，然后停下来等你确认。"}
+          </p>
+        )}
+
+        {/* 这一屏的信息在**加入队列之后也要继续显示**（用户 2026-09-13），
+            只是出了审核点就不给改了：上传/换图与设置开关只在这里是 awaiting_review 时可用。 */}
+        {item.ai && (
+          <section className="batch-review">
+            <div className="batch-review-image">
+              <div className="batch-review-label"><ImageSquare /> 候选人物图 · 第 {(item.revision || 0) + 1} 版</div>
+              {hasImage ? (
+                <img
+                  src={`/api/batches/${batch!.id}/items/${item.id}/image?v=${imageToken || item.revision || 0}`}
+                  alt="候选人物图"
+                />
+              ) : atReview ? (
+                <label
+                  className={`batch-dropzone ${dragging ? "over" : ""}`}
+                  onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDragging(false);
+                    const file = event.dataTransfer.files?.[0];
+                    if (file) void uploadImage(file);
+                  }}
+                >
+                  <UploadSimple weight="bold" />
+                  <strong>{busyAction === "upload" ? "正在上传…" : "把 GPT 生成的图拖到这里"}</strong>
+                  <small>或点击选择文件 · PNG / JPG / WEBP · 单张 25MB 以内</small>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void uploadImage(file);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
+              ) : (
+                <p className="batch-empty">这一条没有留下候选人物图。</p>
+              )}
+              {hasImage && atReview && (
+                <label className="batch-replace">
+                  <UploadSimple /> 换一张
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void uploadImage(file);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
+              )}
+            </div>
+            <div className="batch-review-copy">
+              <div className="batch-review-title">
+                <span>{atReview ? "等待你的确认" : `本条信息（只读）· ${batchStatusLabel(item.status)}`}</span>
+                <small>{atReview ? `按 ${selectedRatio} 出片 · 确认前不会启动 ComfyUI` : `按 ${selectedRatio} 出片`}</small>
+              </div>
+
+              {item.ai.song_name && <p className="batch-song-name">识别歌曲：{item.ai.song_name}</p>}
+              <label><span>标题</span><p>{item.ai.title}</p></label>
+              <label><span>简介</span><p>{item.ai.introduction}</p></label>
+              <label><span>标签</span><div className="batch-tags">{item.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>
+              {/* 确认这一屏要把后端掌握的**全部**信息给出来（用户 2026-09-13）——
+                  确认相关的字段直接展示；排障用的技术字段收进「高级信息」折叠区，避免一屏太杂
+                  （2026-09-15 用户：「信息展示太杂」）。条目日志不放这里（用户要求去掉）。 */}
+              <label>
+                <span>本条全部信息</span>
+                <dl className="batch-facts">
+                  {reviewCore.map(([label, value]) => (
+                    <div key={label}>
+                      <dt>{label}</dt>
+                      <dd>{value || "—"}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <details className="batch-advanced">
+                  <summary>高级信息（排障用）</summary>
+                  <dl className="batch-facts">
+                    {reviewAdvanced.map(([label, value]) => (
+                      <div key={label}>
+                        <dt>{label}</dt>
+                        <dd>{value || "—"}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </details>
+              </label>
+              {atReview && renderSettings(item)}
+              {atReview && (
+                <div className="batch-review-actions">
+                  <button
+                    className="batch-primary"
+                    disabled={Boolean(busyAction) || !hasImage}
+                    onClick={() => itemCall("confirm")}
+                    title={hasImage ? undefined : "请先添加上这一条的候选人物图"}
+                  >
+                    <Check weight="bold" />确认并出片
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {item.ai && item.status !== "awaiting_review" && settingsEditable && (
+          <section className="batch-prompt-panel">
+            <div className="batch-panel-title">
+              <span>出片前设置</span>
+              <small>
+                {item.status === "confirmed"
+                  ? "已加入出片队列，轮到它之前仍可改"
+                  : "这一条还没开始出片，可以直接改"}
+              </small>
+            </div>
+            <div className="batch-review-copy">{renderSettings(item)}</div>
+          </section>
+        )}
+
+        {/* 「已填写的动作与运镜 / 迁移提示词」整块去掉（2026-09-13 用户要求）——
+            提示词仍然照常提交给工作流，只是不再在页面上展示。 */}
+
+        <section className="batch-progress-panel">
+          <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(item.status)}</small></div>
+          <div className="batch-steps">
+            {item.milestones.map((step) => {
+              const percent = stepPercent(step);
+              const elapsed = elapsedLabel(step.startedAt);
+              return (
+                <div className={`batch-step ${step.status}`} key={step.id}>
+                  <span className="batch-step-icon">{stepIcon(step.status)}</span>
+                  <div><strong>{step.label}</strong><small>{step.currentNode || step.subtitle}</small></div>
+                  {step.status === "running" && (percent !== null
+                    ? <em>{percent}%</em>
+                    : (
+                      <em className="indeterminate" title="该步骤没有节点级进度，按实际耗时显示">
+                        进行中{elapsed ? ` · ${elapsed}` : ""}
+                      </em>
+                    ))}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {stageEntries.length > 0 && (
+          <section className="batch-child-panel">
+            <div className="batch-panel-title">
+              <span>生成阶段产物</span>
+              <small>只读 · 点开即看，不影响任务</small>
+            </div>
+            <div className="batch-stage-list">
+              {stageEntries.map(([key, label]) => (
+                <a
+                  key={key}
+                  href={`/api/batches/${batch!.id}/items/${item.id}/stage/${key}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {label}
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {item.childJob && (
+          <section className="batch-child-panel">
+            <div className="batch-panel-title">
+              <span>真实生成流程</span>
+              <small>{item.childJob.currentNodeTitle || batchStatusLabel(item.childJob.status)}</small>
+            </div>
+            <div className="batch-child-badges">
+              {item.childJob.currentSegment && <i>H3 分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</i>}
+              {item.childJob.cleanBatch && <i>去字幕 {item.childJob.cleanBatch}/{item.childJob.cleanBatches}</i>}
+              {item.childJob.upscaleBatch && <i>二采 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</i>}
+            </div>
+            <div className="batch-steps compact">
+              {(item.childJob.milestones || []).map((step) => (
+                <div className={`batch-step ${step.status}`} key={step.id}>
+                  <span className="batch-step-icon">{stepIcon(step.status)}</span>
+                  <div><strong>{step.label}</strong><small>{step.subtitle}</small></div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* 成品区整个去掉（2026-09-13 用户要求）：交付照做（文件照样写进发布目录），
+            页面上不再放这块面板。成片仍可在「生成阶段产物」里点开看。 */}
+
+        {(item.error || item.warning) && <div className="batch-alert"><WarningCircle weight="fill" />{item.error || item.warning}</div>}
+      </div>
+    );
+  };
+
   return (
     <main className="batch-page">
       <header className="batch-header">
@@ -630,7 +1201,7 @@ export function BatchRoute() {
       <section className="batch-input-card">
         <div className="batch-prepare-head">
           <span>准备任务</span>
-          <small>点「准备任务」后立即开始：下载抖音视频 → 生成人物图与发布文案 → 停下来等你确认；确认后点「加入队列」直接开跑 ComfyUI 出片</small>
+          <small>点「准备任务」后立即开始：下载抖音视频 → 生成人物图与发布文案 → 停下来等你确认；确认后「确认并出片」直接开跑 ComfyUI 出片</small>
         </div>
         <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
           <label className={singingOn ? "" : "off"}>
@@ -679,7 +1250,7 @@ export function BatchRoute() {
           </label>
         </div>
         <div className="batch-input-actions">
-          <p><ListChecks /> 重复链接会自动跳过；备好料就停下来等你确认，点「加入队列」才真正出片。</p>
+          <p><ListChecks /> 重复链接会自动跳过；备好料就停下来等你确认，点「确认并出片」才真正出片。</p>
           <div className="batch-input-buttons">
             <button
               className="batch-primary"
@@ -699,12 +1270,24 @@ export function BatchRoute() {
 
       {batch && (
         <section className="batch-workspace">
-          <aside className="batch-queue">
-            <div className="batch-section-head">
-              <div><span>制作队列</span><small>{batch.notice}</small></div>
-              <div className="batch-head-actions">
-                {/* 不再显示**批次总耗时**（2026-09-13 用户：「每一个队列里的任务都是独立的计算时间
-                    我不需要看总时间」）：每条自己的时间在队列行里，选中条目在标题下有耗时。 */}
+          <div className="batch-table-card">
+            <div className="batch-table-head">
+              <div className="batch-tabs" role="tablist" aria-label="按状态筛选">
+                {TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === tab.id}
+                    className={`batch-tab ${activeTab === tab.id ? "active" : ""}`}
+                    onClick={() => switchTab(tab.id)}
+                  >
+                    {tab.label}
+                    <i>{tabCount(tab.id)}</i>
+                  </button>
+                ))}
+              </div>
+              <div className="batch-table-controls">
                 {batch.status === "paused" ? (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 ) : !["completed", "awaiting_review", "cancelled"].includes(batch.status) ? (
@@ -725,417 +1308,140 @@ export function BatchRoute() {
                 )}
               </div>
             </div>
-            <div className="batch-item-list">
-              {visibleItems.map((item) => (
-                <button key={item.id} className={`batch-item ${selected?.id === item.id ? "selected" : ""}`} onClick={() => selectItem(item.id)}>
-                  <span className={`batch-item-index ${item.status}`}>{item.status === "completed" ? <Check /> : item.index}</span>
-                  <span className="batch-item-copy">
-                    <strong>{itemTitle(item)}</strong>
-                    <small>
-                      {item.kind === "singing" ? "歌曲视频" : "跳舞视频"} · {batchStatusLabel(item.status)}
-                      {/* 出片中的条目在列表里也给出真实进度：分段 / 去字幕 / 二采第几批 */}
-                      {item.childJob?.currentSegment && item.childJob.estimatedSegments
-                        ? ` · 分段 ${item.childJob.currentSegment}/${item.childJob.estimatedSegments}`
-                        : ""}
-                      {/* 每条自己的时间（用户 2026-09-13：「当前任务队列的时间也给下」） */}
-                      {queueTime(item) ? ` · ${queueTime(item)}` : ""}
-                    </small>
-                    {/* 模型起的标题认不出是哪条视频：列表里再挂一行源作品自己的文案 */}
-                    {sourceCaption(item) && (
-                      <small className="batch-item-source" title={sourceCaption(item)}>
-                        源：{sourceCaption(item)}
-                      </small>
-                    )}
-                  </span>
-                  {item.status === "running" && <SpinnerGap className="spin" />}
+
+            {/* 批量操作栏：勾选任意一条后出现 */}
+            {selectedIds.size > 0 && (
+              <div className="batch-bulk-bar">
+                <span>已选 {selectedIds.size} 条</span>
+                <button
+                  className="batch-primary small"
+                  disabled={!anyConfirmable || Boolean(busyAction)}
+                  onClick={() => void batchOp("confirm-many")}
+                  title={anyConfirmable ? "一次放行所有已勾选的待确认条目（缺候选图的不会放行）" : "勾选里没有可确认的条目（需待确认且有候选图）"}
+                >
+                  <Check weight="bold" />确认并出片
                 </button>
-              ))}
-              {!visibleItems.length && <p className="batch-empty">队列里还没有任务。</p>}
-            </div>
-          </aside>
+                <button
+                  disabled={!anySkippable || Boolean(busyAction)}
+                  onClick={() => void batchOp("skip-many", "跳过选中的 N 条？正在出片的会先安全取消，成片已生成的会保留。")}
+                >
+                  <X />跳过
+                </button>
+                <button
+                  className="danger"
+                  disabled={!anyDeletable || Boolean(busyAction)}
+                  onClick={() => void batchOp("delete-many", "删除选中的 N 条？正在跑的步骤会被安全取消，已生成的文件会保留。")}
+                >
+                  <Trash />删除
+                </button>
+                <button className="ghost" onClick={() => setSelectedIds(new Set())}>取消选择</button>
+              </div>
+            )}
 
-          <div className="batch-detail">
-            {selected ? (
-              <>
-                <div className="batch-detail-head">
-                  <div>
-                    <p>第 {selected.index} 条 · {selected.kind === "singing" ? "歌曲视频" : "跳舞视频"}</p>
-                    <h2>{itemTitle(selected)}</h2>
-                    <div className="batch-detail-meta">
-                      <a href={selected.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
-                      {/* 本条已运行时间：跑到哪一步、一共花了多久 */}
-                      {itemElapsedMs !== null && (
-                        <span className="batch-timer" title={selected.finishedAt ? "本条总耗时" : "本条已运行时间（含排队）"}>
-                          <Timer weight="fill" /> {formatElapsedMs(itemElapsedMs)}
-                          {selected.finishedAt ? "（总）" : ""}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="batch-item-actions">
-                    {/* 失败 / 已跳过 / 已出片：都能直接再出一版（同一接口，已确认过的只重跑出片） */}
-                    {selected.status === "failed" && <button onClick={() => itemCall("retry")}><ArrowClockwise />重试</button>}
-                    {["skipped", "completed"].includes(selected.status) && (
-                      <button
-                        onClick={() => {
-                          if (
-                            selected.status !== "completed"
-                            || window.confirm("再出一版？会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。")
-                          ) {
-                            void itemCall("retry");
-                          }
-                        }}
-                        title={hasImage ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
-                      >
-                        <ArrowClockwise />重新开始
-                      </button>
-                    )}
-                    {/* 开始中了（已放行 / 正在出片）：给一个明确的「取消出片」，取消后就能重新开始 */}
-                    {["confirmed", "running", "revising"].includes(selected.status) && (
-                      <button
-                        className="danger"
-                        onClick={() => {
-                          const message = renderingNow(selected)
-                            ? "取消这一条当前的出片？已经生成到一半的进度会作废，取消后可以点「重新开始」再出片。"
-                            : "这一条还没开始出片，取消这次放行不会动到其它条目。取消后可以点「重新开始」。";
-                          if (window.confirm(message)) {
-                            void itemCall("skip");
-                          }
-                        }}
-                        title="停止这一条当前的生成/出片；取消后可以重新开始"
-                      >
-                        <X weight="bold" />取消出片
-                      </button>
-                    )}
-                    {["pending", "awaiting_review"].includes(selected.status) && (
-                      <button onClick={() => itemCall("skip")}><X />跳过</button>
-                    )}
-                    {canReopen && (
-                      <button
-                        onClick={() => {
-                          // 只有真的在出片的条目才会作废进度；`confirmed`（已放行、还没轮到）
-                          // 退回去只是把放行作废，不碰任何正在跑的生成，不用吓唬用户。
-                          if (
-                            !renderingNow(selected)
-                            || window.confirm("这一条正在出片。回到确认会先取消当前出片（已生成到一半的进度作废），确定吗？")
-                          ) {
-                            void itemCall("reopen-review");
-                          }
-                        }}
-                        title={
-                          renderingNow(selected)
-                            ? "回到「等待你的确认」：会先安全取消这一条当前的出片"
-                            : "回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认（不会影响其它条目）"
-                        }
-                      >
-                        <ArrowUUpLeft />回到确认
-                      </button>
-                    )}
-                    <button
-                      className="danger"
-                      onClick={() => {
-                        if (window.confirm(`删除第 ${selected.index} 条？正在跑的步骤会被安全取消，已生成的文件会保留。`)) {
-                          void itemCall("", "DELETE");
-                        }
-                      }}
-                    >
-                      <Trash />删除这一条
-                    </button>
-                  </div>
-                </div>
-
-                {/* 本条对应的源视频：确认前必须先能认出「这是哪条抖音视频」。
-                    条目上的标题是模型重起的发布标题，源作品文案 + 可播放源片 + 作品号才认得出。
-                    认出来不对就地替换（用户 2026-09-13：「要有让我可以替换的操作」）。 */}
-                <section className="batch-source-panel">
-                  <div className="batch-panel-title">
-                    <span>本条源视频</span>
-                    <div className="batch-source-head">
-                      <small>
-                        {selected.kind === "singing" ? "唱歌条目" : "跳舞条目"}
-                        {selected.awemeId ? ` · 抖音作品号 ${selected.awemeId}` : " · 还没下载"}
-                      </small>
-                      {canReplaceSource && (
-                        <button
-                          onClick={() => {
-                            setReplaceKind(selected.kind);
-                            setReplaceUrl("");
-                            setReplacingSource((open) => !open);
-                          }}
-                        >
-                          <ArrowClockwise />{replacingSource ? "收起" : "替换源视频"}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <div className="batch-source-body">
-                    {selected.sourcePath ? (
-                      <video
-                        key={selected.sourcePath}
-                        src={`/api/batches/${batch.id}/items/${selected.id}/stage/source`}
-                        controls
-                        preload="metadata"
+            <div className="batch-table-wrap">
+              <table className="batch-table">
+                <thead>
+                  <tr>
+                    <th className="batch-check">
+                      <input
+                        type="checkbox"
+                        aria-label="选择当前标签下全部任务"
+                        checked={allChecked}
+                        onChange={toggleSelectAll}
                       />
-                    ) : (
-                      <div className="batch-source-empty">还没下载源视频<br />下载完成后这里可以直接播放核对</div>
-                    )}
-                    <div className="batch-source-meta">
-                      <strong title={sourceCaption(selected)}>
-                        {sourceCaption(selected) || "这一条还没有下载源视频"}
-                      </strong>
-                      {selected.sourceName && <small title={selected.sourceName}>{selected.sourceName}</small>}
-                      <em>
-                        {selected.kind === "singing"
-                          ? "出片时按这条视频的画面与音轨生成"
-                          : "出片时按这条视频的动作做迁移"}
-                      </em>
-                      <a href={selected.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
-                    </div>
-                  </div>
-
-                  {replacingSource && (
-                    <div className="batch-source-replace">
-                      <label>
-                        <span>换成哪条抖音链接</span>
-                        <textarea
-                          rows={2}
-                          value={replaceUrl}
-                          onChange={(event) => setReplaceUrl(event.target.value)}
-                          placeholder="粘贴抖音分享链接，或 www.douyin.com/video/作品号"
-                        />
-                      </label>
-                      <div className="batch-source-kind">
-                        <span>类型</span>
-                        {(["singing", "dance"] as const).map((value) => (
-                          <button
-                            key={value}
-                            className={replaceKind === value ? "active" : ""}
-                            onClick={() => setReplaceKind(value)}
-                          >
-                            {value === "singing" ? "唱歌视频" : "跳舞视频"}
-                          </button>
-                        ))}
-                      </div>
-                      <p className="field-note">
-                        替换后这一条会作废按旧视频做的分析、出图提示词与文案，重新下载并备料，然后停在「等待你的确认」。
-                        {replaceKind !== selected.kind
-                          ? ` 类型改成${replaceKind === "singing" ? "唱歌视频" : "跳舞视频"}，画布比例回到该类型默认值。`
-                          : ""}
-                      </p>
-                      <div className="batch-review-actions">
-                        <button onClick={() => setReplacingSource(false)}>取消</button>
-                        <button
-                          className="batch-primary"
-                          disabled={!replaceUrl.trim() || Boolean(busyAction)}
-                          onClick={async () => {
-                            await itemCall("source", "POST", { url: replaceUrl.trim(), kind: replaceKind });
-                            setReplaceUrl("");
-                            setReplacingSource(false);
-                          }}
+                    </th>
+                    <th>任务</th>
+                    <th>状态</th>
+                    <th>比例</th>
+                    <th>时间</th>
+                    <th className="right">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={6}>
+                        <p className="batch-empty">这个状态下还没有任务。</p>
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredItems.map((item) => (
+                      <Fragment key={item.id}>
+                        <tr
+                          className={`batch-row ${selectedId === item.id ? "selected" : ""} ${item.status}`}
+                          onClick={() => selectItem(item.id)}
                         >
-                          {busyAction.endsWith("/source") ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
-                          替换并重新备料
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </section>
-
-                {selected.status === "pending" && (
-                  <p className="field-note">
-                    {batch?.status === "paused" || batch?.pauseRequested
-                      ? "这一条还在排队：批次处于暂停，点队列上方的「继续」后才会开始（下载抖音视频 → 生成人物图素材与发布文案 → 停下来等你确认）。"
-                      : "这一条还在排队：轮到它就会自动下载抖音视频、生成人物图素材与发布文案，然后停下来等你确认。"}
-                  </p>
-                )}
-
-                {/* 这一屏的信息在**加入队列之后也要继续显示**（用户 2026-09-13），
-                    只是出了审核点就不给改了：上传/换图与设置开关只在这里是 awaiting_review 时可用。 */}
-                {selected.ai && (
-                  <section className="batch-review">
-                    <div className="batch-review-image">
-                      <div className="batch-review-label"><ImageSquare /> 候选人物图 · 第 {(selected.revision || 0) + 1} 版</div>
-                      {hasImage ? (
-                        <img
-                          src={`/api/batches/${batch.id}/items/${selected.id}/image?v=${imageToken || selected.revision || 0}`}
-                          alt="候选人物图"
-                        />
-                      ) : atReview ? (
-                        <label
-                          className={`batch-dropzone ${dragging ? "over" : ""}`}
-                          onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
-                          onDragLeave={() => setDragging(false)}
-                          onDrop={(event) => {
-                            event.preventDefault();
-                            setDragging(false);
-                            const file = event.dataTransfer.files?.[0];
-                            if (file) void uploadImage(file);
-                          }}
-                        >
-                          <UploadSimple weight="bold" />
-                          <strong>{busyAction === "upload" ? "正在上传…" : "把 GPT 生成的图拖到这里"}</strong>
-                          <small>或点击选择文件 · PNG / JPG / WEBP · 单张 25MB 以内</small>
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp"
-                            onChange={(event) => {
-                              const file = event.target.files?.[0];
-                              if (file) void uploadImage(file);
-                              event.target.value = "";
-                            }}
-                          />
-                        </label>
-                      ) : (
-                        <p className="batch-empty">这一条没有留下候选人物图。</p>
-                      )}
-                      {hasImage && atReview && (
-                        <label className="batch-replace">
-                          <UploadSimple /> 换一张
-                          <input
-                            type="file"
-                            accept="image/png,image/jpeg,image/webp"
-                            onChange={(event) => {
-                              const file = event.target.files?.[0];
-                              if (file) void uploadImage(file);
-                              event.target.value = "";
-                            }}
-                          />
-                        </label>
-                      )}
-                    </div>
-                    <div className="batch-review-copy">
-                      <div className="batch-review-title">
-                        <span>{atReview ? "等待你的确认" : `本条信息（只读）· ${batchStatusLabel(selected.status)}`}</span>
-                        <small>{atReview ? `按 ${selectedRatio} 出片 · 确认前不会启动 ComfyUI` : `按 ${selectedRatio} 出片`}</small>
-                      </div>
-
-                      {selected.ai.song_name && <p className="batch-song-name">识别歌曲：{selected.ai.song_name}</p>}
-                      <label><span>标题</span><p>{selected.ai.title}</p></label>
-                      <label><span>简介</span><p>{selected.ai.introduction}</p></label>
-                      <label><span>标签</span><div className="batch-tags">{selected.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>
-                      {/* 确认这一屏要把后端掌握的**全部**信息给出来（用户 2026-09-13：
-                          「报所有可以展示的信息都展示出来」「是指等待你的确认里的信息」）——
-                          以前这里只有标题/简介/标签，歌曲情绪、造型来源、作品号、时间线
-                          都藏在后端里，用户没法核对。条目日志不放这里（用户要求去掉）。 */}
-                      <label>
-                        <span>本条全部信息</span>
-                        <dl className="batch-facts">
-                          {reviewFacts.map(([label, value]) => (
-                            <div key={label}>
-                              <dt>{label}</dt>
-                              <dd>{value || "—"}</dd>
+                          <td className="batch-check">
+                            <input
+                              type="checkbox"
+                              aria-label={`选择第 ${item.index} 条`}
+                              checked={selectedIds.has(item.id)}
+                              onChange={() => toggleSelect(item.id)}
+                              onClick={(event) => event.stopPropagation()}
+                            />
+                          </td>
+                          <td className="batch-task-cell">
+                            <div className="batch-task-title">
+                              <i className={`batch-kind ${item.kind}`}>
+                                {item.kind === "singing" ? <MusicNotes weight="fill" /> : <PersonSimpleRun weight="fill" />}
+                                {item.kind === "singing" ? "歌曲" : "跳舞"}
+                              </i>
+                              <strong>{itemTitle(item)}</strong>
                             </div>
-                          ))}
-                        </dl>
-                      </label>
-                      {atReview && renderSettings(selected)}
-                      {atReview && (
-                        <div className="batch-review-actions">
-                          <button
-                            className="batch-primary"
-                            disabled={Boolean(busyAction) || !hasImage}
-                            onClick={() => itemCall("confirm")}
-                            title={hasImage ? undefined : "请先添加上这一条的候选人物图"}
-                          >
-                            <Check weight="bold" />加入队列并出片
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </section>
-                )}
-
-                {selected.ai && selected.status !== "awaiting_review" && settingsEditable && (
-                  <section className="batch-prompt-panel">
-                    <div className="batch-panel-title">
-                      <span>出片前设置</span>
-                      <small>
-                        {selected.status === "confirmed"
-                          ? "已加入出片队列，轮到它之前仍可改"
-                          : "这一条还没开始出片，可以直接改"}
-                      </small>
-                    </div>
-                    <div className="batch-review-copy">{renderSettings(selected)}</div>
-                  </section>
-                )}
-
-                {/* 「已填写的动作与运镜 / 迁移提示词」整块去掉（2026-09-13 用户：
-                    「已填写的迁移提示词 这块内容整个都可以去掉 我不关心」）——
-                    提示词仍然照常提交给工作流，只是不再在页面上展示。 */}
-
-                <section className="batch-progress-panel">
-                  <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(selected.status)}</small></div>
-                  <div className="batch-steps">
-                    {selected.milestones.map((step) => {
-                      const percent = stepPercent(step);
-                      const elapsed = elapsedLabel(step.startedAt);
-                      return (
-                        <div className={`batch-step ${step.status}`} key={step.id}>
-                          <span className="batch-step-icon">{stepIcon(step.status)}</span>
-                          <div><strong>{step.label}</strong><small>{step.currentNode || step.subtitle}</small></div>
-                          {step.status === "running" && (percent !== null
-                            ? <em>{percent}%</em>
-                            : (
-                              <em className="indeterminate" title="该步骤没有节点级进度，按实际耗时显示">
-                                进行中{elapsed ? ` · ${elapsed}` : ""}
-                              </em>
-                            ))}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-
-                {stageEntries.length > 0 && (
-                  <section className="batch-child-panel">
-                    <div className="batch-panel-title">
-                      <span>生成阶段产物</span>
-                      <small>只读 · 点开即看，不影响任务</small>
-                    </div>
-                    <div className="batch-stage-list">
-                      {stageEntries.map(([key, label]) => (
-                        <a
-                          key={key}
-                          href={`/api/batches/${batch.id}/items/${selected.id}/stage/${key}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {label}
-                        </a>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {selected.childJob && (
-                  <section className="batch-child-panel">
-                    <div className="batch-panel-title">
-                      <span>真实生成流程</span>
-                      <small>{selected.childJob.currentNodeTitle || batchStatusLabel(selected.childJob.status)}</small>
-                    </div>
-                    <div className="batch-child-badges">
-                      {selected.childJob.currentSegment && <i>H3 分段 {selected.childJob.currentSegment}/{selected.childJob.estimatedSegments}</i>}
-                      {selected.childJob.cleanBatch && <i>去字幕 {selected.childJob.cleanBatch}/{selected.childJob.cleanBatches}</i>}
-                      {selected.childJob.upscaleBatch && <i>二采 {selected.childJob.upscaleBatch}/{selected.childJob.upscaleBatches}</i>}
-                    </div>
-                    <div className="batch-steps compact">
-                      {(selected.childJob.milestones || []).map((step) => (
-                        <div className={`batch-step ${step.status}`} key={step.id}>
-                          <span className="batch-step-icon">{stepIcon(step.status)}</span>
-                          <div><strong>{step.label}</strong><small>{step.subtitle}</small></div>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {/* 成品区整个去掉（2026-09-13 用户指着一张只有「最终成片 / 人物图 / 发布文案 /
-                    打开文件夹」的截图说「这个没有去掉吗 不是说去掉吗」）：交付照做（文件照样写进
-                    发布目录），页面上不再放这块面板。成片仍可在「生成阶段产物」里点开看。 */}
-
-                {(selected.error || selected.warning) && <div className="batch-alert"><WarningCircle weight="fill" />{selected.error || selected.warning}</div>}
-              </>
-            ) : <div className="batch-empty-detail"><ListChecks /><p>填写链接并开始后，审核和真实进度会显示在这里。</p></div>}
+                            {/* 模型起的标题认不出是哪条视频：列表里再挂一行源作品自己的文案 */}
+                            {sourceCaption(item) && (
+                              <small className="batch-item-source" title={sourceCaption(item)}>
+                                源：{sourceCaption(item)}
+                              </small>
+                            )}
+                          </td>
+                          <td className="batch-status-cell">
+                            <span className={`batch-status ${item.status}`}>{batchStatusLabel(item.status)}</span>
+                            {item.childJob?.currentSegment && item.childJob.estimatedSegments && (
+                              <small>分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
+                            )}
+                          </td>
+                          <td className="batch-ratio-cell">{itemRatio(item)}</td>
+                          <td className="batch-time-cell">{queueTime(item)}</td>
+                          <td className="batch-ops-cell" onClick={(event) => event.stopPropagation()}>
+                            <div className="batch-row-ops">
+                              {statusAction(item)}
+                              {!["running", "revising", "completed", "deleted"].includes(item.status) && (
+                                <span className="batch-move">
+                                  <button
+                                    className="ghost"
+                                    disabled={Boolean(busyAction)}
+                                    onClick={() => moveItem(item.id, "up")}
+                                    title="在队列里上移（调处理顺序）"
+                                    aria-label="上移"
+                                  >
+                                    <CaretUp weight="bold" />
+                                  </button>
+                                  <button
+                                    className="ghost"
+                                    disabled={Boolean(busyAction)}
+                                    onClick={() => moveItem(item.id, "down")}
+                                    title="在队列里下移（调处理顺序）"
+                                    aria-label="下移"
+                                  >
+                                    <CaretDown weight="bold" />
+                                  </button>
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                        {selectedId === item.id && (
+                          <tr className="batch-expanded-row">
+                            <td colSpan={6}>{renderSelectedDetail()}</td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       )}

@@ -285,6 +285,152 @@ def append_batch_items(
     return {"state": batch_store.get(batch_id) or {}, **result}
 
 
+def move_batch_item(batch_id: str, item_id: str, direction: str) -> dict[str, Any]:
+    """把一条**还没开始处理**的条目在队列里上移 / 下移（调的是处理顺序）。
+
+    用户 2026-09-15：批量页改成后台表格交互后要能自己调整顺序。出片严格按队列顺序
+    一条一条跑（`_next_work` 按 `items` 的先后挑活），所以调顺序就是换 `items` 里的
+    位置；正在出片（running/revising）和已经出片（completed）的条目锁死不能动，
+    避免把正在跑的链子打乱。已删除的条目排在末尾不占位，只在**可见**条目之间换。
+    """
+    if direction not in {"up", "down"}:
+        raise ValueError("direction 必须是 up 或 down")
+    state = batch_store.get(batch_id)
+    if not state:
+        raise KeyError(batch_id)
+    items = list(state.get("items") or [])
+    live = [i for i, item in enumerate(items) if item.get("status") != "deleted"]
+    pos = next((i for i in live if items[i].get("id") == item_id), None)
+    if pos is None:
+        raise RuntimeError("批量条目不存在")
+    if items[pos].get("status") in {"running", "revising", "completed"}:
+        raise ValueError("正在出片或已经出片的条目不能调整顺序")
+    rank = live.index(pos)
+    neighbor = rank - 1 if direction == "up" else rank + 1
+    if neighbor < 0 or neighbor >= len(live):
+        return state  # 已经在队列头/尾：什么都不用改
+    other = live[neighbor]
+    items[pos], items[other] = items[other], items[pos]
+
+    def apply(row: dict[str, Any]) -> None:
+        row["items"] = items
+
+    batch_store.mutate(batch_id, apply)
+    batch_store.add_item_log(
+        batch_id, item_id, f"已把这条{'上移' if direction == 'up' else '下移'}（影响之后的处理顺序）。"
+    )
+    return batch_store.get(batch_id) or {}
+
+
+def confirm_batch_items(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
+    """批量确认：一次放行多条「等待确认」且已有候选人物图的条目。
+
+    用户 2026-09-15：批量页改成后台表格交互后要能批量确认已就绪的条目。放行只是把它们
+    标成 `confirmed` 排队等出片（出片仍严格一条一条，不会并发）；缺候选图 / 不在待确认
+    状态的条目逐个跳过并说明原因，让页面能提示「为什么那几条没放行」。
+    """
+    state = batch_store.get(batch_id)
+    if not state:
+        raise KeyError(batch_id)
+    by_id = {item.get("id"): item for item in state.get("items") or []}
+    confirmed: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for item_id in item_ids or []:
+        item = by_id.get(item_id)
+        if not item:
+            skipped.append({"id": item_id, "reason": "条目不存在"})
+            continue
+        if item.get("status") != "awaiting_review":
+            skipped.append({"id": item_id, "reason": "不在待确认状态"})
+            continue
+        if not str((item.get("ai") or {}).get("reference_image_path") or "").strip():
+            skipped.append({"id": item_id, "reason": "还没有候选人物图"})
+            continue
+        confirmed.append(item_id)
+    for item_id in confirmed:
+        batch_store.set_item_milestone(batch_id, item_id, "review", status="completed", progress=100)
+
+        def approve(row: dict[str, Any]) -> None:
+            row.update(
+                status="confirmed",
+                stage="confirmed",
+                reviewApproved=True,
+                approvedAt=now_iso(),
+                error=None,
+            )
+
+        batch_store.mutate_item(batch_id, item_id, approve)
+    return {"confirmed": confirmed, "skipped": skipped}
+
+
+def mark_items_skipped(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
+    """批量跳过：没在出片的条目直接落 `skipped`；正在出片的标 `skipRequested` 交给 runner
+    安全取消后落 skipped（成片已生成的照样抢救进发布目录，`_finish_abandoned` 兜底）。"""
+    state = batch_store.get(batch_id)
+    if not state:
+        raise KeyError(batch_id)
+    by_id = {item.get("id"): item for item in state.get("items") or []}
+    marked: list[str] = []
+    busy: list[str] = []
+    rejected: list[dict[str, str]] = []
+    for item_id in item_ids or []:
+        item = by_id.get(item_id)
+        if not item:
+            rejected.append({"id": item_id, "reason": "条目不存在"})
+            continue
+        if item.get("status") in {"completed", "skipped", "deleted"}:
+            rejected.append({"id": item_id, "reason": "已经结束"})
+            continue
+        batch_store.mutate_item(batch_id, item_id, lambda row: row.update(skipRequested=True))
+        cancel_item_work(batch_id, item_id)
+        if item.get("status") not in {"running", "revising"}:
+            def mark_skipped(row: dict[str, Any]) -> None:
+                row.update(status="skipped", stage="skipped", finishedAt=now_iso(), childJob=None)
+                for milestone in row.get("milestones") or []:
+                    if milestone.get("status") in {"pending", "running"}:
+                        milestone["status"] = "skipped"
+
+            batch_store.mutate_item(batch_id, item_id, mark_skipped)
+            marked.append(item_id)
+        else:
+            busy.append(item_id)
+    return {"marked": marked, "busy": busy, "rejected": rejected}
+
+
+def mark_items_deleted(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
+    """批量删除：没在出片的条目直接落 `deleted`；正在出片的标 `deleteRequested` 交给
+    runner 安全取消后落 deleted（成片已生成的照样抢救进发布目录，不丢交付）。"""
+    state = batch_store.get(batch_id)
+    if not state:
+        raise KeyError(batch_id)
+    by_id = {item.get("id"): item for item in state.get("items") or []}
+    marked: list[str] = []
+    busy: list[str] = []
+    rejected: list[dict[str, str]] = []
+    for item_id in item_ids or []:
+        item = by_id.get(item_id)
+        if not item:
+            rejected.append({"id": item_id, "reason": "条目不存在"})
+            continue
+        if item.get("status") == "deleted":
+            rejected.append({"id": item_id, "reason": "已经删除"})
+            continue
+        batch_store.mutate_item(batch_id, item_id, lambda row: row.update(deleteRequested=True))
+        cancel_item_work(batch_id, item_id)
+        if item.get("status") not in {"running", "revising"}:
+            def mark_deleted(row: dict[str, Any]) -> None:
+                row.update(status="deleted", stage="deleted", finishedAt=now_iso(), childJob=None)
+                for milestone in row.get("milestones") or []:
+                    if milestone.get("status") in {"pending", "running"}:
+                        milestone["status"] = "skipped"
+
+            batch_store.mutate_item(batch_id, item_id, mark_deleted)
+            marked.append(item_id)
+        else:
+            busy.append(item_id)
+    return {"marked": marked, "busy": busy, "rejected": rejected}
+
+
 def _item(batch_id: str, item_id: str) -> dict[str, Any]:
     state = batch_store.get(batch_id)
     for item in (state or {}).get("items") or []:

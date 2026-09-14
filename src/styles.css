@@ -1437,7 +1437,77 @@ body {
 .batch-alert { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0; padding: 11px 13px; border: 1px solid rgba(255, 108, 137, .34); border-radius: 8px; color: #ffc0cc; background: rgba(71, 18, 39, .38); font-size: 12px; line-height: 1.6; }
 .batch-alert svg { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px; }
 .batch-alert.info { border-color: rgba(255, 199, 108, .34); color: #ffdca6; background: rgba(71, 52, 18, .38); }
-.batch-workspace { display: grid; grid-template-columns: 294px minmax(0, 1fr); gap: 14px; align-items: start; }
+.batch-workspace { display: block; }
+
+/* 后台表格交互（2026-09-15）：状态筛选标签 + 表格化任务列表 + 批量操作 + 行内展开详情 */
+.batch-table-card { border: 1px solid var(--shell-line); border-radius: 12px; background: rgba(12, 9, 34, .94); overflow: hidden; }
+.batch-table-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--shell-line); }
+.batch-tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.batch-tab { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 11px; border: 1px solid transparent; border-radius: 7px; color: #9d95b5; background: transparent; font-size: 11px; cursor: pointer; transition: .16s ease; }
+.batch-tab i { min-width: 16px; height: 16px; display: inline-grid; place-items: center; padding: 0 5px; border-radius: 999px; background: rgba(90, 80, 120, .18); color: #b6aed0; font-size: 9px; font-style: normal; }
+.batch-tab:hover { color: #d9d3e9; }
+.batch-tab.active { border-color: rgba(55, 216, 230, .4); color: #8ceaf6; background: rgba(41, 184, 211, .1); }
+.batch-tab.active i { background: rgba(55, 216, 230, .18); color: #9ff1f8; }
+.batch-table-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.batch-table-controls button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid #463a64; border-radius: 7px; color: #d9d3e9; background: #17112f; font-size: 11px; cursor: pointer; transition: .16s ease; }
+.batch-table-controls button:hover:not(:disabled) { border-color: #65577f; color: #fff; }
+.batch-table-controls button.danger { border-color: rgba(255, 108, 137, .34); color: #ffc0cc; background: rgba(71, 18, 39, .38); }
+.batch-bulk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid rgba(55, 216, 230, .22); background: rgba(24, 42, 60, .5); }
+.batch-bulk-bar > span { margin-right: 4px; color: #b6dce2; font-size: 12px; font-weight: 600; }
+.batch-bulk-bar button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 12px; border: 1px solid #463a64; border-radius: 7px; color: #d9d3e9; background: #17112f; font-size: 11px; transition: .16s ease; cursor: pointer; }
+.batch-bulk-bar button.danger { border-color: rgba(255, 108, 137, .34); color: #ffc0cc; background: rgba(71, 18, 39, .38); }
+.batch-bulk-bar button.ghost { border-color: transparent; background: transparent; color: #9d95b5; }
+.batch-bulk-bar button:hover:not(:disabled) { border-color: #65577f; color: #fff; }
+.batch-bulk-bar button:disabled { cursor: not-allowed; opacity: .4; }
+.batch-table-wrap { overflow-x: auto; }
+.batch-table { width: 100%; border-collapse: collapse; }
+.batch-table th { padding: 9px 12px; border-bottom: 1px solid var(--shell-line); color: #837b99; font-size: 10px; font-weight: 650; letter-spacing: .04em; text-align: left; white-space: nowrap; }
+.batch-table th.right, .batch-table td.batch-ops-cell { text-align: right; }
+.batch-table td { padding: 9px 12px; border-bottom: 1px solid rgba(67, 55, 91, .4); vertical-align: middle; font-size: 12px; }
+.batch-check { width: 36px; }
+.batch-check input { accent-color: var(--shell-accent); cursor: pointer; }
+.batch-row { cursor: pointer; transition: background .14s ease; }
+.batch-row:hover { background: rgba(22, 20, 50, .7); }
+.batch-row.selected { background: rgba(25, 27, 57, .7); box-shadow: inset 3px 0 0 var(--shell-accent); }
+.batch-task-cell { min-width: 240px; }
+.batch-task-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.batch-task-title strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #eeeaf7; font-size: 12px; font-weight: 600; }
+.batch-kind { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 3px 7px; border-radius: 5px; font-size: 9px; font-style: normal; }
+.batch-kind svg { width: 11px; height: 11px; }
+.batch-kind.singing { border: 1px solid rgba(55, 216, 230, .32); color: #8ceaf6; background: rgba(41, 184, 211, .1); }
+.batch-kind.dance { border: 1px solid rgba(180, 132, 255, .34); color: #c9abff; background: rgba(140, 90, 255, .12); }
+.batch-item-source { display: block; max-width: 520px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8d86a6; font-size: 10px; }
+.batch-status-cell small { display: block; margin-top: 3px; color: var(--shell-muted); font-size: 9px; }
+.batch-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid #3a3152; border-radius: 999px; color: #a89fc2; background: rgba(16, 12, 39, .8); font-size: 10px; white-space: nowrap; }
+.batch-status.awaiting_review { border-color: rgba(55, 216, 230, .45); color: #8ceaf6; }
+.batch-status.running, .batch-status.revising { border-color: rgba(55, 216, 230, .4); color: #66e4ee; }
+.batch-status.confirmed { border-color: rgba(120, 180, 255, .38); color: #a8cfff; }
+.batch-status.completed { border-color: rgba(71, 211, 139, .38); color: #73e2a9; }
+.batch-status.skipped { color: #9d95b5; opacity: .7; }
+.batch-status.failed { border-color: rgba(255, 108, 137, .45); color: #ff9caf; }
+.batch-ratio-cell { white-space: nowrap; color: #c8c3dd; font-size: 11px; }
+.batch-time-cell { white-space: nowrap; color: var(--shell-muted); font-size: 11px; }
+.batch-ops-cell { white-space: nowrap; }
+.batch-row-ops { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.batch-row-ops button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; border: 1px solid #44385f; border-radius: 7px; color: #cbc5da; background: #15102c; font-size: 11px; cursor: pointer; transition: .16s ease; }
+.batch-row-ops button:hover:not(:disabled) { border-color: #65577f; color: #fff; }
+.batch-row-ops button.danger { border-color: rgba(255, 108, 137, .3); color: #ff9daf; }
+.batch-row-ops button:disabled { cursor: not-allowed; opacity: .4; }
+.batch-row-ops .batch-primary.small { min-height: 28px; padding: 0 11px; border-color: var(--shell-accent); color: #061316; background: var(--shell-accent); font-weight: 700; }
+.batch-row-ops .batch-primary.small:hover:not(:disabled) { filter: brightness(1.08); }
+.batch-move { display: inline-flex; align-items: center; margin-left: 2px; }
+.batch-move button { min-height: 24px; width: 24px; padding: 0; justify-content: center; border-color: transparent; background: transparent; color: #7d7493; }
+.batch-move button svg { width: 12px; height: 12px; }
+.batch-move button:hover:not(:disabled) { color: var(--shell-accent); border-color: transparent; }
+.batch-expanded-row > td { padding: 0; border-bottom: none; }
+.batch-expanded-row:hover { background: transparent; }
+.batch-expanded { padding: 16px 18px 18px; border-top: 1px solid rgba(55, 216, 230, .25); }
+.batch-detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.batch-timer { display: inline-flex; align-items: center; gap: 5px; color: var(--shell-muted); font-size: 11px; }
+.batch-timer svg { width: 14px; height: 14px; color: var(--shell-accent); }
+.batch-advanced { margin-top: 10px; }
+.batch-advanced summary { cursor: pointer; color: #87809d; font-size: 10px; }
+.batch-advanced summary:hover { color: var(--shell-accent); }
 .batch-queue { position: sticky; top: 16px; overflow: hidden; }
 .batch-section-head { min-height: 66px; padding: 13px 14px; border-bottom: 1px solid var(--shell-line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .batch-section-head > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
