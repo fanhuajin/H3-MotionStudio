@@ -705,9 +705,18 @@ export function BatchRoute() {
   // （2026-09-15 用户：「信息展示太杂」）。
   const reviewCoreFacts = (ai: BatchAI, item: BatchItem): Array<[string, string]> => {
     const image = String(ai.reference_image_path || "");
-    return [
+    const facts: Array<[string, string]> = [
       ["类型", item.kind === "singing" ? "唱歌视频" : "跳舞视频"],
       ["状态", `${batchStatusLabel(item.status)} · ${item.stage}`],
+    ];
+    // 跳舞条目：这条到底按哪种模式出片 —— 它决定提交给迁移工作流 #353 的开关
+    // （2026-09-15 用户：「本条信息 里也加上是动作迁移 还是人物替换 的信息描述」）。
+    if (item.kind === "dance") {
+      const mode: MigrateMode =
+        ai.migrate_mode === "replacement" ? "replacement" : "animation";
+      facts.push(["迁移模式", `${MIGRATE_MODE_LABEL[mode]} · ${MIGRATE_MODE_NOTE[mode]}`]);
+    }
+    facts.push(
       ["抖音作品号", String(item.awemeId || "")],
       ["源作品文案", sourceCaption(item)],
       ["源文件名", String(item.sourceName || "")],
@@ -718,7 +727,8 @@ export function BatchRoute() {
       ["候选图版本", `第 ${(item.revision || 0) + 1} 版`],
       ["审核放行", item.status === "awaiting_review" ? "还没放行" : "已放行"],
       ["创建时间", formatLogTime(item.createdAt)],
-    ] as Array<[string, string]>;
+    );
+    return facts;
   };
   const reviewAdvancedFacts = (item: BatchItem): Array<[string, string]> => [
     ["条目 id", item.id],

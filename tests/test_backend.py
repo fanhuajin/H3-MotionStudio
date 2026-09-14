@@ -1210,6 +1210,12 @@ class WorkflowPreparationTests(unittest.TestCase):
                     "/api/batches/{batch_id}/items/{item_id}/migrate-mode",
                     {getattr(route, "path", "") for route in app.routes},
                 )
+                # 「本条全部信息」里也要显示当前是哪一种模式（2026-09-15 用户要求）
+                ui = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn('facts.push(["迁移模式"', ui)
+                self.assertIn("MIGRATE_MODE_LABEL[mode]", ui)
             finally:
                 batch_store_module.DB_PATH = original
 
