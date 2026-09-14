@@ -2077,6 +2077,17 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("已用", rendered)
         self.assertNotIn("用时 {", rendered)
 
+    def test_batch_status_tabs_put_all_first_and_default(self) -> None:
+        """「全部」排在最前，并且是默认标签（2026-09-15 用户：「全部默认放到最前面」）。"""
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 第一个标签就是「全部」，且默认选中它
+        self.assertIn('const TABS: Array<{ id: TabId; label: string }> = [\n  { id: "all", label: "全部" },', source)
+        self.assertIn('useState<TabId>("all")', source)
+        # 标签顺序：全部 → 待确认 → 备料中 → 出片中 → 已跳过 → 已失败 → 已完成
+        order = ["全部", "待确认", "备料中", "出片中", "已跳过", "已失败", "已完成"]
+        positions = [source.index(f'label: "{name}"') for name in order]
+        self.assertEqual(positions, sorted(positions), "标签顺序不对")
+
     def test_batch_edit_rule_toggle_and_reopen_scope(self) -> None:
         """未完成（非运行中/已完成）都能直接编辑；再点同一行收起；「回到确认」只给运行中+已完成。
 

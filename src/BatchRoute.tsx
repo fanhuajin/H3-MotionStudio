@@ -307,18 +307,19 @@ function responseMessage(response: Response, fallback: string): Promise<string> 
 }
 
 /**
- * 状态筛选标签（后台表格交互）：默认落在「待确认」，已完成条目归档到「已完成」。
- * 2026-09-15 用户：「现在完成的任务还在队列里 其实完成的任务应该去完成的列表才对」。
+ * 状态筛选标签（后台表格交互）：**「全部」排在最前且是默认标签**（2026-09-15 用户：
+ * 「全部默认放到最前面」），已完成条目仍可切到「已完成」单独看
+ * （2026-09-15 用户：「现在完成的任务还在队列里 其实完成的任务应该去完成的列表才对」）。
  */
-type TabId = "awaiting_review" | "preparing" | "rendering" | "skipped" | "failed" | "completed" | "all";
+type TabId = "all" | "awaiting_review" | "preparing" | "rendering" | "skipped" | "failed" | "completed";
 const TABS: Array<{ id: TabId; label: string }> = [
+  { id: "all", label: "全部" },
   { id: "awaiting_review", label: "待确认" },
   { id: "preparing", label: "备料中" },
   { id: "rendering", label: "出片中" },
   { id: "skipped", label: "已跳过" },
   { id: "failed", label: "已失败" },
   { id: "completed", label: "已完成" },
-  { id: "all", label: "全部" },
 ];
 const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
   awaiting_review: (item) => item.status === "awaiting_review",
@@ -338,8 +339,8 @@ export function BatchRoute() {
   const [danceOn, setDanceOn] = useState(initial.danceOn);
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // 状态筛选标签：默认「待确认」，已完成条目归档到「已完成」。
-  const [activeTab, setActiveTab] = useState<TabId>("awaiting_review");
+  // 状态筛选标签：「全部」在最前且是默认标签（2026-09-15 用户：「全部默认放到最前面」）
+  const [activeTab, setActiveTab] = useState<TabId>("all");
   // 批量操作勾选：后台表格交互（2026-09-15 用户要求批量确认/跳过/删除）。
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busyAction, setBusyAction] = useState("");
