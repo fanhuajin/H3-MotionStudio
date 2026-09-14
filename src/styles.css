@@ -1487,6 +1487,8 @@ body {
 .batch-status.completed { border-color: rgba(71, 211, 139, .38); color: #73e2a9; }
 .batch-status.skipped { color: #9d95b5; opacity: .7; }
 .batch-status.failed { border-color: rgba(255, 108, 137, .45); color: #ff9caf; }
+/* 列表行里的进度百分比（真实非零进度才出现；2026-09-15 用户要求不用点开也能看进度） */
+.batch-status-percent { margin-left: 1px; padding-left: 6px; border-left: 1px solid currentColor; font-size: 10px; font-weight: 700; font-style: normal; }
 .batch-ratio-cell { white-space: nowrap; color: #c8c3dd; font-size: 11px; }
 .batch-ops-cell { white-space: nowrap; }
 .batch-row-ops { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; }

@@ -82,6 +82,24 @@ function itemActiveMs(item: BatchItem, nowMs: number): number | null {
   return null;
 }
 
+/**
+ * 列表行里的进度百分比：**只认真实、非零的进度**，点开前也能看到跑到哪了。
+ *
+ * 用户 2026-09-15：「除了时间 进入也同步的列表中 像现在的 17% 这样的 我有时候不想点开来看」。
+ * 口径与展开详情一致，但更保守：优先用出片子任务的 `childJob.progress`；没有的话只看**正在出片**
+ * 的那一格。**备料阶段的百分比是本地粗刻度（5/8/99），不往列表上放**。
+ * 跳舞（SCAIL）链路不广播采样进度、`childJob.progress` 是 `None` —— 那就返回 null 不显示数字，
+ * 绝不写 0 或假百分比（项目铁律：进度不得造假）。
+ */
+function itemPercent(item: BatchItem): number | null {
+  const child = item.childJob?.progress;
+  if (typeof child === "number" && child > 0) return Math.round(child);
+  const video = (item.milestones || []).find(
+    (step) => step.id === "video" && step.status === "running",
+  );
+  return video ? stepPercent(video) : null;
+}
+
 interface BatchAI {
   reference_image_path: string;
   song_name?: string;
@@ -1419,7 +1437,15 @@ export function BatchRoute() {
                             )}
                           </td>
                           <td className="batch-status-cell">
-                            <span className={`batch-status ${item.status}`}>{batchStatusLabel(item.status)}</span>
+                            <span className={`batch-status ${item.status}`}>
+                              {batchStatusLabel(item.status)}
+                              {/* 进度直接在列表这一行显示，不用点开（2026-09-15 用户：「除了时间
+                                  进入也同步的列表中 像现在的 17% 这样的 我有时候不想点开来看」）；
+                                  只认真实非零进度，0/null 不显示数字（进度不得造假）。 */}
+                              {itemPercent(item) !== null && (
+                                <b className="batch-status-percent">{itemPercent(item)}%</b>
+                              )}
+                            </span>
                             {item.childJob?.currentSegment && item.childJob.estimatedSegments && (
                               <small>分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
                             )}

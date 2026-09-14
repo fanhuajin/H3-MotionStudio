@@ -2077,6 +2077,25 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("已用", rendered)
         self.assertNotIn("用时 {", rendered)
 
+    def test_batch_row_shows_real_progress_percent(self) -> None:
+        """列表行也显示进度百分比（不用点开），且只认真实非零进度、绝不造假。
+
+        2026-09-15 用户：「除了时间 进入也同步的列表中 像现在的 17% 这样的 我有时候不想点开来看」。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 行内徽章里带百分比
+        self.assertIn("function itemPercent(item: BatchItem)", source)
+        self.assertIn('className="batch-status-percent"', source)
+        # 来源：出片子任务进度优先，其次**正在出片**的那一格
+        self.assertIn("item.childJob?.progress", source)
+        self.assertIn('step.id === "video" && step.status === "running"', source)
+        # 只认 > 0 的真实进度（0/null 一律不显示数字）
+        self.assertIn('typeof child === "number" && child > 0', source)
+        self.assertNotIn("item.childJob?.progress || 0", source)
+        self.assertNotIn("itemPercent(item) ?? 0", source)
+        # 备料阶段的本地粗刻度不往列表上放
+        self.assertNotIn('step.id === "prepare" && step.status === "running"', source)
+
     def test_batch_status_tabs_are_only_open_and_completed(self) -> None:
         """标签只要两档「未完成 / 已完成」，默认「未完成」；细状态仍保留在行内徽章上。
 
