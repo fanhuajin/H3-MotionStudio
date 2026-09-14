@@ -2240,7 +2240,7 @@ def replace_item_source_file(batch_id: str, item_id: str, source: Path) -> dict[
     item = _item(batch_id, item_id)
     status = str(item.get("status") or "")
     if status in {"running", "revising"}:
-        raise ValueError("这一条正在出片或重新备料，先「停止取消」再换源视频")
+        raise ValueError("这一条正在出片或重新备料，先「取消」再换源视频")
     if status in {"completed", "deleted"}:
         raise ValueError("这一条已经结束，不能换源视频")
     target = Path(source)

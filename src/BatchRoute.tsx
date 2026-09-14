@@ -11,7 +11,6 @@ import {
   ImageSquare,
   ListChecks,
   MusicNotes,
-  Pause,
   PersonSimpleRun,
   Play,
   SpinnerGap,
@@ -797,7 +796,7 @@ export function BatchRoute() {
           }}
           title="停止这一条当前的生成/出片；取消后可以重新开始"
         >
-          <X weight="bold" />停止取消
+          <X weight="bold" />取消
         </button>
       );
     }
@@ -1328,26 +1327,16 @@ export function BatchRoute() {
                   </button>
                 ))}
               </div>
-              <div className="batch-table-controls">
-                {batch.status === "paused" ? (
+              {/* 「暂停 / 取消整批」两个按钮已去掉（2026-09-15 用户：「不需要暂停和取消整批
+                  这两个按钮」）：整批控制改由**单条操作**承担（跳过 / 取消 / 删除，以及
+                  批量操作栏），后端 `/pause`、`/resume`、`/cancel` 接口保留（API 能力）。
+                  只留一个**恢复用**的「继续」，且只在批次已经处于暂停状态时出现 —— 这个状态页面
+                  自己造不出来（唯一来源是本地服务在备料中途重启时的安全暂停），不留就会卡死。 */}
+              {batch.status === "paused" && (
+                <div className="batch-table-controls">
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
-                ) : !["completed", "awaiting_review", "cancelled"].includes(batch.status) ? (
-                  <button onClick={() => call("pause")} disabled={Boolean(busyAction)}><Pause />暂停</button>
-                ) : null}
-                {!["completed", "cancelled"].includes(batch.status) && (
-                  <button
-                    className="danger"
-                    disabled={Boolean(busyAction)}
-                    onClick={() => {
-                      if (window.confirm("取消整批制作？未完成的条目会被标记为已跳过，已生成的候选结果会保留。")) {
-                        void call("cancel");
-                      }
-                    }}
-                  >
-                    <X />取消整批
-                  </button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
 
             {/* 批量操作栏：勾选任意一条后出现 */}

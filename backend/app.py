@@ -765,7 +765,7 @@ async def replace_batch_item_source_file(
     item = _batch_item_or_404(batch_id, item_id)
     status = str(item.get("status") or "")
     if status in {"running", "revising"}:
-        raise HTTPException(409, "这一条正在出片或重新备料，先「停止取消」再换源视频")
+        raise HTTPException(409, "这一条正在出片或重新备料，先「取消」再换源视频")
     if status in {"completed", "deleted"}:
         raise HTTPException(409, "这一条已经结束，不能换源视频")
     suffix = Path(file.filename or "source.mp4").suffix.lower()
@@ -1013,7 +1013,7 @@ async def upload_batch_item_image(
     # 2026-09-15 用户：「只要状态是未完成的任务都可以进行编辑，当然正在运行的那条不允许编辑」——
     # 出片中/重新备料的条目不能换图（否则成片用的是旧图、文案却按新图重写，图文脱节）
     if status in {"running", "revising"}:
-        raise HTTPException(409, "当前条目正在出片或重新备料，不能换图（先「停止取消」或「回到确认」）")
+        raise HTTPException(409, "当前条目正在出片或重新备料，不能换图（先「取消」或「回到确认」）")
     suffix = Path(file.filename or "candidate.png").suffix.lower()
     if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
         raise HTTPException(400, "只支持 PNG / JPG / WEBP 图片")
