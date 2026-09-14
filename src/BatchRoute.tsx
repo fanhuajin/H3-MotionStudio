@@ -809,7 +809,7 @@ export function BatchRoute() {
   const renderSelectedDetail = () => {
     if (!selected) return null;
     const item = selected;
-    const reviewCore = reviewCoreFacts(item.ai!, item);
+    const reviewCore = item.ai ? reviewCoreFacts(item.ai, item) : [];
     const reviewAdvanced = reviewAdvancedFacts(item);
     return (
       <div className="batch-expanded">

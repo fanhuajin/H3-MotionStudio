@@ -857,6 +857,8 @@ async def move_batch_item_endpoint(batch_id: str, item_id: str, request: BatchIt
         return move_batch_item(batch_id, item_id, request.direction)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(404, str(error)) from error
 
 
 @app.post("/api/batches/{batch_id}/items/confirm-many")
