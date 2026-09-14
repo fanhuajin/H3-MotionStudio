@@ -696,6 +696,30 @@ export function BatchRoute() {
     }
   };
 
+  /**
+   * 用**本机选择的视频文件**替换这一条的源视频：只换视频，其余内容一律不动
+   * （2026-09-15 用户：「替换源视频可以让我进行本地选择」+「所有定义好的内容都不需要变」）。
+   */
+  const replaceSourceFile = async (file: File) => {
+    if (!batch || !selected) return;
+    const endpoint = `/api/batches/${batch.id}/items/${selected.id}/source-file`;
+    setBusyAction("source-file");
+    setError("");
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await fetch(endpoint, { method: "POST", body });
+      if (!response.ok) throw new Error(await responseMessage(response, "替换源视频失败"));
+      setBatch(await readJson<BatchState>(response, "替换源视频失败"));
+      setReplacingSource(false);
+      setNotice(`已把这一条的源视频换成本机文件「${file.name}」，标题、文案、候选图保持原样。`);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(`${message}　〔POST ${endpoint}〕`);
+    } finally {
+      setBusyAction("");
+    }
+  };
   const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
 
@@ -950,6 +974,26 @@ export function BatchRoute() {
                   {busyAction.endsWith("/source") ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
                   替换并重新备料
                 </button>
+              </div>
+
+              {/* 本机选择：只换视频，其它内容全部不动（2026-09-15 用户：「替换源视频可以让我进行
+                  本地选择」+「其他内容都不需要改变只需要改变视频 所有定义好的内容都不需要变」）。 */}
+              <div className="batch-local-source">
+                <span>或者从本机选一个视频：<b>只换视频</b>，标题 / 简介 / 标签 / 候选图 / 比例全部保持不变</span>
+                <label className={`batch-replace ${busyAction === "source-file" ? "busy" : ""}`}>
+                  {busyAction === "source-file" ? <SpinnerGap className="spin" /> : <UploadSimple />}
+                  {busyAction === "source-file" ? "正在上传…" : "选择本机视频"}
+                  <input
+                    type="file"
+                    accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mp4,.mov,.mkv,.webm"
+                    disabled={Boolean(busyAction)}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void replaceSourceFile(file);
+                      event.target.value = "";
+                    }}
+                  />
+                </label>
               </div>
             </div>
           )}

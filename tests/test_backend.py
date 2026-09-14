@@ -1059,6 +1059,81 @@ class WorkflowPreparationTests(unittest.TestCase):
                     )
                 self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_batch_local_source_swap_keeps_everything_else(self) -> None:
+        """用本机文件换源视频**只换视频**：标题/简介/标签/候选图/状态/里程碑全部不动。
+
+        2026-09-15 用户：「替换源视频可以让我进行本地选择」+「其他内容都不需要改变只需要改变
+        视频而且，所有定义好的内容都不需要变」——与换抖音链接（清空重备料）是两条路。
+        """
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/a"], [])
+                item_id = state["items"][0]["id"]
+                store.create(state)
+                video = Path(folder) / "local.mp4"
+                video.write_bytes(b"fake-video")
+                store.mutate_item(
+                    state["id"],
+                    item_id,
+                    lambda row: row.update(
+                        status="awaiting_review",
+                        stage="review",
+                        sourcePath="E:/old/source.mp4",
+                        sourceName="old-source.mp4",
+                        ratio="9:16",
+                        ai={
+                            "title": "已经定好的标题",
+                            "introduction": "已经定好的简介",
+                            "tags": ["a", "b", "c", "d", "e"],
+                            "reference_image_path": "E:/img.png",
+                            "action_prompt": "已经定好的动作",
+                        },
+                        milestones=[{"id": "video", "label": "生成最终视频", "status": "pending"}],
+                    ),
+                )
+                with patch.object(batch_worker, "batch_store", store):
+                    batch_worker.replace_item_source_file(state["id"], item_id, video)
+
+                item = store.get(state["id"])["items"][0]
+                # 只换了视频文件
+                self.assertEqual(item["sourcePath"], str(video))
+                self.assertEqual(item["sourceName"], "local.mp4")
+                # 其余内容一律原样
+                self.assertEqual(item["status"], "awaiting_review")
+                self.assertEqual(item["ratio"], "9:16")
+                self.assertEqual(item["ai"]["title"], "已经定好的标题")
+                self.assertEqual(item["ai"]["introduction"], "已经定好的简介")
+                self.assertEqual(item["ai"]["reference_image_path"], "E:/img.png")
+                self.assertEqual(item["ai"]["action_prompt"], "已经定好的动作")
+                self.assertEqual(item["ai"]["tags"], ["a", "b", "c", "d", "e"])
+                self.assertEqual([m["id"] for m in item["milestones"]], ["video"])
+
+                # 运行中 / 已结束的条目拒绝（和换链接同一条规则）
+                for blocked in ("running", "revising", "completed"):
+                    store.mutate_item(
+                        state["id"], item_id, lambda row, s=blocked: row.update(status=s)
+                    )
+                    with patch.object(batch_worker, "batch_store", store):
+                        with self.assertRaises(ValueError):
+                            batch_worker.replace_item_source_file(state["id"], item_id, video)
+
+                # 接口已注册
+                from backend.app import app
+
+                self.assertIn(
+                    "/api/batches/{batch_id}/items/{item_id}/source-file",
+                    {getattr(route, "path", "") for route in app.routes},
+                )
+            finally:
+                batch_store_module.DB_PATH = original
+
     def test_comfy_stop_endpoint_and_jobless_shutdown(self) -> None:
         """手动关闭 ComfyUI：接口在，且交接用的关闭逻辑能在没有 job 的情况下调用。"""
         import inspect

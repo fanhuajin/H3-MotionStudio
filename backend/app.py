@@ -27,6 +27,7 @@ from .batch_store import batch_store
 from . import batch_ai
 from .batch_worker import (
     IDENTITY_PATH,
+    MAX_LOCAL_SOURCE_BYTES,
     append_batch_items,
     cancel_item_work,
     confirm_batch_items,
@@ -39,6 +40,7 @@ from .batch_worker import (
     move_batch_item,
     new_batch_state,
     replace_item_source,
+    replace_item_source_file,
     request_review_adjustment,
     reset_review_row,
     run_batch,
@@ -746,6 +748,67 @@ async def replace_batch_item_source(
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     return _resume_batch(batch_id, "已替换源视频，正在重新下载并准备候选图与发布文案。")
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/source-file")
+async def replace_batch_item_source_file(
+    batch_id: str, item_id: str, file: UploadFile = File(...)
+):
+    """用**本机选择的视频文件**替换这一条的源视频：只换视频，其余内容一律不动。
+
+    用户 2026-09-15：「替换源视频可以让我进行本地选择」+「其他内容都不需要改变只需要改变视频
+    而且，所有定义好的内容都不需要变」——和换抖音链接不同，这条路不清空重备料：
+    标题/简介/标签、候选人物图、画布比例与去除字幕、动作或迁移提示词、里程碑与当前状态
+    全部保持原样，只是出片时驱动的那个视频换成这个文件。
+    """
+    _batch_or_404(batch_id)
+    item = _batch_item_or_404(batch_id, item_id)
+    status = str(item.get("status") or "")
+    if status in {"running", "revising"}:
+        raise HTTPException(409, "这一条正在出片或重新备料，先「停止取消」再换源视频")
+    if status in {"completed", "deleted"}:
+        raise HTTPException(409, "这一条已经结束，不能换源视频")
+    suffix = Path(file.filename or "source.mp4").suffix.lower()
+    if suffix not in VIDEO_UPLOAD_SUFFIXES:
+        raise HTTPException(400, "请选择 MP4、MOV、MKV 或 WebM 视频文件。")
+
+    folder = (DATA_DIR / "batches" / batch_id / item_id).resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    # 同名不同后缀的历史文件先清掉，避免条目目录里留两份源视频
+    for stale in folder.glob("source-local.*"):
+        try:
+            stale.unlink(missing_ok=True)
+        except OSError:
+            pass
+    target = folder / f"source-local{suffix}"
+    # 分块落盘：本机录像可能很大，不能整段读进内存（ComfyUI 还在占显存/内存）
+    total = 0
+    try:
+        with target.open("wb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_LOCAL_SOURCE_BYTES:
+                    handle.close()
+                    target.unlink(missing_ok=True)
+                    raise HTTPException(400, "视频文件超过 1 GB，请换一个更小的文件。")
+                handle.write(chunk)
+    except HTTPException:
+        raise
+    except OSError as error:
+        target.unlink(missing_ok=True)
+        raise HTTPException(500, f"保存视频失败：{error}") from error
+    if not total:
+        target.unlink(missing_ok=True)
+        raise HTTPException(400, "上传的视频是空文件")
+
+    try:
+        replace_item_source_file(batch_id, item_id, target)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    return _batch_or_404(batch_id)
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/adjust")

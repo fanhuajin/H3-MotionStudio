@@ -2215,6 +2215,45 @@ def replace_item_source(
     return batch_store.get(batch_id) or {}
 
 
+# 本机替换源视频的体积上限：抖音源一般几十 MB，本机录像可能更大；1 GiB 够用，
+# 而且保存时是分块落盘（不把整段视频读进内存），不会和 ComfyUI 抢内存。
+MAX_LOCAL_SOURCE_BYTES = 1024 * 1024 * 1024
+
+
+def replace_item_source_file(batch_id: str, item_id: str, source: Path) -> dict[str, Any]:
+    """把这一条的源视频换成**本机选的一个视频文件**：只换视频，其余内容一律不动。
+
+    用户 2026-09-15：「替换源视频可以让我进行本地选择」+「其他内容都不需要改变只需要改变视频
+    而且，所有定义好的内容都不需要变」——与换抖音链接（`replace_item_source`：清空重备料）不同，
+    这条路**只改 `sourcePath` / `sourceName`**：标题、简介、标签、候选人物图、画布比例与去除字幕、
+    动作或迁移提示词、里程碑与当前状态、发布目录记录全部原样保留，出片时只是换一个视频去驱动。
+    """
+    item = _item(batch_id, item_id)
+    status = str(item.get("status") or "")
+    if status in {"running", "revising"}:
+        raise ValueError("这一条正在出片或重新备料，先「停止取消」再换源视频")
+    if status in {"completed", "deleted"}:
+        raise ValueError("这一条已经结束，不能换源视频")
+    target = Path(source)
+    if not target.is_file():
+        raise ValueError("没有收到可用的视频文件")
+
+    def apply(row: dict[str, Any]) -> None:
+        # **只动这两项**：`ai`（标题/简介/标签/候选图/提示词）、里程碑、outputs、比例、
+        # 状态全部保持原样 —— 用户明确要求「所有定义好的内容都不需要变」。
+        row["sourcePath"] = str(target)
+        row["sourceName"] = target.name
+        row["warning"] = None
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(
+        batch_id,
+        item_id,
+        f"已用本机文件替换源视频：{target.name}（标题、文案、候选图与其余设置保持不变）。",
+    )
+    return batch_store.get(batch_id) or {}
+
+
 def item_settings_editable(item: dict[str, Any]) -> bool:
     """条目是否还处在「没开始出片」的可改阶段（用户 2026-09-14：「未开始前的任务都允许修改」）。
 
