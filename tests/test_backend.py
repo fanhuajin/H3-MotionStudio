@@ -1896,16 +1896,24 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("发布文案.txt", source)
 
     def test_batch_only_the_in_progress_item_shows_its_time(self) -> None:
-        """表格里只给「本条进行中」的那一条显示已用时间，其它任务不显示。
+        """表格里只给「本条进行中」的那一条显示已用时间，且必须是**实际干活时间**。
 
-        2026-09-15 用户：「你只需统计 本条的时间 我不关心所有任务的时间」——表格不再给每条
-        任务都显示时间，只给正在处理的那一条（= `batch.currentItemId` 且状态为 备料中/出片中/
-        重新备料）显示「已用 X」；展开详情头部另有「本条已运行时间（总耗时）」；批次总耗时仍然
-        不显示（2026-09-13 用户也要求过）。
+        2026-09-15 用户：「你只需统计 本条的时间 我不关心所有任务的时间」→ 表格不再给每条任务
+        都显示时间，只给正在处理的那一条（= `batch.currentItemId` 且状态为 备料中/出片中/重新备料）
+        显示「已用 X」。随后用户指出「我想知道的是单条用时，现在的时间不对都 22 小时还多了」——
+        旧计时从条目 `createdAt`（加入队列）算起，批次放了 22 小时就一直累加。现在只算真正干活的
+        阶段（`itemActiveMs`：下载 / 备料 / 出片），`review`（等你确认）与排队不算；已完成给出片耗时。
+        批次总耗时仍然不显示（2026-09-13 用户也要求过）。
         """
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
-        self.assertIn("本条已运行时间", source)
+        # 实际用时：只算 下载/备料/出片，排除 review（等你确认）
+        self.assertIn("function itemActiveMs(item: BatchItem, nowMs: number)", source)
+        self.assertIn('step.id !== "review"', source)
+        self.assertIn("本条实际用时", source)
         self.assertIn("formatElapsedMs(itemElapsedMs)", source)
+        # 不再从「加入队列的那一刻」算起（22 小时的根因）
+        self.assertNotIn("elapsedMs(selected.createdAt", source)
+        self.assertNotIn("elapsedMs(item.createdAt", source)
         # 表格里只给「本条进行中」那一条显示已用时间
         self.assertIn("已用 {itemElapsedText(item)}", source)
         self.assertIn('["pending", "running", "revising"].includes(item.status)', source)

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readJson } from "./api";
-import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
+import { formatElapsedMs, useNowTick } from "./jobTime";
 import {
   ArrowClockwise,
   ArrowUUpLeft,
@@ -32,6 +32,7 @@ interface BatchStep {
   progress?: number | null;
   currentNode?: string | null;
   startedAt?: string | null;
+  finishedAt?: string | null;
 }
 
 /**
@@ -53,6 +54,33 @@ function elapsedLabel(startedAt?: string | null) {
 /** 只有真实、非零、未完成的百分比才显示数字；0 与 null 都按「进度未知」处理。 */
 function stepPercent(step: BatchStep) {
   return typeof step.progress === "number" && step.progress > 0 ? Math.round(step.progress) : null;
+}
+
+/**
+ * 单条**实际用时**：只算真正干活的阶段（下载 / 备料 / 出片），不含排队与等你确认的空闲。
+ *
+ * 用户 2026-09-15：「我想知道的是单条用时，现在的时间不对都 22 小时还多了」——旧计时从条目
+ * `createdAt`（加入队列那一刻）算起，批次放了 22 小时就一直累加，完全不是这条片子花了多久。
+ * 现在：正在跑哪个阶段就从那个阶段的 `startedAt` 算到此刻（`review` 是「等你确认」，不算干活）；
+ * 已经出完片就给出片（`video`）阶段的实际耗时；排队 / 等确认 / 还没开始则返回 null（不显示时间）。
+ */
+function itemActiveMs(item: BatchItem, nowMs: number): number | null {
+  const milestones = item.milestones || [];
+  const running = milestones.filter(
+    (step) => step.status === "running" && step.id !== "review" && step.startedAt,
+  );
+  const active = running.length ? running[running.length - 1] : undefined;
+  if (active?.startedAt) {
+    const started = Date.parse(active.startedAt);
+    if (Number.isFinite(started)) return Math.max(0, nowMs - started);
+  }
+  const video = milestones.find((step) => step.id === "video");
+  if (video?.startedAt && video.finishedAt) {
+    const started = Date.parse(video.startedAt);
+    const finished = Date.parse(video.finishedAt);
+    if (Number.isFinite(started) && Number.isFinite(finished)) return Math.max(0, finished - started);
+  }
+  return null;
 }
 
 interface BatchAI {
@@ -682,19 +710,17 @@ export function BatchRoute() {
   const batchLive = Boolean(batch && !batch.finishedAt && !["completed", "cancelled", "failed"].includes(batch.status));
   // 时间只统计「本条」（2026-09-15 用户：「你只需统计 本条的时间 我不关心所有任务的时间」）：
   // 表格里只给**正在处理的那一条**（= batch.currentItemId，且状态在 备料中/出片中/重新备料）显示
-  // 「已用 X」，其它任务不显示；展开详情头部另有「本条已运行时间」。跳秒逻辑保留（批次可能刚收尾）。
+  // 「已用 X」，其它任务不显示；展开详情头部另有「本条实际用时」。跳秒逻辑保留（批次可能刚收尾）。
   const queueLive = visibleItems.some(
     (item) => !item.finishedAt && ["running", "revising", "confirmed"].includes(item.status),
   );
   const batchNowTick = useNowTick(batchLive || queueLive);
 
-  // 本条已运行时间：从条目创建算到结束（或此刻）。
-  const itemElapsedMs = selected
-    ? elapsedMs(selected.createdAt, selected.finishedAt, batchNowTick)
-    : null;
-  /** 表格行里「本条进行中」那条的已用时间（从加入队列算起）。 */
+  // 本条实际用时：只算真正干活的阶段（下载 / 备料 / 出片），不含排队与等你确认。
+  const itemElapsedMs = selected ? itemActiveMs(selected, batchNowTick) : null;
+  /** 表格行里「本条进行中」那条的已用时间（同上：只算真正干活的时间）。 */
   const itemElapsedText = (item: BatchItem): string => {
-    const ms = elapsedMs(item.createdAt, item.finishedAt, batchNowTick);
+    const ms = itemActiveMs(item, batchNowTick);
     return ms === null ? "" : formatElapsedMs(ms);
   };
 
@@ -821,11 +847,10 @@ export function BatchRoute() {
             <h2>{itemTitle(selected)}</h2>
             <div className="batch-detail-meta">
               <a href={item.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
-              {/* 本条已运行时间：跑到哪一步、一共花了多久 */}
+              {/* 本条实际用时：只算下载 / 备料 / 出片，不含排队与等你确认 */}
               {itemElapsedMs !== null && (
-                <span className="batch-timer" title={item.finishedAt ? "本条总耗时" : "本条已运行时间（含排队）"}>
-                  <Timer weight="fill" /> {formatElapsedMs(itemElapsedMs)}
-                  {item.finishedAt ? "（总）" : ""}
+                <span className="batch-timer" title="本条实际用时（只算下载 / 备料 / 出片，不含排队与等你确认）">
+                  <Timer weight="fill" /> 用时 {formatElapsedMs(itemElapsedMs)}
                 </span>
               )}
             </div>
@@ -1401,10 +1426,11 @@ export function BatchRoute() {
                             {item.childJob?.currentSegment && item.childJob.estimatedSegments && (
                               <small>分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
                             )}
-                            {/* 只给「本条进行中」的那一条显示已用时间（2026-09-15 用户：只统计本条的时间） */}
+                            {/* 只给「本条进行中」的那一条显示已用时间（实际干活时间，不含排队/等确认） */}
                             {batch?.status === "running"
                               && item.id === batch?.currentItemId
-                              && ["pending", "running", "revising"].includes(item.status) && (
+                              && ["pending", "running", "revising"].includes(item.status)
+                              && itemElapsedText(item) && (
                                 <small className="batch-elapsed"><Timer weight="fill" />已用 {itemElapsedText(item)}</small>
                               )}
                           </td>
