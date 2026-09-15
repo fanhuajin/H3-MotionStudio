@@ -2088,6 +2088,22 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("未识别", placeholders["tags"])
         self.assertNotIn("未知", placeholders["tags"])
 
+    def test_batch_image_success_clears_previous_warning(self) -> None:
+        """出图成功后必须清掉上一次失败的 warning。
+
+        用户 2026-09-15：「桌面端未产出图片（生成超时或取图失败） 其实已经成功了
+        为什么会提示在这个」——那次是前一回 CDP 端口配错留下的 warning，
+        重试成功后界面上仍然挂着旧报错，让人以为这次也失败了。
+        """
+        import inspect
+
+        from backend import chatgpt_image
+
+        source = inspect.getsource(chatgpt_image._generate_candidate_sync)
+        self.assertIn("warning=None", source)
+        # 必须在成功上传之后
+        self.assertLess(source.index("_upload_item_image"), source.index("warning=None"))
+
     def test_batch_auto_confirm_starts_rendering_without_manual_click(self) -> None:
         """候选人物图一到就自动放行出片，不再停在审核点等人点确认。
 

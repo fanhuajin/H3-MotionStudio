@@ -218,6 +218,10 @@ def _generate_candidate_sync(batch_id: str, item_id: str, feedback: str = "") ->
         if not got:
             raise RuntimeError("桌面端未产出图片（生成超时或取图失败）")
         _upload_item_image(batch_id, item_id, str(got))
+        # 成功后要**清掉上一次失败的警告**：否则界面上会一直挂着旧报错，
+        # 让人以为这次也失败了（用户 2026-09-15：「其实已经成功了 为什么会提示在这个」——
+        # 那次是前一回端口配错留下的 warning，重试成功后仍然显示）。
+        _mark(item_id, batch_id, warning=None)
         bw.batch_store.add_item_log(
             batch_id, item_id,
             f"已生成候选人物图并上传：{got}" + (f"（按意见：{feedback}）" if feedback else ""),
