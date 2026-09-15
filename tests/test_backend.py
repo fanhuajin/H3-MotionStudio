@@ -2088,6 +2088,32 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("未识别", placeholders["tags"])
         self.assertNotIn("未知", placeholders["tags"])
 
+    def test_batch_stopping_also_closes_comfyui(self) -> None:
+        """停止/取消之后要顺手关掉 ComfyUI，别让它空转占显存。
+
+        用户 2026-09-15：「停止的话 comfyui 你也要关闭」——实测取消一条之后
+        ComfyUI 进程从 19:31 一直开到晚上、队列里还留着被取消的那个 prompt 白烧显存。
+        注意必须先 `/interrupt` + 清队列：`/api/comfy/stop` 见到队列非空会 409 拒绝关闭。
+        """
+        import inspect
+
+        from backend import batch_worker
+
+        helper = inspect.getsource(batch_worker._stop_comfy_if_idle)
+        self.assertIn("/api/comfy/stop", helper)
+        self.assertIn("interrupt", helper)  # 先掐残留 prompt
+        self.assertIn("clear", helper)
+        # 批次里还有没结束的条目就不关（免得来回启停）
+        self.assertIn("awaiting_review", helper)
+
+        # 三条停止路径都要接上
+        for fn in (
+            batch_worker._abandon_without_runner,
+            batch_worker.salvage_abandoned_items,
+            batch_worker.run_batch,
+        ):
+            self.assertIn("_stop_comfy_if_idle", inspect.getsource(fn))
+
     def test_batch_auto_image_never_regenerates_existing(self) -> None:
         """已有图就不再重复生成（用户 2026-09-15：「自动化流程如果有对应图片了不需要重复生成」）。
 

@@ -1853,6 +1853,8 @@ async def salvage_abandoned_items(batch_id: str) -> int:
             continue
         if await _salvage_deliver(batch_id, str(item.get("id") or "")):
             saved += 1
+    # 整批取消后顺手关掉 ComfyUI，别让它空转占显存（用户 2026-09-15：「停止的话 comfyui 你也要关闭」）
+    await _stop_comfy_if_idle()
     return saved
 
 
@@ -1895,6 +1897,59 @@ def _spawn_deferred_salvage(batch_id: str, item_id: str, job_id: str) -> None:
     task.add_done_callback(_SALVAGE_TASKS.discard)
 
 
+async def _stop_comfy_if_idle() -> bool:
+    """没有别的活要干了就顺手关掉 ComfyUI，把显存让出来。
+
+    用户 2026-09-15：「停止的话 comfyui 你也要关闭」——取消/跳过一条之后，
+    ComfyUI 常常就那样空转占着显存（实测有从 19:31 一直开到晚上的情况）。
+
+    直接打自家的 `POST /api/comfy/stop`，**复用它的安全判断**：
+    还有别的条目在 running/revising/confirmed、或 ComfyUI 队列里还有 prompt 时它会回 409，
+    这里就当「还不能关」静默跳过，不会误杀正在生成的图/视频。
+
+    另外在这里先自查一遍批次：只要还有**没结束**的条目（排队/等确认/已放行/出片中/重新备料）
+    就不关 —— 免得后面还要再用 ComfyUI 又把它拉起来，来回启停更慢。
+    """
+    try:
+        state = batch_store.active()
+    except Exception:
+        state = None
+    if state:
+        busy = next(
+            (
+                item
+                for item in state.get("items") or []
+                if item.get("status") in {"pending", "awaiting_review", "confirmed", "running", "revising"}
+            ),
+            None,
+        )
+        if busy is not None:
+            return False
+    try:
+        from .settings import COMFY_URL
+    except Exception:
+        COMFY_URL = "http://127.0.0.1:8188"
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            # **先掐掉残留的 prompt**：取消任务后 ComfyUI 队列里常常还留着它，
+            # 而 `/api/comfy/stop` 见到队列非空会 409 拒绝关闭（实测），
+            # 结果就是「明明取消了，ComfyUI 还在白烧显存」。
+            # 上面已经确认批次里没有没结束的条目，所以这里中断是安全的。
+            try:
+                await client.post(f"{COMFY_URL}/interrupt")
+                await client.post(f"{COMFY_URL}/queue", json={"clear": True})
+            except Exception:
+                logger.warning("中断 ComfyUI 残留任务失败（继续尝试关闭）", exc_info=True)
+            resp = await client.post(f"{BATCH_SELF_URL}/api/comfy/stop")
+    except Exception:
+        logger.warning("自动关闭 ComfyUI 失败（忽略）", exc_info=True)
+        return False
+    if resp.status_code == 200:
+        logger.info("已顺手关闭 ComfyUI，释放显存")
+        return True
+    return False
+
+
 def _spawn_orphan_abandon(batch_id: str, item_id: str, *, deleted: bool) -> None:
     """runner 已经退出时，直接收尾一个「正在出片」的条目。
 
@@ -1926,6 +1981,8 @@ async def _abandon_without_runner(batch_id: str, item_id: str, *, deleted: bool)
             if not child or child.get("status") not in {"queued", "running", "cancelling"}:
                 break
     await _finish_abandoned(batch_id, item_id, deleted=deleted)
+    # 停止之后顺手关掉 ComfyUI（用户 2026-09-15：「停止的话 comfyui 你也要关闭」）
+    await _stop_comfy_if_idle()
 
 
 def reset_review_row(row: dict[str, Any]) -> None:
@@ -2275,6 +2332,8 @@ async def run_batch(batch_id: str) -> None:
             try:
                 if item.get("skipRequested"):
                     await _finish_abandoned(batch_id, item["id"], deleted=bool(item.get("deleteRequested")))
+                    # 停下来就把 ComfyUI 关掉（批次里还有别的活时它会自己跳过）
+                    await _stop_comfy_if_idle()
                     continue
                 if item.get("status") == "confirmed":
                     # 出片丢进后台任务：runner 立刻回到循环顶，继续给后面的条目备料
