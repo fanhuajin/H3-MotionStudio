@@ -409,6 +409,10 @@ def mark_items_skipped(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
             marked.append(item_id)
         else:
             busy.append(item_id)
+            if batch_id not in _RUNNING_BATCHES:
+                # runner 已退出（批次因**别的**条目失败而 failed）→ 直接收尾，
+                # 否则条目会永远卡在 running（用户实测「点击列表取消怎么没有效果」）
+                _spawn_orphan_abandon(batch_id, item_id, deleted=False)
     return {"marked": marked, "busy": busy, "rejected": rejected}
 
 
@@ -443,6 +447,9 @@ def mark_items_deleted(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
             marked.append(item_id)
         else:
             busy.append(item_id)
+            if batch_id not in _RUNNING_BATCHES:
+                # 同 mark_items_skipped：runner 已退出时直接收尾，否则条目卡在 running
+                _spawn_orphan_abandon(batch_id, item_id, deleted=True)
     return {"marked": marked, "busy": busy, "rejected": rejected}
 
 
@@ -1885,6 +1892,39 @@ def _spawn_deferred_salvage(batch_id: str, item_id: str, job_id: str) -> None:
     task = asyncio.create_task(_deferred_salvage(batch_id, item_id, job_id))
     _SALVAGE_TASKS.add(task)
     task.add_done_callback(_SALVAGE_TASKS.discard)
+
+
+def _spawn_orphan_abandon(batch_id: str, item_id: str, *, deleted: bool) -> None:
+    """runner 已经退出时，直接收尾一个「正在出片」的条目。
+
+    2026-09-15 用户：「点击列表取消怎么没有效果」——批次因为**别的**条目失败而 `failed`、
+    runner 已退出；这时点「取消」只把 `skipRequested` 写进状态（也会取消子任务），
+    但**把条目落成 `skipped` 这一步在 runner 循环里**，没人做 → 条目永远卡在 `running`，
+    页面上看着就像没生效。
+    """
+    task = asyncio.create_task(_abandon_without_runner(batch_id, item_id, deleted=deleted))
+    _SALVAGE_TASKS.add(task)
+    task.add_done_callback(_SALVAGE_TASKS.discard)
+
+
+async def _abandon_without_runner(batch_id: str, item_id: str, *, deleted: bool) -> None:
+    current = _item(batch_id, item_id)
+    child_id = str(
+        current.get("videoJobId") or (current.get("childJob") or {}).get("id") or ""
+    )
+    if child_id:
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                await client.post(f"{BATCH_SELF_URL}/api/jobs/{child_id}/cancel")
+        except Exception:
+            logger.warning("取消子任务失败（继续收尾）：%s", child_id, exc_info=True)
+        # 等子任务真的落定，成片若已生成 `_finish_abandoned` 会照样抢救进发布目录
+        for _ in range(90):
+            await asyncio.sleep(2)
+            child = store.get(child_id)
+            if not child or child.get("status") not in {"queued", "running", "cancelling"}:
+                break
+    await _finish_abandoned(batch_id, item_id, deleted=deleted)
 
 
 def reset_review_row(row: dict[str, Any]) -> None:
