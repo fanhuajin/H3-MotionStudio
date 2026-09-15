@@ -160,6 +160,17 @@ def _generate_candidate_sync(batch_id: str, item_id: str, feedback: str = "") ->
     prompt_file = work / "出图提示词.txt"
     item = bw._item(batch_id, item_id)
 
+    # **已经有候选图就不要重复生成**（用户 2026-09-15：「自动化流程如果有对应图片了
+    # 不需要重复生成」）。这里有这道守卫，任何调用路径都不会白跑一次出图；
+    # 带修改意见（feedback）时是用户明确要求重出，才放行。
+    if not feedback:
+        existing = Path(str((item.get("ai") or {}).get("reference_image_path") or ""))
+        if existing.is_file():
+            bw.batch_store.add_item_log(
+                batch_id, item_id, "本条已经有候选人物图了，跳过重复生成。"
+            )
+            return
+
     if not scene.is_file() or not IDENTITY_IMAGE.is_file():
         bw.batch_store.add_item_log(
             batch_id, item_id,
@@ -233,6 +244,10 @@ def _covers_sync(publish_folder: str, copy_file: str, image_file: str) -> None:
     prompt_base = Path(copy_file).read_text(encoding="utf-8", errors="replace")
     for i, (tag, instruction, fname) in enumerate(COVER_TASKS):  # 顺序写死，不做成可并行
         target = folder / fname
+        # 已经有这张封面就不重复生成（用户 2026-09-15：「有对应图片了不需要重复生成」）
+        if target.is_file() and target.stat().st_size > 0:
+            logger.info("封面已存在，跳过生成：%s", target)
+            continue
         try:
             imgs = [image_file] if i == 0 else []  # 第二张复用上文里的图
             got = cd.generate(

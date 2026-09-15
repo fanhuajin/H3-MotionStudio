@@ -2088,6 +2088,23 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("未识别", placeholders["tags"])
         self.assertNotIn("未知", placeholders["tags"])
 
+    def test_batch_auto_image_never_regenerates_existing(self) -> None:
+        """已有图就不再重复生成（用户 2026-09-15：「自动化流程如果有对应图片了不需要重复生成」）。
+
+        候选人物图与两张封面都要守：否则「重新备料 / 重新开始」这类路径会白跑一次出图，
+        既费时间也吃 ChatGPT 额度。
+        """
+        import inspect
+
+        from backend import chatgpt_image
+
+        candidate = inspect.getsource(chatgpt_image._generate_candidate_sync)
+        self.assertIn("跳过重复生成", candidate)
+        self.assertIn("reference_image_path", candidate)
+
+        covers = inspect.getsource(chatgpt_image._covers_sync)
+        self.assertIn("封面已存在，跳过生成", covers)
+
     def test_batch_camera_timeline_never_changes_framing(self) -> None:
         """运镜时间轴**不得改变构图**（推近/拉远/变焦）。
 
