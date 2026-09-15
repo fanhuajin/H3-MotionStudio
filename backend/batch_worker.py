@@ -409,10 +409,12 @@ def mark_items_skipped(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
             marked.append(item_id)
         else:
             busy.append(item_id)
-            if batch_id not in _RUNNING_BATCHES:
-                # runner 已退出（批次因**别的**条目失败而 failed）→ 直接收尾，
-                # 否则条目会永远卡在 running（用户实测「点击列表取消怎么没有效果」）
-                _spawn_orphan_abandon(batch_id, item_id, deleted=False)
+            # **总是**直接收尾，不再依赖 runner 是否活着。
+            # 实测两次踩坑：① 批次因别的条目失败而 failed、runner 已退出；
+            # ② 批次处于 paused、runner 也不在 —— 两种情况下 skipRequested 都没人处理，
+            # 条目永远卡在 running，用户看到的现象就是「点击取消没有效果」。
+            # runner 若也在处理，两条路都收敛到 skipped，重复执行无副作用。
+            _spawn_orphan_abandon(batch_id, item_id, deleted=False)
     return {"marked": marked, "busy": busy, "rejected": rejected}
 
 
@@ -447,9 +449,8 @@ def mark_items_deleted(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
             marked.append(item_id)
         else:
             busy.append(item_id)
-            if batch_id not in _RUNNING_BATCHES:
-                # 同 mark_items_skipped：runner 已退出时直接收尾，否则条目卡在 running
-                _spawn_orphan_abandon(batch_id, item_id, deleted=True)
+            # 同 mark_items_skipped：**总是**直接收尾（runner 退出或批次 paused 时都没人做）
+            _spawn_orphan_abandon(batch_id, item_id, deleted=True)
     return {"marked": marked, "busy": busy, "rejected": rejected}
 
 
