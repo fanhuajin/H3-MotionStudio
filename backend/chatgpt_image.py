@@ -59,6 +59,16 @@ def auto_cover_enabled() -> bool:
     return settings.env_value("H3_AUTO_CHATGPT_COVER", "0").strip() == "1"
 
 
+def auto_confirm_enabled() -> bool:
+    """候选人物图一到就**自动放行出片**，跳过人工确认环节（默认开启）。
+
+    用户 2026-09-15：「自动化流程不需要我确认了 之后候选人物图生成了直接开始任务」。
+    出片本身仍然严格一条一条；想恢复「等你确认」这个审核点就把 `H3_AUTO_CONFIRM` 设成 `0`。
+    """
+    raw = str(settings.env_value("H3_AUTO_CONFIRM", "1") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def is_generating(batch_id: str, item_id: str) -> bool:
     """该条当前是否正在让 AI 生成候选图（前端据此显示「正在生成…」）。"""
     from . import batch_worker as bw

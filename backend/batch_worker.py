@@ -1356,6 +1356,24 @@ async def _prepare_review_work(
     # 开关 H3_AUTO_CHATGPT_COVER=1；由 _IMAGE_LOCK 保证和人物图一样严格单链，绝不并发。
     _maybe_spawn_covers(batch_id, item_id)
 
+    # **自动放行出片**（用户 2026-09-15：「自动化流程不需要我确认了 之后候选人物图生成了
+    # 直接开始任务」）：候选图一到就直接放行，不再停在审核点等人点确认。
+    # 出片本身仍严格一条一条；`H3_AUTO_CONFIRM=0` 可以恢复人工确认点。
+    if _cgi_auto_confirm():
+        fresh = _item(batch_id, item_id)
+        if str((fresh.get("ai") or {}).get("reference_image_path") or "").strip():
+            confirm_batch_items(batch_id, [item_id])
+            batch_store.add_item_log(batch_id, item_id, "已自动放行出片（无需人工确认）。")
+
+
+def _cgi_auto_confirm() -> bool:
+    from . import chatgpt_image as _cgi
+
+    try:
+        return bool(_cgi.auto_confirm_enabled())
+    except Exception:
+        return False
+
 
 def _maybe_spawn_covers(batch_id: str, item_id: str) -> None:
     """若已开启封面自动化且该条的人物图+发布文案都齐了，就后台触发封面生成。

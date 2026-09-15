@@ -2088,6 +2088,27 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("未识别", placeholders["tags"])
         self.assertNotIn("未知", placeholders["tags"])
 
+    def test_batch_auto_confirm_starts_rendering_without_manual_click(self) -> None:
+        """候选人物图一到就自动放行出片，不再停在审核点等人点确认。
+
+        用户 2026-09-15：「自动化流程不需要我确认了 之后候选人物图生成了直接开始任务」。
+        实现是备料收尾时（出图之后）调 `confirm_batch_items` 把条目置成 `confirmed`，
+        剩下的交给 runner 按老规矩**一条一条**出片；`H3_AUTO_CONFIRM=0` 可恢复人工确认点。
+        """
+        import inspect
+
+        from backend import batch_worker, chatgpt_image
+
+        self.assertTrue(chatgpt_image.auto_confirm_enabled())  # 默认开启
+
+        source = inspect.getsource(batch_worker._prepare_review_work)
+        self.assertIn("已自动放行出片", source)
+        self.assertIn("confirm_batch_items(batch_id, [item_id])", source)
+        # 必须在出图之后放行，否则会拿着一张还没有图的条目去出片
+        self.assertLess(source.index("auto_generate_candidate_image"), source.index("已自动放行出片"))
+        # 放行前要确认真的有候选图
+        self.assertIn("reference_image_path", source[source.index("已自动放行出片") - 400:])
+
     def test_batch_stopping_also_closes_comfyui(self) -> None:
         """停止/取消之后要顺手关掉 ComfyUI，别让它空转占显存。
 
