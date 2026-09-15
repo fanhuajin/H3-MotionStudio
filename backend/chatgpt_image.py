@@ -105,9 +105,21 @@ def _mark(item_id: str, batch_id: str, **changes) -> None:
 
 # ---------------- 候选人物图 ----------------
 async def auto_generate_candidate_image(batch_id: str, item_id: str) -> None:
-    """备料后自动生成候选人物图并上传。失败只标黄，不抛断调用方。"""
-    async with _IMAGE_LOCK:
-        await asyncio.to_thread(_generate_candidate_sync, batch_id, item_id, "")
+    """备料后自动生成候选人物图并上传。失败只标黄，不抛断调用方。
+
+    生成期间打 `ai.image_generating` 标记，前端据此在图片位显示 loading
+    （用户 2026-09-15：「这个过程你在图片哪里加个loading状态」）。
+    """
+    from . import batch_worker as bw
+    _set_generating(batch_id, item_id, True)
+    bw.batch_store.add_item_log(
+        batch_id, item_id, "正在让 AI 生成候选人物图（ChatGPT 静默出图中，约 1~3 分钟）……"
+    )
+    try:
+        async with _IMAGE_LOCK:
+            await asyncio.to_thread(_generate_candidate_sync, batch_id, item_id, "")
+    finally:
+        _set_generating(batch_id, item_id, False)
 
 
 async def auto_regenerate_candidate_image(batch_id: str, item_id: str, feedback: str = "") -> None:

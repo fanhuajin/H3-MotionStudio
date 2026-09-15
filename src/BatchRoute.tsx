@@ -414,8 +414,6 @@ export function BatchRoute() {
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [imageToken, setImageToken] = useState(0);
-  const [regenFeedback, setRegenFeedback] = useState("");
-  const [regenPanelOpen, setRegenPanelOpen] = useState(false);
   // 「替换源视频」：贴错链接 / 放错槽位（唱歌视频贴进跳舞口）时不用删了重加
   const [replacingSource, setReplacingSource] = useState(false);
   const [replaceUrl, setReplaceUrl] = useState("");
@@ -937,25 +935,6 @@ export function BatchRoute() {
   // 该条当前是否正在让 AI 生成候选图（后台异步，轮询到后显示「正在生成…」）。
   const generatingImage = Boolean(selected?.ai?.image_generating);
 
-  /** 「让 AI 换一张」：不带意见重新生成一张新的；带 feedback 则基于当前图按意见重出一版。
-   *  后端异步后台生成（受单链锁），返回后前端靠 WebSocket 推送看到 image_generating 结束。 */
-  const regenImage = async (feedback?: string) => {
-    if (!selected || !batch || generatingImage) return;
-    setError("");
-    try {
-      const endpoint = `/api/batches/${batch.id}/items/${selected.id}/regen-image`;
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: feedback ? { "Content-Type": "application/json" } : undefined,
-        body: feedback ? JSON.stringify({ feedback }) : undefined,
-      });
-      if (!response.ok) throw new Error(await responseMessage(response, "AI 换图失败"));
-      setBatch(await readJson<BatchState>(response, "AI 换图失败"));
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    }
-  };
-
   // 异步生成结束（image_generating 从 true → false）时刷新图片，显示新生成的那张。
   const prevGenerating = useRef(Boolean(selected?.ai?.image_generating));
   useEffect(() => {
@@ -1336,15 +1315,38 @@ export function BatchRoute() {
 
         {/* 这一屏的信息在**加入队列之后也要继续显示**（用户 2026-09-13），
             只是出了审核点就不给改了：上传/换图与设置开关只在这里是 awaiting_review 时可用。 */}
-        {item.ai && (
+        {/* 首次自动出图期间还没有文案，整块显示 loading（用户 2026-09-15：
+            「这个过程你在图片哪里加个loading状态」）。 */}
+        {item.ai?.image_generating && !item.ai?.title ? (
+          <section className="batch-review batch-review-loading">
+            <SpinnerGap className="spin" />
+            <strong>正在生成候选人物图…</strong>
+            <small>ChatGPT 静默出图中，约 1~3 分钟 · 期间请不要操作鼠标键盘</small>
+          </section>
+        ) : item.ai && (
           <section className="batch-review">
             <div className="batch-review-image">
               <div className="batch-review-label"><ImageSquare /> 候选人物图 · 第 {(item.revision || 0) + 1} 版</div>
               {hasImage ? (
-                <img
-                  src={`/api/batches/${batch!.id}/items/${item.id}/image?v=${imageToken || item.revision || 0}`}
-                  alt="候选人物图"
-                />
+                <>
+                  <img
+                    src={`/api/batches/${batch!.id}/items/${item.id}/image?v=${imageToken || item.revision || 0}`}
+                    alt="候选人物图"
+                  />
+                  {generatingImage && (
+                    <div className="batch-image-loading">
+                      <SpinnerGap className="spin" />
+                      <strong>正在重新生成…</strong>
+                      <small>ChatGPT 出图中，约 1~3 分钟</small>
+                    </div>
+                  )}
+                </>
+              ) : generatingImage ? (
+                <div className="batch-image-loading">
+                  <SpinnerGap className="spin" />
+                  <strong>正在生成候选人物图…</strong>
+                  <small>ChatGPT 静默出图中，约 1~3 分钟</small>
+                </div>
               ) : atReview ? (
                 <label
                   className={`batch-dropzone ${dragging ? "over" : ""}`}
@@ -1386,54 +1388,6 @@ export function BatchRoute() {
                     }}
                   />
                 </label>
-              )}
-              {editable && (
-                <div className="batch-ai-regen">
-                  <div className="batch-ai-regen-actions">
-                    <button
-                      type="button"
-                      className="batch-ai-regen-btn"
-                      disabled={Boolean(busyAction) || generatingImage}
-                      onClick={() => void regenImage()}
-                      title="把图一+图二+提示词再送 ChatGPT 生成一张全新的候选图"
-                    >
-                      {generatingImage ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
-                      {generatingImage ? "正在生成…" : "AI 换一张"}
-                    </button>
-                    <button
-                      type="button"
-                      className="batch-ai-regen-btn"
-                      disabled={Boolean(busyAction) || generatingImage}
-                      onClick={() => setRegenPanelOpen((v) => !v)}
-                      title="写一句修改意见，让 AI 基于当前图重出一版"
-                    >
-                      {regenPanelOpen ? "收起意见" : "写意见再换"}
-                    </button>
-                  </div>
-                  {regenPanelOpen && (
-                    <div className="batch-ai-regen-panel">
-                      <textarea
-                        value={regenFeedback}
-                        onChange={(event) => setRegenFeedback(event.target.value)}
-                        placeholder="例如：把背景换成暖色调、换个发型、穿白色上衣……"
-                        rows={2}
-                      />
-                      <button
-                        type="button"
-                        className="batch-ai-regen-btn primary"
-                        disabled={Boolean(busyAction) || generatingImage || !regenFeedback.trim()}
-                        onClick={() => {
-                          void regenImage(regenFeedback.trim());
-                          setRegenFeedback("");
-                          setRegenPanelOpen(false);
-                        }}
-                      >
-                        {generatingImage ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
-                        按这个意见生成
-                      </button>
-                    </div>
-                  )}
-                </div>
               )}
             </div>
             <div className="batch-review-copy">

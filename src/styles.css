@@ -1542,17 +1542,6 @@ body {
 .batch-dropzone input, .batch-replace input { display: none; }
 .batch-replace { display: inline-flex; align-items: center; align-self: flex-start; gap: 6px; margin-top: 9px; padding: 6px 11px; border: 1px solid #463a64; border-radius: 7px; color: #d9d3e9; background: #17112f; font-size: 11px; cursor: pointer; transition: .18s ease; }
 .batch-replace:hover { border-color: var(--shell-accent); color: #e8f6f8; }
-/* 「AI 换一张」：让 ChatGPT 桌面端重新生成候选图（单链，后台异步） */
-.batch-ai-regen { display: flex; flex-direction: column; gap: 8px; align-self: stretch; margin-top: 9px; }
-.batch-ai-regen-actions { display: flex; gap: 8px; }
-.batch-ai-regen-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px solid #4b70b8; border-radius: 7px; color: #dce6f7; background: rgba(38, 58, 94, .55); font-size: 11px; cursor: pointer; transition: .18s ease; }
-.batch-ai-regen-btn:hover:not(:disabled) { border-color: var(--shell-accent); color: #e8f6f8; background: rgba(24, 42, 60, .62); }
-.batch-ai-regen-btn:disabled { opacity: .55; cursor: not-allowed; }
-.batch-ai-regen-btn.primary { border-color: var(--shell-accent); background: rgba(24, 42, 60, .7); }
-.batch-ai-regen-btn svg { width: 13px; height: 13px; }
-.batch-ai-regen-panel { display: flex; flex-direction: column; gap: 8px; padding: 9px; border: 1px solid #463a64; border-radius: 7px; background: #17112f; }
-.batch-ai-regen-panel textarea { width: 100%; resize: vertical; padding: 7px 9px; border: 1px solid #3a2f56; border-radius: 6px; background: #100c27; color: #e6e1f3; font-size: 11px; line-height: 1.5; outline: none; }
-.batch-ai-regen-panel textarea:focus { border-color: var(--shell-accent); }
 .batch-item-list { display: flex; flex-direction: column; gap: 3px; padding: 7px; max-height: calc(100vh - 260px); overflow-y: auto; }
 .batch-item { width: 100%; min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr) 16px; align-items: center; gap: 9px; padding: 10px; border: 1px solid transparent; border-radius: 8px; text-align: left; color: #d8d3e7; background: transparent; cursor: pointer; }
 .batch-item:hover { background: #14102d; }
@@ -1617,6 +1606,14 @@ body {
 .batch-item-actions button.start:hover:not(:disabled) { filter: brightness(1.08); }
 .batch-item-actions button:disabled { cursor: not-allowed; opacity: .45; }
 .batch-review { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(380px, 1.15fr); gap: 16px; padding: 14px; border: 1px solid rgba(55, 216, 230, .32); border-radius: 10px; background: linear-gradient(145deg, rgba(17, 17, 45, .96), rgba(10, 8, 29, .96)); }
+/* 图片生成中的 loading：整块（首次出图）与覆盖在图上（重新生成）两种 */
+.batch-review-loading { grid-template-columns: 1fr; min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
+.batch-review-loading svg, .batch-image-loading svg { width: 30px; height: 30px; color: var(--shell-accent); }
+.batch-review-loading strong { color: #e8f6f8; font-size: 14px; }
+.batch-review-loading small { color: var(--shell-muted); font-size: 11px; }
+.batch-image-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; background: rgba(7, 6, 22, .82); backdrop-filter: blur(2px); }
+.batch-image-loading strong { color: #e8f6f8; font-size: 13px; }
+.batch-image-loading small { color: var(--shell-muted); font-size: 11px; }
 .batch-review-image { position: relative; min-height: 440px; overflow: hidden; display: grid; place-items: center; border: 1px solid #302746; border-radius: 8px; background: #070616; }
 .batch-review-image img { width: 100%; height: 100%; max-height: 600px; object-fit: contain; display: block; }
 .batch-review-label { position: absolute; z-index: 2; top: 10px; left: 10px; display: flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 6px; color: #dcf9fb; background: rgba(7, 7, 24, .82); backdrop-filter: blur(7px); font-size: 10px; }
