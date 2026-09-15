@@ -2088,6 +2088,27 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("未识别", placeholders["tags"])
         self.assertNotIn("未知", placeholders["tags"])
 
+    def test_batch_camera_timeline_never_changes_framing(self) -> None:
+        """运镜时间轴**不得改变构图**（推近/拉远/变焦）。
+
+        2026-09-15 用户：「唱歌视频的运镜出现了一瞬间的从远到近的弹跳式的镜头 为什么」——
+        视频由多个 ~15 秒片段各自独立生成后再拼接，片段之间不共享镜头状态，
+        接缝（14.17–15.08 秒等）前后一旦构图在变就会跳一下（实测提示词写了
+        「6.5–13.5秒：镜头缓慢向人物轻微推近」后，接缝处出现从远到近的弹跳）。
+        所以提示词里必须是硬禁止，而不是仅提示「镜头基本不动也可以」。
+        """
+        from backend.batch_ai import ACTION_RULES, preflight_prompt
+
+        self.assertIn("不得改变构图", ACTION_RULES)
+        for forbidden in ("推近", "拉远", "变焦"):
+            self.assertIn(forbidden, ACTION_RULES)  # 明确点名禁止
+        self.assertIn("轻微自然手持漂移", ACTION_RULES)
+        # 模板仍可正常按 duration 格式化（两处提示词都靠它）
+        rendered = ACTION_RULES.format(duration="27.3")
+        self.assertIn("27.3", rendered)
+        preflight = preflight_prompt(kind="singing", duration=27.3, description="", tags=[])
+        self.assertIn("不得改变构图", preflight)
+
     def test_batch_copy_prompts_ask_for_creator_voice_not_description(self) -> None:
         """发布文案必须是**创作者口吻**（第一人称情绪），不能是画面描述、也不能喊话互动。
 
