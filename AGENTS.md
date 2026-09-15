@@ -52,8 +52,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - **抖音下载：本地已有这条作品就直接复用，不再下载**（2026-09-13 用户：「抖音下载的时候如果已经有了就不要下载了」）：下载器子进程自己会跳过已存在的视频（`D:\project\douyin-downloader` 的 `core/video_downloader.py`：「Video %s already downloaded, skipping」→ `result.skipped += 1`，且 `douyin_service.result_for()` 是按 `DOUYIN_OUTPUT.rglob(f"*{aweme_id}*")` 找文件的，所以**跳过也不会报「找不到视频文件」**），但那条路要**先把下载服务拉起来、再提交一次任务**（一个完整 Python 进程 + 一次轮询，占内存、拖慢批量）。因此 `batch_worker.cached_download_path(url)` 在**提交之前**先查本地：① 下载器写的 metadata 清单（`download_manifest.jsonl` 的 `file_paths`）② 没命中就按作品号在下载目录里搜（过滤条件与 `result_for` 一致：视频后缀、排除 `.h3-converted`/`.part.`）；两个根都查（`DOUYIN_OUTPUT` 与 `MANIFEST_PATH.parent`——实测这台机器上 media 在 `E:\AI_Exports\Douyin`，清单在 `D:\EV`，**两边都可能有同名文件，别只认一个**）。命中即由 `_adopt_existing_source()` 复用：照常过 `duplicate_item_by_aweme` 判重、`ensure_download_playable`、写 `sourcePath`/`awemeId`/`sourceMetadata`/`title`、download 里程碑打勾，日志记「本地已有这条视频，跳过下载」，**完全不调用 `douyin_service.submit`**。`test_batch_reuses_an_already_downloaded_source` 守住这条。
 - 每个批量条目只生成一份 `发布文案.txt`，内含一套可直接复制的标题、简介和标签，不再分别生成抖音版与 B 站版文案。**不再生成任何封面**（2026-09-10 用户要求「双封面我也会自己生成」）：交付阶段只输出最终成片 + 人物图 + `发布文案.txt`，`render_covers()` 与相关 PIL 绘制函数已删除，`/output` 接口也不再接受 `coverBilibili`/`coverDouyin`。
 - 批量条目的画布比例是**条目级**字段（2026-09-10 用户要求「每个视频需要让我选择比例，歌曲默认 4:3、跳舞默认 9:16，我可以改的」）：每条独立保存自己的 `ratio`，默认值由 `settings.BATCH_DEFAULT_RATIOS` / `new_batch_state` 按类型给出（`POST /api/batches` 的 `singingRatio`/`danceRatio` 仍可整组覆盖，属 API 能力、页面不再暴露），`POST /api/batches/{batch}/items/{item}/ratio` 可改；**改动窗口在 2026-09-14 放宽为「只要没开始出片就能改」**（用户：「未开始前的任务都允许修改」）——`batch_worker.item_settings_editable()` 判定，`pending`/`awaiting_review`/`confirmed`/`failed`/`skipped` 都放行，只有 `running`/`revising`/`completed`/`deleted` 拒绝（先点「回到确认」）。比例同时驱动三处：候选人物图的生成档（`batch_image.IMAGE_SIZES` / `batch_portrait`）、出图提示词的构图规格（`batch_ai.compose_image_prompt(ratio=…)`，改比例会按新比例重拼并覆盖 `出图提示词.txt`）、以及出片时提交给 `/api/jobs`（唱歌）或 `/api/jobs/migrate`（跳舞）的 `ratio`。缺 `ratio` 的历史批次按类型默认值兜底（`batch_worker.item_ratio`）。候选图与所选比例不符时只写日志提示，不擅自清空用户自己出的图。
-- **「回到确认」与跳舞条目的「去除字幕」开关**：`POST …/reopen-review` 把过了审核点的条目退回审核点——`reset_review_row()` 清空 `reviewApproved`/`videoJobId`，`review` 里程碑回到 `running`、`video`/`deliver` 回到 `pending`，**旧成片与发布目录不删**；没在出片就直接退，正在出片先按「跳过」同一条链路安全取消，由 runner 的 `_finish_abandoned()` 落回审核点（用户明确要求允许）。跳舞条目的「是否去除字幕」用 `POST …/remove-subtitles`（`set_item_remove_subtitles`）改，规则与画布比例同一条，出片时 `_post_video_job` 按当前值提交。审核区仍然只有「看图 + 改这两个开关 + 确认」。**警告文案必须区分「已放行但还没轮到」和「真的在出片」**：`renderingNow(item)` = `status === "running"` 或 `childJob.status ∈ {queued, running, cancelling}`，只有它为真时「回到确认 / 取消出片」才弹「进度作废」；`confirmed` 退回只是作废这次放行（后端不调 `cancel_job`），不碰别的条目。
-- 批量输入区的「歌曲视频链接 / 跳舞视频链接」各带一个开关（2026-09-10 用户要求「我开了哪个展示哪个，哪个才要执行」）：关掉的一类既不展示输入框，也不会进批次（`start()` 只提交开启的那一类，两类都关时报错）。开关状态与链接一起持久化在页面草稿里。
+- **「回到确认」与跳舞条目的「去除字幕」开关**：`POST …/reopen-review` 把过了审核点的条目退回审核点——`reset_review_row()` 清空 `reviewApproved`/`videoJobId`，`review` 里程碑回到 `running`、`video`/`deliver` 回到 `pending`，**旧成片与发布目录不删**；没在出片就直接退，正在出片先按「跳过」同一条链路安全取消，由 runner 的 `_finish_abandoned()` 落回审核点（用户明确要求允许）。跳舞条目的「是否去除字幕」用 `POST …/remove-subtitles`（`set_item_remove_subtitles`）改，规则与画布比例同一条，出片时 `_post_video_job` 按当前值提交。审核区仍然只有「看图 + 改这两个开关 + 确认」。**警告文案必须区分「已放行但还没轮到」和「真的在出片」**：`renderingNow(item)` = `status === "running"` 或 `childJob.status ∈ {queued, running, cancelling}`，只有它为真时「回到确认 / 取消出片」才弹「进度作废」；`confirmed` 退回只是作废这次放行（后端不调 `cancel_job`），不碰别的条目。**没在出片的取消不弹任何提示**（2026-09-15 用户：「这一条还没开始出片，停止这次放行不会动到其它条目。停止后可以点「重新开始」。不会影响到的不需要又这个提示 可以直接取消就好了」）：行内「取消」（`confirmed`）= `!renderingNow(item) || confirm("…进度会作废…")` 就执行 `skip`，那句「不会动到其它条目」的提示整句删掉；批量操作栏的「跳过」同理，勾选里 `selectedItems.some(renderingNow)` 才确认，否则直接执行（删除仍然一律二次确认）。`test_batch_cancel_asks_nothing_when_nothing_is_rendering` 守住。**确认框一律走页内弹框，不许用 `window.confirm`**（2026-09-15 用户：「弹出框的效果样式改下 现在的不好看」）：原生灰白弹框跟深色壳子不是一个东西，也没法把「影响哪几条」说清楚。`BatchRoute` 里统一用 `askConfirm(ConfirmAsk): Promise<boolean>`（`{title, detail?, items?, confirmLabel, cancelLabel?, danger?}`）+ `.batch-modal-backdrop` / `.batch-modal` 样式（深靛底、暗紫描边、危险操作红系），Esc / 点遮罩 = 取消，**破坏性操作默认把焦点放在「取消」上**（回车不误删），批量跳过/删除会把受影响的条目标题列出来（最多 6 条 + 「…还有 N 条」）。`test_batch_confirm_dialog_is_a_styled_page_modal` 守住（含「源码里 `window.confirm`/`window.alert` 一个都不许留」与 CSS 选择器必须真的存在）。
+- 批量输入区的「歌曲视频链接 / 跳舞视频链接」各带一个开关（2026-09-10 用户要求「我开了哪个展示哪个，哪个才要执行」）：关掉的一类既不展示输入框，也不会进批次（`start()` 只提交开启的那一类，两类都关时报错）。开关状态与链接一起持久化在页面草稿里。**点「准备任务」提交成功后清空输入框**（2026-09-15 用户：「准备任务点击之后清空现有的歌曲视频链接和跳舞视频链接」）：`prepare()` 在拿到批次状态之后 `setSinging("")` / `setDance("")`，只清**这次真的提交了**的那一类（开关关着的那类原样留着，两类的开关与草稿照旧持久化）；请求失败时不清，免得用户白粘一遍。`test_batch_prepare_clears_the_submitted_link_boxes` 守住。
 - 批次随时可以追加任务、单条随时可删（2026-09-10 用户：「可以让我随时添加新的任务，删除单条任务」）：`POST /api/batches/{batch_id}/items`（`batch_worker.append_batch_items`）在批次**跑着 / 暂停 / 等审核 / 已完成 / 失败**时都能把新链接排到队尾，编号接着往下排，`ratio` 按类型默认值给；同批上限仍是 `MAX_BATCH_ITEMS`=50；只有 `cancelled` 批次不能复活（需新建）。追加只排队、**不会自己跑起来**（走 `_wake_batch()`，见下一条）。页面上输入区不再因为「批次未结束」而禁用，按钮是「加入队列（N 条）」，提交成功后清空对应链接框；单条删除按钮是「删除这一条」并带二次确认（运行中的条目会先安全取消子任务）。
 - **出片在后台跑，runner 同时继续给后面的条目备料**（2026-09-13 用户实测：「我现在重新加入了一条…下载抖音视频、生成人物图与发布文案、等待你的确认…现在没有处理啊」）：`run_batch` 不再原地 `await _process_confirmed`，而是把它丢进后台任务（强引用集合 `_VIDEO_TASKS`），自己继续循环备料；出片本身仍**严格一条一条**（`_next_work(state, allow_confirmed=video_task is None)` 在后台出片时不返回新的 `confirmed`）。备料只用下载 + ffmpeg 抽帧 + 一次文本模型调用，不碰 ComfyUI，所以能和出片并行；暂停仍不打断正在出片的这一条（等它落定再暂停），失败/取消复用 `_fail_item_and_batch` / `_finish_abandoned` 同一套收尾。防呆：出片任务正常返回却没把条目推进出 `confirmed` 时直接判失败停下（否则会无限重投出片任务，该分支由复现脚本实测出来过）。
 - **`scripts/batch_prep_item.py`**：不重启后端、单独给某个排队中的条目备料（`--batch <id> --index 3` 或 `--item <id>`）。它把 `batch_worker.batch_store` 换成 CAS 版本（`UPDATE … WHERE state_json = 我读到的那一份`，冲突就重读重算）后复用 `_download` + `_prepare_review`，因此不会和 runner 每 ~3 秒的整份状态写回互相覆盖（普通 `BatchStore.update` 是进程内锁，跨进程会互相吃掉写入，比如用户刚点的「跳过」）。用完会把停在 `completed` 的批次拉回 `awaiting_review`。
@@ -109,3 +109,64 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 - 每一次修改（不论大小：前端、后端、样式、文案、文档、配置、工作流参数）完成后，只要已验证通过，就必须立即 `git add` → `git commit` → `git push origin main`，并在同一次回复中告知用户提交哈希。
 - 不允许在一个回合结束时留下已完成但未提交的改动；提交动作不得拖延到"批量攒齐"再执行。
+
+## 批量制作的「图片流程」接入 ChatGPT 桌面端（2026-09-15 固化）
+
+用户要求：批量制作其他环节都已自动，**只把「图片」这一环自动化**（候选人物图 + 两张封面），
+且**必须严格单链路、一条一条完成，绝不并发**。以下为已实测跑通并固化的做法。
+
+### 只做图片，且用用户桌面的提示词
+- 出图提示词**不用**项目自动拼的 `出图提示词.txt`（用户：「提示词错了」），而是按类型取用户桌面文件：
+  - 唱歌（4:3）→ `C:\Users\admin\Desktop\4比3图片.txt`
+  - 跳舞（9:16）→ `C:\Users\admin\Desktop\9比16图片.txt`
+  - 可用 `H3_CHATGPT_PROMPT_43` / `H3_CHATGPT_PROMPT_916` 覆盖；文件缺失才退回项目提示词。
+- 两张输入图：**图一** = 该条 `scene-frame.jpg`（源视频取景帧，提供造型/场景）；
+  **图二** = `E:\AI_Assets\PortraitIdentity\本人固定参考.png`（唯一身份基准）。
+
+### 驱动方式：静默 CDP（不是坐标点击，也不是 UIA）
+- **真实登录 profile 下应用不开放 CDP 调试端口**（实测），必须用**专用 profile**
+  `%USERPROFILE%\.codex-automation\profile`；该 profile 因登录态在 `~/.codex/auth.json` 里，
+  **自动就是已登录状态，不需要重新扫码**。
+- 端口用 **9444**，**不要用 9222**（主实例命令行里可能带着 9222，端口不生效）。
+- 生成图在 DOM 里是 `<img src="blob:app://-/...">`：**不会落盘**（监听 `generated_images/` 无效），
+  `fetch(blob:)` 被 CSP 拦（Failed to fetch），**只能用 canvas 绘制后 `toDataURL` 取回**。
+- 落盘 `E:\AI_Exports\H3-MotionStudio\ChatGPT生成图\`（`H3_CHATGPT_IMAGE_DIR` 可覆盖），
+  再由 `POST /api/batches/{batch}/items/{item}/image` 上传回条目。
+
+### 封面：**同一个对话内串行**，不新开窗口
+用户 2026-09-15：「B站4:3 → 抖音3:4，串行。不要新开窗口，在同一个窗口发布不同的文案就可以了，
+AI 会理解的。」→ `_covers_sync` 只有**第一条** `new_chat=True` 并贴人物图，
+**第二条在同一对话里直接发不同指令**（不新开、不重贴，AI 用上下文里的图）。顺序写死不并行。
+
+### 单链路
+`backend/chatgpt_image.py` 的 `_IMAGE_LOCK` 是**独立于 `pipeline_lock`** 的第二把锁：
+所有图片操作（人物图 + 封面）共用它，同一时刻只跑一条；图片不阻塞视频出片，但图片之间严格串行。
+
+### 开关（默认关闭，不影响原 manual 模式）
+`H3_AUTO_CHATGPT_IMAGE=1`（备料后自动出图）、`H3_AUTO_CHATGPT_COVER=1`（落盘后自动出封面）。
+改环境变量后必须重启后端。
+
+### 踩坑清单（改这条链路前必读；详见 `docs/自动化流程说明.md`）
+1. **DPI 缩放**：进程启动时必须先 `SetProcessDpiAwareness(2)`，否则 125% 缩放下
+   `GetWindowRect` 返回虚拟化坐标，与截图/点击整体错位。
+2. **长提示词发不出去**：2000+ 字会把输入框撑到 1700px 高，**顶部跑到视口外**（y 为负）；
+   聚焦要**点靠近底部**，点中心会落在视口外 → 拿不到焦点 → Enter 无效。
+3. **发送要校验**：发完必须确认输入框已清空，否则重点发送按钮；不能只发一次就当作已发送。
+4. **附件会堆叠**：失败留下的附件不会自己消失（实测堆到 3 张）；
+   每次生成前必须清空输入框**含附件**，移除按钮是 `pointer-events-none`，只能用 JS 触发。
+5. **取图基线要在贴图之后记**：否则会把贴进去的图二当成「新生成的图」取回来。
+6. **新对话必须校验为 0 张图**：blob URL 会随重绘变化，残留的旧生成图会被当成新图
+   （实测取回的图与上一次 sha 完全相同）；新对话后页面仍有图就重试。
+7. **页面不要「滑来滑去」**：用 JS 操作 DOM，别用 Playwright 的 `click()`
+   （它会自动把元素滚进可视区）。
+8. **窗口错乱**：应用会同时存在 `detached-window` / `avatar-overlay` 等页面，
+   页面选择必须要求 `index.html` 且排除这两者，否则操作到空白页。
+
+### 运行方式
+**推荐用 `启动H3影动高清工作台.bat` 启动后端**：从临时会话用 `Start-Process` 起的后端
+可能随会话结束被杀，长任务（出图/出片）会被中途打断。
+
+### 抖音下载器（同一天修的另一件事）
+`HTTP 403 Blocked by ArgusSecurityPlugin` 的根因是**下载器版本旧**（抖音 9-10 收紧风控，
+上游 9-15 才发修复）：`git fetch origin main && git merge origin/main`。
+本地 `server/*` 的接入改动与上游无交集，合并后完整保留。

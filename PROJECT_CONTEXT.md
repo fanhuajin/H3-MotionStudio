@@ -101,18 +101,45 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 
 页面分别向「歌曲视频」「跳舞视频」两个多行输入区粘贴抖音链接（表格导入/导出只是可选的批次备份方式，不是启动前提），批次严格逐条串行，复用全局 `pipeline_lock`。
 
-每个条目的 6 个里程碑（歌曲 7 个）：
+每个条目的 **4 个里程碑**（下载 / 备料 / 审核 / 出片，2026-09-13 起定型）：
 
-1. **download**：抖音下载 → 浏览器兼容化 → 从 `D:\EV\download_manifest.jsonl` 取原作品 desc/tags；结束后立刻 `douyin_service.stop()` 给 ComfyUI 让内存。
-2. **prepare（预审，可降级）**：本地 ffmpeg 抽 6 帧联系表 + 抽一帧全分辨率「场景帧」→ 直连 `gpt-5.6-luna` 一次调用拿到造型来源判断、标题/简介/标签/封面标题，以及唱歌的动作/运镜时间轴（跳舞则是迁移提示词）→ 本地 ComfyUI Krea2「双图片编辑」出候选人物图（图像-1 = 场景帧、图像-2 = 固定身份图；唱歌 `4:3`、跳舞 `9:16`）。模型失败退回源作品文案、出图失败退回源视频取帧，只标 warning 不阻断整批。
-3. **review**：停在审核点。审核区提供自由填写的修改意见与「只调图片 / 只调文案 / 两者都调」，调整后仍停在审核点；只有用户点「确认并继续生成视频」才放行。
-4. **video**：唱歌提交 `POST /api/jobs`（4:3、RVC 开、二采开，动作/运镜取自预审结果）；跳舞提交 `POST /api/jobs/migrate`（9:16、动作迁移、按需去字幕、二采开）。
-5. **lyrics（仅歌曲）**：按识别出的歌名搜网易云 → 取词 → `POST /api/jobs/lyrics`；失败只标 warning，不覆盖无字幕成片。
-6. **deliver**：复制成片到 `E:\AI_Exports\H3-MotionStudio\发布成品\{序号}_{歌名}_{aweme_id}\`，写一份 `发布文案.txt`，本地渲染 B 站 4:3 与抖音 3:4 封面。
+1. **download**：抖音下载 → 浏览器兼容化 → 从 `D:\EV\download_manifest.jsonl` 取原作品 desc/tags；**本地已有同作品就直接复用**（`cached_download_path()`，不提交下载任务）；结束后立刻 `douyin_service.stop()` 给 ComfyUI 让内存。
+2. **prepare**：本地 ffmpeg 抽 6 帧联系表 + 抽一帧全分辨率「场景帧」（`scene-frame.jpg`）→ 直连文本模型一次调用拿到造型来源判断与标题/简介/标签，以及唱歌的动作/运镜时间轴（跳舞则是迁移提示词）→ **生成候选人物图**。模型失败退回源作品文案、出图失败退回源视频取帧，只标 warning 不阻断整批。
+3. **review**：停在审核点（只做「看图 + 改比例/去字幕/迁移模式 + 换图 + 确认」，无教学式提示）。
+4. **video**：唱歌提交 `POST /api/jobs`（按条目比例、RVC 开、二采开）；跳舞提交 `POST /api/jobs/migrate`（按条目比例、动作迁移/人物替换、按需去字幕、二采开）。出片在后台跑，runner 继续给后面的条目备料。
 
-预审不驱动 Codex CLI（`codex exec` 每条要起完整 agent 会话、吃订阅额度、单条十几分钟且会挂死）。文本分析走 `gpt-5.6-luna` 直连 API；候选人物图由 `H3_BATCH_IMAGE_PROVIDER` 决定：`api` 走用户自备的国内中转站（默认 `auto` 在配好中转站后自动使用）、`local` 走本地 ComfyUI Krea2 双图编辑（8GB 卡上单图 74.6 秒且画质不达标，仅备用）、`frame` 直接用源视频取帧。官方 API 的 `gpt-image-*` 全报 `credit_balance_exhausted`，所以出图不能走官方图片接口。造型提示词收在 `backend/prompts/`（`H3_BATCH_*_PROMPT` 可覆盖）。
+交付（`_deliver`）：`E:\AI_Exports\H3-MotionStudio\发布成品\{编号}_{标题}_{作品号}\` 内的
+`最终成片.mp4` + `人物图.png` + `发布文案.txt`；封面由 ChatGPT 生成（见下）。
 
-批次状态存在 SQLite `batches` 表，页面链接草稿与审核意见存 localStorage；`POST /api/batches/{id}/cancel` 用于整批取消（否则 failed 批次会被 `active()` 一直挡住新建）。跳过/删除单条通过 `cancel_item_work` 取消正在跑的预审子任务。
+#### 图片流程（候选人物图 + 封面）——2026-09-15 固化
+
+**这是本路由唯一需要「外部程序」的环节**，其余（下载/备料/文案/确认/出片）都是本地自动。
+
+- **执行方式**：`backend/chatgpt_cdp.py` 用 **CDP 静默驱动 ChatGPT 桌面端**
+  （专用 profile `~/.codex-automation/profile` + 端口 9444；登录态来自 `~/.codex/auth.json`，
+  所以专用 profile 自动已登录）。**不抢前台、不动鼠标键盘**，窗口可最小化。
+- **提示词**：按类型取**用户桌面文件** —— 唱歌 `C:\Users\admin\Desktop\4比3图片.txt`、
+  跳舞 `C:\Users\admin\Desktop\9比16图片.txt`（**不用**项目自动拼的 `出图提示词.txt`）。
+- **两张输入图**：图一 = 该条 `scene-frame.jpg`；图二 = `E:\AI_Assets\PortraitIdentity\本人固定参考.png`。
+- **取图**：生成图在 DOM 里是 blob，不落盘；`fetch(blob:)` 被 CSP 拦，用 **canvas 导出**。
+  落 `E:\AI_Exports\H3-MotionStudio\ChatGPT生成图\`，再 `POST /api/batches/{b}/items/{i}/image` 上传回条目。
+- **封面**：`人物图.png` + `发布文案.txt` → **同一对话内串行**生成
+  `封面_B站4x3.png`（4:3）→ `封面_抖音3x4.png`（3:4）；只有第一条开新对话。
+- **单链路**：`backend/chatgpt_image.py` 的 `_IMAGE_LOCK` 是独立于 `pipeline_lock` 的第二把锁，
+  所有图片操作共用它，严格一条一条。
+- **开关**：`H3_AUTO_CHATGPT_IMAGE=1` / `H3_AUTO_CHATGPT_COVER=1`（默认关闭）；
+  页面上的「AI 换一张 / 写意见再换」走 `POST /api/batches/{b}/items/{i}/regen-image`。
+
+> 详细的踩坑清单（DPI / 长提示词发不出 / 附件堆叠 / 取图取错 / 窗口错乱…）
+> 见 `docs/自动化流程说明.md`，改这条链路前必读。
+
+**仍然保留的降级路径**：`H3_BATCH_IMAGE_PROVIDER` 决定「项目内部」的出图来源 ——
+`manual`（默认，只备料等你上传）、`api`（用户自备国内中转站）、`local`（本地 Krea2 双图编辑，
+8GB 卡上单图 74.6 秒且画质不达标，仅备用）、`frame`（直接用源视频取帧）。
+官方 API 的 `gpt-image-*` 全报 `credit_balance_exhausted`，不能走官方图片接口。
+造型提示词收在 `backend/prompts/`（`H3_BATCH_*_PROMPT` 可覆盖）。
+
+批次状态存在 SQLite `batches` 表，页面链接草稿存 localStorage；`POST /api/batches/{id}/cancel` 用于整批取消。跳过/删除单条通过 `cancel_item_work` 取消正在跑的预审子任务。
 
 ## 5. 任务状态与实时进度
 
@@ -201,6 +228,11 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 - `backend/douyin_mirror.py`：抖音任务的磁盘镜像。
 - `backend/douyin_preview.py`：下载视频的浏览器兼容化与原子替换。
 - `backend/portrait_studio.py`：人物定妆 API 后端实现，当前保留但前端隐藏。
+- `backend/chatgpt_cdp.py`：**静默驱动 ChatGPT 桌面端**（专用 profile + CDP 9444 + canvas 取 blob 图）。图片流程的执行层。
+- `backend/chatgpt_image.py`：图片流程编排（按类型取桌面提示词、上传成图、封面同对话串行）；持有 `_IMAGE_LOCK`。
+- `backend/chatgpt_desktop.py`：坐标点击版驱动（备用，会抢前台），含 `force_foreground` / `capture_window` 等工具。
+- `backend/batch_worker.py` / `backend/batch_store.py` / `backend/batch_ai.py` / `backend/batch_image.py` / `backend/batch_portrait.py`：批量制作的 runner、状态库、文案、内部出图、定妆。
+- `docs/自动化流程说明.md`：批量图片流程的**权威说明 + 踩坑清单**，改这条链路前必读。
 
 ### 外部资源与脚本
 
@@ -236,6 +268,13 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 | `H3_BATCH_IMAGE_QUALITY` / `H3_BATCH_IMAGE_FIDELITY` | 默认 `high`；后者对应编辑接口的 `input_fidelity` |
 | `H3_BATCH_TEXT_BASE_URL` / `H3_BATCH_TEXT_API_KEY` | 预审文本分析端点与凭据（默认官方 `https://api.openai.com/v1`）|
 | `H3_BATCH_LUNA_MODEL` | 预审文本模型，默认 `gpt-5.6-luna` |
+| `H3_AUTO_CHATGPT_IMAGE=1` | 打开「备料后自动用 ChatGPT 生成候选人物图」（默认关闭）|
+| `H3_AUTO_CHATGPT_COVER=1` | 打开「人物图+文案落盘后自动生成两张封面」（默认关闭）|
+| `H3_CHATGPT_PROMPT_43` | 唱歌出图提示词，默认桌面 `4比3图片.txt` |
+| `H3_CHATGPT_PROMPT_916` | 跳舞出图提示词，默认桌面 `9比16图片.txt` |
+| `H3_CHATGPT_CDP_PORT` | 专用实例调试端口，默认 **9444**（**不要用 9222**，会被主实例占用）|
+| `H3_CHATGPT_AUTOMATION_PROFILE` | 专用 profile，默认 `%USERPROFILE%\.codex-automation\profile`（自动已登录）|
+| `H3_CHATGPT_IMAGE_DIR` | 生成图落盘目录，默认 `E:\AI_Exports\H3-MotionStudio\ChatGPT生成图` |
 
 人物定妆 API 的身份图和输出目录另见 `backend/portrait_studio.py`：默认身份图在 `E:\AI_Assets\PortraitIdentity\本人固定参考.png`，输出在 `E:\AI_Exports\PortraitStudio\4x3` 或 `9x16`。OpenAI 凭据只能从进程环境读取。
 
@@ -282,6 +321,16 @@ npm run test:sites
 - 结果区只暴露 `final` 与 `original`；中间字段可写入状态，但不要重新加入 `_job_media_entries()`。
 - 不要把 OpenAI、RVC 或下载器凭据写进前端、数据库或仓库。
 - HEVC 预览与下载兼容化必须保留原始提交文件不变（上传卡片预览）或按下载规则原地原子替换（抖音结果）。
+- **改「ChatGPT 出图」这条链路前必读 `docs/自动化流程说明.md` 的踩坑清单**，其中每条都是实测踩出来的：
+  进程必须 `SetProcessDpiAwareness(2)`（否则 125% 缩放下坐标整体错位）；
+  长提示词会把输入框撑出视口、聚焦要点**靠近底部**而不是中心；
+  发送后要**校验输入框已清空**；每次生成前要**清空输入框含附件**（移除按钮 `pointer-events-none`，只能 JS 触发）；
+  取图基线要在**贴图之后**记；新对话后要**校验页面为 0 张图**（blob URL 会随重绘变化，残留旧图会被当成新图）；
+  用 JS 操作 DOM 而不是 Playwright 的 `click()`（后者会滚动页面，用户看得到「滑来滑去」）。
+- **专用 ChatGPT 实例与用户自己的窗口是两回事**：走专用 profile + 端口 9444，**不要用 9222**
+  （主实例命令行可能带着它，端口不生效）；也不要改动用户正在用的那个窗口。
+- **长任务要用 `启动H3影动高清工作台.bat` 起后端**：从临时会话 `Start-Process` 起的后端可能随会话结束被杀，
+  会把生成中的图片/视频任务打断。
 - 每次已验证的修改都必须立即 `git add` → `git commit` → `git push origin main`，不要把已完成改动留到回合末尾。
 
 ## 11. 当前工作区注意事项

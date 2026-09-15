@@ -22,6 +22,9 @@ import httpx
 
 logger = logging.getLogger("uvicorn.error")
 
+# 后台「让 AI 换一张」任务（强引用，防止被 GC）；由 chatgpt_image 的 _IMAGE_LOCK 单链保护。
+_REGEN_IMAGE_TASKS: set[asyncio.Task] = set()
+
 from . import input_preview
 from .batch_store import batch_store
 from . import batch_ai
@@ -45,6 +48,8 @@ from .batch_worker import (
     replace_item_source_file,
     request_review_adjustment,
     reset_review_row,
+    restart_batch_items,
+    restart_item_to_run,
     resume_shutdown_watch,
     run_batch,
     salvage_abandoned_items,
@@ -368,6 +373,12 @@ class BatchAdjustRequest(BaseModel):
     mode: str = "both"
 
 
+class BatchRegenImageRequest(BaseModel):
+    """「让 AI 换一张」的可选修改意见（不填就是重新生成一张全新的）。"""
+
+    feedback: str = ""
+
+
 class BatchItemMoveRequest(BaseModel):
     """队列里上移 / 下移一条还没开始的条目（调处理顺序）。"""
 
@@ -686,6 +697,38 @@ async def confirm_batch_item(batch_id: str, item_id: str):
     return _resume_batch(batch_id, "已确认，正在开始生成这一条视频。")
 
 
+@app.post("/api/batches/{batch_id}/items/{item_id}/regen-image")
+async def regen_batch_item_image(
+    batch_id: str, item_id: str, request: BatchRegenImageRequest | None = None,
+):
+    """「让 AI 换一张」：后台重新生成该条候选人物图并上传替换。
+
+    - 不带意见：把图一+图二+提示词再送一次，生成一张全新的。
+    - 带 feedback：把当前候选图 + 图二 + 提示词 + 修改意见一起送 ChatGPT 重出一版。
+    受 chatgpt_image 的全局 `_IMAGE_LOCK` 单链保护；生成期间条目 `ai.image_generating=true`，
+    前端据此显示「正在生成…」。失败标黄停下等人工。需要 H3_AUTO_CHATGPT_IMAGE=1。
+    """
+    from . import chatgpt_image as _cgi
+    item = _batch_item_or_404(batch_id, item_id)
+    status = str(item.get("status") or "")
+    if status in {"completed", "deleted"}:
+        raise HTTPException(409, "当前条目已经结束")
+    if status in {"running", "revising"}:
+        raise HTTPException(409, "当前条目正在出片或重新备料，不能换图（先「取消」或「回到确认」）")
+    if not _cgi.auto_candidate_enabled():
+        raise HTTPException(409, "图片自动化未开启：请先设 H3_AUTO_CHATGPT_IMAGE=1")
+    if _cgi.is_generating(batch_id, item_id):
+        raise HTTPException(409, "这一条正在生成候选图，请稍候")
+
+    feedback = (request.feedback if request else "") or ""
+    task = asyncio.create_task(
+        _cgi.auto_regenerate_candidate_image(batch_id, item_id, feedback)
+    )
+    _REGEN_IMAGE_TASKS.add(task)
+    task.add_done_callback(_REGEN_IMAGE_TASKS.discard)
+    return _batch_or_404(batch_id)
+
+
 @app.post("/api/batches/{batch_id}/items/{item_id}/ratio")
 async def set_batch_item_ratio(
     batch_id: str, item_id: str, request: BatchItemRatioRequest
@@ -912,31 +955,14 @@ async def retry_batch_item(batch_id: str, item_id: str):
     if item.get("status") not in {"failed", "skipped", "completed"}:
         raise HTTPException(409, "只有失败、已跳过或已出片的条目可以重新开始")
 
-    def reset(row: dict[str, Any]) -> None:
-        ai = row.get("ai") or {}
-        approved = (
-            bool(row.get("reviewApproved"))
-            and bool(str(ai.get("reference_image_path") or "").strip())
-            and Path(str(row.get("sourcePath") or "")).is_file()
-        )
-        row.update(
-            status="confirmed" if approved else "pending",
-            stage="confirmed" if approved else "queued",
-            error=None,
-            warning=None,
-            skipRequested=False,
-            deleteRequested=False,
-            childJob=None,
-            videoJobId=None,
-            outputs={},
-            finishedAt=None,
-        )
-        for milestone in row.get("milestones") or []:
-            if milestone.get("id") == "video" or milestone.get("status") == "error":
-                milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
-
-    batch_store.mutate_item(batch_id, item_id, reset)
-    batch_store.add_item_log(batch_id, item_id, "已重新开始这一条，正在按当前结果继续出片。")
+    # 重置逻辑与批量「重新开始」共用同一份（batch_worker.restart_item_to_run），
+    # 免得单条与批量两边的行为慢慢跑偏。
+    direct = restart_item_to_run(batch_id, item_id)
+    batch_store.add_item_log(
+        batch_id,
+        item_id,
+        "已重新开始这一条，正在按当前结果继续出片。" if direct else "已重新开始这一条，将从下载与备料重做。",
+    )
     return _resume_batch(batch_id, "已重新开始跳过的条目。")
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/skip")
@@ -1016,6 +1042,30 @@ async def confirm_batch_items_endpoint(batch_id: str, request: BatchItemIdsReque
     note = f"已确认 {confirmed} 条，正在按顺序出片。"
     if skipped:
         note += f"（{len(skipped)} 条未放行：{skipped[0].get('reason')}）"
+    return _resume_batch(batch_id, note)
+
+
+@app.post("/api/batches/{batch_id}/items/retry-many")
+async def retry_batch_items_endpoint(batch_id: str, request: BatchItemIdsRequest):
+    """批量重新开始：失败 / 已跳过 / 已出片的条目一次全部重来。
+
+    用户 2026-09-15：「批量选择选择后加个批量重新开始」。规则与单条「重试 / 重新开始」
+    完全一致（共用 `batch_worker.restart_item_to_run`）：已确认过且源视频还在的只重跑出片，
+    其余的从下载与备料重做；正在出片的要先「取消」，已删除的不能复活，还没出片的不需要
+    重开 —— 后几类逐个记原因返回，页面提示「哪几条没重开、为什么」。出片仍严格一条一条。
+    """
+    _batch_or_404(batch_id)
+    if not request.itemIds:
+        raise HTTPException(400, "请先勾选要重新开始的条目")
+    result = restart_batch_items(batch_id, request.itemIds)
+    restarted = result.get("restarted") or []
+    rejected = result.get("rejected") or []
+    if not restarted:
+        reason = rejected[0].get("reason") if rejected else "没有可重新开始的条目"
+        return batch_store.update(batch_id, notice=f"没有可重新开始的条目：{reason}。")
+    note = f"已重新开始 {len(restarted)} 条，正在按顺序重新出片。"
+    if rejected:
+        note += f"（{len(rejected)} 条没重开：{rejected[0].get('reason')}）"
     return _resume_batch(batch_id, note)
 
 

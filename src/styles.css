@@ -1542,6 +1542,17 @@ body {
 .batch-dropzone input, .batch-replace input { display: none; }
 .batch-replace { display: inline-flex; align-items: center; align-self: flex-start; gap: 6px; margin-top: 9px; padding: 6px 11px; border: 1px solid #463a64; border-radius: 7px; color: #d9d3e9; background: #17112f; font-size: 11px; cursor: pointer; transition: .18s ease; }
 .batch-replace:hover { border-color: var(--shell-accent); color: #e8f6f8; }
+/* 「AI 换一张」：让 ChatGPT 桌面端重新生成候选图（单链，后台异步） */
+.batch-ai-regen { display: flex; flex-direction: column; gap: 8px; align-self: stretch; margin-top: 9px; }
+.batch-ai-regen-actions { display: flex; gap: 8px; }
+.batch-ai-regen-btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px solid #4b70b8; border-radius: 7px; color: #dce6f7; background: rgba(38, 58, 94, .55); font-size: 11px; cursor: pointer; transition: .18s ease; }
+.batch-ai-regen-btn:hover:not(:disabled) { border-color: var(--shell-accent); color: #e8f6f8; background: rgba(24, 42, 60, .62); }
+.batch-ai-regen-btn:disabled { opacity: .55; cursor: not-allowed; }
+.batch-ai-regen-btn.primary { border-color: var(--shell-accent); background: rgba(24, 42, 60, .7); }
+.batch-ai-regen-btn svg { width: 13px; height: 13px; }
+.batch-ai-regen-panel { display: flex; flex-direction: column; gap: 8px; padding: 9px; border: 1px solid #463a64; border-radius: 7px; background: #17112f; }
+.batch-ai-regen-panel textarea { width: 100%; resize: vertical; padding: 7px 9px; border: 1px solid #3a2f56; border-radius: 6px; background: #100c27; color: #e6e1f3; font-size: 11px; line-height: 1.5; outline: none; }
+.batch-ai-regen-panel textarea:focus { border-color: var(--shell-accent); }
 .batch-item-list { display: flex; flex-direction: column; gap: 3px; padding: 7px; max-height: calc(100vh - 260px); overflow-y: auto; }
 .batch-item { width: 100%; min-width: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr) 16px; align-items: center; gap: 9px; padding: 10px; border: 1px solid transparent; border-radius: 8px; text-align: left; color: #d8d3e7; background: transparent; cursor: pointer; }
 .batch-item:hover { background: #14102d; }
@@ -1661,6 +1672,32 @@ body {
 .batch-empty-detail p { max-width: 330px; margin: 0; font-size: 12px; line-height: 1.7; }
 .spin { animation: batch-spin 1s linear infinite; }
 @keyframes batch-spin { to { transform: rotate(360deg); } }
+
+/* 页内确认框（替代 window.confirm）：跟深色壳子同一套配色 —— 深靛底、暗紫描边、
+   青色强调，危险操作换成红系（2026-09-15 用户：「弹出框的效果样式改下 现在的不好看」）。 */
+.batch-modal-backdrop { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 22px; background: rgba(5, 4, 14, .72); backdrop-filter: blur(5px); animation: batchFade .14s ease; }
+.batch-modal { position: relative; width: min(430px, 100%); display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; padding: 18px; border: 1px solid rgba(55, 216, 230, .38); border-radius: 12px; background: linear-gradient(155deg, #141230 0%, #0a0820 100%); box-shadow: 0 24px 60px rgba(2, 2, 12, .72), 0 0 0 1px rgba(9, 7, 24, .9); animation: batchModalIn .16s cubic-bezier(.2, .9, .3, 1.2); }
+.batch-modal.danger { border-color: rgba(255, 108, 137, .4); }
+.batch-modal-icon { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid rgba(55, 216, 230, .4); border-radius: 50%; color: var(--shell-accent); background: rgba(55, 216, 230, .09); }
+.batch-modal-icon svg { width: 20px; height: 20px; }
+.batch-modal.danger .batch-modal-icon { border-color: rgba(255, 108, 137, .45); color: #ff9daf; background: rgba(255, 108, 137, .12); }
+.batch-modal-body { min-width: 0; }
+.batch-modal-body h2 { margin: 3px 0 0; color: #f3f0fb; font-size: 15px; font-weight: 650; line-height: 1.45; }
+.batch-modal-body p { margin: 8px 0 0; color: #a79fbe; font-size: 12px; line-height: 1.7; }
+.batch-modal-items { max-height: 168px; margin: 10px 0 0; padding: 8px 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; list-style: none; border: 1px solid #352a55; border-radius: 8px; background: #0d0a24; }
+.batch-modal-items li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #cfc8e2; font-size: 11px; }
+.batch-modal-items li:last-child { color: #8f86a8; }
+.batch-modal-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.batch-modal-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 15px; border: 1px solid #44385f; border-radius: 7px; color: #cbc5da; background: #17112f; font-size: 12px; cursor: pointer; transition: .16s ease; }
+.batch-modal-actions button:hover { border-color: #65577f; color: #fff; }
+.batch-modal-actions button.ghost { border-color: transparent; background: transparent; color: #9d95b5; }
+.batch-modal-actions button.ghost:hover { color: #e8e3f5; background: #1a1533; }
+.batch-modal-actions button.batch-primary { border-color: var(--shell-accent); color: #061316; background: var(--shell-accent); font-weight: 700; }
+.batch-modal-actions button.batch-primary:hover { filter: brightness(1.08); }
+.batch-modal-actions button.danger { border-color: rgba(255, 108, 137, .42); color: #ffc0cc; background: rgba(71, 18, 39, .5); font-weight: 600; }
+.batch-modal-actions button.danger:hover { border-color: rgba(255, 108, 137, .7); color: #fff; background: rgba(96, 24, 51, .62); }
+@keyframes batchFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes batchModalIn { from { opacity: 0; transform: translateY(9px) scale(.97); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 1180px) {
   .batch-workspace { grid-template-columns: 240px minmax(0, 1fr); }

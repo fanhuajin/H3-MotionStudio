@@ -1030,13 +1030,157 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_batch_restart_many_resets_finished_items(self) -> None:
+        """批量重新开始：失败 / 已跳过 / 已出片的一起重跑；运行中、已删除、还没出片的拒绝。
+
+        2026-09-15 用户：「批量选择选择后加个批量重新开始」。重置规则必须与单条
+        「重试 / 重新开始」完全一致（同一个 `restart_item_to_run`）：备过料 + 源视频还在
+        → 回 `confirmed` 只重跑出片；否则回 `pending` 从下载与备料重做。
+        """
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(
+                    [
+                        "https://v.douyin.com/a",
+                        "https://v.douyin.com/b",
+                        "https://v.douyin.com/c",
+                        "https://v.douyin.com/d",
+                        "https://v.douyin.com/e",
+                    ],
+                    [],
+                )
+                store.create(state)
+                ids = [item["id"] for item in state["items"]]
+                # ① 已出片且备过料（有图 + 源视频在磁盘上 + 已放行）→ 只重跑出片
+                source = Path(folder) / "source.mp4"
+                source.write_bytes(b"fake")
+                store.mutate_item(
+                    state["id"],
+                    ids[0],
+                    lambda row: row.update(
+                        status="completed",
+                        stage="completed",
+                        reviewApproved=True,
+                        sourcePath=str(source),
+                        ai={"reference_image_path": str(Path(folder) / "candidate.png")},
+                        childJob={"id": "old-child", "status": "completed"},
+                        videoJobId="old-video",
+                        outputs={"folder": "E:/x"},
+                    ),
+                )
+                # ② 已跳过但没备过料 → 从下载与备料重做
+                store.mutate_item(state["id"], ids[1], lambda row: row.update(status="skipped"))
+                # ③ 失败、备过料但**源视频已经不在了** → 也必须回落 pending（否则提交时报文件不存在）
+                store.mutate_item(
+                    state["id"],
+                    ids[2],
+                    lambda row: row.update(
+                        status="failed",
+                        reviewApproved=True,
+                        sourcePath=str(Path(folder) / "gone.mp4"),
+                        ai={"reference_image_path": str(Path(folder) / "candidate.png")},
+                        error="出片失败",
+                    ),
+                )
+                # ④ 正在出片 / ⑤ 已删除 → 都不能被批量重开
+                store.mutate_item(state["id"], ids[3], lambda row: row.update(status="running"))
+                store.mutate_item(state["id"], ids[4], lambda row: row.update(status="deleted"))
+
+                with patch.object(batch_worker, "batch_store", store):
+                    result = batch_worker.restart_batch_items(state["id"], ids)
+
+                self.assertEqual(result["restarted"], [ids[0], ids[1], ids[2]])
+                self.assertEqual(
+                    result["rejected"],
+                    [
+                        {"id": ids[3], "reason": "正在出片，请先「取消」再重新开始"},
+                        {"id": ids[4], "reason": "已删除"},
+                    ],
+                )
+                rows = {item["id"]: item for item in store.get(state["id"])["items"]}
+                # 备过料 + 源视频还在 → confirmed（只重跑出片，不重复下载备料）
+                self.assertEqual(rows[ids[0]]["status"], "confirmed")
+                self.assertIsNone(rows[ids[0]]["childJob"])
+                self.assertIsNone(rows[ids[0]]["videoJobId"])
+                self.assertEqual(rows[ids[0]]["outputs"], {})
+                # 没备料 / 源视频丢了 → pending（从下载与备料重做）
+                self.assertEqual(rows[ids[1]]["status"], "pending")
+                self.assertEqual(rows[ids[2]]["status"], "pending")
+                self.assertIsNone(rows[ids[2]]["error"])
+                # 出片里程碑回到待办，页面上流程重新变成待办而不是停在 ✗
+                video_milestones = [
+                    milestone
+                    for milestone in rows[ids[0]]["milestones"]
+                    if milestone.get("id") == "video"
+                ]
+                self.assertTrue(video_milestones)
+                self.assertTrue(all(m["status"] == "pending" for m in video_milestones))
+                # 正在出片 / 已删除的条目一个字都没动
+                self.assertEqual(rows[ids[3]]["status"], "running")
+                self.assertEqual(rows[ids[4]]["status"], "deleted")
+
+                # 一条都重开不了时也要把原因说清楚（页面靠它提示）
+                store.mutate_item(state["id"], ids[3], lambda row: row.update(status="running"))
+                with patch.object(batch_worker, "batch_store", store):
+                    none_result = batch_worker.restart_batch_items(state["id"], [ids[4]])
+                self.assertEqual(none_result["restarted"], [])
+                self.assertEqual(none_result["rejected"][0]["reason"], "已删除")
+            finally:
+                batch_store_module.DB_PATH = original
+
+    def test_batch_bulk_bar_can_restart_selected_items(self) -> None:
+        """勾选后能批量「重新开始」（2026-09-15 用户：「批量选择选择后加个批量重新开始」）。
+
+        只对「已经跑完一轮」的状态开放（失败 / 已跳过 / 已出片），与单条的
+        「重试 / 重新开始」按钮同一条规则；出片仍然严格一条一条。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 批量接口的联合类型里加上 retry-many
+        self.assertIn('"confirm-many" | "retry-many" | "skip-many" | "delete-many"', source)
+        # 可重开的状态判定
+        self.assertIn("const anyRestartable = selectedItems.some(", source)
+        self.assertIn('["failed", "skipped", "completed"].includes(item.status),', source)
+        # 批量操作栏里的按钮 + 走 askConfirm（会在弹框里列出受影响的条目）
+        self.assertIn("<ArrowClockwise />重新开始", source)
+        self.assertIn('void batchOp("retry-many", {', source)
+        self.assertIn("没有可重新开始的条目（只有失败 / 已跳过 / 已出片的能重开）", source)
+        # 按钮受 anyRestartable 控制（勾选里没有可重开的就禁用）
+        self.assertIn("disabled={!anyRestartable || Boolean(busyAction)}", source)
+
+    def test_batch_prepare_clears_the_submitted_link_boxes(self) -> None:
+        """点「准备任务」提交成功后清空输入框（链接已经进队列了，直接粘下一批）。
+
+        2026-09-15 用户：「准备任务点击之后清空现有的歌曲视频链接和跳舞视频链接」。
+        只清这次真的提交了的那一类；请求失败时不清（否则用户白粘一遍）。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 拿到批次状态之后清空（= 只有成功才清；失败走 catch，不碰输入框）
+        self.assertIn('if (singingOn && singingUrls.length) setSinging("");', source)
+        self.assertIn('if (danceOn && danceUrls.length) setDance("");', source)
+        # 旧行为（提交后保留输入框内容）不许回来
+        rendered = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
+        self.assertNotIn("输入框内容保留", rendered)
+        # 清空必须在 setBatch(state) 之后、catch 之前
+        body = source[source.index("const prepare = async () => {"):source.index("const call = async (action: string")]
+        self.assertLess(body.index("setBatch(state);"), body.index('setSinging("");'))
+        self.assertLess(body.index('setSinging("");'), body.index("} catch (reason) {"))
+
     def test_batch_table_endpoints_are_registered(self) -> None:
-        """后台表格化的批量接口（重排序 + 批量确认/跳过/删除）必须都注册在 app 上。"""
+        """后台表格化的批量接口（重排序 + 批量确认/重新开始/跳过/删除）必须都注册在 app 上。"""
         from backend.app import app
 
         paths = {getattr(route, "path", "") for route in app.routes}
         self.assertIn("/api/batches/{batch_id}/items/{item_id}/move", paths)
         self.assertIn("/api/batches/{batch_id}/items/confirm-many", paths)
+        self.assertIn("/api/batches/{batch_id}/items/retry-many", paths)
         self.assertIn("/api/batches/{batch_id}/items/skip-many", paths)
         self.assertIn("/api/batches/{batch_id}/items/delete-many", paths)
 
@@ -2196,6 +2340,62 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("itemPercent(item) ?? 0", source)
         # 备料阶段的本地粗刻度不往列表上放
         self.assertNotIn('step.id === "prepare" && step.status === "running"', source)
+
+    def test_batch_cancel_asks_nothing_when_nothing_is_rendering(self) -> None:
+        """没在出片的条目取消时直接执行，不弹「不会动到其它条目」这类无意义提示。
+
+        2026-09-15 用户：「这一条还没开始出片，停止这次放行不会动到其它条目。停止后可以点
+        「重新开始」。不会影响到的不需要又这个提示 可以直接取消就好了」——只有 `renderingNow`
+        为真（真在出片、进度会作废）时才需要确认。
+        """
+        source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        # 注释里提到那句提示不算（注释会被剥掉再断言）
+        rendered = re.sub(r"\{/\*.*?\*/\}", "", source, flags=re.S)
+        rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
+        # 那条「不会动到其它条目」的提示整句删掉
+        self.assertNotIn("不会动到其它条目", rendered)
+        # 行内「取消」：只有 renderingNow 为真（真在出片、进度会作废）才拦一次
+        self.assertIn("renderingNow(item)", source)
+        self.assertIn("!(await askConfirm({", source)
+        self.assertIn("已经生成到一半的进度会作废", source)
+        # 批量「跳过」同理：勾选里没有正在出片的就不过弹框
+        self.assertIn("selectedItems.some(renderingNow)", source)
+
+    def test_batch_confirm_dialog_is_a_styled_page_modal(self) -> None:
+        """确认框改成页内深色弹框，不再用系统原生的 window.confirm。
+
+        2026-09-15 用户：「弹出框的效果样式改下 现在的不好看」——原生灰白弹框跟深色壳子不是一个
+        东西，也没法把「影响哪几条」列出来。现在统一走 `askConfirm()`（Promise<boolean>）+
+        `.batch-modal` 样式，Esc / 点遮罩 = 取消，危险操作用红色确认键。
+        """
+        root = Path(__file__).parents[1]
+        source = (root / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
+        styles = (root / "src" / "styles.css").read_text(encoding="utf-8")
+        # 原生弹框一个都不许留（注释里提到这几个字不算）
+        code = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        code = re.sub(r"^\s*//.*$", "", code, flags=re.M)
+        self.assertNotIn("window.confirm", code)
+        self.assertNotIn("window.alert", code)
+        # 页内弹框：Promise 化的 askConfirm + 受控渲染
+        self.assertIn("interface ConfirmAsk", source)
+        self.assertIn("const askConfirm = (ask: ConfirmAsk): Promise<boolean>", source)
+        self.assertIn('className="batch-modal-backdrop"', source)
+        self.assertIn('role="alertdialog"', source)
+        self.assertIn("answerConfirm(false)", source)
+        # Esc 取消、危险操作红色
+        self.assertIn('event.key === "Escape"', source)
+        self.assertIn("danger: true", source)
+        # 真的给它写了样式（不是只有结构）
+        for selector in (
+            ".batch-modal-backdrop",
+            ".batch-modal {",
+            ".batch-modal-icon",
+            ".batch-modal-items",
+            ".batch-modal-actions button.danger",
+        ):
+            self.assertIn(selector, styles)
+        # 批量删除 / 跳过要把受影响的条目列出来
+        self.assertIn("items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`)", source)
 
     def test_batch_status_tabs_are_only_open_and_completed(self) -> None:
         """标签只要两档「未完成 / 已完成」，默认「未完成」；细状态仍保留在行内徽章上。

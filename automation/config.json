@@ -1,0 +1,25 @@
+{
+  "backend_url": "http://127.0.0.1:8111",
+
+  "prompt_43_path": "C:\\Users\\admin\\Desktop\\4比3图片.txt",
+  "prompt_916_path": "C:\\Users\\admin\\Desktop\\9比16图片.txt",
+
+  "publish_root": "E:\\AI_Exports\\H3-MotionStudio\\发布成品",
+  "identity_image": "E:\\AI_Assets\\PortraitIdentity\\本人固定参考.png",
+
+  "chatgpt_exe_glob": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_*\\app\\ChatGPT.exe",
+  "chatgpt_profile": "C:\\Users\\admin\\AppData\\Local\\Packages\\OpenAI.Codex_2p2nqsd0c76g0\\LocalCache\\Roaming\\Codex\\web\\Codex",
+  "cdp_port": 9222,
+  "cdp_host": "127.0.0.1",
+
+  "work_dir": "data\\automation",
+  "cover_43_suffix": "_B站4x3.png",
+  "cover_916_suffix": "_抖音3x4.png",
+
+  "frame_strategy": "reuse",
+  "poll_seconds": 5,
+  "max_wait_seconds": 1800,
+  "cover_order": ["bilibili_4x3", "douyin_3x4"],
+  "watch_enabled": true,
+  "mode": "assist"
+}

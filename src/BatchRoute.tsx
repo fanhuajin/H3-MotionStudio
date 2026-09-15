@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readJson } from "./api";
 import { formatElapsedMs, useNowTick } from "./jobTime";
 import {
@@ -121,6 +121,8 @@ interface BatchAI {
   remove_subtitles?: boolean;
   /** 跳舞条目的迁移模式：`animation`=动作迁移（默认）/ `replacement`=人物替换 */
   migrate_mode?: MigrateMode;
+  /** 「让 AI 换一张」正在后台生成候选图时为 true（前端据此显示「正在生成…」）。 */
+  image_generating?: boolean;
 }
 
 interface ChildJob {
@@ -376,6 +378,21 @@ const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
   completed: (item) => item.status === "completed",
 };
 
+/**
+ * 页内确认框的内容。**不用 `window.confirm`**：系统原生的灰白弹框跟这套深色壳子完全不是
+ * 一个东西，而且没法把「影响哪几条」摊开说清楚（2026-09-15 用户：「弹出框的效果样式改下
+ * 现在的不好看」）。危险操作（取消出片 / 删除 / 覆盖成片）用红色确认键。
+ */
+interface ConfirmAsk {
+  title: string;
+  detail?: string;
+  /** 受影响的具体条目（批量操作时列出来，用户才知道自己到底在动哪几条）。 */
+  items?: string[];
+  confirmLabel: string;
+  cancelLabel?: string;
+  danger?: boolean;
+}
+
 export function BatchRoute() {
   const initial = useMemo(readInputDraft, []);
   const [singing, setSinging] = useState(initial.singing);
@@ -397,6 +414,8 @@ export function BatchRoute() {
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [imageToken, setImageToken] = useState(0);
+  const [regenFeedback, setRegenFeedback] = useState("");
+  const [regenPanelOpen, setRegenPanelOpen] = useState(false);
   // 「替换源视频」：贴错链接 / 放错槽位（唱歌视频贴进跳舞口）时不用删了重加
   const [replacingSource, setReplacingSource] = useState(false);
   const [replaceUrl, setReplaceUrl] = useState("");
@@ -404,6 +423,35 @@ export function BatchRoute() {
   // 先把上次的队列读回来再允许提交：否则刚打开页面就点「加入队列」会新开一个批次，
   // 看到的现象就是「我排好的队列不见了」。
   const [loaded, setLoaded] = useState(false);
+  // 页内确认框（替代 window.confirm）：`askConfirm()` 返回 Promise<boolean>，
+  // 所以调用点可以 `if (!(await askConfirm(...))) return;` 继续写同步逻辑。
+  const [confirmAsk, setConfirmAsk] = useState<ConfirmAsk | null>(null);
+  const confirmResolver = useRef<((ok: boolean) => void) | null>(null);
+  const askConfirm = (ask: ConfirmAsk): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      // 上一个还没答完就再弹一个：先把上一个按「取消」结掉，避免 Promise 永远挂着
+      confirmResolver.current?.(false);
+      confirmResolver.current = resolve;
+      setConfirmAsk(ask);
+    });
+  const answerConfirm = useCallback((ok: boolean) => {
+    const resolve = confirmResolver.current;
+    confirmResolver.current = null;
+    setConfirmAsk(null);
+    resolve?.(ok);
+  }, []);
+  // Esc = 取消（破坏性操作只能主动点确认键）
+  useEffect(() => {
+    if (!confirmAsk) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        answerConfirm(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmAsk, answerConfirm]);
 
   const visibleItems = useMemo(() => batch?.items.filter((item) => item.status !== "deleted") || [], [batch]);
   // 当前标签下显示的条目；展开的详情行也只在当前标签里渲染。
@@ -514,13 +562,20 @@ export function BatchRoute() {
       const payload = append
         ? { singingUrls, danceUrls, autoStart }
         : { singingUrls, danceUrls, autoStart, shutdownOnComplete: shutdownOn };
-      const response = await fetch(target, {        method: "POST",
+      const response = await fetch(target, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       if (!response.ok) throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
       const state = await readJson<BatchState>(response, append ? "加入队列失败" : "创建队列失败");
       setBatch(state);
+      // 链接已经进队列了，输入框清空，直接粘下一批就行
+      // （2026-09-15 用户：「准备任务点击之后清空现有的歌曲视频链接和跳舞视频链接」）。
+      // 只清**这次真的提交了**的那一类：开关关着的那一类不参与入队，原样留着不动。
+      // 失败时不清（catch 里不碰输入框），免得白粘一遍。
+      if (singingOn && singingUrls.length) setSinging("");
+      if (danceOn && danceUrls.length) setDance("");
       // 新建批次也不自动展开任何一条：列表默认全收起，由用户自己点开要看的那条
       // （2026-09-15 用户：「启动页面的时候 列表默认都是收起来的 由我自己点击要查看哪个」）。
       // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
@@ -529,8 +584,6 @@ export function BatchRoute() {
       } else {
         setNotice("");
       }
-      // 输入框内容保留：重复链接后端会自动过滤（notice 里写明跳过了几条），
-      // 想接着补链接或核对粘贴内容都不用重新粘一遍。
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(`${message}　〔POST ${target}〕`);
@@ -574,9 +627,12 @@ export function BatchRoute() {
   };
 
   /** 批量操作：勾选后一次确认 / 跳过 / 删除（后端逐个校验，出片仍一条一条来）。 */
-  const batchOp = async (action: "confirm-many" | "skip-many" | "delete-many", confirmText?: string) => {
+  const batchOp = async (
+    action: "confirm-many" | "retry-many" | "skip-many" | "delete-many",
+    ask?: ConfirmAsk,
+  ) => {
     if (!batch || selectedIds.size === 0) return;
-    if (confirmText && !window.confirm(confirmText.replace("N", String(selectedIds.size)))) return;
+    if (ask && !(await askConfirm(ask))) return;
     const endpoint = `/api/batches/${batch.id}/items/${action}`;
     setBusyAction(action);
     setError("");
@@ -878,6 +934,39 @@ export function BatchRoute() {
     }
   };
 
+  // 该条当前是否正在让 AI 生成候选图（后台异步，轮询到后显示「正在生成…」）。
+  const generatingImage = Boolean(selected?.ai?.image_generating);
+
+  /** 「让 AI 换一张」：不带意见重新生成一张新的；带 feedback 则基于当前图按意见重出一版。
+   *  后端异步后台生成（受单链锁），返回后前端靠 WebSocket 推送看到 image_generating 结束。 */
+  const regenImage = async (feedback?: string) => {
+    if (!selected || !batch || generatingImage) return;
+    setError("");
+    try {
+      const endpoint = `/api/batches/${batch.id}/items/${selected.id}/regen-image`;
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: feedback ? { "Content-Type": "application/json" } : undefined,
+        body: feedback ? JSON.stringify({ feedback }) : undefined,
+      });
+      if (!response.ok) throw new Error(await responseMessage(response, "AI 换图失败"));
+      setBatch(await readJson<BatchState>(response, "AI 换图失败"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  // 异步生成结束（image_generating 从 true → false）时刷新图片，显示新生成的那张。
+  const prevGenerating = useRef(Boolean(selected?.ai?.image_generating));
+  useEffect(() => {
+    const now = Boolean(selected?.ai?.image_generating);
+    if (prevGenerating.current && !now) {
+      setImageToken(Date.now());
+    }
+    prevGenerating.current = now;
+  }, [selected?.ai?.image_generating, selected?.id]);
+
+
   /**
    * 用**本机选择的视频文件**替换这一条的源视频：只换视频，其余内容一律不动
    * （2026-09-15 用户：「替换源视频可以让我进行本地选择」+「所有定义好的内容都不需要变」）。
@@ -926,6 +1015,11 @@ export function BatchRoute() {
   const anyConfirmable = selectedItems.some(
     (item) => item.status === "awaiting_review" && Boolean(item.ai?.reference_image_path),
   );
+  // 能批量「重新开始」的只有已经跑完一轮的（失败 / 已跳过 / 已出片），
+  // 跟单条「重试 / 重新开始」按钮同一条规则。
+  const anyRestartable = selectedItems.some((item) =>
+    ["failed", "skipped", "completed"].includes(item.status),
+  );
   const anySkippable = selectedItems.some(
     (item) => !["completed", "skipped", "deleted"].includes(item.status),
   );
@@ -955,12 +1049,25 @@ export function BatchRoute() {
       return (
         <button
           className="danger"
-          onClick={() => {
-            const message = renderingNow(item)
-              ? "停止这一条当前的出片？已经生成到一半的进度会作废，取消后可以点「重新开始」再出片。"
-              : "这一条还没开始出片，停止这次放行不会动到其它条目。停止后可以点「重新开始」。";
-            if (window.confirm(message)) void itemCallFor(item, "skip");
-          }}
+          onClick={() =>
+            void (async () => {
+              // 只有真的在出片时才需要确认（会作废一半进度）；只是放行了还没轮到出片的，
+              // 取消不动任何已生成的内容，直接执行就好，不再多弹一次提示（2026-09-15 用户要求）。
+              if (
+                renderingNow(item)
+                && !(await askConfirm({
+                  title: "停止这一条当前的出片？",
+                  detail: "已经生成到一半的进度会作废。取消后可以点「重新开始」再出片。",
+                  items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                  confirmLabel: "停止出片",
+                  danger: true,
+                }))
+              ) {
+                return;
+              }
+              await itemCallFor(item, "skip");
+            })()
+          }
           title="停止这一条当前的生成/出片；取消后可以重新开始"
         >
           <X weight="bold" />取消
@@ -973,14 +1080,24 @@ export function BatchRoute() {
     if (["skipped", "completed"].includes(item.status)) {
       return (
         <button
-          onClick={() => {
-            if (
-              item.status !== "completed"
-              || window.confirm("再出一版？会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。")
-            ) {
-              void itemCallFor(item, "retry");
-            }
-          }}
+          onClick={() =>
+            void (async () => {
+              // 已出片的「重新开始」会覆盖发布目录里的成片，先问一句；失败 / 已跳过没有成片可覆盖
+              if (
+                item.status === "completed"
+                && !(await askConfirm({
+                  title: "再出一版？",
+                  detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
+                  items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                  confirmLabel: "再出一版",
+                  danger: true,
+                }))
+              ) {
+                return;
+              }
+              await itemCallFor(item, "retry");
+            })()
+          }
           title={item.ai?.reference_image_path ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
         >
           <ArrowClockwise />重新开始
@@ -1016,14 +1133,23 @@ export function BatchRoute() {
             {/* 失败 / 已跳过 / 已出片：都能直接再出一版（同一接口，已确认过的只重跑出片） */}
             {["failed", "skipped", "completed"].includes(item.status) && (
               <button
-                onClick={() => {
-                  if (
-                    item.status !== "completed"
-                    || window.confirm("再出一版？会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。")
-                  ) {
-                    void itemCall("retry");
-                  }
-                }}
+                onClick={() =>
+                  void (async () => {
+                    if (
+                      item.status === "completed"
+                      && !(await askConfirm({
+                        title: "再出一版？",
+                        detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
+                        items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                        confirmLabel: "再出一版",
+                        danger: true,
+                      }))
+                    ) {
+                      return;
+                    }
+                    await itemCall("retry");
+                  })()
+                }
                 title={hasImage ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
               >
                 <ArrowClockwise />
@@ -1032,16 +1158,25 @@ export function BatchRoute() {
             )}
             {canReopen && (
               <button
-                onClick={() => {
-                  // 只有真的在出片的条目才会作废进度；`confirmed`（已放行、还没轮到）
-                  // 退回去只是把放行作废，不碰任何正在跑的生成，不用吓唬用户。
-                  if (
-                    !renderingNow(item)
-                    || window.confirm("这一条正在出片。回到确认会先取消当前出片（已生成到一半的进度作废），确定吗？")
-                  ) {
-                    void itemCall("reopen-review");
-                  }
-                }}
+                onClick={() =>
+                  void (async () => {
+                    // 只有真的在出片的条目才会作废进度；`confirmed`（已放行、还没轮到）
+                    // 退回去只是把放行作废，不碰任何正在跑的生成，不用吓唬用户。
+                    if (
+                      renderingNow(item)
+                      && !(await askConfirm({
+                        title: "回到确认？",
+                        detail: "这一条正在出片，会先安全取消当前出片，已生成到一半的进度作废。旧成片与发布目录不会被删。",
+                        items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                        confirmLabel: "回到确认",
+                        danger: true,
+                      }))
+                    ) {
+                      return;
+                    }
+                    await itemCall("reopen-review");
+                  })()
+                }
                 title={
                   renderingNow(item)
                     ? "回到「等待你的确认」：会先安全取消这一条当前的出片"
@@ -1053,11 +1188,18 @@ export function BatchRoute() {
             )}
             <button
               className="danger"
-              onClick={() => {
-                if (window.confirm(`删除第 ${item.index} 条？正在跑的步骤会被安全取消，已生成的文件会保留。`)) {
-                  void itemCall("", "DELETE");
-                }
-              }}
+              onClick={() =>
+                void (async () => {
+                  const ok = await askConfirm({
+                    title: `删除第 ${item.index} 条？`,
+                    detail: "正在跑的步骤会被安全取消，已经生成的文件会保留。这一条不再占队列位置。",
+                    items: [`${item.kind === "singing" ? "歌曲" : "跳舞"} · ${itemTitle(item)}`],
+                    confirmLabel: "删除这一条",
+                    danger: true,
+                  });
+                  if (ok) await itemCall("", "DELETE");
+                })()
+              }
             >
               <Trash />删除这一条
             </button>
@@ -1244,6 +1386,54 @@ export function BatchRoute() {
                     }}
                   />
                 </label>
+              )}
+              {editable && (
+                <div className="batch-ai-regen">
+                  <div className="batch-ai-regen-actions">
+                    <button
+                      type="button"
+                      className="batch-ai-regen-btn"
+                      disabled={Boolean(busyAction) || generatingImage}
+                      onClick={() => void regenImage()}
+                      title="把图一+图二+提示词再送 ChatGPT 生成一张全新的候选图"
+                    >
+                      {generatingImage ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
+                      {generatingImage ? "正在生成…" : "AI 换一张"}
+                    </button>
+                    <button
+                      type="button"
+                      className="batch-ai-regen-btn"
+                      disabled={Boolean(busyAction) || generatingImage}
+                      onClick={() => setRegenPanelOpen((v) => !v)}
+                      title="写一句修改意见，让 AI 基于当前图重出一版"
+                    >
+                      {regenPanelOpen ? "收起意见" : "写意见再换"}
+                    </button>
+                  </div>
+                  {regenPanelOpen && (
+                    <div className="batch-ai-regen-panel">
+                      <textarea
+                        value={regenFeedback}
+                        onChange={(event) => setRegenFeedback(event.target.value)}
+                        placeholder="例如：把背景换成暖色调、换个发型、穿白色上衣……"
+                        rows={2}
+                      />
+                      <button
+                        type="button"
+                        className="batch-ai-regen-btn primary"
+                        disabled={Boolean(busyAction) || generatingImage || !regenFeedback.trim()}
+                        onClick={() => {
+                          void regenImage(regenFeedback.trim());
+                          setRegenFeedback("");
+                          setRegenPanelOpen(false);
+                        }}
+                      >
+                        {generatingImage ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
+                        按这个意见生成
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
             <div className="batch-review-copy">
@@ -1556,15 +1746,57 @@ export function BatchRoute() {
                   <Check weight="bold" />确认并出片
                 </button>
                 <button
+                  disabled={!anyRestartable || Boolean(busyAction)}
+                  onClick={() =>
+                    void batchOp("retry-many", {
+                      title: `重新开始选中的 ${selectedIds.size} 条？`,
+                      detail: "已经出过片的会重跑一遍生成链路，新成片会覆盖发布目录里的同名文件；"
+                        + "已备过料且源视频还在的只重跑出片，其余的从下载与备料重做。正在出片的不会被重开。",
+                      items: selectedItems.map((item) => `第 ${item.index} 条 · ${batchStatusLabel(item.status)} · ${itemTitle(item)}`),
+                      confirmLabel: "重新开始这 " + selectedIds.size + " 条",
+                      danger: true,
+                    })
+                  }
+                  title={
+                    anyRestartable
+                      ? "把勾选里「已失败 / 已跳过 / 已出片」的条目重新跑一遍（出片仍一条一条来）"
+                      : "勾选里没有可重新开始的条目（只有失败 / 已跳过 / 已出片的能重开）"
+                  }
+                >
+                  <ArrowClockwise />重新开始
+                </button>
+                <button
                   disabled={!anySkippable || Boolean(busyAction)}
-                  onClick={() => void batchOp("skip-many", "跳过选中的 N 条？正在出片的会先安全取消，成片已生成的会保留。")}
+                  onClick={() =>
+                    void batchOp(
+                      "skip-many",
+                      // 勾选里没有正在出片的条目时，跳过不动任何已生成的内容，直接执行不弹提示。
+                      selectedItems.some(renderingNow)
+                        ? {
+                          title: `跳过选中的 ${selectedIds.size} 条？`,
+                          detail: "正在出片的会先安全取消（已生成到一半的进度作废），成片已生成的会保留。",
+                          items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`),
+                          confirmLabel: "跳过这 " + selectedIds.size + " 条",
+                          danger: true,
+                        }
+                        : undefined,
+                    )
+                  }
                 >
                   <X />跳过
                 </button>
                 <button
                   className="danger"
                   disabled={!anyDeletable || Boolean(busyAction)}
-                  onClick={() => void batchOp("delete-many", "删除选中的 N 条？正在跑的步骤会被安全取消，已生成的文件会保留。")}
+                  onClick={() =>
+                    void batchOp("delete-many", {
+                      title: `删除选中的 ${selectedIds.size} 条？`,
+                      detail: "正在跑的步骤会被安全取消，已经生成的文件会保留。",
+                      items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`),
+                      confirmLabel: "删除这 " + selectedIds.size + " 条",
+                      danger: true,
+                    })
+                  }
                 >
                   <Trash />删除
                 </button>
@@ -1691,6 +1923,51 @@ export function BatchRoute() {
             </div>
           </div>
         </section>
+      )}
+
+      {/* 页内确认框（不用 window.confirm）：深色壳子里的同风格弹框，把「影响哪几条」摊开，
+          危险操作用红色确认键、Esc / 点遮罩 = 取消（2026-09-15 用户：「弹出框的效果样式改下」）。 */}
+      {confirmAsk && (
+        <div
+          className="batch-modal-backdrop"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) answerConfirm(false);
+          }}
+        >
+          <div
+            className={`batch-modal ${confirmAsk.danger ? "danger" : ""}`}
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="batch-modal-title"
+            aria-describedby={confirmAsk.detail ? "batch-modal-detail" : undefined}
+          >
+            <span className="batch-modal-icon"><WarningCircle weight="fill" /></span>
+            <div className="batch-modal-body">
+              <h2 id="batch-modal-title">{confirmAsk.title}</h2>
+              {confirmAsk.detail && <p id="batch-modal-detail">{confirmAsk.detail}</p>}
+              {confirmAsk.items && confirmAsk.items.length > 0 && (
+                <ul className="batch-modal-items">
+                  {confirmAsk.items.slice(0, 6).map((line) => <li key={line}>{line}</li>)}
+                  {confirmAsk.items.length > 6 && <li>…还有 {confirmAsk.items.length - 6} 条</li>}
+                </ul>
+              )}
+            </div>
+            <div className="batch-modal-actions">
+              {/* 破坏性操作默认把焦点放在「取消」上：回车不会误删/误停 */}
+              <button className="ghost" autoFocus={confirmAsk.danger} onClick={() => answerConfirm(false)}>
+                {confirmAsk.cancelLabel || "取消"}
+              </button>
+              <button
+                className={confirmAsk.danger ? "danger" : "batch-primary"}
+                autoFocus={!confirmAsk.danger}
+                onClick={() => answerConfirm(true)}
+              >
+                {confirmAsk.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

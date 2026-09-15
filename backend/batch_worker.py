@@ -53,6 +53,8 @@ _SALVAGE_TASKS: set[asyncio.Task] = set()
 # 正在后台出片的条目任务。runner 不再原地 await 出片，而是把出片放进这里的任务，
 # 自己继续给后面的条目备料；这个集合是**强引用**（否则任务可能在跑的过程中被回收）。
 _VIDEO_TASKS: set[asyncio.Task] = set()
+# 后台自动生成封面的任务（强引用）。封面生成走 ChatGPT 桌面端，由 _IMAGE_LOCK 保证单链。
+_COVER_TASKS: set[asyncio.Task] = set()
 
 
 def cancel_item_work(batch_id: str, item_id: str) -> bool:
@@ -143,6 +145,10 @@ def item_key(kind: str, url: str) -> str:
 
 # 一个批次（含随时追加）最多多少条视频
 MAX_BATCH_ITEMS = 50
+
+# 能「重新开始」的条目状态：只有已经跑完一轮的（失败 / 已跳过 / 已出片）。
+# 正在出片的必须先「取消」，已删除的不能复活，还没出片的本来就会跑、不需要重开。
+RETRYABLE_ITEM_STATUSES = {"failed", "skipped", "completed"}
 
 
 def new_item(kind: str, url: str, ratio: str, index: int, created: str) -> dict[str, Any]:
@@ -440,13 +446,96 @@ def mark_items_deleted(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
     return {"marked": marked, "busy": busy, "rejected": rejected}
 
 
+def restart_item_to_run(batch_id: str, item_id: str) -> bool:
+    """把一条**已经结束**的条目重置成可以重跑的状态，返回它是否直接续跑。
+
+    失败 / 已跳过 / 已出片共用的重置逻辑（单条「重试 / 重新开始」与批量「重新开始」
+    必须走同一份代码，否则两边的行为会慢慢跑偏）：
+
+    - 已经确认过（审核放行 + 有候选人物图 + **源视频还在磁盘上**）→ 回到 `confirmed`，
+      只重跑出片链路，不重复下载与备料；
+    - 还没确认、或者源视频已经被清理掉 → 回到 `pending`，从下载与备料重新走一遍
+      （2026-09-14 实测：源文件不在时直接续跑会在提交时报「文件不存在」）；
+    - 清掉 skip/delete 请求、错误、上一次的子任务与发布文件记录，并把 `video`（以及任何
+      报错的）里程碑重置为待办，页面上的流程重新变回待办而不是停在 ✗。
+    """
+    box: dict[str, bool] = {}
+
+    def reset(row: dict[str, Any]) -> None:
+        ai = row.get("ai") or {}
+        approved = (
+            bool(row.get("reviewApproved"))
+            and bool(str(ai.get("reference_image_path") or "").strip())
+            and Path(str(row.get("sourcePath") or "")).is_file()
+        )
+        box["approved"] = approved
+        row.update(
+            status="confirmed" if approved else "pending",
+            stage="confirmed" if approved else "queued",
+            error=None,
+            warning=None,
+            skipRequested=False,
+            deleteRequested=False,
+            childJob=None,
+            videoJobId=None,
+            outputs={},
+            finishedAt=None,
+        )
+        for milestone in row.get("milestones") or []:
+            if milestone.get("id") == "video" or milestone.get("status") == "error":
+                milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
+
+    batch_store.mutate_item(batch_id, item_id, reset)
+    return bool(box.get("approved"))
+
+
+def restart_batch_items(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
+    """批量重新开始：失败 / 已跳过 / **已出片**的条目一次全部重来。
+
+    用户 2026-09-15：「批量选择选择后加个批量重新开始」——跟批量确认/跳过/删除一套交互。
+    能重开的只有「已经跑完一轮」的状态（`failed` / `skipped` / `completed`），跟单条
+    「重试 / 重新开始」按钮完全同一条规则：正在出片（`running` / `revising`）的必须先
+    「取消」，已删除的不能复活，还没出片的（`pending` / `awaiting_review` / `confirmed`）
+    本来就会跑、不需要重开 —— 这些都逐个记下原因返回，页面照旧提示「哪几条没重开、为什么」。
+    出片仍然严格一条一条（重置后只是回到队列/出片队列，不并发）。
+    """
+    state = batch_store.get(batch_id)
+    if not state:
+        raise KeyError(batch_id)
+    by_id = {item.get("id"): item for item in state.get("items") or []}
+    restarted: list[str] = []
+    rejected: list[dict[str, str]] = []
+    for item_id in item_ids or []:
+        item = by_id.get(item_id)
+        if not item:
+            rejected.append({"id": item_id, "reason": "条目不存在"})
+            continue
+        status = str(item.get("status") or "")
+        if status in {"running", "revising"}:
+            rejected.append({"id": item_id, "reason": "正在出片，请先「取消」再重新开始"})
+            continue
+        if status == "deleted":
+            rejected.append({"id": item_id, "reason": "已删除"})
+            continue
+        if status not in RETRYABLE_ITEM_STATUSES:
+            rejected.append({"id": item_id, "reason": "还没出片，不用重新开始"})
+            continue
+        direct = restart_item_to_run(batch_id, item_id)
+        batch_store.add_item_log(
+            batch_id,
+            item_id,
+            "已重新开始这一条，正在按当前结果继续出片。" if direct else "已重新开始这一条，将从下载与备料重做。",
+        )
+        restarted.append(item_id)
+    return {"restarted": restarted, "rejected": rejected}
+
+
 def _item(batch_id: str, item_id: str) -> dict[str, Any]:
     state = batch_store.get(batch_id)
     for item in (state or {}).get("items") or []:
         if item.get("id") == item_id:
             return item
     raise RuntimeError("批量条目不存在")
-
 
 def _set_item(batch_id: str, item_id: str, **changes: Any) -> dict[str, Any]:
     def apply(item: dict[str, Any]) -> None:
@@ -1215,6 +1304,46 @@ async def _prepare_review_work(
     await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
     # 注意：这里**不**把整个批次置为 awaiting_review，也不停 runner ——
     # 用户要求先整批备料，所以要让 run_batch 继续跑下一条的备料。
+
+    # 2026-09 图片流程自动化（opt-in）：manual 模式备料完、还没有候选图时，
+    # 自动送 ChatGPT 桌面端生成候选人物图并上传回本条。由 `_IMAGE_LOCK` 保证
+    # 严格一条一条完成（绝不并发）；失败只标黄停下等人工。开关 H3_AUTO_CHATGPT_IMAGE=1。
+    if _image_provider() == "manual" and not result.get("reference_image_path"):
+        from . import chatgpt_image as _cgi
+        if _cgi.auto_candidate_enabled():
+            batch_store.add_item_log(
+                batch_id, item_id, "已开启自动生成人物图：正在送 ChatGPT 桌面端生成候选图……"
+            )
+            await _cgi.auto_generate_candidate_image(batch_id, item_id)
+
+    # 封面自动化（opt-in）：人物图 + 发布文案落盘后，后台自动生成 B站4:3 / 抖音3:4。
+    # 开关 H3_AUTO_CHATGPT_COVER=1；由 _IMAGE_LOCK 保证和人物图一样严格单链，绝不并发。
+    _maybe_spawn_covers(batch_id, item_id)
+
+
+def _maybe_spawn_covers(batch_id: str, item_id: str) -> None:
+    """若已开启封面自动化且该条的人物图+发布文案都齐了，就后台触发封面生成。
+
+    后台 fire-and-forget，不阻塞备料/出片；`_IMAGE_LOCK` 保证全局串行。
+    """
+    from . import chatgpt_image as _cgi
+    if not _cgi.auto_cover_enabled():
+        return
+    item = _item(batch_id, item_id)
+    outputs = item.get("outputs") or {}
+    folder = outputs.get("folder")
+    if not folder:
+        return
+    publish_folder = Path(folder)
+    image = next(publish_folder.glob("人物图.*"), None) if publish_folder.is_dir() else None
+    copy = publish_folder / "发布文案.txt"
+    if image is None or not copy.is_file():
+        return
+    task = asyncio.create_task(
+        _cgi.auto_generate_covers(str(publish_folder), str(copy), str(image))
+    )
+    _COVER_TASKS.add(task)
+    task.add_done_callback(_COVER_TASKS.discard)
 
 
 async def _wait_for_free_pipeline(batch_id: str, item_id: str) -> None:
