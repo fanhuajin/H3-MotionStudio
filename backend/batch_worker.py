@@ -708,31 +708,61 @@ async def _download(batch_id: str, item_id: str) -> Path:
     _set_item(batch_id, item_id, stage="download", status="running", error=None)
     batch_store.add_item_log(batch_id, item_id, "正在下载抖音源视频……")
     try:
-        job = await douyin_service.submit(item["url"])
-        job_id = str(job.get("job_id") or "")
-        if not job_id:
-            raise RuntimeError("下载服务没有返回任务编号")
-        _set_item(batch_id, item_id, downloadJobId=job_id)
-        while job.get("status") not in {"success", "failed", "cancelled"}:
-            await asyncio.sleep(2)
-            job = await douyin_service.job(job_id)
+        # 先走下载器 REST；它取作品详情用的是被 Argus 门禁的 Web 接口，会时好时坏，
+        # 失败时用 douyin_direct（分享页 + aweme.snssdk.com 直连）兜底。
+        service_failure: Exception | None = None
+        source: Path | None = None
+        aweme_id = ""
+        metadata: dict[str, Any] = {}
+        try:
+            job = await douyin_service.submit(item["url"])
+            job_id = str(job.get("job_id") or "")
+            if not job_id:
+                raise RuntimeError("下载服务没有返回任务编号")
+            _set_item(batch_id, item_id, downloadJobId=job_id)
+            while job.get("status") not in {"success", "failed", "cancelled"}:
+                await asyncio.sleep(2)
+                job = await douyin_service.job(job_id)
+                mirror_upsert([job])
+                done = int(job.get("success") or 0) + int(job.get("failed") or 0) + int(job.get("skipped") or 0)
+                total = max(1, int(job.get("total") or 1))
+                batch_store.set_item_milestone(
+                    batch_id,
+                    item_id,
+                    "download",
+                    status="running",
+                    progress=min(92, max(8, round(done / total * 90))),
+                )
             mirror_upsert([job])
-            done = int(job.get("success") or 0) + int(job.get("failed") or 0) + int(job.get("skipped") or 0)
-            total = max(1, int(job.get("total") or 1))
-            batch_store.set_item_milestone(
-                batch_id,
-                item_id,
-                "download",
-                status="running",
-                progress=min(92, max(8, round(done / total * 90))),
+            if job.get("status") != "success":
+                raise RuntimeError(str(job.get("error") or "抖音下载失败"))
+            result = douyin_service.result_for(job)
+            if not result:
+                raise RuntimeError("下载完成但没有找到视频文件")
+            aweme_id = str(result["awemeId"])
+            source = await ensure_download_playable(Path(result["path"]), aweme_id)
+            metadata = _manifest_metadata(aweme_id)
+        except Exception as error:  # noqa: BLE001 - 下载器失败就兜底
+            service_failure = error
+            batch_store.add_item_log(
+                batch_id, item_id,
+                f"下载器未能取到源视频（{error}），改用直连兜底下载……",
             )
-        mirror_upsert([job])
-        if job.get("status") != "success":
-            raise RuntimeError(str(job.get("error") or "抖音下载失败"))
-        result = douyin_service.result_for(job)
-        if not result:
-            raise RuntimeError("下载完成但没有找到视频文件")
-        aweme_id = str(result["awemeId"])
+            from . import douyin_direct
+            got = await asyncio.to_thread(douyin_direct.fetch, str(item["url"]), DOUYIN_OUTPUT)
+            if not got:
+                raise
+            path, direct_meta = got
+            aweme_id = str(direct_meta["awemeId"])
+            source = await ensure_download_playable(Path(path), aweme_id)
+            metadata = {
+                "desc": direct_meta.get("desc") or "",
+                "tags": list(direct_meta.get("tags") or []),
+                "nickname": direct_meta.get("nickname") or "",
+                "source": "direct",
+            }
+            batch_store.add_item_log(batch_id, item_id, "直连兜底下载成功。")
+
         # 链接写法不同的同一条作品只有下载后才知道，这里再兜一次重复过滤
         duplicate = duplicate_item_by_aweme(
             batch_id, item_id, aweme_id, str(item.get("kind") or "")
@@ -742,8 +772,6 @@ async def _download(batch_id: str, item_id: str) -> Path:
                 f"和第 {duplicate.get('index')} 条是同一个抖音作品"
                 f"（{duplicate.get('title') or duplicate.get('url')}），本条已自动跳过，不重复制作。"
             )
-        source = await ensure_download_playable(Path(result["path"]), aweme_id)
-        metadata = _manifest_metadata(aweme_id)
         title = str(metadata.get("desc") or source.stem).splitlines()[0].strip() or source.stem
         _set_item(
             batch_id,
