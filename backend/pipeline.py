@@ -429,13 +429,53 @@ def completed_milestones_for(kind: str) -> tuple[str, ...]:
 
 
 def is_job_cancelled(job_id: str) -> bool:
+    """任务是不是已经被取消 —— **认取消印记，不只看当前状态**。
+
+    2026-09-17 实测事故（用户「comfyui 在运行 批量制作里的状态却是错误的而且不会同步进度」）：
+    批量里点「取消」时，出片子任务正卡在 `pipeline_lock` 上排队，取消把状态写成
+    `cancelled`；等它拿到锁，入口那句**无条件**的 `store.update(status="running")`
+    又把状态覆盖回来 —— 于是取消彻底失效，它自己把 ComfyUI 拉起来跑了几十分钟，
+    而批次里那一条早就是「已跳过」，页面记录的子任务又是另一个永远排队的空任务。
+
+    所以取消除了写状态，还留一个**谁也覆盖不掉的印记** `cancelRequested`：
+    哪怕将来又有人漏掉状态检查，只要有这个印记就拦得住。
+    """
     state = store.get(job_id) or {}
+    if state.get("cancelRequested"):
+        return True
     return state.get("status") in ("cancelled", "cancelling")
 
 
 def raise_if_cancelled(job_id: str) -> None:
     if is_job_cancelled(job_id):
         raise PipelineError("任务已取消")
+
+
+async def claim_job_run(job_id: str, *, stage: str) -> bool:
+    """拿到 `pipeline_lock` 之后、真正开跑之前的**最后一道取消闸门**。
+
+    返回 False 表示这条任务在排队等锁期间已经被取消，**调用方必须立刻 return** ——
+    绝不能再去启动 ComfyUI 或提交工作流。
+
+    所有 `run_*` / `resume_*` 入口都必须走这里，别再各写一遍（`run_migrate_pipeline`
+    正是因为漏了这一句，才有 2026-09-17 那次「取消不掉、状态还不同步」的事故）。
+    """
+    state = store.get(job_id)
+    if not state:
+        return False
+    if is_job_cancelled(job_id):
+        await finish_cancelled(job_id)
+        return False
+    store.update(
+        job_id,
+        status="running",
+        stage=stage,
+        errorSummary=None,
+        errorDetail=None,
+        startedAt=state.get("startedAt") or now_iso(),
+        finishedAt=None,
+    )
+    return True
 
 
 async def finish_cancelled(job_id: str) -> None:
@@ -446,6 +486,9 @@ async def finish_cancelled(job_id: str) -> None:
             store.set_milestone(job_id, milestone["id"], status="skipped", currentNode=None, progress=None)
     store.update(
         job_id,
+        # 顺手补上取消印记（幂等）：不管这条任务是从哪个入口被取消的，
+        # 之后任何一次「把它覆盖成 running」的尝试都会被 `is_job_cancelled` 拦住。
+        cancelRequested=True,
         stage="cancelled",
         currentNodeId=None,
         currentNodeTitle=None,
@@ -550,6 +593,8 @@ async def _await_existing_comfy_output(
     preserve the work and lets the normal pipeline continue from its output.
     """
     store.add_log(job_id, f"已重新连接 ComfyUI 任务：{prompt_id}，继续等待当前生成完成。")
+    # 重连写入状态之前先过一道取消闸门：重启前就被取消掉的任务不该被「接回来」。
+    raise_if_cancelled(job_id)
     store.update(
         job_id,
         status="running",
@@ -1140,18 +1185,9 @@ async def run_pipeline(job_id: str) -> None:
         state = store.get(job_id)
         if not state:
             return
-        if is_job_cancelled(job_id):
-            await finish_cancelled(job_id)
+        # 等锁期间被取消的任务**绝不许**在这里被覆盖成 running 再跑一遍。
+        if not await claim_job_run(job_id, stage="starting"):
             return
-        store.update(
-            job_id,
-            status="running",
-            stage="starting",
-            errorSummary=None,
-            errorDetail=None,
-            startedAt=now_iso(),
-            finishedAt=None,
-        )
         try:
             await resources.ensure_comfy(job_id)
             state = store.get(job_id) or state
@@ -1223,6 +1259,9 @@ async def resume_singing_pipeline(job_id: str) -> None:
         prompt_id = str((state.get("promptIds") or {}).get("singing") or "")
         if not prompt_id:
             raise PipelineError("无法恢复任务", "没有保存 ComfyUI Prompt ID。")
+        # 恢复同样要过取消闸门：用户已经取消掉的任务，不该因为一次服务重启又活过来。
+        if not await claim_job_run(job_id, stage="starting"):
+            return
         try:
             original = await _await_existing_comfy_output(job_id, prompt_id, "59")
             for milestone_id in completed_milestones_for("singing"):
@@ -1267,10 +1306,9 @@ async def resume_migrate_pipeline(job_id: str) -> None:
         prompt_id = str((state.get("promptIds") or {}).get("migrate") or "")
         if not prompt_id:
             raise PipelineError("无法恢复任务", "没有保存 ComfyUI Prompt ID。")
-        store.update(
-            job_id, status="running", stage="migrating", errorSummary=None,
-            errorDetail=None, finishedAt=None,
-        )
+        # 恢复同样要过取消闸门：用户已经取消掉的任务，不该因为一次服务重启又活过来。
+        if not await claim_job_run(job_id, stage="migrating"):
+            return
         try:
             draft = await _await_existing_comfy_output(job_id, prompt_id, "456")
             store.set_milestone(job_id, "migrate", status="completed", progress=100, currentNode=None)
@@ -1689,17 +1727,17 @@ async def run_migrate_pipeline(job_id: str) -> None:
         state = store.get(job_id)
         if not state:
             return
-        store.update(
-            job_id,
-            status="running",
-            stage="starting",
-            errorSummary=None,
-            errorDetail=None,
-            startedAt=now_iso(),
-            finishedAt=None,
-        )
+        # ⚠️ 2026-09-17 事故点：这里以前是**无条件**写 `status="running"`，漏掉了
+        # `run_pipeline` / `run_upscale_job` / `run_rvc_job` 都有的那句取消检查。
+        # 于是「等锁期间被取消」的迁移任务，一拿到锁就把 `cancelled` 覆盖成 running，
+        # 自己拉起 ComfyUI 跑几十分钟 —— 用户看到的就是「ComfyUI 在跑，批量里状态是错的、
+        # 进度也不同步」。改这里之前先看清楚 `claim_job_run` 的注释。
+        if not await claim_job_run(job_id, stage="starting"):
+            return
         try:
             await resources.ensure_comfy(job_id)
+            # 刚把 ComfyUI 拉起来就发现被取消：**绝不提交工作流**（否则又会白烧一次显存）。
+            raise_if_cancelled(job_id)
             state = store.get(job_id) or state
             params = canvas_params(state.get("canvas") or DEFAULT_CANVAS)
             mode = state.get("migrateMode") or "animation"
@@ -1764,6 +1802,8 @@ async def run_migrate_pipeline(job_id: str) -> None:
             )
             store.update(job_id, draftOutput=str(draft), draftReady=True)
             store.add_log(job_id, f"迁移成片已保存：{draft.name}")
+            # 采样途中被取消：成片留着，但**不再做二采**（省掉一次几十分钟的 4× 超分）。
+            raise_if_cancelled(job_id)
 
             # 二采放大开关（默认开启）：迁移成片再做 RealESRGAN 4× 并收 1080p 档，
             # 结果即该任务的最终成片；关闭时迁移成片就是最终成片。
@@ -1912,18 +1952,9 @@ async def run_upscale_job(job_id: str) -> None:
         state = store.get(job_id)
         if not state:
             return
-        if is_job_cancelled(job_id):
-            await finish_cancelled(job_id)
+        # 等锁期间被取消的任务**绝不许**在这里被覆盖成 running 再跑一遍。
+        if not await claim_job_run(job_id, stage="starting"):
             return
-        store.update(
-            job_id,
-            status="running",
-            stage="starting",
-            errorSummary=None,
-            errorDetail=None,
-            startedAt=now_iso(),
-            finishedAt=None,
-        )
         try:
             await resources.ensure_comfy(job_id)
             state = store.get(job_id) or state
@@ -1994,18 +2025,9 @@ async def run_rvc_job(job_id: str) -> None:
         state = store.get(job_id)
         if not state:
             return
-        if is_job_cancelled(job_id):
-            await finish_cancelled(job_id)
+        # 等锁期间被取消的任务**绝不许**在这里被覆盖成 running 再跑一遍。
+        if not await claim_job_run(job_id, stage="handoff"):
             return
-        store.update(
-            job_id,
-            status="running",
-            stage="handoff",
-            errorSummary=None,
-            errorDetail=None,
-            startedAt=now_iso(),
-            finishedAt=None,
-        )
         try:
             source = Path(state.get("sourcePath") or "")
             if not source.is_file():

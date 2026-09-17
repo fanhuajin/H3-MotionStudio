@@ -82,6 +82,47 @@ def cancel_item_work(batch_id: str, item_id: str) -> bool:
     return True
 
 
+async def _cancel_child_job_quietly(child_id: str, batch_id: str, item_id: str) -> None:
+    """取消一个还挂在条目名下的出片子任务（失败只记日志，绝不往上抛）。"""
+    del batch_id, item_id
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(f"{BATCH_SELF_URL}/api/jobs/{child_id}/cancel")
+        if response.status_code not in {200, 404, 409}:
+            logger.warning("取消子任务 %s 返回 %s（继续收尾）", child_id, response.status_code)
+    except Exception:
+        logger.warning("取消子任务失败（忽略）：%s", child_id, exc_info=True)
+
+
+def cancel_item_video_job(batch_id: str, item_id: str) -> str:
+    """把一条条目名下**还在跑**的出片子任务真正取消掉，返回被取消的 job id（没有则空串）。
+
+    2026-09-17 实测事故：条目被跳过、又被「重新开始」，而它上一轮的出片子任务其实还活着
+    （取消只写了个状态、没真的中断它），重置时又把 `videoJobId` 一清 —— 那个任务就此变成
+    谁都管不到的孤儿：攥着 `pipeline_lock` 继续烧显卡，页面则永远停在「排队中」，
+    而 ComfyUI 里跑的偏偏是它。凡是「重置 / 跳过 / 删除一条」的地方，都要在清指针
+    **之前**先调这里。
+    """
+    try:
+        item = _item(batch_id, item_id)
+    except Exception:
+        return ""
+    child_id = str(item.get("videoJobId") or (item.get("childJob") or {}).get("id") or "")
+    if not child_id:
+        return ""
+    child = store.get(child_id) or {}
+    if child.get("status") not in {"queued", "running", "cancelling"}:
+        return ""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # 没有事件循环（同步调用 / 关停中）：留给重启后的僵尸清理
+        return ""
+    task = loop.create_task(_cancel_child_job_quietly(child_id, batch_id, item_id))
+    _SALVAGE_TASKS.add(task)
+    task.add_done_callback(_SALVAGE_TASKS.discard)
+    return child_id
+
+
 def batch_run_alive(batch_id: str) -> bool:
     """这一批是不是已经有一个 runner 在跑（他才会把批次推进下去）。"""
     return batch_id in _RUNNING_BATCHES
@@ -624,6 +665,9 @@ def restart_item_to_run(batch_id: str, item_id: str) -> bool:
             if milestone.get("id") == "video" or milestone.get("status") == "error":
                 milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
 
+    # 上一轮的出片子任务若还活着（取消没真的生效过一次），必须**在清指针之前**掐掉它，
+    # 否则它会变成谁也管不到的孤儿，继续攥着流水线烧显卡。
+    cancel_item_video_job(batch_id, item_id)
     batch_store.mutate_item(batch_id, item_id, reset)
     return bool(box.get("approved"))
 
@@ -1889,6 +1933,20 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
     # 比例以条目自己的选择为准（歌曲默认 4:3、跳舞默认 9:16，用户可逐条改）
     ratio = item_ratio(item)
     await _wait_for_free_pipeline(batch_id, item_id)
+    # 等流水线的这段时间里，条目可能已经被「取消 / 跳过 / 删除」：**提交前的最后一道校验**。
+    # 2026-09-17 实测事故：条目在提交途中被跳过，新子任务照样建了出来并排在流水线后面，
+    # 于是它永远停在「排队中」，页面进度一动不动 —— 而真正占着 GPU 的是上一轮那个
+    # 早已被取消的任务（它拿到锁后把 `cancelled` 覆盖成了 `running`）。
+    current = _item(batch_id, item_id)
+    if (
+        current.get("skipRequested")
+        or current.get("deleteRequested")
+        or str(current.get("status") or "") in {"skipped", "deleted", "completed", "failed"}
+    ):
+        batch_store.add_item_log(
+            batch_id, item_id, "本条在等流水线时已被取消/跳过，不再提交出片任务。"
+        )
+        raise asyncio.CancelledError
     batch_store.add_item_log(
         batch_id, item_id, f"本条画布比例：{ratio_hint(str(item['kind']), ratio)}"
     )
@@ -1903,9 +1961,6 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
             action = action or fallback_action
             camera = camera or fallback_camera
             batch_store.add_item_log(batch_id, item_id, "动作/运镜缺少模型结果，已使用保守时间轴兜底。")
-        current = _item(batch_id, item_id)
-        if current.get("skipRequested") or current.get("deleteRequested"):
-            raise asyncio.CancelledError
         _set_item(batch_id, item_id, actionPrompt=action, cameraPrompt=camera)
         data = {
             "action_prompt": action,
@@ -2571,6 +2626,36 @@ async def _abandon_without_runner(batch_id: str, item_id: str, *, deleted: bool)
     await _finish_abandoned(batch_id, item_id, deleted=deleted)
     # 停止之后顺手关掉 ComfyUI（用户 2026-09-15：「停止的话 comfyui 你也要关闭」）
     await _stop_comfy_if_idle()
+
+
+def heal_terminal_item_milestones(state: dict[str, Any] | None) -> bool:
+    """终态条目上不许留着「进行中」的里程碑；返回是否真的改过（幂等，读批次时顺手体检）。
+
+    2026-09-17 实测事故：条目已经是「已跳过」，它的 `video` 里程碑却还挂着 running
+    （跳过之后 runner 又推进了一次，`finishedAt` 甚至早于 `startedAt`），页面上那一步
+    永远转圈 —— 用户报的正是「批量里的状态是错的、进度也不同步」。这里只收尾**已经
+    结束的条目**；还在跑（running/revising/等确认）的一律不碰。
+    """
+    if not state:
+        return False
+    batch_id = str(state.get("id") or "")
+    if not batch_id:
+        return False
+    target_of = {"skipped": "skipped", "deleted": "skipped", "completed": "completed", "failed": "error"}
+    changed = False
+    for item in state.get("items") or []:
+        target = target_of.get(str(item.get("status") or ""))
+        if not target:
+            continue
+        for milestone in item.get("milestones") or []:
+            if milestone.get("status") != "running":
+                continue
+            batch_store.set_item_milestone(
+                batch_id, str(item.get("id") or ""), milestone["id"],
+                status=target, currentNode=None, progress=None,
+            )
+            changed = True
+    return changed
 
 
 def reset_review_row(row: dict[str, Any]) -> None:

@@ -41,6 +41,7 @@ from .batch_worker import (
     deliver_item_now,
     deliver_review_materials,
     ensure_shutdown_watcher,
+    heal_terminal_item_milestones,
     image_ratio_note,
     item_ratio,
     mark_items_deleted,
@@ -674,8 +675,18 @@ def _heal_stalled_batch(state: dict[str, Any] | None) -> dict[str, Any] | None:
     安全边界：只有 `running` 才自愈。`paused`（用户暂停 / 重启保护）与
     `awaiting_review`（等你确认）**绝不**偷偷继续；`runnerActive=True` 且这一轮真的
     spawn 过（`_SPAWNED_BATCH_IDS`）说明 runner 活得好好的，不动它。
+
+    除了「补 runner」，这里顺手把**已经结束的条目上还挂着「进行中」的里程碑**收尾
+    （2026-09-17 实测：条目早已「已跳过」，`video` 那一步却还在转圈）。
     """
-    if not state or state.get("status") != "running":
+    if not state:
+        return state
+    try:
+        if heal_terminal_item_milestones(state):
+            state = batch_store.get(str(state.get("id") or "")) or state
+    except Exception:  # noqa: BLE001 - 体检失败不能把「读状态」这个请求带崩
+        logger.exception("收尾终态条目的里程碑失败（忽略）")
+    if state.get("status") != "running":
         return state
     batch_id = str(state.get("id") or "")
     if not batch_id:
@@ -1288,6 +1299,18 @@ async def skip_batch_item(batch_id: str, item_id: str):
         raise HTTPException(409, "当前条目已经结束")
     batch_store.mutate_item(batch_id, item_id, lambda row: row.update(skipRequested=True))
     cancel_item_work(batch_id, item_id)
+    # 正在出片的那一条：光设 `skipRequested` 远远不够 —— 子任务在 ComfyUI 里照跑不误，
+    # 用户看到的就是「点了取消没效果」（2026-09-15 用户：「点击列表取消怎么没有效果」）。
+    # 跟删除端点走同一条路：**真的把子任务取消掉**，pipeline 会在下一个检查点收尾
+    # （2026-09-17 事故里，取消只写状态、任务拿到锁又把自己翻回 running 跑了几十分钟）。
+    child = item.get("childJob") or {}
+    child_id = str(item.get("videoJobId") or child.get("id") or "")
+    if child_id and item.get("status") in {"running", "revising"}:
+        try:
+            await cancel_job(child_id)
+        except HTTPException as error:
+            if error.status_code not in {404, 409}:
+                raise
     if item.get("status") not in {"running", "revising"}:
         def mark_skipped(row: dict[str, Any]) -> None:
             row.update(status="skipped", stage="skipped", finishedAt=now_iso(), childJob=None)
@@ -2639,6 +2662,7 @@ async def cancel_job(job_id: str):
         store.update(
             job_id,
             status="cancelled",
+            cancelRequested=True,
             stage="cancelled",
             currentNodeId=None,
             currentNodeTitle=None,
@@ -2658,6 +2682,10 @@ async def cancel_job(job_id: str):
     store.update(
         job_id,
         status="cancelling",
+        # `cancelRequested` 是**不可被覆盖的取消印记**：任务在等 `pipeline_lock` 时被取消，
+        # 拿到锁那一刻的入口代码若不查状态就会把 `cancelled` 覆盖回 `running` 继续跑
+        # （2026-09-17 实测事故），有印记才拦得住。见 `pipeline.is_job_cancelled`。
+        cancelRequested=True,
         errorSummary=None,
         errorDetail=None,
         currentNodeTitle="正在取消任务…",
@@ -2688,7 +2716,7 @@ async def cancel_job(job_id: str):
 
     # 状态置为 cancelled 后，pipeline 会在下一个检查点感知并收尾（里程碑跳过），
     # 不会改写为失败、不会关闭 ComfyUI。
-    store.update(job_id, status="cancelled", finishedAt=now_iso())
+    store.update(job_id, status="cancelled", cancelRequested=True, finishedAt=now_iso())
     return store.get(job_id)
 
 

@@ -477,6 +477,9 @@ def reset_subtitle_job(job_id: str) -> dict[str, Any]:
             "subtitleCorrected": None,
             "subtitlePublishPath": None,
             "subtitlePublishError": None,
+            # 「重新开始」必须**清掉取消印记**，否则这一条会一路被当成已取消
+            # （`is_job_cancelled` 认印记，见 backend/pipeline.py）。
+            "cancelRequested": False,
             RESTART_KEY: False,
         })
         logs = list(row.get("logs") or [])

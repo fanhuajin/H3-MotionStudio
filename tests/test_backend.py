@@ -6933,6 +6933,248 @@ class BatchSingleVideoQueueTests(unittest.TestCase):
         spawn.assert_not_called()
 
 
+class CancelGateTests(unittest.TestCase):
+    """2026-09-17 事故回归：**被取消的任务绝不许自己复活**。
+
+    用户报的原话：「comfyui在运行 批量制作里的状态却是错误的而且不会同步进度」。
+    还原出来的真实链路：批量里点「取消」→ 出片子任务当时正卡在 `pipeline_lock` 上排队，
+    取消把状态写成 `cancelled` → 它拿到锁后**无条件**把 `status` 写回 `running`
+    （覆盖掉取消）→ 自己把 ComfyUI 拉起来跑了几十分钟；而批次里那一条早就「已跳过」，
+    `videoJobId` 又被「重新开始」换成了另一个永远排队的空任务，页面于是盯着一个
+    永远不动的进度。下面每条测试钉住这条链路上的一环，改代码前先看它们。
+    """
+
+    @staticmethod
+    def _job_store(state: dict):
+        class _Store:
+            def get(self, _job_id):
+                return state
+
+            def update(self, _job_id, **changes):
+                state.update(changes)
+                return state
+
+            def add_log(self, _job_id, message):
+                state.setdefault("logs", []).append({"time": "t", "message": message})
+                return state
+
+            def set_milestone(self, _job_id, milestone_id, **changes):
+                for milestone in state.get("milestones") or []:
+                    if milestone["id"] == milestone_id:
+                        milestone.update(changes)
+                return state
+
+            def mutate(self, _job_id, mutator):
+                mutator(state)
+                return state
+
+        return _Store()
+
+    def test_a_job_cancelled_while_queued_never_starts_comfyui(self):
+        """等锁期间被取消的迁移任务：拿到锁也不许启动 ComfyUI、不许把状态翻回 running。"""
+        from backend import pipeline
+
+        state = {
+            "id": "j1", "kind": "migrate", "status": "cancelled", "cancelRequested": True,
+            "milestones": [{"id": "migrate", "status": "running"}],
+        }
+        comfy_calls: list[str] = []
+
+        async def fake_ensure(*_args, **_kwargs):
+            comfy_calls.append("ensure")
+
+        async def scenario():
+            with patch.object(pipeline, "store", self._job_store(state)), \
+                 patch.object(pipeline, "pipeline_lock", asyncio.Lock()), \
+                 patch.object(pipeline.resources, "ensure_comfy", new=fake_ensure):
+                await pipeline.run_migrate_pipeline("j1")
+
+        asyncio.run(scenario())
+        self.assertEqual(comfy_calls, [], "被取消的迁移任务绝不许再去启动 ComfyUI")
+        self.assertEqual(state["status"], "cancelled", "取消状态不许被入口覆盖成 running")
+        self.assertEqual(state["stage"], "cancelled")
+
+    def test_a_live_job_still_enters_the_migrate_pipeline(self):
+        """反向断言：没被取消的任务照旧开跑（别把闸门修成一律拒绝）。"""
+        from backend import pipeline
+
+        state = {"id": "j2", "kind": "migrate", "status": "queued",
+                 "milestones": [{"id": "migrate", "status": "pending"}]}
+        seen: list[str] = []
+
+        async def fake_ensure(*_args, **_kwargs):
+            seen.append("ensure")
+            raise pipeline.PipelineError("停在这里", "测试：不再往后跑工作流")
+
+        async def fake_health():
+            return None
+
+        async def scenario():
+            with patch.object(pipeline, "store", self._job_store(state)), \
+                 patch.object(pipeline, "pipeline_lock", asyncio.Lock()), \
+                 patch.object(pipeline, "comfy_health", new=fake_health), \
+                 patch.object(pipeline.resources, "ensure_comfy", new=fake_ensure):
+                await pipeline.run_migrate_pipeline("j2")
+
+        asyncio.run(scenario())
+        self.assertEqual(seen, ["ensure"], "没被取消的任务必须真的进入链路")
+        self.assertEqual(state["status"], "failed", "链路内抛错照旧按失败收尾")
+
+    def test_a_cancel_stamp_survives_a_status_overwrite(self):
+        """取消印记 `cancelRequested` 必须压过被覆盖回来的 running 状态。"""
+        from backend import pipeline
+
+        state = {"id": "j3", "status": "running", "cancelRequested": True}
+        with patch.object(pipeline, "store", self._job_store(state)):
+            self.assertTrue(pipeline.is_job_cancelled("j3"),
+                            "状态被翻回 running 也要认得出来这是已取消的任务")
+
+    def test_every_pipeline_entry_walks_through_the_cancel_gate(self):
+        """源码级断言：所有入口都要过 `claim_job_run`（`run_migrate_pipeline` 就栽在这）。"""
+        import inspect
+
+        from backend import pipeline
+
+        for name in (
+            "run_pipeline", "run_migrate_pipeline", "run_upscale_job", "run_rvc_job",
+            "resume_singing_pipeline", "resume_migrate_pipeline",
+        ):
+            source = inspect.getsource(getattr(pipeline, name))
+            self.assertIn("claim_job_run", source, f"{name} 必须过取消闸门 claim_job_run")
+
+    def test_skipping_a_running_item_cancels_its_child_job(self):
+        """跳过一条正在出片的条目：必须**真的取消子任务**，不能只写个标记。"""
+        from backend import app as app_module
+
+        item = {"id": "i1", "status": "running", "videoJobId": "job-1",
+                "childJob": {"id": "job-1"}, "milestones": [{"id": "video", "status": "running"}]}
+        state = {"id": "b1", "items": [item], "status": "running"}
+        cancelled: list[str] = []
+
+        class _BatchStore:
+            def get(self, _batch_id):
+                return state
+
+            def mutate_item(self, _batch_id, _item_id, mutator):
+                mutator(item)
+                return state
+
+            def update(self, _batch_id, **changes):
+                state.update(changes)
+                return state
+
+        async def fake_cancel(job_id):
+            cancelled.append(job_id)
+            return {}
+
+        async def scenario():
+            with patch.object(app_module, "_batch_item_or_404", return_value=item), \
+                 patch.object(app_module, "batch_store", _BatchStore()), \
+                 patch.object(app_module, "cancel_item_work", return_value=False), \
+                 patch.object(app_module, "cancel_job", new=fake_cancel), \
+                 patch.object(app_module, "_wake_batch", lambda *_a, **_k: state):
+                await app_module.skip_batch_item("b1", "i1")
+
+        asyncio.run(scenario())
+        self.assertEqual(cancelled, ["job-1"], "跳过正在出片的一条，必须真的取消子任务")
+        self.assertTrue(item["skipRequested"])
+
+    def test_restarting_an_item_cancels_a_leftover_child_job(self):
+        """「重新开始」前必须掐掉上一轮还活着的子任务，否则它会变成烧显卡的孤儿。"""
+        from backend import batch_worker
+
+        item = {"id": "i1", "status": "skipped", "videoJobId": "job-9",
+                "childJob": {"id": "job-9"}, "outputs": {},
+                "milestones": [{"id": "video", "status": "running"}]}
+        state = {"id": "b1", "items": [item]}
+        cancelled: list[str] = []
+
+        class _BatchStore:
+            def get(self, _batch_id):
+                return state
+
+            def mutate_item(self, _batch_id, _item_id, mutator):
+                mutator(item)
+                return state
+
+        async def fake_cancel(child_id, _batch_id, _item_id):
+            cancelled.append(child_id)
+
+        async def scenario():
+            with patch.object(batch_worker, "batch_store", _BatchStore()), \
+                 patch.object(batch_worker.store, "get", lambda _job_id: {"status": "running"}), \
+                 patch.object(batch_worker, "_cancel_child_job_quietly", new=fake_cancel):
+                batch_worker.restart_item_to_run("b1", "i1")
+                await asyncio.sleep(0.05)
+
+        asyncio.run(scenario())
+        self.assertEqual(cancelled, ["job-9"], "重新开始前必须掐掉还活着的旧子任务")
+        self.assertIsNone(item["videoJobId"], "重置照旧清掉子任务指针")
+
+    def test_post_video_job_refuses_after_the_item_was_skipped(self):
+        """等流水线期间被跳过的条目：绝不许再提交出片任务。"""
+        from backend import batch_worker
+
+        item = {"id": "i1", "index": 1, "kind": "dance", "status": "skipped",
+                "skipRequested": True, "ratio": "9:16",
+                "sourcePath": __file__, "ai": {"reference_image_path": __file__}}
+        state = {"id": "b1", "items": [item]}
+        posted: list[str] = []
+
+        class _BatchStore:
+            def get(self, _batch_id):
+                return state
+
+            def mutate_item(self, _batch_id, _item_id, mutator):
+                mutator(item)
+                return state
+
+            def add_item_log(self, _batch_id, _item_id, message):
+                item.setdefault("logs", []).append({"time": "t", "message": message})
+                return state
+
+        async def fake_wait(*_args, **_kwargs):
+            return None
+
+        async def scenario():
+            with patch.object(batch_worker, "batch_store", _BatchStore()), \
+                 patch.object(batch_worker, "_wait_for_free_pipeline", fake_wait):
+                with self.assertRaises(asyncio.CancelledError):
+                    await batch_worker._post_video_job("b1", "i1")
+                posted.append("done")
+
+        asyncio.run(scenario())
+        self.assertEqual(posted, ["done"], "被跳过的条目必须当场中止提交")
+        self.assertTrue(
+            any("已被取消/跳过" in entry["message"] for entry in item.get("logs") or []),
+            item.get("logs"),
+        )
+
+    def test_terminal_items_lose_their_running_milestone(self):
+        """已结束的条目上不许留着「进行中」的里程碑（否则那一步永远转圈）。"""
+        from backend import batch_worker
+
+        state = {"id": "b1", "items": [
+            {"id": "i1", "status": "skipped", "milestones": [{"id": "video", "status": "running"}]},
+            {"id": "i2", "status": "deleted", "milestones": [{"id": "video", "status": "running"}]},
+            {"id": "i3", "status": "running", "milestones": [{"id": "video", "status": "running"}]},
+            {"id": "i4", "status": "awaiting_review", "milestones": [{"id": "video", "status": "pending"}]},
+        ]}
+        written: list[tuple[str, str]] = []
+
+        class _BatchStore:
+            def set_item_milestone(self, _batch_id, item_id, milestone_id, **changes):
+                written.append((item_id, changes["status"]))
+                return state
+
+        with patch.object(batch_worker, "batch_store", _BatchStore()):
+            changed = batch_worker.heal_terminal_item_milestones(state)
+
+        self.assertTrue(changed)
+        self.assertEqual(written, [("i1", "skipped"), ("i2", "skipped")],
+                         "只收尾已结束的条目，正在跑 / 等确认的一律不碰")
+
+
 class PublishWatcherTests(unittest.TestCase):
     """发布目录监听（2026-09-17 用户：「出现人物图.png 你直接放到候选人物图里并直接开始确认并出片
     不需要我去点击了」+「如果已经有的你不要重复跑」）。
