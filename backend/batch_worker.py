@@ -959,7 +959,7 @@ def douyin_download_failure_note(
     detail = "；".join(parts) or "原因未知"
     return (
         f"抖音下载失败（直连与下载器两条路由都没成功）。{detail}。"
-        "请先在抖音里确认这条作品能正常播放；仍失败就去 /douyin 页面刷新登录后重试。"
+        "请先在抖音里确认这条作品能正常播放；仍失败可稍后在批量里点「重新开始」重试本条。"
     )
 
 

@@ -27,7 +27,6 @@ import {
 } from "@phosphor-icons/react";
 import { BatchRoute } from "./BatchRoute";
 import { readJson, readJsonOrNull } from "./api";
-import { DouyinRoute } from "./DouyinRoute";
 import { MigrateRoute } from "./MigrateRoute";
 import { ImageWorkbenchRoute } from "./ImageWorkbenchRoute";
 import { QueuePanel } from "./QueuePanel";
@@ -914,7 +913,6 @@ function MotionStudioRoute() {
 
 export function App() {
   const path = window.location.pathname.replace(/\/+$/, "");
-  const isDouyinRoute = path === "/douyin";
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
   const isRvcRoute = path === "/rvc";
@@ -941,66 +939,49 @@ export function App() {
         <nav className="sidebar-navigation" aria-label="工作台导航">
           <p className="sidebar-section-label">工作台</p>
           <div className="route-switcher">
-            <a className={isDouyinRoute ? "active" : ""} href="/douyin">
-              <DownloadSimple weight={isDouyinRoute ? "fill" : "regular"} />
-              <span>抖音下载</span>
-            </a>
-            <a className={!isDouyinRoute ? "active" : ""} href="/">
-              <FilmSlate weight={!isDouyinRoute ? "fill" : "regular"} />
+            <a className="active" href="/">
+              <FilmSlate weight="fill" />
               <span>影动生成</span>
             </a>
           </div>
           <p className="route-caption">批量 · 生成 · 迁移 · 放大 · 音色 · 字幕</p>
 
-          {isDouyinRoute ? (
-            <>
-              <p className="sidebar-section-label">创作与管理</p>
-              <a className="sidebar-nav-item active" href="/douyin">
-                <DownloadSimple />
-                <span>链接下载</span>
-                <i />
-              </a>
-            </>
-          ) : (
-            <>
-              <p className="sidebar-section-label">创作与管理</p>
-              <a className={isBatchRoute || isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
-                <ListChecks />
-                <span>批量制作</span>
-                {(isBatchRoute || isWorkspaceRoute) && <i />}
-              </a>
-              <a className={isImagesRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/images">
-                <ImageSquare weight={isImagesRoute ? "fill" : "regular"} />
-                <span>图片与封面</span>
-                {isImagesRoute && <i />}
-              </a>
-              <a className={isSingingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/singing">
-                <MusicNotes weight="fill" />
-                <span>歌曲生成</span>
-                {isSingingRoute && <i />}
-              </a>
-              <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
-                <PersonSimpleRun />
-                <span>动作迁移</span>
-                {isMigrateRoute && <i />}
-              </a>
-              <a className={isUpscaleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/upscale">
-                <MagnifyingGlassPlus />
-                <span>二采放大</span>
-                {isUpscaleRoute && <i />}
-              </a>
-              <a className={isRvcRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/rvc">
-                <MicrophoneStage />
-                <span>音色转换</span>
-                {isRvcRoute && <i />}
-              </a>
-              <a className={isSubtitleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/subtitle">
-                <ClosedCaptioning />
-                <span>生成字幕</span>
-                {isSubtitleRoute && <i />}
-              </a>
-            </>
-          )}
+          <p className="sidebar-section-label">创作与管理</p>
+          <a className={isBatchRoute || isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
+            <ListChecks />
+            <span>批量制作</span>
+            {(isBatchRoute || isWorkspaceRoute) && <i />}
+          </a>
+          <a className={isImagesRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/images">
+            <ImageSquare weight={isImagesRoute ? "fill" : "regular"} />
+            <span>图片与封面</span>
+            {isImagesRoute && <i />}
+          </a>
+          <a className={isSingingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/singing">
+            <MusicNotes weight="fill" />
+            <span>歌曲生成</span>
+            {isSingingRoute && <i />}
+          </a>
+          <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
+            <PersonSimpleRun />
+            <span>动作迁移</span>
+            {isMigrateRoute && <i />}
+          </a>
+          <a className={isUpscaleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/upscale">
+            <MagnifyingGlassPlus />
+            <span>二采放大</span>
+            {isUpscaleRoute && <i />}
+          </a>
+          <a className={isRvcRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/rvc">
+            <MicrophoneStage />
+            <span>音色转换</span>
+            {isRvcRoute && <i />}
+          </a>
+          <a className={isSubtitleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/subtitle">
+            <ClosedCaptioning />
+            <span>生成字幕</span>
+            {isSubtitleRoute && <i />}
+          </a>
         </nav>
 
         <div className="sidebar-system">
@@ -1015,7 +996,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
+        {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
       </div>
     </div>
   );

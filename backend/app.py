@@ -3212,10 +3212,6 @@ if dist_dir.is_dir():
         改了三次前端，用户页面还停在最早的 bundle，新按钮全看不到）。"""
         return FileResponse(dist_dir / "index.html", headers={"Cache-Control": "no-store"})
 
-    @app.get("/douyin", include_in_schema=False)
-    async def douyin_frontend():
-        return _spa_index()
-
     @app.get("/migrate", include_in_schema=False)
     async def migrate_frontend():
         return _spa_index()
