@@ -902,12 +902,11 @@ export function BatchRoute() {
   // 「等待你的确认」那一屏要把后端掌握的**全部**信息摊开；但排障用的技术字段（条目 id、
   // 下载/视频子任务、源文件路径）收进「高级信息」折叠区，不再一上来就堆满一屏
   // （2026-09-15 用户：「信息展示太杂」）。
+  // 只保留「这一屏其它地方看不到」的字段：类型/状态在头部与状态徽章里、源作品文案与
+  // 源文件名在「本条源视频」卡片里，都不再重复（2026-09-18 用户：「列表展开信息简略一下」）。
   const reviewCoreFacts = (ai: BatchAI, item: BatchItem): Array<[string, string]> => {
     const image = String(ai.reference_image_path || "");
-    const facts: Array<[string, string]> = [
-      ["类型", item.kind === "singing" ? "唱歌视频" : "跳舞视频"],
-      ["状态", `${batchStatusLabel(item.status)} · ${item.stage}`],
-    ];
+    const facts: Array<[string, string]> = [];
     // 跳舞条目：这条到底按哪种模式出片 —— 它决定提交给迁移工作流 #353 的开关
     // （2026-09-15 用户：「本条信息 里也加上是动作迁移 还是人物替换 的信息描述」）。
     if (item.kind === "dance") {
@@ -917,8 +916,6 @@ export function BatchRoute() {
     }
     facts.push(
       ["抖音作品号", String(item.awemeId || "")],
-      ["源作品文案", sourceCaption(item)],
-      ["源文件名", String(item.sourceName || "")],
       ["识别歌曲", String(ai.song_name || "")],
       ["歌曲情绪", String(ai.song_mood || "")],
       ["造型来源", styleSourceLabel(ai.style_source)],
@@ -1444,21 +1441,20 @@ export function BatchRoute() {
               <label><span>标题</span><p>{item.ai.title}</p></label>
               <label><span>简介</span><p>{item.ai.introduction}</p></label>
               <label><span>标签</span><div className="batch-tags">{item.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}</div></label>
-              {/* 确认这一屏要把后端掌握的**全部**信息给出来（用户 2026-09-13）——
-                  确认相关的字段直接展示；排障用的技术字段收进「高级信息」折叠区，避免一屏太杂
-                  （2026-09-15 用户：「信息展示太杂」）。条目日志不放这里（用户要求去掉）。 */}
-              <label>
-                <span>本条全部信息</span>
-                <dl className="batch-facts">
-                  {reviewCore.map(([label, value]) => (
-                    <div key={label}>
-                      <dt>{label}</dt>
-                      <dd>{value || "—"}</dd>
-                    </div>
-                  ))}
-                </dl>
-                <details className="batch-advanced">
-                  <summary>高级信息（排障用）</summary>
+              {/* 确认这一屏的信息照旧保留，但整块默认折叠（2026-09-18 用户：「列表展开信息
+                  简略一下」）：字段没删，只是不再一上来就堆满一屏。排障字段列在后面。 */}
+              <details className="batch-collapse">
+                <summary>本条全部信息<small>含排障字段</small></summary>
+                <div className="batch-collapse-body">
+                  <dl className="batch-facts">
+                    {reviewCore.map(([label, value]) => (
+                      <div key={label}>
+                        <dt>{label}</dt>
+                        <dd>{value || "—"}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="batch-facts-divider">排障字段</div>
                   <dl className="batch-facts">
                     {reviewAdvanced.map(([label, value]) => (
                       <div key={label}>
@@ -1467,8 +1463,8 @@ export function BatchRoute() {
                       </div>
                     ))}
                   </dl>
-                </details>
-              </label>
+                </div>
+              </details>
               {atReview && renderSettings(item)}
               {atReview && (
                 <div className="batch-review-actions">
@@ -1527,46 +1523,47 @@ export function BatchRoute() {
         </section>
 
         {stageEntries.length > 0 && (
-          <section className="batch-child-panel">
-            <div className="batch-panel-title">
-              <span>生成阶段产物</span>
-              <small>只读 · 点开即看，不影响任务</small>
+          <details className="batch-collapse">
+            <summary>生成阶段产物<small>{stageEntries.length} 个 · 只读，点开即看</small></summary>
+            <div className="batch-collapse-body">
+              <div className="batch-stage-list">
+                {stageEntries.map(([key, label]) => (
+                  <a
+                    key={key}
+                    href={`/api/batches/${batch!.id}/items/${item.id}/stage/${key}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {label}
+                  </a>
+                ))}
+              </div>
             </div>
-            <div className="batch-stage-list">
-              {stageEntries.map(([key, label]) => (
-                <a
-                  key={key}
-                  href={`/api/batches/${batch!.id}/items/${item.id}/stage/${key}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {label}
-                </a>
-              ))}
-            </div>
-          </section>
+          </details>
         )}
 
         {item.childJob && (
-          <section className="batch-child-panel">
-            <div className="batch-panel-title">
-              <span>真实生成流程</span>
+          <details className="batch-collapse">
+            <summary>
+              真实生成流程
               <small>{item.childJob.currentNodeTitle || batchStatusLabel(item.childJob.status)}</small>
+            </summary>
+            <div className="batch-collapse-body">
+              <div className="batch-child-badges">
+                {item.childJob.currentSegment && <i>H3 分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</i>}
+                {item.childJob.cleanBatch && <i>去字幕 {item.childJob.cleanBatch}/{item.childJob.cleanBatches}</i>}
+                {item.childJob.upscaleBatch && <i>二采 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</i>}
+              </div>
+              <div className="batch-steps compact">
+                {(item.childJob.milestones || []).map((step) => (
+                  <div className={`batch-step ${step.status}`} key={step.id}>
+                    <span className="batch-step-icon">{stepIcon(step.status)}</span>
+                    <div><strong>{step.label}</strong><small>{step.subtitle}</small></div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="batch-child-badges">
-              {item.childJob.currentSegment && <i>H3 分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</i>}
-              {item.childJob.cleanBatch && <i>去字幕 {item.childJob.cleanBatch}/{item.childJob.cleanBatches}</i>}
-              {item.childJob.upscaleBatch && <i>二采 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</i>}
-            </div>
-            <div className="batch-steps compact">
-              {(item.childJob.milestones || []).map((step) => (
-                <div className={`batch-step ${step.status}`} key={step.id}>
-                  <span className="batch-step-icon">{stepIcon(step.status)}</span>
-                  <div><strong>{step.label}</strong><small>{step.subtitle}</small></div>
-                </div>
-              ))}
-            </div>
-          </section>
+          </details>
         )}
 
         {/* 成品区整个去掉（2026-09-13 用户要求）：交付照做（文件照样写进发布目录），
