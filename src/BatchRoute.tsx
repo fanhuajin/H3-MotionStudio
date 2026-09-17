@@ -1261,15 +1261,15 @@ export function BatchRoute() {
             ) : (
               <div className="batch-source-empty">还没下载源视频<br />下载完成后这里可以直接播放核对</div>
             )}
-            <div className="batch-source-meta">
-              <strong title={sourceCaption(item)}>
-                {sourceCaption(item) || "这一条还没有下载源视频"}
-              </strong>
-              {/* 本机换源后没有抖音出处了，不显示「打开抖音原链接」，免得用户以为没换成功 */}
-              {item.sourceOrigin !== "local" && (
-                <a href={item.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
-              )}
-            </div>
+          </div>
+          <div className="batch-source-meta">
+            <strong title={sourceCaption(item)}>
+              {sourceCaption(item) || "这一条还没有下载源视频"}
+            </strong>
+            {/* 本机换源后没有抖音出处了，不显示「打开抖音原链接」，免得用户以为没换成功 */}
+            {item.sourceOrigin !== "local" && (
+              <a href={item.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
+            )}
           </div>
 
           {replacingSource && (
