@@ -1755,9 +1755,11 @@ body {
 .batch-stage-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .batch-stage-list a { display: inline-flex; align-items: center; min-height: 30px; padding: 0 11px; border: 1px solid #463a64; border-radius: 7px; color: #d9d3e9; background: #17112f; font-size: 11px; text-decoration: none; transition: .18s ease; }
 .batch-stage-list a:hover { border-color: var(--shell-accent); color: #e8f6f8; }
-.batch-panel-title { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 8px; }
+.batch-panel-title { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 8px; }
 .batch-panel-title span { color: #eeeafa; font-size: 13px; font-weight: 650; }
 .batch-panel-title small { color: var(--shell-muted); font-size: 10px; text-align: right; }
+/* 「当前条目进度」标题右侧：真实分段 / 去字幕 / 二采徽章 + 条目状态，窄屏可换行 */
+.batch-progress-head { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 9px; }
 .batch-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 7px; }
 .batch-steps.compact { margin-top: 9px; }
 .batch-step { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 46px; padding: 7px; border: 1px solid #302744; border-radius: 7px; background: #100c27; }

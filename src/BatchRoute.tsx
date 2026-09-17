@@ -1497,7 +1497,19 @@ export function BatchRoute() {
             提示词仍然照常提交给工作流，只是不再在页面上展示。 */}
 
         <section className="batch-progress-panel">
-          <div className="batch-panel-title"><span>当前条目进度</span><small>{batchStatusLabel(item.status)}</small></div>
+          {/* 真实的 H3 分段 / 去字幕 / 二采进度摆在标题右侧，不展开折叠区也能看见
+              （2026-09-18 用户：「H3 分段 5/5 二采 21/41 这些全部放到当前条目的右侧」）。 */}
+          <div className="batch-panel-title">
+            <span>当前条目进度</span>
+            <div className="batch-progress-head">
+              <div className="batch-child-badges">
+                {item.childJob?.currentSegment && <i>H3 分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</i>}
+                {item.childJob?.cleanBatch && <i>去字幕 {item.childJob.cleanBatch}/{item.childJob.cleanBatches}</i>}
+                {item.childJob?.upscaleBatch && <i>二采 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</i>}
+              </div>
+              <small>{batchStatusLabel(item.status)}</small>
+            </div>
+          </div>
           <div className="batch-steps">
             {item.milestones.map((step) => {
               const percent = stepPercent(step);
@@ -1546,11 +1558,6 @@ export function BatchRoute() {
               <small>{item.childJob.currentNodeTitle || batchStatusLabel(item.childJob.status)}</small>
             </summary>
             <div className="batch-collapse-body">
-              <div className="batch-child-badges">
-                {item.childJob.currentSegment && <i>H3 分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</i>}
-                {item.childJob.cleanBatch && <i>去字幕 {item.childJob.cleanBatch}/{item.childJob.cleanBatches}</i>}
-                {item.childJob.upscaleBatch && <i>二采 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</i>}
-              </div>
               <div className="batch-steps compact">
                 {(item.childJob.milestones || []).map((step) => (
                   <div className={`batch-step ${step.status}`} key={step.id}>
