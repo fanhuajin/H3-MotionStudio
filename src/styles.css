@@ -1646,7 +1646,7 @@ body {
 /* 「启动」：队列已排好、等用户点它才跑流程 */
 .batch-head-actions button.start { border-color: var(--shell-accent); color: #061316; background: var(--shell-accent); font-weight: 700; }
 .batch-head-actions button.start:hover { filter: brightness(1.08); }
-.batch-dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; min-height: 260px; padding: 20px; border: 1.5px dashed #4a3f66; border-radius: 10px; color: #b9b2cd; background: #100c27; text-align: center; cursor: pointer; transition: .18s ease; }
+.batch-dropzone { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 190px; padding: 16px; border: 1.5px dashed #4a3f66; border-radius: 10px; color: #b9b2cd; background: #100c27; text-align: center; cursor: pointer; transition: .18s ease; }
 .batch-dropzone:hover, .batch-dropzone.over { border-color: var(--shell-accent); color: #e8f6f8; background: rgba(24, 42, 60, .62); }
 .batch-dropzone svg { width: 30px; height: 30px; color: var(--shell-accent); }
 .batch-dropzone strong { font-size: 13px; }
@@ -1669,7 +1669,13 @@ body {
 /* 列表里的源作品文案：模型起的标题认不出是哪条视频，用它才认得出（单行省略） */
 .batch-item-copy .batch-item-source { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #8d86a6; }
 /* 本条源视频：确认前核对「这是哪条抖音视频」用的，只读 + 可就地替换 */
-.batch-source-panel { margin-bottom: 10px; padding: 10px 12px; border: 1px solid rgba(55, 216, 230, .25); border-radius: 9px; background: #0a081f; }
+/* 顶部媒体行：本条源视频 | 候选人物图 并排同一行（2026-09-18 用户：「放到同一行
+   图片不需要那么大 信息不需要那么多」）；窄屏自动叠回一列 */
+.batch-media-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; margin-bottom: 10px; }
+.batch-media-row .batch-source-panel { margin-bottom: 0; }
+.batch-candidate-panel { min-width: 0; padding: 10px 12px; border: 1px solid rgba(55, 216, 230, .25); border-radius: 9px; background: #0a081f; }
+.batch-candidate-panel .batch-empty { margin: 26px 10px; }
+.batch-source-panel { padding: 10px 12px; border: 1px solid rgba(55, 216, 230, .25); border-radius: 9px; background: #0a081f; }
 .batch-source-head { display: flex; align-items: center; gap: 10px; }
 .batch-source-head button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; border: 1px solid #44385f; border-radius: 7px; color: #cbc5da; background: #15102c; font-size: 11px; }
 .batch-source-head button:hover { border-color: #65577f; color: #fff; }
@@ -1677,7 +1683,8 @@ body {
 .batch-source-body video { width: auto; max-width: 34%; max-height: 150px; border: 1px solid #302746; border-radius: 8px; background: #070616; }
 .batch-source-empty { display: grid; place-items: center; width: 200px; min-height: 84px; padding: 10px; border: 1px dashed #332a4d; border-radius: 8px; color: var(--shell-muted); background: #070616; font-size: 11px; text-align: center; line-height: 1.7; }
 .batch-source-meta { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.batch-source-meta strong { color: #eeeaf7; font-size: 12px; font-weight: 600; line-height: 1.6; }
+/* 源作品文案最多两行，保持媒体行高度紧凑 */
+.batch-source-meta strong { color: #eeeaf7; font-size: 12px; font-weight: 600; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .batch-source-meta small { color: #8d86a6; font-size: 10px; line-height: 1.6; word-break: break-all; }
 .batch-source-meta em { color: var(--shell-muted); font-size: 10px; font-style: normal; }
 .batch-source-meta a { align-self: flex-start; color: #8f88a7; font-size: 11px; text-decoration: none; }
@@ -1720,18 +1727,14 @@ body {
 /* 审核区单列（2026-09-18 用户：「本条源视频 和 候选人物图 放在同一列 不要两列」）：
    源视频面板在上、候选人物图在下、文案在最下面，全部纵向排，不再左右两列 */
 .batch-review { display: grid; grid-template-columns: 1fr; gap: 14px; padding: 12px; border: 1px solid rgba(55, 216, 230, .32); border-radius: 10px; background: linear-gradient(145deg, rgba(17, 17, 45, .96), rgba(10, 8, 29, .96)); }
-/* 图片生成中的 loading：整块（首次出图）与覆盖在图上（重新生成）两种 */
-.batch-review-loading { grid-template-columns: 1fr; min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
-.batch-review-loading svg, .batch-image-loading svg { width: 30px; height: 30px; color: var(--shell-accent); }
-.batch-review-loading strong { color: #e8f6f8; font-size: 14px; }
-.batch-review-loading small { color: var(--shell-muted); font-size: 11px; }
+/* 图片生成中的 loading：覆盖在候选图格子里（首次出图与重新生成两种场景同用） */
+.batch-image-loading svg { width: 30px; height: 30px; color: var(--shell-accent); }
 .batch-image-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; background: rgba(7, 6, 22, .82); backdrop-filter: blur(2px); }
 .batch-image-loading strong { color: #e8f6f8; font-size: 13px; }
 .batch-image-loading small { color: var(--shell-muted); font-size: 11px; }
-.batch-review-image { position: relative; min-height: 300px; padding: 12px; overflow: hidden; display: grid; place-items: center; border: 1px solid #302746; border-radius: 8px; background: #070616; }
-/* 单列后图片整行居中展示：按原比例缩放、高度封顶，不拉伸变形 */
-.batch-review-image img { display: block; max-width: 100%; max-height: 460px; object-fit: contain; }
-.batch-review-label { position: absolute; z-index: 2; top: 10px; left: 10px; display: flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 6px; color: #dcf9fb; background: rgba(7, 7, 24, .82); backdrop-filter: blur(7px); font-size: 10px; }
+.batch-review-image { position: relative; min-height: 200px; padding: 8px; overflow: hidden; display: grid; place-items: center; border: 1px solid #302746; border-radius: 8px; background: #070616; }
+/* 候选人物图与源视频并排后整体缩小：按原比例缩放、高度封顶 240px，不拉伸变形 */
+.batch-review-image img { display: block; max-width: 100%; max-height: 240px; object-fit: contain; }
 .batch-review-copy { min-width: 0; display: flex; flex-direction: column; }
 .batch-review-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 11px; border-bottom: 1px solid var(--shell-line); }
 .batch-review-title span { color: var(--shell-accent); font-size: 14px; font-weight: 700; }
@@ -1813,7 +1816,8 @@ body {
 
 @media (max-width: 1180px) {
   .batch-workspace { grid-template-columns: 240px minmax(0, 1fr); }
-  .batch-review-image { min-height: 280px; }
+  .batch-media-row { grid-template-columns: 1fr; }
+  .batch-review-image { min-height: 220px; }
 }
 @media (max-width: 860px) {
   .batch-page { padding: 24px 14px 42px; }
@@ -1825,7 +1829,7 @@ body {
 }
 @media (max-width: 560px) {
   .batch-review { padding: 9px; }
-  .batch-review-image { min-height: 240px; }
+  .batch-review-image { min-height: 200px; }
   .batch-review-actions { flex-direction: column; }
   .batch-output-grid { grid-template-columns: 1fr; }
 }
