@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 
 from . import batch_ai, batch_image, batch_portrait
 from .batch_store import batch_store
@@ -1030,32 +1030,53 @@ async def _download(batch_id: str, item_id: str) -> Path:
         await douyin_service.stop()
 
 
-def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path:
-    """从源视频抽一帧全分辨率画面，作为 Krea2 双图编辑的「图像-1 造型场景」。"""
-    duration = _video_duration_seconds(source)
-    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.unlink(missing_ok=True)
+def _frame_detail_score(data: bytes) -> float:
+    """Return a lightweight sharpness score without adding a CV-model dependency.
+
+    The scene frame becomes the image-generation reference. A frame with
+    motion-smeared hands can carry that defect into the generated portrait, so
+    favour the frame with the clearest local edges.
+    """
+    with Image.open(io.BytesIO(data)) as opened:
+        image = opened.convert("L")
+    image.thumbnail((480, 480), Image.Resampling.LANCZOS)
+    edges = image.filter(ImageFilter.FIND_EDGES)
+    return float(ImageStat.Stat(edges).var[0])
+
+
+def _extract_frame_bytes(source: Path, timestamp: float, *, flags: int) -> bytes | None:
     result = subprocess.run(
         [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-y",
-            "-ss",
-            f"{duration * ratio:.3f}",
-            "-i",
-            str(source),
-            "-frames:v",
-            "1",
-            str(target),
+            "ffmpeg", "-v", "error", "-ss", f"{timestamp:.3f}", "-i", str(source),
+            "-frames:v", "1", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
         ],
         capture_output=True,
         timeout=120,
         creationflags=flags,
     )
-    if result.returncode != 0 or not target.is_file():
+    return result.stdout if result.returncode == 0 and result.stdout else None
+
+
+def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path:
+    """Choose a clear scene frame and reject a hand-motion-blurred timestamp.
+
+    A single fixed timestamp frequently lands on a gesture. Sampling nearby
+    moments and retaining the sharpest frame prevents such frames becoming an
+    image-generation reference.
+    """
+    duration = _video_duration_seconds(source)
+    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.unlink(missing_ok=True)
+    ratios = (ratio, ratio - 0.12, ratio + 0.12, ratio - 0.06, ratio + 0.06)
+    candidates: list[tuple[float, bytes]] = []
+    for candidate_ratio in dict.fromkeys(max(0.04, min(0.96, value)) for value in ratios):
+        frame = _extract_frame_bytes(source, duration * candidate_ratio, flags=flags)
+        if frame:
+            candidates.append((_frame_detail_score(frame), frame))
+    if not candidates:
         raise RuntimeError("从源视频抽帧失败，无法生成候选人物图")
+    target.write_bytes(max(candidates, key=lambda candidate: candidate[0])[1])
     return target
 
 
