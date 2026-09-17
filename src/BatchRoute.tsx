@@ -186,6 +186,7 @@ interface BatchState {
   currentItemId?: string | null;
   notice?: string;
   pauseRequested?: boolean;
+  recoveryActive?: boolean;
   /** 整批跑完后是否自动关机（页面开关，**默认关闭**） */
   shutdownOnComplete?: boolean;
   /** 时间戳（ISO）：用来算「已运行多久」 */
@@ -414,6 +415,11 @@ export function BatchRoute() {
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [imageToken, setImageToken] = useState(0);
+  // 发布目录监听（2026-09-17 用户要求）：发布目录里出现新的 人物图.png 就自动挂成候选图
+  // 并自动「确认并出片」。开关落盘在后端（data/publish_watch.json），页面只读写它。
+  const [watchOn, setWatchOn] = useState(true);
+  const [watchBusy, setWatchBusy] = useState(false);
+  const [watchHint, setWatchHint] = useState("");
   // 「替换源视频」：贴错链接 / 放错槽位（唱歌视频贴进跳舞口）时不用删了重加
   const [replacingSource, setReplacingSource] = useState(false);
   const [replaceUrl, setReplaceUrl] = useState("");
@@ -500,6 +506,44 @@ export function BatchRoute() {
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      fetch("/api/watch/publish-portrait", { cache: "no-store" })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: { enabled?: boolean } | null) => {
+          if (alive && data && typeof data.enabled === "boolean") setWatchOn(data.enabled);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = window.setInterval(load, 10000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const togglePublishWatch = async () => {
+    const next = !watchOn;
+    setWatchBusy(true);
+    setWatchHint("");
+    try {
+      const response = await fetch("/api/watch/publish-portrait", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      const data = await readJson<{ enabled?: boolean }>(response, "切换监听失败");
+      setWatchOn(Boolean(data.enabled));
+      setWatchHint(next ? "已开启：发布目录里出现新的人物图就会自动确认出片" : "已关闭：仍需要你手动确认");
+    } catch (reason) {
+      setWatchHint(String((reason as Error).message || reason));
+    } finally {
+      setWatchBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!batch?.id) return;
@@ -1680,12 +1724,28 @@ export function BatchRoute() {
                   批量操作栏），后端 `/pause`、`/resume`、`/cancel` 接口保留（API 能力）。
                   只留一个**恢复用**的「继续」，且只在批次已经处于暂停状态时出现 —— 这个状态页面
                   自己造不出来（唯一来源是本地服务在备料中途重启时的安全暂停），不留就会卡死。 */}
-              {batch.status === "paused" && (
-                <div className="batch-table-controls">
+              <div className="batch-table-controls">
+                {batch.status === "paused" && !batch.recoveryActive && (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
-                </div>
-              )}
+                )}
+                {/* 发布目录监听（2026-09-17 用户：「出现了人物图.png 你直接放到候选人物图里
+                    并直接开始确认并出片 不需要我去点击了」）：把这个开关放在表格右上角，
+                    随时能看见状态、随时能关掉。 */}
+                <label
+                  className={`batch-watch ${watchOn ? "on" : ""}`}
+                  title={"发布目录：E:\\AI_Exports\\H3-MotionStudio\\发布成品\\…\\人物图.png\n出现新的人物图就自动挂成候选图并自动「确认并出片」；已经处理过的那张不会重复跑。"}
+                >
+                  <input
+                    type="checkbox"
+                    checked={watchOn}
+                    disabled={watchBusy}
+                    onChange={() => void togglePublishWatch()}
+                  />
+                  <span>监听发布目录人物图</span>
+                </label>
+              </div>
             </div>
+            {watchHint && <div className="batch-watch-hint">{watchHint}</div>}
 
             {/* 批量操作栏：勾选任意一条后出现 */}
             {selectedIds.size > 0 && (
@@ -1827,6 +1887,13 @@ export function BatchRoute() {
                             {item.childJob?.currentSegment && item.childJob.estimatedSegments && (
                               <small>分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
                             )}
+                            {batch?.recoveryActive
+                              && item.id === batch.currentItemId
+                              && item.childJob?.currentNodeTitle && (
+                                <small className="batch-elapsed">
+                                  <Timer weight="fill" />恢复中 · {item.childJob.currentNodeTitle}
+                                </small>
+                              )}
                             {/* 只给「本条进行中」的那一条显示时间（实际干活时间，不含排队/等确认）；不要「已用」这类标签字 */}
                             {batch?.status === "running"
                               && item.id === batch?.currentItemId

@@ -5,19 +5,20 @@
 **单链路**：所有图片生成（候选人物图 + 封面）共用 `_IMAGE_LOCK`，
 同一时刻只跑一条，前一条没跑完下一条不开始 —— 绝不并发。
 
-实现方式见 `backend.chatgpt_desktop`（窗口置前 + 剪贴板粘贴 + 点发送 + 从查看器另存）。
-CDP 与 UIA 两条路都已实测排除：
-  - CDP：真实登录 profile 下应用不开放远程调试端口；
-  - UIA：Chromium 不把网页内容暴露给无障碍树。
+实现方式见 `backend.chatgpt_cdp`（CDP 连专用实例、静默操作 DOM、canvas 取图）。
+提示词一律以 `.txt` **附件**形式发出，输入框里只留一句短说明（用户 2026-09-16：
+「提示词太长了…不要在输入框框中输入 不然会被风控」）。
 
 开关（默认关闭，不影响原 manual 模式）：
   H3_AUTO_CHATGPT_IMAGE=1   备料后自动生成候选人物图
   H3_AUTO_CHATGPT_COVER=1   落盘后自动生成封面
+  H3_CHATGPT_PROMPT_AS_FILE=0  退回「把长提示词粘进输入框」的旧行为（默认走附件）
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 import time
 from pathlib import Path
 
@@ -38,6 +39,19 @@ DEFAULT_PROMPT_43 = Path(r"C:\Users\admin\Desktop\4比3图片.txt")
 DEFAULT_PROMPT_916 = Path(r"C:\Users\admin\Desktop\9比16图片.txt")
 
 
+def write_prompt_attachment(prompt: str, name: str = "提示词.txt") -> Path:
+    """把要发的提示词写成 .txt 落到临时目录，供 CDP 以**附件**形式挂进输入框。
+
+    不写进条目目录：那份 `出图提示词.txt` 是给用户看/给人工流程用的，可能带「修改意见」，
+    与这次真正发出去的内容不是一回事。
+    """
+    base = Path(tempfile.gettempdir()) / "h3-chatgpt-prompts"
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / name
+    path.write_text(prompt, encoding="utf-8")
+    return path
+
+
 def prompt_for_kind(kind: str) -> str:
     """按条目类型取用户桌面上的提示词；文件缺失时返回空串（由调用方退回项目提示词）。"""
     if str(kind) == "dance":
@@ -51,6 +65,10 @@ def prompt_for_kind(kind: str) -> str:
 
 
 # ---------------- 开关 ----------------
+# 2026-09-16 用户：「去除图片生成的自动化流程吧 只保留生成字幕的流程」——
+# 候选人物图、封面这两条 ChatGPT 桌面端出图的自动化**全部默认关闭**，图片改回纯手工作业
+# （素材备好自己出图、自己上传），链路里只保留「唱歌条目出片后加字幕」这一条自动化。
+# 想临时恢复某一条就把对应变量设成 1（见 AGENTS.md）。
 def auto_candidate_enabled() -> bool:
     return settings.env_value("H3_AUTO_CHATGPT_IMAGE", "0").strip() == "1"
 
@@ -60,13 +78,15 @@ def auto_cover_enabled() -> bool:
 
 
 def auto_confirm_enabled() -> bool:
-    """候选人物图一到就**自动放行出片**，跳过人工确认环节（默认开启）。
+    """候选人物图一到就自动放行出片。**默认关闭**（2026-09-16 用户要求去掉图片自动化）。
 
-    用户 2026-09-15：「自动化流程不需要我确认了 之后候选人物图生成了直接开始任务」。
-    出片本身仍然严格一条一条；想恢复「等你确认」这个审核点就把 `H3_AUTO_CONFIRM` 设成 `0`。
+    历史：2026-09-15 用户说过「自动化流程不需要我确认了」，所以当时默认开启；
+    2026-09-16 改为去掉整条图片自动化，这里随之回到**人工审核点**：
+    图由用户自己出/自己上传，上传后停在「等待你的确认」，点「确认并出片」才出片。
+    想恢复自动放行把 `H3_AUTO_CONFIRM` 设成 `1`。
     """
-    raw = str(settings.env_value("H3_AUTO_CONFIRM", "1") or "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    raw = str(settings.env_value("H3_AUTO_CONFIRM", "0") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def is_generating(batch_id: str, item_id: str) -> bool:
@@ -214,7 +234,11 @@ def _generate_candidate_sync(batch_id: str, item_id: str, feedback: str = "") ->
 
     out = _out_path(batch_id, item_id, "反馈" if feedback else "")
     try:
-        got = cd.generate(images, prompt, save_to=out)
+        # 提示词一律走 .txt 附件（用户 2026-09-16：「太长了…不要在输入框框中输入 不然会被风控」
+        # 追加：「你不是已经又提示词文件了吗 问什么输入框还要重新输入一遍」）：
+        # **不传 instruction**，输入框保持空的，直接发附件；规则全在附件正文里。
+        prompt_file = write_prompt_attachment(prompt)
+        got = cd.generate(images, prompt, save_to=out, prompt_file=prompt_file)
         if not got:
             raise RuntimeError("桌面端未产出图片（生成超时或取图失败）")
         _upload_item_image(batch_id, item_id, str(got))
@@ -235,9 +259,30 @@ def _generate_candidate_sync(batch_id: str, item_id: str, feedback: str = "") ->
 
 
 # ---------------- 封面 ----------------
+# 两张封面都必须**沿用人物图（本人固定参考那张）的背景**（用户 2026-09-16：
+# 「生成的封面图背景要和人物图背景相同」）：封面与人物图是同一套物料，背景一换就图文脱节。
+COVER_BACKGROUND_RULE = (
+    "【最重要】背景必须与人物图的背景**完全相同**：沿用同一场景、同一环境、同一色调、"
+    "同一光线方向与明暗，不要换背景、不要重新设计环境、不要改成纯色或渐变、"
+    "不要加新的光斑/星点/花纹/道具/文字/水印/边框。"
+)
 COVER_TASKS = [
-    ("B站4:3", "请根据这份发布文案和人物图，生成一张 B站 4:3 横版封面图。", "封面_B站4x3.png"),
-    ("抖音3:4", "请根据这份发布文案和人物图，生成一张 抖音 3:4 竖版封面图。", "封面_抖音3x4.png"),
+    (
+        "B站4:3",
+        "请根据这份发布文案和人物图，生成一张 B站 4:3 横版封面图（宽 4、高 3）。"
+        + COVER_BACKGROUND_RULE
+        + "人物与人物图里的本人保持同一张脸、同一妆造、同一服装；"
+        "只允许调整取景与构图（横版），不要改变背景。直接出图，不要问我。",
+        "封面_B站4x3.png",
+    ),
+    (
+        "抖音3:4",
+        "再生成一张抖音 3:4 竖版封面图（宽 3、高 4），人物图与上文里的背景保持不变。"
+        + COVER_BACKGROUND_RULE
+        + "竖版只改变画幅与取景，背景、色调、光线、人物形象全部照旧；"
+        "不要沿用上一张横版封面的构图，直接出图，不要问我。",
+        "封面_抖音3x4.png",
+    ),
 ]
 
 
@@ -253,9 +298,12 @@ def _covers_sync(publish_folder: str, copy_file: str, image_file: str) -> None:
     用户原话：「B站4:3 → 抖音3:4，串行。不要新开窗口，在同一个窗口发布不同的文案就可以了，
     AI 会理解的。」——所以只有第一条开新对话，第二条直接在同一个对话里继续发指令
     （图已经在上下文里了，不必重贴）。
+
+    提示词同样走 .txt 附件（用户 2026-09-16 的风控要求），只有第一条挂附件，第二条
+    复用上文里的规则与人物图。
     """
     folder = Path(publish_folder)
-    prompt_base = Path(copy_file).read_text(encoding="utf-8", errors="replace")
+    copy_text = Path(copy_file).read_text(encoding="utf-8", errors="replace")
     for i, (tag, instruction, fname) in enumerate(COVER_TASKS):  # 顺序写死，不做成可并行
         target = folder / fname
         # 已经有这张封面就不重复生成（用户 2026-09-15：「有对应图片了不需要重复生成」）
@@ -263,12 +311,18 @@ def _covers_sync(publish_folder: str, copy_file: str, image_file: str) -> None:
             logger.info("封面已存在，跳过生成：%s", target)
             continue
         try:
-            imgs = [image_file] if i == 0 else []  # 第二张复用上文里的图
+            first = i == 0
+            imgs = [image_file] if first else []  # 第二张复用上文里的图
+            body = f"{copy_text}\n\n{instruction}"
+            # 附件模式：不传 instruction —— 第一条的规则全在附件正文里，输入框留空；
+            # 第二条只是同一对话里的后续指令（没有附件可挂），才把这句话打出去。
             got = cd.generate(
                 imgs,
-                f"{prompt_base}\n\n{instruction}",
+                body,
                 save_to=target,
-                new_chat=(i == 0),  # 只有第一条开新对话，其余在同一对话里继续
+                new_chat=first,  # 只有第一条开新对话，其余在同一对话里继续
+                prompt_file=write_prompt_attachment(body) if first else None,
+                instruction=None if first else instruction,
             )
             if got:
                 logger.info("封面已生成 %s -> %s", tag, got)

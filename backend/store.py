@@ -65,6 +65,35 @@ def rvc_milestones() -> list[dict[str, Any]]:
     ]
 
 
+def subtitle_milestones() -> list[dict[str, Any]]:
+    """生成字幕路由里程碑：就是批量唱歌条目出片后那条链路（2026-09-16 定型）。
+
+    剪映「识别歌词」拿时间轴（用户：「剪映的歌词识别 他的时间是最准的」）→ 网易云官方歌词
+    逐句核对**文字**（时间轴一字不动）→ ffmpeg + libass 按剪映手书观感烧录。
+    不经过 ComfyUI / RVC，但会独占剪映（打开草稿那一下用一次真实鼠标双击）。
+    """
+    return [
+        {
+            "id": "recognize",
+            "label": "剪映识别歌词",
+            "subtitle": "准备草稿并识别时间轴（打开草稿时会动一次鼠标）",
+            "status": "pending",
+        },
+        {
+            "id": "verify",
+            "label": "官方歌词核对",
+            "subtitle": "网易云官方歌词逐句核对文字，时间轴不动",
+            "status": "pending",
+        },
+        {
+            "id": "burn",
+            "label": "烧录字幕成片",
+            "subtitle": "ffmpeg + 剪映手书 JYgangbi",
+            "status": "pending",
+        },
+    ]
+
+
 def lyrics_milestones() -> list[dict[str, Any]]:
     """歌词字幕路由（多语言）：提取 → Demucs 分离人声 → 自动语种识别实测
     逐句时间 → 与歌词文本对齐 → 剪映手书风格烧录。不经过 ComfyUI/RVC。"""
@@ -195,6 +224,32 @@ class JobStore:
                 "SELECT state_json FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1"
             ).fetchone()
         return json.loads(row["state_json"]) if row else None
+
+    def active_all(self) -> list[dict[str, Any]]:
+        """所有 queued/running 的任务（**不只最新那一条**）。
+
+        服务启动自检要把上一个进程留下的僵尸任务（状态写着在跑、其实早没人跑了）逐条
+        标成 interrupted：`active()` 只看最新的一条，挡不住更老的僵尸 —— 而它们照样算
+        `store.active()`，会把批量出片的前置等待无限期堵死。
+        """
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM jobs WHERE status IN ('queued', 'running')"
+                " ORDER BY created_at DESC"
+            ).fetchall()
+        return [json.loads(row["state_json"]) for row in rows]
+
+    def waiting(self) -> list[dict[str, Any]]:
+        """排队中的任务（目前只有独立「生成字幕」用 `waiting`：它在等 `pipeline_lock`）。
+
+        **故意不算 `active()`**：它还没占住流水线，不该挡住批量提交下一个子任务
+        （否则「生成字幕」一排队，整批出片就会全部卡在 409 上）。
+        """
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM jobs WHERE status = 'waiting' ORDER BY created_at DESC"
+            ).fetchall()
+        return [json.loads(row["state_json"]) for row in rows]
 
     def recent(self, limit: int = 8) -> list[dict[str, Any]]:
         """最近任务（按创建时间倒序），供“从最近任务选”使用。"""

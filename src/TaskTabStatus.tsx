@@ -22,6 +22,7 @@ function jobBrief(kind?: string) {
   if (kind === "upscale") return "二采放大";
   if (kind === "rvc") return "音色转换";
   if (kind === "lyrics") return "歌词字幕";
+  if (kind === "subtitle") return "生成字幕";
   return "影动生成";
 }
 
@@ -67,11 +68,11 @@ export function TaskTabStatus() {
         return;
       }
       const brief = jobBrief(job.kind);
-      if (job.status === "queued" || job.status === "running") {
+      if (job.status === "queued" || job.status === "running" || job.status === "waiting") {
         const runningMilestone = (job.milestones || []).find((m) => m.status === "running");
         const label = runningMilestone?.label
           || STAGE_TEXT[job.stage]
-          || (job.status === "queued" ? "排队中" : job.stage);
+          || (job.status === "running" ? job.stage : "排队中");
         const percent = job.progress != null && Number.isFinite(job.progress)
           ? `${Math.round(job.progress)}% `
           : "";

@@ -5,12 +5,14 @@ import {
   CaretUp,
   Check,
   Circle,
+  ClosedCaptioning,
   DownloadSimple,
   Eye,
   FileText,
   FilmSlate,
   Graph,
   Info,
+  ImageSquare,
   ListChecks,
   MagnifyingGlassPlus,
   MicrophoneStage,
@@ -27,8 +29,10 @@ import { BatchRoute } from "./BatchRoute";
 import { readJson, readJsonOrNull } from "./api";
 import { DouyinRoute } from "./DouyinRoute";
 import { MigrateRoute } from "./MigrateRoute";
+import { ImageWorkbenchRoute } from "./ImageWorkbenchRoute";
 import { QueuePanel } from "./QueuePanel";
 import { RvcRoute } from "./RvcRoute";
+import { SubtitleRoute } from "./SubtitleRoute";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
 import { UpScaleRoute } from "./UpScaleRoute";
@@ -914,8 +918,10 @@ export function App() {
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
   const isRvcRoute = path === "/rvc";
+  const isSubtitleRoute = path === "/subtitle";
   const isBatchRoute = path === "/batch";
   const isSingingRoute = path === "/singing";
+  const isImagesRoute = path === "/images";
   // 影动生成工作台根路径 `/`：进入默认选择「批量制作」（2026-09 用户：「启动项目的时候
   // 进入影动生成默认选择批量制作」）；歌曲生成独立到 `/singing`。
   const isWorkspaceRoute = path === "";
@@ -944,7 +950,7 @@ export function App() {
               <span>影动生成</span>
             </a>
           </div>
-          <p className="route-caption">批量 · 生成 · 迁移 · 放大 · 音色</p>
+          <p className="route-caption">批量 · 生成 · 迁移 · 放大 · 音色 · 字幕</p>
 
           {isDouyinRoute ? (
             <>
@@ -962,6 +968,11 @@ export function App() {
                 <ListChecks />
                 <span>批量制作</span>
                 {(isBatchRoute || isWorkspaceRoute) && <i />}
+              </a>
+              <a className={isImagesRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/images">
+                <ImageSquare weight={isImagesRoute ? "fill" : "regular"} />
+                <span>图片与封面</span>
+                {isImagesRoute && <i />}
               </a>
               <a className={isSingingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/singing">
                 <MusicNotes weight="fill" />
@@ -983,6 +994,11 @@ export function App() {
                 <span>音色转换</span>
                 {isRvcRoute && <i />}
               </a>
+              <a className={isSubtitleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/subtitle">
+                <ClosedCaptioning />
+                <span>生成字幕</span>
+                {isSubtitleRoute && <i />}
+              </a>
             </>
           )}
         </nav>
@@ -999,7 +1015,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isDouyinRoute ? <DouyinRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : <BatchRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
       </div>
     </div>
   );

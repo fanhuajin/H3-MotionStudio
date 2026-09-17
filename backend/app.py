@@ -12,6 +12,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -26,12 +27,14 @@ logger = logging.getLogger("uvicorn.error")
 _REGEN_IMAGE_TASKS: set[asyncio.Task] = set()
 
 from . import input_preview
+from . import image_workbench
 from .batch_store import batch_store
 from . import batch_ai
 from .batch_worker import (
     IDENTITY_PATH,
     MAX_LOCAL_SOURCE_BYTES,
     append_batch_items,
+    batch_run_alive,
     cancel_item_work,
     cancel_pending_shutdown,
     confirm_batch_items,
@@ -60,6 +63,7 @@ from .batch_worker import (
     shutdown_disabled,
     shutdown_status,
     stage_media,
+    take_over_batch_run,
 )
 from .douyin_mirror import all_jobs as mirror_jobs
 from .douyin_mirror import get_job as mirror_get_job
@@ -78,6 +82,7 @@ from .douyin_service import (
     is_douyin_url,
 )
 from .lyrics_worker import lang_label, netease_lyric, netease_search, run_lyrics_job
+from . import publish_watcher
 from .pipeline import (
     PipelineError,
     comfy_health,
@@ -88,7 +93,9 @@ from .pipeline import (
     resources,
     retry_voice,
     run_migrate_pipeline,
+    resume_migrate_pipeline,
     run_pipeline,
+    resume_singing_pipeline,
     run_rvc_job,
     run_upscale_job,
     upscale_target_size,
@@ -121,18 +128,70 @@ from .store import (
     now_iso,
     rvc_milestones,
     store,
+    subtitle_milestones,
     upscale_milestones,
 )
+from .subtitle_step import (  # noqa: E402
+    request_restart,
+    reset_subtitle_job,
+    run_subtitle_job,
+)
+from .jianying_recognize import kill_app  # noqa: E402
 from .workflows import load_workflow, node_by_id
 
 
 running_tasks: set[asyncio.Task] = set()
+# 本进程真的拉起来过的任务 / 批次（重启后据此认出「数据库里还在 running、但早就没人跑」
+# 的僵尸任务 —— 它们会一直占着 `store.active()`，把批量出片的等待循环无限期堵死）。
+_SPAWNED_JOB_IDS: set[str] = set()
+_SPAWNED_BATCH_IDS: set[str] = set()
+
+
+def _spawn_owner_id(coroutine) -> str:
+    """从后台协程里认出它属于哪个任务 / 批次（认不出来就返回空串）。
+
+    只对 `run_*` / `retry_voice` 这几个「任务工厂」协程生效：它们的协程帧里有
+    `job_id` / `batch_id` 参数。用在**服务启动自检**上 —— 数据库里还写着 running、
+    本进程却从没 spawn 过的，就是上一个进程留下的僵尸任务。
+    """
+    frame = getattr(coroutine, "cr_frame", None)
+    if frame is None:
+        return ""
+    name = str(getattr(getattr(coroutine, "cr_code", None), "co_name", "") or "")
+    if not (name.startswith("run_") or name == "retry_voice"):
+        return ""
+    local = frame.f_locals
+    # 顺序要紧：`run_batch(batch_id, ...)` 这种把批次当第一个参数的，`job_id` 根本不在
+    # 局部变量里，所以按批次优先判断（两者同名的情况不可能出现）。
+    for key in ("batch_id", "job_id"):
+        value = str(local.get(key) or "")
+        if value:
+            return value
+    return ""
+
+
+def _spawn_is_batch(coroutine) -> bool:
+    """这条后台协程代表的是**批次** runner 还是单个任务。"""
+    frame = getattr(coroutine, "cr_frame", None)
+    return bool(frame is not None and "batch_id" in frame.f_locals)
 
 
 def spawn(coroutine) -> None:
     task = asyncio.create_task(coroutine)
-    running_tasks.add(task)
     task.add_done_callback(running_tasks.discard)
+    running_tasks.add(task)
+    # 记下这条协程对应哪个任务 / 批次（拿不到就放弃记录，绝不让记账本身影响任务）。
+    try:
+        owner = _spawn_owner_id(coroutine)
+        is_batch = _spawn_is_batch(coroutine)
+    except Exception:  # noqa: BLE001 - 记账失败不影响 spawn 本身
+        return
+    if not owner:
+        return
+    if is_batch:
+        _SPAWNED_BATCH_IDS.add(owner)
+    else:
+        _SPAWNED_JOB_IDS.add(owner)
 
 
 # 成片入口（media key → (state 字段, 就绪标记, 显示名)）：只暴露「最终成片」与
@@ -265,18 +324,46 @@ def workflow_defaults() -> tuple[str, str]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # 本进程是刚起来的：之前记的「我 spawn 过谁」一律作废（换进程了，谁都还没 spawn）。
+    _SPAWNED_JOB_IDS.clear()
+    _SPAWNED_BATCH_IDS.clear()
     batch_store.interrupt_active()
-    active = store.active()
-    if active:
+    # 数据库里还写着 queued/running、可这一轮根本没被 spawn 过的任务，全是上一个进程留下的
+    # 僵尸（`interrupt_active()` 只认 `store.active()` 里最新的那一条，挡不住更老的那些）。
+    # 2026-09-16 实测：一条僵尸字幕任务（剪映识别那一步随重启没了，状态永远停在 running）
+    # 一直占着 `store.active()`，批量的出片等待循环被它无限期堵死 —— 条目全卡在
+    # 「已有单链路任务运行，当前条目正在等待资源。」，用户看到的就是「点了重新开始没反应」。
+    await _recover_or_interrupt_orphan_jobs()
+    # 排队中的字幕任务在重启后没人再接单（runner 随进程一起没了）：标成 interrupted，
+    # 页面就能给出「重新开始」（源成片还在任务目录里，不用重新上传）。
+    for queued in store.waiting():
         store.update(
-            active["id"],
+            queued["id"],
             status="interrupted",
             stage="failed",
-            errorSummary="本地服务曾在任务运行时重启",
-            errorDetail="任务状态已保留。请根据已生成的中间成片重新提交或重试音色转换。",
+            errorSummary="本地服务在排队期间重启，这次排队已作废",
+            errorDetail="源成片仍在任务目录里，点「重新开始」即可重跑，不用重新上传。",
             finishedAt=now_iso(),
         )
+    # 批次：这一轮没 spawn 过、却写着 runnerActive 的，runner 早就随进程没了。留着会一路
+    # 「看着在跑、实际没人跑」，所以按服务重启的既有语义安全暂停（`interrupt_active()` 只在
+    # 当前条目确实在跑时才标 failed，这里补上它漏掉的另一半）。
+    for batch in batch_store.active_batches():
+        batch_id = str(batch.get("id") or "")
+        if batch_id in _SPAWNED_BATCH_IDS or not batch.get("runnerActive"):
+            continue
+        batch_store.update(
+            batch_id,
+            status="paused",
+            pauseRequested=True,
+            runnerActive=False,
+            notice="本地服务重启，批次已安全暂停；点「继续」后从当前条目恢复。",
+        )
     sweep_task = asyncio.create_task(_douyin_housekeeping())
+    # 发布目录监听（2026-09-17 用户要求）：发布目录里出现新的 人物图.png →
+    # 自动挂成候选人物图 + 自动「确认并出片」，不用他再点。开关在批量页面右上角
+    # （落盘 data/publish_watch.json），H3_WATCH_PUBLISH_PORTRAIT=0/1 可强制。
+    watch_task = asyncio.create_task(publish_watcher.watch_loop())
     # 本地服务重启后恢复「全部完成后自动关机」的看护：批次可能早就跑完了，
     # 重启前挂的关机记录也可能还在（Windows 的倒计时不随我们重启消失）。
     resume_shutdown_watch()
@@ -286,6 +373,11 @@ async def lifespan(_: FastAPI):
         sweep_task.cancel()
         try:
             await sweep_task
+        except asyncio.CancelledError:
+            pass
+        watch_task.cancel()
+        try:
+            await watch_task
         except asyncio.CancelledError:
             pass
         await douyin_service.stop()
@@ -407,6 +499,16 @@ def _batch_item_or_404(batch_id: str, item_id: str) -> dict[str, Any]:
 
 
 def _resume_batch(batch_id: str, notice: str) -> dict[str, Any]:
+    """让这一批**立刻跑起来**（用户点了准备任务 / 继续 / 确认 / 重新开始都会走这里）。
+
+    已经有活 runner 时只更新队列状态，**绝不换代再起一个**。用户连续确认多条时，旧实现
+    每确认一次都 `take_over_batch_run + spawn`，第一条视频仍在旧 runner 里生成，新 runner
+    却已经开始推进第二条，破坏了视频链路串行。当前 runner 会在这一条结束后自然捡起新状态。
+
+    只有确实没有 runner 时才推进代数并 spawn；这仍保留服务重启、失败后继续与卡住批次
+    自愈所需的接管能力。
+    """
+    runner_alive = batch_run_alive(batch_id)
     state = batch_store.update(
         batch_id,
         status="running",
@@ -416,7 +518,9 @@ def _resume_batch(batch_id: str, notice: str) -> dict[str, Any]:
         finishedAt=None,
         notice=notice,
     )
-    spawn(run_batch(batch_id))
+    if not runner_alive:
+        take_over_batch_run(batch_id)
+        spawn(run_batch(batch_id))
     return state
 
 
@@ -426,6 +530,167 @@ def _pending_items(state: dict[str, Any]) -> list[dict[str, Any]]:
         for item in state.get("items") or []
         if item.get("status") in {"pending", "revising", "confirmed"}
     ]
+
+
+def _interrupt_orphan_jobs() -> None:
+    """把「数据库里还写着 queued/running、本进程却没 spawn 过」的任务标成 interrupted。
+
+    这些是上一个进程留下的僵尸：它的 asyncio 任务已经随进程消失，可状态还写着在跑，
+    于是一直占着 `store.active()` —— 批量的出片等待循环（`_wait_for_free_pipeline`）
+    就被它无限期堵住。标成 interrupted 之后：① 不再挡任何提交；② 页面上会出现
+    「重新开始」（源成片还在任务目录里，不用重新上传）；③ 真在跑的那一条不会被误伤
+    （它就在 `_SPAWNED_JOB_IDS` 里）。
+    """
+    try:
+        rows = store.active_all()
+    except Exception:  # noqa: BLE001 - 启动自检失败不能让服务起不来
+        logger.exception("检查残留任务失败（忽略）")
+        return
+    for state in rows:
+        job_id = str(state.get("id") or "")
+        if not job_id or job_id in _SPAWNED_JOB_IDS:
+            continue
+        if state.get("status") not in {"queued", "running"}:
+            continue
+        store.update(
+            job_id,
+            status="interrupted",
+            stage="failed",
+            errorSummary="本地服务曾在任务运行时重启",
+            errorDetail="任务状态已保留。源成片或中间成片仍在任务目录里，点「重新开始」即可重跑。",
+            finishedAt=now_iso(),
+        )
+        store.add_log(job_id, "本地服务重启后这一条已没有人继续跑，已标记为中断（可重新开始）。")
+        logger.warning("残留任务 %s（%s）已被标记为中断。", job_id[:8], state.get("kind"))
+
+
+async def _resume_orphan_and_batch(job_id: str) -> None:
+    """Reconnect a child job, then restore its batch delivery/runner."""
+    owner: tuple[str, str] | None = None
+    for batch in batch_store.active_batches():
+        for item in batch.get("items") or []:
+            if str(item.get("videoJobId") or "") == job_id:
+                owner = (str(batch.get("id") or ""), str(item.get("id") or ""))
+                break
+        if owner:
+            break
+
+    if owner:
+        # Keep the ordinary batch runner asleep while this recovery watcher owns
+        # the current video.  Otherwise `_heal_stalled_batch` may advance to the
+        # next confirmed row, which then looks interrupted on another restart.
+        batch_store.update(
+            owner[0], status="paused", stage="paused", pauseRequested=True,
+            runnerActive=False, recoveryActive=True,
+            notice="正在续接重启前的生成；后续已确认条目保持等待，完成后自动继续。",
+        )
+
+    state = store.get(job_id) or {}
+    resume = resume_migrate_pipeline if state.get("kind") == "migrate" else resume_singing_pipeline
+    resume_task = asyncio.create_task(resume(job_id))
+    # The old batch runner used to mirror the live child state into `childJob`.
+    # It died with the backend process, so the recovery watcher must take over
+    # that mirror too; otherwise the batch page appears to lose logs/steps.
+    while not resume_task.done():
+        child = store.get(job_id)
+        if owner and child:
+            batch_store.mutate_item(
+                owner[0], owner[1],
+                lambda row, snapshot=child: row.update(
+                    status="running", stage="video", childJob=snapshot, error=None, finishedAt=None
+                ),
+            )
+        await asyncio.sleep(2)
+    await resume_task
+    child = store.get(job_id) or {}
+    if owner:
+        batch_store.mutate_item(owner[0], owner[1], lambda row: row.update(childJob=child))
+    if child.get("status") != "completed":
+        return
+    if owner:
+        try:
+            await deliver_item_now(owner[0], owner[1])
+            batch_store.update(owner[0], recoveryActive=False)
+            _resume_batch(owner[0], "已接回重启前的生成任务并完成交付，继续处理队列。")
+        except Exception:
+            batch_store.update(owner[0], recoveryActive=False)
+            logger.exception("恢复任务完成后整理批次交付失败：%s/%s", owner[0], owner[1])
+
+
+async def _recover_or_interrupt_orphan_jobs() -> None:
+    """Recover live ComfyUI prompts; interrupt only genuine orphan records."""
+    try:
+        rows = store.active_all()
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(f"{COMFY_URL}/queue")
+            response.raise_for_status()
+            payload = response.json()
+        live_ids = {
+            str(entry[1])
+            for label in ("queue_running", "queue_pending")
+            for entry in (payload.get(label) or [])
+            if isinstance(entry, list) and len(entry) > 1
+        }
+    except Exception:
+        logger.exception("检查 ComfyUI 残留任务失败，退回安全中断逻辑")
+        _interrupt_orphan_jobs()
+        return
+
+    recovered: set[str] = set()
+    for state in rows:
+        job_id = str(state.get("id") or "")
+        kind = str(state.get("kind") or "")
+        prompt_id = str((state.get("promptIds") or {}).get(kind) or "")
+        if kind in {"singing", "migrate"} and prompt_id and prompt_id in live_ids:
+            recovered.add(job_id)
+            store.add_log(job_id, "检测到重启前的 ComfyUI 任务仍在运行，正在自动接回，无需重新开始。")
+            spawn(_resume_orphan_and_batch(job_id))
+
+    # Mark every non-recoverable active record as interrupted without touching
+    # the jobs just adopted by this process.
+    for state in rows:
+        job_id = str(state.get("id") or "")
+        if not job_id or job_id in recovered or job_id in _SPAWNED_JOB_IDS:
+            continue
+        if state.get("status") not in {"queued", "running"}:
+            continue
+        store.update(
+            job_id, status="interrupted", stage="failed",
+            errorSummary="本地服务曾在任务运行时重启",
+            errorDetail="ComfyUI 中未找到仍在运行的对应任务，可点「重新开始」重跑。",
+            finishedAt=now_iso(),
+        )
+        store.add_log(job_id, "本地服务重启后未找到仍在运行的 ComfyUI 任务，已标记为中断。")
+
+
+def _heal_stalled_batch(state: dict[str, Any] | None) -> dict[str, Any] | None:
+    """批次卡在「运行中」但这一轮根本没有 runner 在跑时，把它重新拉起来。
+
+    2026-09-16 实测的那种死法：本地服务重启 / 上一轮 runner 被换掉之后，数据库里
+    还留着 `status="running"` + `runnerActive=False`，条目全躺在「已确认」等着出片，
+    可没有任何东西会来推进它们 —— 页面每 3.5 秒轮询一次，用户看到的永远是原地不动。
+    读批次状态时顺手体检一次：确实是「该跑却没人跑」就把 runner 重新 spawn 起来。
+
+    安全边界：只有 `running` 才自愈。`paused`（用户暂停 / 重启保护）与
+    `awaiting_review`（等你确认）**绝不**偷偷继续；`runnerActive=True` 且这一轮真的
+    spawn 过（`_SPAWNED_BATCH_IDS`）说明 runner 活得好好的，不动它。
+    """
+    if not state or state.get("status") != "running":
+        return state
+    batch_id = str(state.get("id") or "")
+    if not batch_id:
+        return state
+    if state.get("runnerActive") and batch_id in _SPAWNED_BATCH_IDS:
+        return state
+    if batch_run_alive(batch_id):
+        return state
+    try:
+        take_over_batch_run(batch_id)
+        spawn(run_batch(batch_id))
+        logger.warning("批次 %s 卡在运行中但没有 runner，已自动重新拉起。", batch_id[:8])
+    except Exception:  # noqa: BLE001 - 自愈失败不能把「读状态」这个请求带崩
+        logger.exception("重新拉起卡住的批次失败（忽略）")
+    return state
 
 
 async def _prewarm_comfy() -> None:
@@ -447,7 +712,8 @@ def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
 
     页面上的开始动作是输入区的「准备任务」（入队 + 立即开始）；API 侧可以不带
     `autoStart` 只入队，那时这里只改状态和提示：
-    - `running`：runner 还活着，会自己捡起新条目；
+    - `running`：runner 还活着，会自己捡起新条目；**要是没人活着就补一个**
+      （跳过的条目被重新开始时走的就是这条路，绝不能只是改个提示语就完事）；
     - `paused`：用户主动暂停，不偷偷继续；
     - 其它（queued / awaiting_review / completed / failed）：等用户再点「准备任务」
       （或 API 调 `/start`）。
@@ -455,6 +721,10 @@ def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
     state = batch_store.get(batch_id) or {}
     status = state.get("status")
     if status == "running":
+        if not batch_run_alive(batch_id):
+            take_over_batch_run(batch_id)
+            batch_store.update(batch_id, pauseRequested=False, runnerActive=False)
+            spawn(run_batch(batch_id))
         return batch_store.update(batch_id, notice=notice)
     if status == "paused" or state.get("pauseRequested"):
         return batch_store.update(
@@ -465,10 +735,56 @@ def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
 
 @app.get("/api/batches/latest")
 async def latest_batch():
-    state = batch_store.latest()
+    state = _heal_stalled_batch(batch_store.latest())
     if not state:
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
     return JSONResponse(state, headers={"Cache-Control": "no-store"})
+
+
+# ---------------- 发布目录监听（页面右上角勾选框） ----------------
+class PublishWatchRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/watch/publish-portrait")
+async def publish_watch_state():
+    """监听开关状态（页面勾选框用）。"""
+    return JSONResponse(
+        {
+            "enabled": publish_watcher.enabled(),
+            "interval": publish_watcher.interval(),
+            "root": str(publish_watcher.publish_root()),
+            "lastScan": publish_watcher.last_scan(),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/watch/publish-portrait")
+async def set_publish_watch(request: PublishWatchRequest):
+    """页面勾选框：开/关发布目录监听（落盘 data/publish_watch.json，立即生效）。"""
+    publish_watcher.set_enabled(bool(request.enabled))
+    return JSONResponse(
+        {"enabled": publish_watcher.enabled()}, headers={"Cache-Control": "no-store"}
+    )
+
+
+@app.post("/api/watch/publish-portrait/scan")
+async def scan_publish_watch():
+    """立刻扫一次（不想等那 5 秒时用）。返回这一轮真正处理了哪几条。"""
+    handled = await publish_watcher.scan_now()
+    return JSONResponse(
+        {
+            "enabled": publish_watcher.enabled(),
+            "handled": [
+                {"itemId": action.item_id, "title": action.title,
+                 "image": action.image.name, "mode": action.mode}
+                for action in handled
+            ],
+            "lastScan": publish_watcher.last_scan(),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.post("/api/batches")
@@ -511,7 +827,7 @@ async def create_batch(request: BatchCreateRequest):
 
 @app.get("/api/batches/{batch_id}")
 async def get_batch(batch_id: str):
-    return _batch_or_404(batch_id)
+    return _heal_stalled_batch(_batch_or_404(batch_id))
 
 
 @app.post("/api/batches/{batch_id}/start")
@@ -1399,7 +1715,7 @@ async def latest_job(kind: str | None = Query(None)):
 
 @app.get("/api/jobs/recent")
 async def recent_jobs():
-    """最近任务及可用成片，供「二采放大」选择输入。必须在 {job_id} 路由前注册。"""
+    """最近任务及可用成片，供「二采放大」「生成字幕」选择输入。必须在 {job_id} 路由前注册。"""
     jobs: list[dict[str, Any]] = []
     for state in store.recent(8):
         title = state.get("sourceName") or state["id"]
@@ -1409,6 +1725,8 @@ async def recent_jobs():
             "kind": kind,
             "status": state["status"],
             "title": title,
+            # 生成字幕页据此预填歌名（歌词任务的 songName 就是用户当时搜的那首）
+            "songName": state.get("songName") or "",
             "createdAt": state.get("createdAt"),
             "media": _job_media_entries(state),
         })
@@ -2014,6 +2332,176 @@ async def create_lyrics_job(
     return state
 
 
+# ---------------------------------------------------------------------------
+# 生成字幕：剪映识别歌词时间轴 + 网易云官方歌词核对文字 + 剪映手书烧录
+# （和批量唱歌条目出片后那条链路是同一条 `subtitle_step.burn_for_video`）
+# ---------------------------------------------------------------------------
+SUBTITLE_OUT_DIR = COMFY_OUTPUT / "video" / "H3_MotionStudio"
+
+
+@app.post("/api/jobs/subtitle")
+async def create_subtitle_job(
+    video: UploadFile | None = File(None),
+    source_job_id: str = Form(""),
+    source_key: str = Form("final"),
+    song_name: str = Form(""),
+):
+    """生成字幕任务：上传/选择成片 → 剪映「识别歌词」拿时间轴 → 官方歌词逐句核对文字
+
+    （时间轴一字不动）→ ffmpeg + libass 按剪映手书观感烧录出字幕版成片。
+    不经过 ComfyUI/RVC，但会独占一次剪映（打开草稿时动一次鼠标，跑完自动关闭）。
+
+    **这条链路不用 ComfyUI，也不再等 `pipeline_lock`**（用户 2026-09-16：
+    「不要锁这个啊 和生成字幕有什么关系 取消这个锁」）——只用剪映 + ffmpeg，提交即跑，
+    不会被出片/迁移任务堵住。唯一保留的互斥是「同时只允许一条字幕任务」（下面的守卫）。
+    """
+    if video is None and not source_job_id:
+        raise HTTPException(400, "请上传视频或选择最近任务成片")
+    # 同一时间只留一条字幕任务（页面在跑时按钮本来就是禁用的，这里防接口直连）
+    existing_subtitle = store.latest("subtitle")
+    if existing_subtitle and existing_subtitle.get("status") in (
+        "waiting", "queued", "running", "cancelling"
+    ):
+        raise HTTPException(
+            409, f"已有一条「生成字幕」任务在跑或排队：{existing_subtitle['id'][:8]}"
+        )
+    queue_note = None
+
+    job_id = uuid.uuid4().hex
+    job_dir = DATA_DIR / "subtitle" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    target = job_dir / "source.mp4"
+
+    source_name_text = ""
+    if video is not None and video.filename:
+        extension = Path(video.filename).suffix.lower()
+        if extension not in VIDEO_UPLOAD_SUFFIXES:
+            raise HTTPException(400, "只支持 MP4、MOV、MKV 或 WebM 视频")
+        target = job_dir / f"source{extension}"
+        try:
+            with target.open("wb") as destination:
+                while chunk := await video.read(1024 * 1024):
+                    destination.write(chunk)
+        finally:
+            await video.close()
+        source_name_text = video.filename
+    else:
+        source_state = store.get(source_job_id)
+        field = MEDIA_FIELD_BY_KEY.get(source_key)
+        source_path = Path(source_state.get(field) or "") if source_state and field else Path()
+        if not source_state or not source_path.is_file():
+            raise HTTPException(400, "所选任务的成片不存在，请重新选择")
+        target = job_dir / f"source{source_path.suffix.lower() or '.mp4'}"
+        await asyncio.to_thread(shutil.copy2, source_path, target)
+        source_name_text = f"{source_state['id'][:8]} {source_key}"
+
+    metadata = await media_metadata(target)
+    # 产物是「字幕版」独立文件，绝不动用户给的无字幕成片（无字幕版是以后重新烧字幕的唯一输入）
+    out_path = SUBTITLE_OUT_DIR / f"{job_id}_字幕版.mp4"
+    song = song_name.strip()
+    created_at = now_iso()
+    logs = [{
+        "time": created_at,
+        "message": (
+            f"已接收字幕源：{source_name_text}"
+            + (f" · {metadata.get('width')}×{metadata.get('height')}" if metadata.get("width") else "")
+            + (f" · 《{song}》" if song else " · 没有歌名，用识别出的歌词反查官方歌词")
+        ),
+    }]
+    if queue_note:
+        logs.append({"time": created_at, "message": f"{queue_note}。"})
+    state = {
+        "id": job_id,
+        "kind": "subtitle",
+        # 提交即跑：不再依赖 pipeline_lock，也就没有 waiting 排队态
+        "status": "queued",
+        "stage": "upload",
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "sourceName": source_name_text,
+        "sourceSize": target.stat().st_size,
+        "sourceDuration": metadata.get("duration"),
+        "sourceFps": metadata.get("fps"),
+        "sourcePath": str(target.resolve()),
+        # 源是哪条任务（"从最近任务选"才有）：出片后据此把字幕版放进**那一条自己的发布目录**
+        "sourceJobId": source_job_id or "",
+        "sourceKey": source_key if source_job_id else "",
+        "songName": song,
+        "subtitleSource": str(target.resolve()),
+        "subtitleDir": str(job_dir),
+        "subtitleOutPath": str(out_path),
+        "subtitleOutDir": str(SUBTITLE_OUT_DIR),
+        "currentNodeId": None,
+        "currentNodeTitle": "等待开始识别",
+        # 还没开跑没有真实进度，绝不写 0（那会被读成「卡在 0%」）
+        "progress": None,
+        "progressValue": None,
+        "progressMax": None,
+        "milestones": subtitle_milestones(),
+        "logs": logs,
+        "errorSummary": None,
+        "errorDetail": None,
+        "originalReady": True,
+        "originalOutput": str(target.resolve()),
+        "finalReady": False,
+        "finalOutput": None,
+        "output": None,
+        "promptIds": {},
+    }
+    store.create(state)
+    spawn(run_subtitle_job(job_id))
+    return state
+
+
+@app.post("/api/jobs/{job_id}/open-publish")
+async def open_subtitle_publish_folder(job_id: str):
+    """打开字幕版所在的发布目录（与批量的 `open-output` 同一条规矩：必须在发布根内）。"""
+    state = store.get(job_id)
+    if not state:
+        raise HTTPException(404, "任务不存在")
+    raw = str(state.get("subtitlePublishPath") or "").strip()
+    if not raw:
+        raise HTTPException(404, "还没有放进发布目录")
+    folder = Path(raw).resolve().parent
+    try:
+        folder.relative_to(BATCH_OUTPUT_ROOT.resolve())
+    except ValueError:
+        raise HTTPException(404, "发布目录不存在") from None
+    if not folder.is_dir():
+        raise HTTPException(404, "发布目录不存在")
+    await asyncio.to_thread(os.startfile, folder)
+    return store.get(job_id)
+
+
+@app.post("/api/jobs/{job_id}/retry")
+async def retry_subtitle_job(job_id: str):
+    """重新开始一条「生成字幕」任务（用户 2026-09-16：「失败了 给我一个重新开始按钮」）。
+
+    源成片已经在任务目录里（`data/subtitle/{job_id}/source*`），所以**不用重新上传**。
+    正在跑（或卡在剪映调用里）的那一次先作废：打上 `restartRequested` 标记，并强杀剪映
+    —— 卡住的 UIA/win32 调用会立刻返回，runner 收尾时看到标记就自己重排一轮
+    （**不在端点里直接重置再 spawn**：旧任务的失败分支会把新任务刚写的状态覆盖掉）。
+    """
+    state = store.get(job_id)
+    if not state:
+        raise HTTPException(404, "任务不存在")
+    if (state.get("kind") or "") != "subtitle":
+        raise HTTPException(400, "只有「生成字幕」任务支持重新开始")
+    source = Path(str(state.get("subtitleSource") or ""))
+    if not source.is_file():
+        raise HTTPException(400, "源成片已不在任务目录里，请重新选择视频再提交")
+
+    if state.get("status") in ("waiting", "queued", "running", "cancelling"):
+        request_restart(job_id)
+        store.add_log(job_id, "收到重新开始请求：先中止当前这一次识别……")
+        await asyncio.to_thread(kill_app)
+        return store.get(job_id)
+
+    reset_subtitle_job(job_id)
+    spawn(run_subtitle_job(job_id))
+    return store.get(job_id)
+
+
 @app.post("/api/jobs/{job_id}/retry-voice")
 async def retry_job_voice(job_id: str):
     state = store.get(job_id)
@@ -2145,6 +2633,22 @@ async def cancel_job(job_id: str):
     state = store.get(job_id)
     if not state:
         raise HTTPException(404, "任务不存在")
+    if state.get("status") == "waiting":
+        # 「生成字幕」在排队（还没拿到 pipeline_lock）：直接收尾即可，
+        # **绝不能**走下面那条路 —— 它会把正在跑的出片任务的中断逻辑也一起触发。
+        store.update(
+            job_id,
+            status="cancelled",
+            stage="cancelled",
+            currentNodeId=None,
+            currentNodeTitle=None,
+            progress=None,
+            errorSummary=None,
+            errorDetail=None,
+            finishedAt=now_iso(),
+        )
+        store.add_log(job_id, "已取消：还在排队、没有开始识别，也没有动正在跑的出片任务。")
+        return store.get(job_id)
     if state.get("status") not in ("queued", "running", "cancelling"):
         raise HTTPException(409, "任务已结束，无法取消")
     active = store.active()
@@ -2584,6 +3088,94 @@ async def get_upload_preview_media(upload_id: str):
     return FileResponse(path, media_type=media_type)
 
 
+@app.get("/api/image-workbench/items")
+async def image_workbench_items():
+    return {"items": image_workbench.list_items()}
+
+
+@app.get("/api/image-workbench/{folder_id}/asset/{key}")
+async def image_workbench_asset(folder_id: str, key: str):
+    try:
+        path = image_workbench.asset_path(image_workbench.resolve_folder(folder_id), key)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png")
+
+
+@app.get("/api/image-workbench/{folder_id}/prompt/{stage}")
+async def image_workbench_prompt(folder_id: str, stage: str, kind: str = Query("singing")):
+    try:
+        folder = image_workbench.resolve_folder(folder_id)
+        return {"prompt": image_workbench.prompt(folder, stage, kind)}
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@app.get("/api/image-workbench/{folder_id}/materials/{stage}")
+async def image_workbench_materials(folder_id: str, stage: str, kind: str = Query("singing")):
+    try:
+        folder = image_workbench.resolve_folder(folder_id)
+        payload = image_workbench.material_zip(folder, stage, kind)
+    except (ValueError, FileNotFoundError, KeyError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    filename = f"{folder.name}_{stage}_ChatGPT素材.zip"
+    return Response(
+        payload,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@app.post("/api/image-workbench/{folder_id}/upload/{stage}")
+async def image_workbench_upload(folder_id: str, stage: str, kind: str = Query("singing"), file: UploadFile = File(...)):
+    payload = await file.read()
+    if len(payload) > 30 * 1024 * 1024:
+        raise HTTPException(413, "图片不能超过 30MB")
+    try:
+        saved = image_workbench.save_upload(image_workbench.resolve_folder(folder_id), stage, payload, kind)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "saved": saved}
+
+
+@app.post("/api/image-workbench/{folder_id}/watch/{stage}")
+async def image_workbench_watch(folder_id: str, stage: str, kind: str = Query("singing")):
+    try:
+        folder = image_workbench.resolve_folder(folder_id)
+        if stage not in {"person", "bilibili", "douyin"}:
+            raise ValueError("图片类型无效")
+        watch_id = await image_workbench.watch_downloads(folder, stage, kind)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"watchId": watch_id}
+
+
+@app.get("/api/image-workbench/watch/{watch_id}")
+async def image_workbench_watch_status(watch_id: str):
+    state = image_workbench.WATCHES.get(watch_id)
+    if not state:
+        raise HTTPException(404, "监听任务不存在")
+    return state
+
+
+@app.post("/api/image-workbench/{folder_id}/automatic")
+async def image_workbench_automatic(folder_id: str, force: bool = Query(False)):
+    try:
+        image_workbench.resolve_folder(folder_id)
+        return image_workbench.start_automatic(folder_id, force=force)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/image-workbench/automatic-all")
+async def image_workbench_automatic_all():
+    if not image_workbench.batch_image.configured():
+        raise HTTPException(400, "第三方图片接口尚未配置")
+    return {"queued": image_workbench.start_all_missing()}
+
+
 dist_dir = PROJECT_ROOT / "dist" / "client"
 if dist_dir.is_dir():
     def _spa_index() -> FileResponse:
@@ -2614,6 +3206,14 @@ if dist_dir.is_dir():
 
     @app.get("/rvc", include_in_schema=False)
     async def rvc_frontend():
+        return _spa_index()
+
+    @app.get("/subtitle", include_in_schema=False)
+    async def subtitle_frontend():
+        return _spa_index()
+
+    @app.get("/images", include_in_schema=False)
+    async def images_frontend():
         return _spa_index()
 
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")

@@ -363,3 +363,54 @@ async def generate_candidate_image(
     if len(failures) >= 2:
         hint = "。若中转站只支持单图编辑，请设置 H3_BATCH_IMAGE_MODE=composite"
     raise RuntimeError(f"中转站出图失败：{detail}{hint}")
+
+
+async def generate_single_edit(
+    *,
+    source_image: Path,
+    prompt: str,
+    size: str,
+    output_path: Path,
+) -> Path:
+    """Edit one reference image through the configured relay (used for publish covers)."""
+    if not configured():
+        raise RuntimeError("尚未配置中转站图片接口")
+    source_image = Path(source_image)
+    if not source_image.is_file():
+        raise RuntimeError(f"缺少参考图片：{source_image}")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    mime = mimetypes.guess_type(source_image.name)[0] or "image/png"
+    data = {
+        "model": model(),
+        "prompt": prompt,
+        "size": size,
+        "n": "1",
+        "quality": env_value("H3_BATCH_IMAGE_QUALITY", "high"),
+        "input_fidelity": env_value("H3_BATCH_IMAGE_FIDELITY", "high"),
+    }
+    failures: list[str] = []
+    image_bytes = source_image.read_bytes()
+    attempts = [
+        (env_value("H3_BATCH_IMAGE_FIELD") or "image", False),
+        ("image[]", False),
+        # TeamoRouter's gpt-image-2.5 edit route accepts the same multi-image
+        # shape used by person generation, but may reject a single reference.
+        # Repeating the identical reference preserves identity while satisfying
+        # that compatibility requirement.
+        ("image[]", True),
+    ]
+    for field, duplicate in attempts:
+        files = [(field, (source_image.name, image_bytes, mime))]
+        if duplicate:
+            files.append((field, (f"reference-{source_image.name}", image_bytes, mime)))
+        try:
+            response = await _post(data, files)
+            if response.is_error:
+                label = f"{field}/double" if duplicate else field
+                failures.append(f"[{label}] {_api_error(response)}")
+                continue
+            return _store(response, output_path)
+        except httpx.HTTPError as exc:
+            failures.append(f"[{field}] {type(exc).__name__}: {str(exc)[:160]}")
+    raise RuntimeError("封面生成失败：" + "；".join(failures))

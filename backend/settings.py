@@ -27,16 +27,34 @@ COMFY_WS = COMFY_URL.replace("http://", "ws://").replace("https://", "wss://")
 # 这些方式不继承用户级变量，不补读会让凭据配置静默失效。
 _USER_ENV_CACHE: dict[str, str] = {}
 
+# **用户级注册表优先**的几个开关：进程环境里的值可能是**上一次会话的残留**
+# （2026-09-16 实测：用户把 H3_AUTO_CHATGPT_IMAGE/COVER 改成 0 之后重启后端，
+#  仍然是「自动出图开」——因为后端是 DSH/终端拉起的，继承了它们启动时的旧环境变量，
+#  `os.environ` 里还是 1，把用户刚改的 0 盖掉了）。
+# 这几个开关的语义是「用户现在要不要图片自动化」，所以**以注册表为准**。
+_REGISTRY_FIRST_KEYS = {"H3_AUTO_CHATGPT_IMAGE", "H3_AUTO_CHATGPT_COVER", "H3_AUTO_CONFIRM"}
+
 
 def env_value(name: str, default: str = "") -> str:
-    """读环境变量：进程环境优先，缺失时补读一次 Windows 用户级环境变量。
+    """读环境变量：**用户级注册表优先**的那几个开关先看注册表，其余进程环境优先。
 
     凭据始终只来自环境，不写入前端、数据库或仓库。
     """
+    if os.name == "nt" and name in _REGISTRY_FIRST_KEYS:
+        registry = _user_env(name)
+        if registry:
+            return registry
     value = (os.environ.get(name) or "").strip()
     if value:
         return value
-    if os.name == "nt" and name not in _USER_ENV_CACHE:
+    return _user_env(name) or default
+
+
+def _user_env(name: str) -> str:
+    """Windows 用户级环境变量（带一次性缓存）。"""
+    if os.name != "nt":
+        return ""
+    if name not in _USER_ENV_CACHE:
         _USER_ENV_CACHE[name] = ""
         try:
             import winreg
@@ -45,7 +63,7 @@ def env_value(name: str, default: str = "") -> str:
                 _USER_ENV_CACHE[name] = str(winreg.QueryValueEx(handle, name)[0] or "").strip()
         except OSError:
             pass
-    return _USER_ENV_CACHE.get(name) or default
+    return _USER_ENV_CACHE[name]
 
 
 WORKFLOW_DIR = COMFY_ROOT / "user" / "default" / "workflows" / "video"

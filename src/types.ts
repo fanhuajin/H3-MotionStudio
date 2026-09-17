@@ -21,7 +21,8 @@ export interface JobLog {
 export interface JobState {
   id: string;
   kind?: string;
-  status: "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  /** `waiting` = 已接单、在等流水线空闲（目前只有独立「生成字幕」用：剪映要独占桌面与显存） */
+  status: "waiting" | "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
   stage: string;
   createdAt: string;
   updatedAt: string;
@@ -45,6 +46,13 @@ export interface JobState {
   lyricLang?: string | null;
   lyricLangLabel?: string | null;
   lyricAsrLang?: string | null;
+  /** 生成字幕任务结果（kind === "subtitle"）：字幕句数 / 官方歌词来源 / 核对修正句数 */
+  subtitleLineCount?: number | null;
+  subtitleLyricSource?: string | null;
+  subtitleCorrected?: number | null;
+  /** 字幕版最终落在哪个发布目录（生成完成即拷进对应的 `{编号}_{歌名}_{作品号}`） */
+  subtitlePublishPath?: string | null;
+  subtitlePublishError?: string | null;
   /** 长视频分段：预估总段数与当前段（每段81帧、重叠5帧衔接） */
   estimatedSegments?: number | null;
   currentSegment?: number | null;

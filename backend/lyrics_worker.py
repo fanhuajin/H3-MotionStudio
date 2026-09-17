@@ -162,6 +162,37 @@ async def netease_search(query: str, limit: int = 6) -> list[dict[str, Any]]:
     return candidates
 
 
+async def netease_search_by_lyric(line: str, limit: int = 8) -> list[dict[str, Any]]:
+    """**按歌词搜歌**（网易云 `type=1006`）—— 歌名缺失或写错时的兜底。
+
+    用户 2026-09-16：「你可以根据歌词找吗」。实测有效：
+      · 「夏天快要过去」→ 《有何不可》- 许嵩
+      · 「是谁把牵挂埋在了土里」→ 《茶花开了…》系列（这条条目 `ai.song_name` 是空的）
+    返回 [{id, name, artist}]（按接口顺序，可能含翻唱/说唱版；由调用方按歌词重合度挑）。
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15, headers=_NETEASE_HEADERS) as client:
+            response = await client.get(f"{_NETEASE}/search/get/web",
+                                        params={"s": line, "type": 1006, "limit": limit})
+            response.raise_for_status()
+            songs = ((response.json().get("result") or {}).get("songs")) or []
+    except (httpx.HTTPError, ValueError) as error:
+        raise PipelineError("按歌词搜索失败", repr(error)) from error
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for song in songs:
+        sid = song.get("id")
+        if not sid or int(sid) in seen:
+            continue
+        seen.add(int(sid))
+        out.append({
+            "id": int(sid),
+            "name": song.get("name") or "",
+            "artist": ((song.get("artists") or [{}])[0].get("name")) or "",
+        })
+    return out
+
+
 async def netease_lyric(song_id: int) -> dict[str, Any]:
     """取某条目的完整歌词：lines=[{time, orig, zh}]、lang、hasZh。"""
     async with httpx.AsyncClient(timeout=15, headers=_NETEASE_HEADERS) as client:

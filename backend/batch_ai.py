@@ -517,6 +517,17 @@ async def locate_face(image: Path) -> dict[str, float] | None:
         },
         "required": ["has_face", "x0", "y0", "x1", "y1"],
     }
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                "请定位图片中最主要人物的完整面部区域，返回归一化坐标 x0/y0/x1/y1（左上到右下，"
+                "范围 0 到 1）。框要覆盖眉眼、鼻子、嘴巴、双颊和下巴，但不要把整颗头发都框进去。"
+                "没有清晰人脸时 has_face=false，其余坐标填 0。"
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": _data_url(Path(image)), "detail": "high"}},
+    ]
     try:
         result = await _chat_structured(
             content=content, schema=schema, name="face_box", label="人脸定位失败"

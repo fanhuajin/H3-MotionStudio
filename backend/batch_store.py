@@ -188,6 +188,28 @@ class BatchStore:
         self._normalize(state)
         return state
 
+    def active_batches(self) -> list[dict[str, Any]]:
+        """还没收尾的批次（**全部**，不只最新那一条）。
+
+        `active()` 只给最新的一条，服务重启自检时要按 `runnerActive` 逐条判断，
+        所以这里给出整个列表（正常只有一个，历史遗留可能有多个）。
+        """
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM batches"
+                " WHERE status IN ('queued', 'running', 'paused', 'awaiting_review', 'failed')"
+                " ORDER BY created_at DESC, rowid DESC"
+            ).fetchall()
+        found: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                state = json.loads(row["state_json"])
+            except (TypeError, ValueError):
+                continue
+            self._normalize(state)
+            found.append(state)
+        return found
+
     def update(self, batch_id: str, **changes: Any) -> dict[str, Any]:
         state = self.get(batch_id)
         if state is None:
@@ -341,6 +363,32 @@ class BatchStore:
                 if str(item.get("awemeId") or "") == aweme_id:
                     found.append({**item, "_batchId": state.get("id")})
         return found
+
+    def item_by_video_job(self, job_id: str, limit: int = 20) -> dict[str, Any] | None:
+        """按**视频子任务 id** 找回它所属的批量条目（跨批次，最新的在前）。
+
+        生成字幕路由要用它把字幕版放进「对应的发布目录」：用户从「最近任务选」挑的成片
+        本来就是某条批量作品出的片，条目里记着 `videoJobId`（`_process_confirmed` 提交后写），
+        顺着它就能拿到那一条自己的发布目录。
+        """
+        job_id = str(job_id or "").strip()
+        if not job_id:
+            return None
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state_json FROM batches WHERE state_json LIKE ?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (f'%"{job_id}"%', limit),
+            ).fetchall()
+        for row in rows:
+            try:
+                state = json.loads(row["state_json"])
+            except (TypeError, ValueError):
+                continue
+            for item in state.get("items") or []:
+                if str(item.get("videoJobId") or "") == job_id:
+                    return {**item, "_batchId": state.get("id")}
+        return None
 
     def flagged_for_shutdown(self) -> list[dict[str, Any]]:
         """找**打开了「全部完成后自动关机」**的批次（跨状态查，已完成/失败/暂停都算）。

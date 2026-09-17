@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowsClockwise,
   CaretDown,
@@ -86,6 +86,7 @@ function kindLabel(kind?: string) {
   if (kind === "migrate") return "动作迁移";
   if (kind === "upscale") return "二采放大";
   if (kind === "rvc") return "音色转换";
+  if (kind === "subtitle") return "生成字幕";
   return "歌曲生成";
 }
 

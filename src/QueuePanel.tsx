@@ -40,6 +40,7 @@ function kindLabel(job: AppJobSummary) {
   if (job.kind === "upscale") return "二采放大";
   if (job.kind === "rvc") return "音色转换";
   if (job.kind === "lyrics") return "歌词字幕";
+  if (job.kind === "subtitle") return "生成字幕";
   return "影动生成";
 }
 

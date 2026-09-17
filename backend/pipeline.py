@@ -109,6 +109,16 @@ class ResourceManager:
         _log_maybe(job_id, "正在启动 ComfyUI，并等待模型服务就绪……")
         COMFY_LOG.parent.mkdir(parents=True, exist_ok=True)
         self.comfy_log_handle = COMFY_LOG.open("a", encoding="utf-8")
+        # **强制 HuggingFace 离线**（2026-09-17 实测）：
+        # 唱歌链路的「③ 人物动作要求 + ④ 独立运镜要求（自动识别歌词）」节点会用 transformers
+        # 加载 whisper-large-v3-turbo（本机缓存里已经有），但新版 transformers 会顺手去
+        # huggingface.co 列 additional_chat_templates，网络不通时抛 httpx.ConnectTimeout
+        # （[WinError 10060]，不在它自己的 except 名单里）→ 整条视频任务失败，
+        # 表现成「批量点重新开始没效果」（重开一次就在同一个节点再失败一次）。
+        # 离线加载实测 0.1~0.2 秒，且模型本来就不需要联网。
+        comfy_env = dict(os.environ)
+        comfy_env.setdefault("HF_HUB_OFFLINE", "1")
+        comfy_env.setdefault("TRANSFORMERS_OFFLINE", "1")
         self.comfy_process = subprocess.Popen(
             [
                 str(COMFY_PYTHON),
@@ -120,6 +130,7 @@ class ResourceManager:
                 "8188",
             ],
             cwd=str(COMFY_HOME),
+            env=comfy_env,
             stdout=self.comfy_log_handle,
             stderr=subprocess.STDOUT,
             creationflags=_creation_flags(),
@@ -524,6 +535,62 @@ async def _completed_history_media(prompt_id: str, preferred_node: str) -> Path 
         if error.summary == "没有找到工作流输出视频":
             return None
         raise
+
+
+async def _await_existing_comfy_output(
+    job_id: str,
+    prompt_id: str,
+    preferred_output_node: str,
+) -> Path:
+    """Reconnect to a prompt submitted by the previous backend process.
+
+    ComfyUI owns the actual generation process, so restarting this API must not
+    turn a still-running prompt into a failed job.  Websocket events emitted
+    before reconnect cannot be replayed; polling history is sufficient to
+    preserve the work and lets the normal pipeline continue from its output.
+    """
+    store.add_log(job_id, f"已重新连接 ComfyUI 任务：{prompt_id}，继续等待当前生成完成。")
+    store.update(
+        job_id,
+        status="running",
+        stage="singing",
+        errorSummary=None,
+        errorDetail=None,
+        finishedAt=None,
+        progress=None,
+        progressValue=None,
+        progressMax=None,
+    )
+    store.set_milestone(
+        job_id, "h3", status="running", currentNode="已恢复连接，ComfyUI 正在继续生成", progress=None
+    )
+    while True:
+        raise_if_cancelled(job_id)
+        output = await _completed_history_media(prompt_id, preferred_output_node)
+        if output is not None:
+            return output
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(f"{COMFY_URL}/queue")
+            response.raise_for_status()
+            payload = response.json()
+        live_ids = {
+            str(entry[1])
+            for label in ("queue_running", "queue_pending")
+            for entry in (payload.get(label) or [])
+            if isinstance(entry, list) and len(entry) > 1
+        }
+        if prompt_id not in live_ids:
+            # History is normally written just before the queue entry vanishes.
+            # Allow a short grace period for that hand-off.
+            await asyncio.sleep(2)
+            output = await _completed_history_media(prompt_id, preferred_output_node)
+            if output is None:
+                raise PipelineError(
+                    "无法恢复 ComfyUI 任务",
+                    f"Prompt ID {prompt_id} 已不在队列中，历史记录里也没有可用成片。",
+                )
+            return output
+        await asyncio.sleep(5)
 
 
 async def run_comfy_workflow(
@@ -1145,6 +1212,96 @@ async def run_pipeline(job_id: str) -> None:
                     await resources.stop_comfy(job_id)
             except Exception as stop_error:
                 store.add_log(job_id, f"清理 ComfyUI 时发生错误：{stop_error}")
+
+
+async def resume_singing_pipeline(job_id: str) -> None:
+    """Resume a singing job whose ComfyUI prompt survived an API restart."""
+    async with pipeline_lock:
+        state = store.get(job_id)
+        if not state or state.get("kind") != "singing":
+            return
+        prompt_id = str((state.get("promptIds") or {}).get("singing") or "")
+        if not prompt_id:
+            raise PipelineError("无法恢复任务", "没有保存 ComfyUI Prompt ID。")
+        try:
+            original = await _await_existing_comfy_output(job_id, prompt_id, "59")
+            for milestone_id in completed_milestones_for("singing"):
+                store.set_milestone(job_id, milestone_id, status="completed", progress=100, currentNode=None)
+            store.update(job_id, originalOutput=str(original), originalReady=True)
+            store.add_log(job_id, f"已从重启前的 ComfyUI 任务接回原版成片：{original.name}")
+
+            state = store.get(job_id) or state
+            output = original
+            if state.get("useUpscale", True):
+                store.add_log(job_id, "继续执行二采放大。")
+                upscaled = await run_upscale_pass(job_id, original, output_tag="高清")
+                store.update(job_id, enhancedOutput=str(upscaled), enhancedReady=True)
+                store.add_log(job_id, f"高清成片已保存：{upscaled.name}")
+                output = upscaled
+            if state.get("useRvc", True):
+                source_audio = Path(str(state.get("sourcePath") or ""))
+                await _run_voice(job_id, output, audio_from=source_audio if source_audio.is_file() else None)
+            else:
+                await _complete_without_rvc(job_id, output)
+        except Exception as error:
+            if is_job_cancelled(job_id):
+                await finish_cancelled(job_id)
+                return
+            if isinstance(error, PipelineError):
+                summary, detail = error.summary, error.detail
+            else:
+                summary, detail = "恢复任务失败", repr(error)
+            store.add_log(job_id, f"错误：{summary}")
+            store.update(
+                job_id, status="failed", stage="failed", errorSummary=summary,
+                errorDetail=detail, finishedAt=now_iso(),
+            )
+
+
+async def resume_migrate_pipeline(job_id: str) -> None:
+    """Resume a migrate job whose ComfyUI prompt survived an API restart."""
+    async with pipeline_lock:
+        state = store.get(job_id)
+        if not state or state.get("kind") != "migrate":
+            return
+        prompt_id = str((state.get("promptIds") or {}).get("migrate") or "")
+        if not prompt_id:
+            raise PipelineError("无法恢复任务", "没有保存 ComfyUI Prompt ID。")
+        store.update(
+            job_id, status="running", stage="migrating", errorSummary=None,
+            errorDetail=None, finishedAt=None,
+        )
+        try:
+            draft = await _await_existing_comfy_output(job_id, prompt_id, "456")
+            store.set_milestone(job_id, "migrate", status="completed", progress=100, currentNode=None)
+            store.update(job_id, draftOutput=str(draft), draftReady=True)
+            store.add_log(job_id, f"已从重启前的 ComfyUI 任务接回迁移成片：{draft.name}")
+
+            state = store.get(job_id) or state
+            final = draft
+            if state.get("useUpscale", True):
+                store.add_log(job_id, "继续执行二采放大。")
+                upscaled = await run_upscale_pass(job_id, draft, output_tag="迁移高清")
+                final = await asyncio.to_thread(mark_final_version, upscaled)
+                store.update(job_id, enhancedOutput=str(final), enhancedReady=True)
+                store.add_log(job_id, f"最终成片已保存并标记：{final.name}")
+            store.update(
+                job_id, status="completed", stage="completed", finalOutput=str(final),
+                finalReady=True, currentNodeId=None, currentNodeTitle=None, progress=100,
+                progressValue=None, progressMax=None, output=await media_metadata(final),
+                finishedAt=now_iso(),
+            )
+            store.add_log(job_id, "动作迁移任务已恢复并完成。")
+        except Exception as error:
+            if isinstance(error, PipelineError):
+                summary, detail = error.summary, error.detail
+            else:
+                summary, detail = "恢复迁移任务失败", repr(error)
+            store.add_log(job_id, f"错误：{summary}")
+            store.update(
+                job_id, status="failed", stage="failed", errorSummary=summary,
+                errorDetail=detail, finishedAt=now_iso(),
+            )
 
 
 # ---------------------------------------------------------------------------
