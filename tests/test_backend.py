@@ -1547,7 +1547,9 @@ class WorkflowPreparationTests(unittest.TestCase):
                 )
                 self.assertIn("function sourceOriginLabel(item: BatchItem)", ui)
                 self.assertIn('return " · 本机视频";', ui)
-                self.assertIn('{item.sourceOrigin !== "local" && (', ui)
+                # 2026-09-18 源作品文案与「打开抖音原链接」移进「本条全部信息」后，
+                # 本机换源的隐藏逻辑从 JSX 三元改成 `reviewCoreFacts` 里的 if 条件。
+                self.assertIn('if (item.sourceOrigin !== "local" && item.url) {', ui)
             finally:
                 batch_store_module.DB_PATH = original
 
