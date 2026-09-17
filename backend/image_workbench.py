@@ -169,7 +169,6 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
     title = _copy_field(copy, "标题") or _title(copy, folder.name)
     introduction = _copy_field(copy, "简介")
     return f"""参考人物和背景，将标题、简介融入图片生成 {platform} 尺寸封面。
-禁止任何虚化：人物、脸部、手部、手指和指甲必须完整清晰，禁止景深虚化、运动模糊和局部模糊。
 标题：
 {title}
 简介：
