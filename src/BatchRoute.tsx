@@ -901,11 +901,13 @@ export function BatchRoute() {
   // 「等待你的确认」那一屏要把后端掌握的**全部**信息摊开；但排障用的技术字段（条目 id、
   // 下载/视频子任务、源文件路径）收进「高级信息」折叠区，不再一上来就堆满一屏
   // （2026-09-15 用户：「信息展示太杂」）。
-  // 只保留「这一屏其它地方看不到」的字段：类型/状态在头部与状态徽章里、源作品文案与
-  // 源文件名在「本条源视频」卡片里，都不再重复（2026-09-18 用户：「列表展开信息简略一下」）。
-  const reviewCoreFacts = (ai: BatchAI, item: BatchItem): Array<[string, string]> => {
+  // 只保留「这一屏其它地方看不到」的字段：类型/状态在头部与状态徽章里，不再重复
+  // （2026-09-18 用户：「列表展开信息简略一下」）。第三项是可选的跳转地址：
+  // 源作品文案与「打开抖音原链接」原来挂在源视频卡片上，用户要求移进这里
+  // （2026-09-18 用户：「你可以放到本条全部信息里面」）。
+  const reviewCoreFacts = (ai: BatchAI, item: BatchItem): Array<[string, string, string?]> => {
     const image = String(ai.reference_image_path || "");
-    const facts: Array<[string, string]> = [];
+    const facts: Array<[string, string, string?]> = [];
     // 跳舞条目：这条到底按哪种模式出片 —— 它决定提交给迁移工作流 #353 的开关
     // （2026-09-15 用户：「本条信息 里也加上是动作迁移 还是人物替换 的信息描述」）。
     if (item.kind === "dance") {
@@ -915,6 +917,7 @@ export function BatchRoute() {
     }
     facts.push(
       ["抖音作品号", String(item.awemeId || "")],
+      ["源作品文案", sourceCaption(item)],
       ["识别歌曲", String(ai.song_name || "")],
       ["歌曲情绪", String(ai.song_mood || "")],
       ["造型来源", styleSourceLabel(ai.style_source)],
@@ -923,12 +926,17 @@ export function BatchRoute() {
       ["审核放行", item.status === "awaiting_review" ? "还没放行" : "已放行"],
       ["创建时间", formatLogTime(item.createdAt)],
     );
+    // 本机换源后没有抖音出处了，不给这个链接，免得用户以为没换成功
+    if (item.sourceOrigin !== "local" && item.url) {
+      facts.push(["抖音原链接", "打开抖音原链接", item.url]);
+    }
     return facts;
   };
   const reviewAdvancedFacts = (item: BatchItem): Array<[string, string]> => [
     ["条目 id", item.id],
     ["下载子任务", String(item.downloadJobId || "")],
     ["视频子任务", String(item.videoJobId || "")],
+    ["源文件名", String(item.sourceName || "")],
     ["源文件路径", String(item.sourcePath || "")],
     ["最近更新", formatLogTime(item.updatedAt)],
   ];
@@ -1262,15 +1270,6 @@ export function BatchRoute() {
               <div className="batch-source-empty">还没下载源视频<br />下载完成后这里可以直接播放核对</div>
             )}
           </div>
-          <div className="batch-source-meta">
-            <strong title={sourceCaption(item)}>
-              {sourceCaption(item) || "这一条还没有下载源视频"}
-            </strong>
-            {/* 本机换源后没有抖音出处了，不显示「打开抖音原链接」，免得用户以为没换成功 */}
-            {item.sourceOrigin !== "local" && (
-              <a href={item.url} target="_blank" rel="noreferrer">打开抖音原链接</a>
-            )}
-          </div>
 
           {replacingSource && (
             <div className="batch-source-replace">
@@ -1441,10 +1440,14 @@ export function BatchRoute() {
                 <summary>本条全部信息<small>含排障字段</small></summary>
                 <div className="batch-collapse-body">
                   <dl className="batch-facts">
-                    {reviewCore.map(([label, value]) => (
+                    {reviewCore.map(([label, value, href]) => (
                       <div key={label}>
                         <dt>{label}</dt>
-                        <dd>{value || "—"}</dd>
+                        <dd>
+                          {href
+                            ? <a href={href} target="_blank" rel="noreferrer">{value}</a>
+                            : (value || "—")}
+                        </dd>
                       </div>
                     ))}
                   </dl>
