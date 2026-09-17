@@ -118,8 +118,6 @@ export function ImageWorkbenchRoute() {
     try {
       await readJson(fetch(`/api/image-workbench/${item.id}/upload/${stage}?kind=${chosenKind}`, { method: "POST", body }), "保存失败");
       setNotice(stage === "person" ? "人物图已保存到对应作品目录。" : "封面已校验尺寸并保存到对应作品目录。");
-      if (stage === "person" && !item.assets.bilibili) setStage("bilibili");
-      else if (stage !== "douyin" && !item.assets.douyin) setStage("douyin");
       await refresh();
     } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); }
     finally { setBusy(false); if (inputRef.current) inputRef.current.value = ""; }
