@@ -133,27 +133,6 @@ RVC_MODEL = RVC_ROOT / "assets" / "weights" / "mogoo_v1.pth"
 # mogoo_v1 专属检索索引；文件缺失时转换脚本会退化为无索引模式。
 RVC_INDEX = RVC_ROOT / "assets" / "indices" / "mogoo_v1.index"
 
-# 歌词字幕路由（多语言）：用 RVC 环境的 torchaudio HDEMUCS 分离人声，再用
-# faster-whisper（本地模型目录，缺省 D:\tmp\fw-turbo，可用 H3_WHISPER_MODEL 覆盖）
-# 自动识别语种并实测每句演唱时间，官方歌词只取文本（韩/日/中/英均可）。
-# 2026-09-06 升级史：base 对带伴奏演唱错字/幻觉整句 → small；随后识别时注入
-# 官方歌词 initial_prompt（见 lyrics_stage.py --prompt-file）后 small 已基本可用，
-# 又试 large-v3-turbo —— 但 turbo 对本机这类 AI 翻唱人声不稳定：CPU int8 长跑会
-# 间歇性整段空转，GPU（cuBLAS/cuDNN 已装入 RVC venv）上则会出现复读死循环
-# （实测「续续续…」×90）。fw-small 连跑多次文本逐字一致、词级时间正确。
-# 因此默认 fw-small；GPU 可用时 lyrics_stage.py 自动走 CUDA（几秒完成），
-# 无需换模型。显式设 H3_WHISPER_MODEL 可覆盖（turbo 需自行评估稳定性）。
-LYRICS_ASR_PY = RVC_PYTHON
-LYRICS_ASR_MODEL = Path(os.getenv("H3_WHISPER_MODEL", r"D:\tmp\fw-small"))
-# 中文歌词最终时间轴采用 FunASR 官方 fa-zh 时间戳预测模型：输入 Demucs 人声与
-# 已确认歌词文本，直接输出逐字时间；Whisper 只负责识别片段实际唱到的歌词范围。
-LYRICS_ALIGN_PY = Path(
-    os.getenv("H3_LYRICS_ALIGN_PY", r"D:\Comfyui\FunASR\.venv\Scripts\python.exe")
-)
-LYRICS_ALIGN_MODEL = Path(
-    os.getenv("H3_LYRICS_ALIGN_MODEL", r"D:\tmp\funasr-fa-zh")
-)
-LYRICS_ALIGN_SCRIPT = PROJECT_ROOT / "scripts" / "lyrics_force_align.py"
 # 剪映手书（内部名 JYgangbi）：剪映缓存字体；直出版默认 白字细描边·字号≈剪映字号10。
 JY_SHOU_SHU_FONT = Path(
     os.getenv(

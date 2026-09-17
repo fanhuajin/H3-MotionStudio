@@ -434,17 +434,6 @@ function MotionStudioRoute() {
     setLocalError(null);
   }, []);
 
-  useEffect(() => {
-    const raw = sessionStorage.getItem("h3-motionstudio:portrait-handoff");
-    if (!raw) return;
-    sessionStorage.removeItem("h3-motionstudio:portrait-handoff");
-    try {
-      const handoff = JSON.parse(raw);
-      if (handoff.mode !== "4:3" || !handoff.url) return;
-      fetch(handoff.url).then((response) => response.blob()).then((blob) => chooseImage(new File([blob], handoff.name || "唱歌人物图.png", { type: blob.type || "image/png" }))).catch(() => setLocalError("人物定妆图自动带入失败，请手动选择生成图片。"));
-    } catch { setLocalError("人物定妆图自动带入失败，请手动选择生成图片。"); }
-  }, [chooseImage]);
-
   const chooseFile = useCallback(async (nextFile: File | null) => {
     if (!nextFile) return;
     const allowed = [".mp4", ".mov", ".mkv", ".webm"];

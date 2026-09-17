@@ -82,7 +82,6 @@ from .douyin_service import (
     douyin_service,
     is_douyin_url,
 )
-from .lyrics_worker import lang_label, netease_lyric, netease_search, run_lyrics_job
 from . import publish_watcher
 from .pipeline import (
     PipelineError,
@@ -101,7 +100,6 @@ from .pipeline import (
     run_upscale_job,
     upscale_target_size,
 )
-from . import portrait_studio
 from .settings import (
     COMFY_INPUT,
     COMFY_OUTPUT,
@@ -124,7 +122,6 @@ from .settings import (
 )
 from .store import (
     initial_milestones,
-    lyrics_milestones,
     migrate_milestones,
     now_iso,
     rvc_milestones,
@@ -2221,141 +2218,6 @@ async def create_rvc_job(
 
 
 # ---------------------------------------------------------------------------
-# 歌词字幕（多语言）：搜索官方歌词 → 自动语种识别实测逐句时间 → 剪映手书烧录
-# ---------------------------------------------------------------------------
-
-LYRICS_OUT_DIR = COMFY_OUTPUT / "video" / "H3_MotionStudio"
-
-
-@app.get("/api/lyrics/search")
-async def lyrics_search(q: str = Query(..., min_length=1), limit: int = Query(6, ge=1, le=10)):
-    try:
-        return {"results": await netease_search(q, limit)}
-    except PipelineError as error:
-        raise HTTPException(502, error.detail) from error
-
-
-@app.get("/api/lyrics/lyric")
-async def lyrics_detail(song_id: int = Query(...)):
-    try:
-        payload = await netease_lyric(song_id)
-        payload["langLabel"] = lang_label(payload.get("lang") or "")
-        return payload
-    except PipelineError as error:
-        raise HTTPException(502, error.detail) from error
-
-
-@app.post("/api/jobs/lyrics")
-async def create_lyrics_job(
-    video: UploadFile | None = File(None),
-    source_job_id: str = Form(""),
-    source_key: str = Form("final"),
-    song_name: str = Form(""),
-    lines_json: str = Form("[]"),
-):
-    """歌词字幕任务：上传/选择视频 + 已确认的歌词行（[{orig,zh}]），后台
-    demucs+whisper 实测逐句时间后按剪映手书风格烧录。不经过 ComfyUI。"""
-    active = store.active()
-    if active:
-        raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
-    if video is None and not source_job_id:
-        raise HTTPException(400, "请上传视频或选择最近任务成片")
-    try:
-        lines = json.loads(lines_json or "[]")
-        if not isinstance(lines, list):
-            raise ValueError
-    except ValueError:
-        raise HTTPException(400, "歌词行数据格式不正确") from None
-    lines = [
-        {
-            "time": float(line["time"]) if (line.get("time") or 0) > 0 else None,
-            "orig": str(line.get("orig") or line.get("text") or "").strip(),
-            "zh": str(line.get("zh") or "").strip(),
-        }
-        for line in lines
-        if isinstance(line, dict) and (line.get("orig") or line.get("text") or "").strip()
-    ]
-    if not lines:
-        raise HTTPException(400, "没有可用的歌词行，请先搜索确认歌词")
-    if len(lines) > 400:
-        raise HTTPException(400, "歌词行数过多（上限 400）")
-
-    job_id = uuid.uuid4().hex
-    job_dir = DATA_DIR / "lyrics" / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    target = job_dir / "source.mp4"
-
-    source_name_text = ""
-    if video is not None and video.filename:
-        extension = Path(video.filename).suffix.lower()
-        if extension not in VIDEO_UPLOAD_SUFFIXES:
-            raise HTTPException(400, "只支持 MP4、MOV、MKV 或 WebM 视频")
-        target = job_dir / f"source{extension}"
-        try:
-            with target.open("wb") as destination:
-                while chunk := await video.read(1024 * 1024):
-                    destination.write(chunk)
-        finally:
-            await video.close()
-        source_name_text = video.filename
-    else:
-        source_state = store.get(source_job_id)
-        field = MEDIA_FIELD_BY_KEY.get(source_key)
-        source_path = Path(source_state.get(field) or "") if source_state and field else Path()
-        if not source_state or not source_path.is_file():
-            raise HTTPException(400, "所选任务的成片不存在，请重新选择")
-        target = job_dir / f"source{source_path.suffix.lower() or '.mp4'}"
-        await asyncio.to_thread(shutil.copy2, source_path, target)
-        source_name_text = f"{source_state['id'][:8]} {source_key}"
-
-    from .lyrics_worker import detect_lang
-
-    lang = detect_lang(" ".join(line["orig"] for line in lines[:12]))
-    created_at = now_iso()
-    state = {
-        "id": job_id,
-        "kind": "lyrics",
-        "status": "queued",
-        "stage": "upload",
-        "createdAt": created_at,
-        "updatedAt": created_at,
-        "sourceName": source_name_text,
-        "songName": song_name,
-        "lyricLang": lang,
-        "lyricLangLabel": lang_label(lang),
-        "lyricLines": lines,
-        "lyricsSource": str(target.resolve()),
-        "lyricsDir": str(job_dir),
-        "lyricsOutDir": str(LYRICS_OUT_DIR),
-        "currentNodeId": None,
-        "currentNodeTitle": "等待开始识别",
-        "progress": 0,
-        "progressValue": None,
-        "progressMax": None,
-        "milestones": lyrics_milestones(),
-        "logs": [{
-            "time": created_at,
-            "message": (
-                f"已接收歌词字幕源：{source_name_text} · {len(lines)} 行歌词"
-                + (f" · {lang_label(lang)}" if lang else "")
-                + (f" · 《{song_name}》" if song_name else "")
-            ),
-        }],
-        "errorSummary": None,
-        "errorDetail": None,
-        "originalReady": True,
-        "originalOutput": str(target.resolve()),
-        "finalReady": False,
-        "finalOutput": None,
-        "output": None,
-        "promptIds": {},
-    }
-    store.create(state)
-    spawn(run_lyrics_job(job_id))
-    return state
-
-
-# ---------------------------------------------------------------------------
 # 生成字幕：剪映识别歌词时间轴 + 网易云官方歌词核对文字 + 剪映手书烧录
 # （和批量唱歌条目出片后那条链路是同一条 `subtitle_step.burn_for_video`）
 # ---------------------------------------------------------------------------
@@ -2982,96 +2844,6 @@ async def douyin_job_media(job_id: str, download: bool = Query(False)):
 
 
 VIDEO_UPLOAD_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
-IMAGE_UPLOAD_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-
-
-async def _portrait_upload(file: UploadFile | None, label: str) -> Path | None:
-    if file is None or not file.filename:
-        return None
-    suffix = Path(file.filename).suffix.lower()
-    if suffix not in IMAGE_UPLOAD_SUFFIXES:
-        raise HTTPException(400, f"{label}仅支持 PNG、JPG 或 WebP。")
-    folder = DATA_DIR / "portrait-studio" / "uploads"
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f"{uuid.uuid4().hex}{suffix}"
-    file.file.seek(0)
-    with target.open("wb") as output:
-        shutil.copyfileobj(file.file, output)
-    return target
-
-
-@app.get("/api/portrait/config")
-async def portrait_config():
-    return {"configured": portrait_studio.configured(), "identityReady": portrait_studio.IDENTITY_PATH.is_file(), "identityUrl": "/api/portrait/identity", "guide4x3Url": "/api/portrait/guides/4x3", "guide9x16Url": "/api/portrait/guides/9x16", "analysisModel": portrait_studio.ANALYSIS_MODEL, "imageModel": portrait_studio.IMAGE_MODEL, "outputRoot": str(portrait_studio.OUTPUT_ROOT)}
-
-
-@app.get("/api/portrait/identity")
-async def portrait_identity():
-    if not portrait_studio.IDENTITY_PATH.is_file():
-        raise HTTPException(404, "固定人物原型图不存在")
-    return FileResponse(portrait_studio.IDENTITY_PATH, media_type="image/png")
-
-
-@app.get("/api/portrait/guides/{mode}")
-async def portrait_guide(mode: str):
-    path = portrait_studio.GUIDE_PATHS.get(mode)
-    if not path or not path.is_file():
-        raise HTTPException(404, "构图范例不存在")
-    return FileResponse(path, media_type="image/png")
-
-
-@app.post("/api/portrait/analyze")
-async def portrait_analyze(mode: str = Form(...), notes: str = Form(""), style_image: UploadFile | None = File(None), identity_image: UploadFile | None = File(None)):
-    if mode not in {"4:3", "9:16"}:
-        raise HTTPException(400, "请选择 4:3 唱歌或 9:16 跳舞。")
-    style_path = await _portrait_upload(style_image, "造型参考图")
-    identity_path = await _portrait_upload(identity_image, "人物原型图") or portrait_studio.IDENTITY_PATH
-    if not identity_path.is_file():
-        raise HTTPException(400, "人物原型图不存在，请上传一张。")
-    try:
-        return {"analysis": await portrait_studio.analyze(mode, style_path, identity_path, notes)}
-    except (RuntimeError, httpx.HTTPError, json.JSONDecodeError) as exc:
-        raise HTTPException(502, str(exc)) from exc
-
-
-@app.post("/api/portrait/generate")
-async def portrait_generate(mode: str = Form(...), plan: str = Form(...), notes: str = Form(""), confirmed: str = Form("0"), style_image: UploadFile | None = File(None), identity_image: UploadFile | None = File(None)):
-    if confirmed not in {"1", "true", "on"}:
-        raise HTTPException(400, "请先明确确认背景、服装与完整方案。")
-    if mode not in {"4:3", "9:16"}:
-        raise HTTPException(400, "作品类型无效。")
-    style_path = await _portrait_upload(style_image, "造型参考图")
-    identity_path = await _portrait_upload(identity_image, "人物原型图") or portrait_studio.IDENTITY_PATH
-    if not identity_path.is_file():
-        raise HTTPException(400, "人物原型图不存在，请上传一张。")
-    try:
-        target = await portrait_studio.generate(mode, style_path, identity_path, plan, notes)
-    except (RuntimeError, httpx.HTTPError) as exc:
-        raise HTTPException(502, str(exc)) from exc
-    return {"name": target.name, "url": f"/api/portrait/images/{target.name}", "path": str(target), "mode": mode}
-
-
-@app.get("/api/portrait/images/{name}")
-async def portrait_image(name: str):
-    if Path(name).name != name:
-        raise HTTPException(404, "图片不存在")
-    for folder in (portrait_studio.OUTPUT_ROOT / "4x3", portrait_studio.OUTPUT_ROOT / "9x16"):
-        target = folder / name
-        if target.is_file():
-            return FileResponse(target, media_type="image/png")
-    raise HTTPException(404, "图片不存在")
-
-
-@app.get("/api/portrait/history")
-async def portrait_history():
-    rows = []
-    for mode, folder_name in (("4:3", "4x3"), ("9:16", "9x16")):
-        folder = portrait_studio.OUTPUT_ROOT / folder_name
-        if folder.is_dir():
-            for path in folder.glob("*.png"):
-                rows.append({"name": path.name, "mode": mode, "url": f"/api/portrait/images/{path.name}", "createdAt": path.stat().st_mtime})
-    rows.sort(key=lambda item: item["createdAt"], reverse=True)
-    return {"images": rows[:24]}
 
 
 @app.post("/api/uploads/preview")

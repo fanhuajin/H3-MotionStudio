@@ -23,7 +23,7 @@ H3 MotionStudio（H3 影动高清工作台）是一个运行在 Windows 本机�
             ├─ SQLite 任务库（data/motionstudio.db）
             ├─ ComfyUI HTTP/WS（D:\Comfyui\ComfyUI）
             ├─ RVC 便携转换器（D:\Comfyui\RVC）
-            ├─ 本地歌词脚本（scripts/lyrics_*.py）
+            ├─ 本地字幕脚本（scripts/burn_draft_subtitles.py 等）
             └─ 独立抖音下载服务（D:\project\douyin-downloader）
 ```
 
@@ -37,10 +37,10 @@ H3 MotionStudio（H3 影动高清工作台）是一个运行在 Windows 本机�
 | `/migrate` | 动作迁移 | 9:16；动作迁移；二采 4× 开 | 动作视频 + 可选人物图 + 三类提示词 → 保留源音频/帧率的成片 |
 | `/upscale` | 独立二采放大 | 固定 4× RealESRGAN | 上传视频或选择最近任务成片 → 1080p 档最终成片 |
 | `/rvc` | 独立音色转换 | `kikiV1` | 上传视频或选择最近原版/最终成片 → RVC 最终成片 |
-| `/lyrics` | 歌词字幕 | 多语言；中文最终走 FunASR 强制对齐 | 上传/选择成片 + 网易云歌词编辑 → 剪映手书风格烧录成片 |
+| ~~`/lyrics`~~ | 歌词字幕（**已移除**）| — | 见 4.8 「生成字幕 `/subtitle`」 |
 | `/douyin` | 抖音下载 | 下载器按需启动 | 抖音链接 → 本地 H.264/AAC MP4 |
 | `/batch` | 批量制作 | 页面粘贴链接后逐条跑 | 抖音链接列表 → 每条一个发布成品文件夹 |
-| `/portrait` | 人物定妆 | 当前从侧边栏隐藏并关闭前端路由 | API、组件和素材保留，方便后续恢复 |
+| ~~`/portrait`~~ | 人物定妆（**已移除**）| — | — |
 
 所有页面共用 `App.tsx` 中的固定左侧导航、系统资源监控、任务队列入口和深靛色视觉壳。当前 `/migrate` 页面已实际打开验证，导航和任务恢复状态可见。
 
@@ -82,7 +82,9 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 - 里程碑为：关闭 ComfyUI → Demucs 分离人声/伴奏 → 加载并转换 `kikiV1` → mux 音频。
 - 无音轨时必须在开始转换前明确失败；成功后标记 `{job_id}_最终版.mp4`。
 
-### 4.5 歌词字幕 `/lyrics`
+### 4.5 歌词字幕 `/lyrics`（已移除）
+
+**2026-09 已按用户要求（「这两个不要了」）彻底移除**：`src/LyricRoute.tsx`、`/api/lyrics/*`、`POST /api/jobs/lyrics`、`scripts/lyrics_stage.py`、`scripts/lyrics_force_align.py` 与对应测试全部删除；`backend/lyrics_worker.py` 只剩网易云取词助手，供在用的 `/subtitle` 字幕链路复用。当前要做字幕请走 **4.8 生成字幕 `/subtitle`**（剪映识别时间轴 + 官方歌词只核对文字 + ffmpeg 烧录）。以下为该功能的历史说明：
 
 1. 上传视频或选择最近成片。
 2. 通过 `/api/lyrics/search`、`/api/lyrics/lyric` 查询网易云歌词，自动识别原语种与中文翻译，用户可编辑后确认。
@@ -154,9 +156,9 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 
 | 字段 | 含义 |
 | --- | --- |
-| `kind` | `singing` / `migrate` / `upscale` / `rvc` / `lyrics` |
+| `kind` | `singing` / `migrate` / `upscale` / `rvc` / `subtitle` / `batch` |
 | `status` | `queued` / `running` / `completed` / `failed` / `cancelled` / `interrupted` |
-| `stage` | 当前阶段，如 `upload`、`h3`、`migrate`、`upscale`、`handoff`、`lyrics`、`completed` |
+| `stage` | 当前阶段，如 `upload`、`h3`、`migrate`、`upscale`、`handoff`、`subtitle`、`completed` |
 | `milestones` | 阶段列表；单项状态为 pending/running/completed/skipped/error |
 | `currentNodeId/title` | 当前 ComfyUI 节点和可读标题 |
 | `progress/value/max` | 当前采样或阶段进度 |
@@ -170,7 +172,7 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 
 ### 单任务互斥
 
-`backend/pipeline.py` 的全局 `pipeline_lock` 保证同一后端进程只有一条生成/迁移/放大/RVC/歌词任务链运行。ComfyUI 与 RVC 的资源切换必须通过 `ResourceManager` 完成，不能在新链路里直接并行启动。
+`backend/pipeline.py` 的全局 `pipeline_lock` 保证同一后端进程只有一条生成/迁移/放大/RVC/字幕任务链运行。ComfyUI 与 RVC 的资源切换必须通过 `ResourceManager` 完成，不能在新链路里直接并行启动。
 
 ## 6. 后端 API 速查
 
@@ -186,16 +188,13 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 | POST | `/api/jobs/migrate` | 创建动作迁移任务 |
 | POST | `/api/jobs/upscale` | 创建固定 4× 独立放大任务 |
 | POST | `/api/jobs/rvc` | 创建独立音色转换任务 |
-| POST | `/api/jobs/lyrics` | 创建歌词字幕任务 |
 | POST | `/api/jobs/{id}/retry-voice` | 歌曲任务重试 RVC |
 | POST | `/api/jobs/{id}/cancel` | 取消任务 |
 | GET/POST | `/api/comfy/queue` | 查看/清理 ComfyUI 队列 |
 | GET | `/api/jobs/{id}/media/{kind}` | 读取 `final` 或 `original` 成片 |
 | GET | `/api/jobs/{id}/input/{kind}` | 读取原始输入或兼容历史来源 |
 | POST/GET | `/api/uploads/preview...` | 上传卡片预览及 HEVC 转码状态 |
-| GET | `/api/lyrics/search`、`/api/lyrics/lyric` | 网易云搜索与歌词详情 |
 | GET/POST | `/api/douyin/...` | 下载器状态、下载、登录、任务和媒体 |
-| GET/POST | `/api/portrait/...` | 人物定妆保留 API，不代表当前导航开放 |
 
 ## 7. 重要文件地图
 
@@ -206,7 +205,6 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 - `src/MigrateRoute.tsx`：动作迁移页面与草稿恢复。
 - `src/UpScaleRoute.tsx`：独立放大页面。
 - `src/RvcRoute.tsx`：独立音色转换页面。
-- `src/LyricRoute.tsx`：歌词搜索、编辑、任务页面。
 - `src/DouyinRoute.tsx`：抖音下载与登录状态页面。
 - `src/QueuePanel.tsx`：ComfyUI 队列和取消/清理操作。
 - `src/SystemMonitor.tsx`：系统资源轮询显示。
@@ -221,13 +219,12 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 - `backend/workflows.py`：工作流 JSON 读取、节点参数替换、图转 API prompt、运行时低显存补丁。
 - `backend/settings.py`：所有外部路径、模型、画布参数、帧数、分批阈值和环境变量入口。
 - `backend/store.py`：SQLite 任务库、里程碑模板、WebSocket 订阅发布。
-- `backend/lyrics_worker.py`：网易云取词、识别结果筛选、歌词任务编排。
+- `backend/lyrics_worker.py`：网易云取词助手（搜歌 / 按歌词搜歌 / 取词 + LRC 解析），只剩 `/subtitle` 字幕链路复用的那部分。
 - `backend/subtitle_detect.py`：持续字幕条检测。
 - `backend/input_preview.py`：上传视频预览保存、HEVC/H.264 预览转换和过期清理。
 - `backend/douyin_service.py`：独立抖音服务生命周期与 HTTP 客户端。
 - `backend/douyin_mirror.py`：抖音任务的磁盘镜像。
 - `backend/douyin_preview.py`：下载视频的浏览器兼容化与原子替换。
-- `backend/portrait_studio.py`：人物定妆 API 后端实现，当前保留但前端隐藏。
 - `backend/chatgpt_cdp.py`：**静默驱动 ChatGPT 桌面端**（专用 profile + CDP 9444 + canvas 取 blob 图）。图片流程的执行层。
 - `backend/chatgpt_image.py`：图片流程编排（按类型取桌面提示词、上传成图、封面同对话串行）；持有 `_IMAGE_LOCK`。
 - `backend/chatgpt_desktop.py`：坐标点击版驱动（备用，会抢前台），含 `force_foreground` / `capture_window` 等工具。
@@ -238,8 +235,6 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 
 - `D:\Comfyui\ComfyUI\user\default\workflows\video\`：唱歌、迁移、去字幕、独立放大工作流 JSON。
 - `D:\Comfyui\RVC\convert_video_to_my_voice.py`：便携音色转换器。
-- `scripts/lyrics_stage.py`：Demucs + faster-whisper 识别实际演唱片段。
-- `scripts/lyrics_force_align.py`：中文 FunASR `fa-zh` 逐字强制对齐。
 - `design/reference-ui.png`、`design/douzy-shell-reference.png`：当前视觉参考源。
 - `worker/index.js`、`scripts/prepare-sites-build.mjs`、`.openai/hosting.json`：Sites 构建/托管边界，保持不动。
 
@@ -254,9 +249,6 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 | `H3_DOUYIN_DOWNLOADER_ROOT` | `D:\project\douyin-downloader` |
 | `H3_DOUYIN_DOWNLOADER_URL` | `http://127.0.0.1:9000` |
 | `H3_DOUYIN_OUTPUT` | `D:\EV` |
-| `H3_WHISPER_MODEL` | `D:\tmp\fw-small` |
-| `H3_LYRICS_ALIGN_PY` | `D:\Comfyui\FunASR\.venv\Scripts\python.exe` |
-| `H3_LYRICS_ALIGN_MODEL` | `D:\tmp\funasr-fa-zh` |
 | `H3_SUBTITLE_DETECT=0` | 关闭自动字幕定位，回退固定底部遮罩 |
 | `H3_FFMPEG_BIN_DIR` | 指定 ffmpeg 依赖 DLL 目录 |
 | `H3_BATCH_IMAGE_PROVIDER` | 候选人物图来源：`auto`（默认）/ `api` / `local` / `frame` |
@@ -276,7 +268,7 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 | `H3_CHATGPT_AUTOMATION_PROFILE` | 专用 profile，默认 `%USERPROFILE%\.codex-automation\profile`（自动已登录）|
 | `H3_CHATGPT_IMAGE_DIR` | 生成图落盘目录，默认 `E:\AI_Exports\H3-MotionStudio\ChatGPT生成图` |
 
-人物定妆 API 的身份图和输出目录另见 `backend/portrait_studio.py`：默认身份图在 `E:\AI_Assets\PortraitIdentity\本人固定参考.png`，输出在 `E:\AI_Exports\PortraitStudio\4x3` 或 `9x16`。OpenAI 凭据只能从进程环境读取。
+批量候选人物图的身份锚点仍是 `E:\AI_Assets\PortraitIdentity\本人固定参考.png`（`batch_portrait` 用它作图二）；原人物定妆 API（`backend/portrait_studio.py` 与 `/api/portrait/*`）已于 2026-09 随功能一起移除。OpenAI 凭据只能从进程环境读取。
 
 ## 9. 开发、构建与验证
 
@@ -317,7 +309,7 @@ npm run test:sites
 - 画布尺寸、遮罩、分批阈值改 `backend/settings.py`，不要直接改工作流 JSON。
 - 工作流节点替换和图转 API prompt 集中放在 `backend/workflows.py`；ComfyUI 外部补丁不属于本仓库。
 - 不要让 ComfyUI 和 RVC 并行；复用 `pipeline_lock` 和 `ResourceManager`。
-- 不能用等距假进度冒充 H3/迁移/歌词实际进度；状态要来自真实节点、批次或子进程阶段。
+- 不能用等距假进度冒充 H3/迁移/字幕实际进度；状态要来自真实节点、批次或子进程阶段。
 - 结果区只暴露 `final` 与 `original`；中间字段可写入状态，但不要重新加入 `_job_media_entries()`。
 - 不要把 OpenAI、RVC 或下载器凭据写进前端、数据库或仓库。
 - HEVC 预览与下载兼容化必须保留原始提交文件不变（上传卡片预览）或按下载规则原地原子替换（抖音结果）。

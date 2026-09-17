@@ -2251,7 +2251,7 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertIn('from "./api"', source, name)
             self.assertIn("readJson", source, name)
         # 这几个路由以前都是 `response.status === 204 ? null : response.json()`
-        for name in ("RvcRoute.tsx", "UpScaleRoute.tsx", "LyricRoute.tsx"):
+        for name in ("RvcRoute.tsx", "UpScaleRoute.tsx"):
             source = (root / name).read_text(encoding="utf-8")
             self.assertNotIn("? null : response.json()", source, name)
             self.assertIn("readJsonOrNull", source, name)
