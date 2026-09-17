@@ -1717,7 +1717,9 @@ body {
 .batch-item-actions button.start { border-color: var(--shell-accent); color: #061316; background: var(--shell-accent); font-weight: 700; }
 .batch-item-actions button.start:hover:not(:disabled) { filter: brightness(1.08); }
 .batch-item-actions button:disabled { cursor: not-allowed; opacity: .45; }
-.batch-review { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(380px, 1.15fr); gap: 14px; padding: 12px; border: 1px solid rgba(55, 216, 230, .32); border-radius: 10px; background: linear-gradient(145deg, rgba(17, 17, 45, .96), rgba(10, 8, 29, .96)); }
+/* 审核区单列（2026-09-18 用户：「本条源视频 和 候选人物图 放在同一列 不要两列」）：
+   源视频面板在上、候选人物图在下、文案在最下面，全部纵向排，不再左右两列 */
+.batch-review { display: grid; grid-template-columns: 1fr; gap: 14px; padding: 12px; border: 1px solid rgba(55, 216, 230, .32); border-radius: 10px; background: linear-gradient(145deg, rgba(17, 17, 45, .96), rgba(10, 8, 29, .96)); }
 /* 图片生成中的 loading：整块（首次出图）与覆盖在图上（重新生成）两种 */
 .batch-review-loading { grid-template-columns: 1fr; min-height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
 .batch-review-loading svg, .batch-image-loading svg { width: 30px; height: 30px; color: var(--shell-accent); }
@@ -1726,8 +1728,9 @@ body {
 .batch-image-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; background: rgba(7, 6, 22, .82); backdrop-filter: blur(2px); }
 .batch-image-loading strong { color: #e8f6f8; font-size: 13px; }
 .batch-image-loading small { color: var(--shell-muted); font-size: 11px; }
-.batch-review-image { position: relative; min-height: 320px; overflow: hidden; display: grid; place-items: center; border: 1px solid #302746; border-radius: 8px; background: #070616; }
-.batch-review-image img { width: 100%; height: 100%; max-height: 400px; object-fit: contain; display: block; }
+.batch-review-image { position: relative; min-height: 300px; padding: 12px; overflow: hidden; display: grid; place-items: center; border: 1px solid #302746; border-radius: 8px; background: #070616; }
+/* 单列后图片整行居中展示：按原比例缩放、高度封顶，不拉伸变形 */
+.batch-review-image img { display: block; max-width: 100%; max-height: 460px; object-fit: contain; }
 .batch-review-label { position: absolute; z-index: 2; top: 10px; left: 10px; display: flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 6px; color: #dcf9fb; background: rgba(7, 7, 24, .82); backdrop-filter: blur(7px); font-size: 10px; }
 .batch-review-copy { min-width: 0; display: flex; flex-direction: column; }
 .batch-review-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 11px; border-bottom: 1px solid var(--shell-line); }
@@ -1810,7 +1813,6 @@ body {
 
 @media (max-width: 1180px) {
   .batch-workspace { grid-template-columns: 240px minmax(0, 1fr); }
-  .batch-review { grid-template-columns: 1fr; }
   .batch-review-image { min-height: 280px; }
 }
 @media (max-width: 860px) {
