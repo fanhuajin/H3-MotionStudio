@@ -83,9 +83,17 @@ SING_RATIO, DANCE_RATIO, BILI_RATIO, DOUYIN_RATIO = 4 / 3, 9 / 16, 4 / 3, 3 / 4
 RATIO_TOLERANCE = 0.06
 STEP_ORDER = ("person", "bili", "douyin")
 
-UPLOAD_TIMEOUT = float(os.getenv("H3_CHATGPT_UPLOAD_TIMEOUT", "600"))
-SEND_TIMEOUT = float(os.getenv("H3_CHATGPT_SEND_TIMEOUT", "300"))
-IMAGE_TIMEOUT = float(os.getenv("H3_CHATGPT_IMAGE_TIMEOUT", "900"))
+UPLOAD_TIMEOUT = float(os.getenv("H3_CHATGPT_UPLOAD_TIMEOUT", "900"))
+SEND_TIMEOUT = float(os.getenv("H3_CHATGPT_SEND_TIMEOUT", "600"))
+IMAGE_TIMEOUT = float(os.getenv("H3_CHATGPT_IMAGE_TIMEOUT", "1800"))
+# 「给一个最大时间，时间给大一点」（用户 2026-09-19）：宁可等久，也别把慢的判成失败。
+# 但**不能无限等**：实测 011 有一轮 26 秒就结束、既无图也无输出，旧实现会一直干等到出图超时。
+# 所以三个上限分工如下：
+#   IMAGE_TIMEOUT       单轮等出图的绝对上限（默认 1800 秒 = 30 分钟）
+#   IDLE_GRACE          观察到"正在生成"之后又归于静止，再宽限多久才判本轮没出图（默认 120 秒）
+#   NO_ACTIVITY_TIMEOUT 发出后迟迟没观察到任何生成活动（没停止按钮、没百分比）的判定时限（默认 180 秒）
+IDLE_GRACE = float(os.getenv("H3_CHATGPT_IDLE_GRACE", "120"))
+NO_ACTIVITY_TIMEOUT = float(os.getenv("H3_CHATGPT_NO_ACTIVITY_TIMEOUT", "180"))
 
 EXIT_OK, EXIT_GATE1, EXIT_GATE2, EXIT_GATE3 = 0, 1, 2, 3
 
@@ -370,25 +378,54 @@ def _path_from_fs_src(src: str) -> Path | None:
     return Path(raw)
 
 
+JS_ACTIVITY = r"""
+() => {
+  const stop = Array.from(document.querySelectorAll('button'))
+    .some(b => /停止生成|Stop generating|停止响应/i.test((b.getAttribute('aria-label') || '') + (b.innerText || '')));
+  const body = document.body ? document.body.innerText : '';
+  return {stop: stop, percent: /\d{1,3}\s*%/.test(body), worked: /Worked for|已工作/i.test(body)};
+}
+"""
+
+# 这一轮结束却没出图时，用来催它真的去调出图工具（实测 011 出现过"26 秒结束、什么都没有"）
+NUDGE_TEXT = (
+    "这一轮没有生成图片。请**现在直接调用图片生成工具**把这张图生成出来，"
+    "规格与上面完全相同（人物图：图二的脸 + 图一给图一的造型/场景/灯光；画幅按上面写死的比例）。"
+    "不要只回复文字，不要解释，不要提问，不要再次确认。"
+)
+
+
 def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: set,
-                   sent_at: float, timeout: float = IMAGE_TIMEOUT,
-                   scratch: Path | None = None) -> Path | None:
+                   sent_at: float, timeout: float | None = None,
+                   scratch: Path | None = None, idle_grace: float | None = None) -> Path | None:
     """等生成结果。
 
     **聊天模式的真实落点（2026-09-19 实测）**：页面上一个
-    `<img src="data:image/png;base64,...">`，尺寸 1448x1086 —— 既不是 `blob:`，
+    `<img src="data:image/png;base64,...">` —— 既不是 `blob:`，
     也不会进 `~/.codex/generated_images`（那是 Codex 侧出图才走的路）。
-    所以这里按优先级找，并**一律排除参考图**（抽帧/晚柠/人物图，尺寸已知）：
+    所以这里按优先级找，并**一律排除参考图**（抽帧/晚柠/人物图）：
 
       1. `data:image/...` 内联图（实测走的就是这条）
       2. `app://fs/@fs/<本地路径>` —— 能直接读到文件
       3. `blob:` 大图（老外壳）→ canvas 导出（fetch(blob:) 被 CSP 拦）
       4. `generated_images/**` 里新出现的 png（Codex 侧）
+
+    **回合结束检测（2026-09-19 补）**：实测 011 有一轮 26 秒就结束、既没出图也没输出，
+    旧实现会死等到 900 秒超时（用户看到的就是"卡死"）。现在：
+      - 只要观察到"正在生成"（停止按钮或百分比）后再归于静止，宽限 `idle_grace` 秒仍无新图 → 提前返回 None；
+      - 全程 45 秒都没观察到任何活动 → 也返回 None。
+    返回 None 时由调用方决定是否催一次重来。
     """
     seen_before = {i["src"] for i in imgs_before}
     scratch = scratch or Path(os.getenv("TEMP", "."))
+    timeout = IMAGE_TIMEOUT if timeout is None else timeout
+    idle_grace = IDLE_GRACE if idle_grace is None else idle_grace
     deadline = time.time() + timeout
     heartbeat = time.time()
+    started_at = time.time()
+    seen_activity = False
+    idle_since: float | None = None
+    no_activity_deadline = started_at + NO_ACTIVITY_TIMEOUT
 
     while time.time() < deadline:
         # 4) 磁盘（Codex 侧出图才走这条，留作兜底）
@@ -436,13 +473,31 @@ def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: 
                 except Exception as exc:
                     log(f"  blob 导出失败：{exc}")
 
+        # 回合结束检测
+        try:
+            activity = page.evaluate(JS_ACTIVITY)
+        except Exception:
+            activity = {"stop": True, "percent": True, "worked": False}
+        busy = bool(activity.get("stop") or activity.get("percent"))
+        if busy:
+            seen_activity = True
+            idle_since = None
+        elif seen_activity:
+            idle_since = idle_since or time.time()
+            if time.time() - idle_since >= idle_grace:
+                log(f"  ⚠ 这一轮已经结束、静止 {idle_grace:.0f}s 也没出现新图 → 判定本轮未出图")
+                return None
+        elif time.time() > no_activity_deadline:
+            log(f"  ⚠ 发出后 {NO_ACTIVITY_TIMEOUT:.0f}s 内没观察到任何生成活动，也没出现新图 → 判定本轮未出图")
+            return None
+
         if time.time() - heartbeat > 30:
             heartbeat = time.time()
             try:
                 prog = page.evaluate(JS_PROGRESS)
             except Exception:
                 prog = ""
-            log(f"  等出图中… 已等 {int(time.time() - (deadline - timeout))}s"
+            log(f"  等出图中… 已等 {int(time.time() - started_at)}s"
                 + (f" 进度 {prog}" if prog else ""))
         page.wait_for_timeout(3000)
 
@@ -770,7 +825,22 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
 
     got = wait_new_image(page, disk_before, imgs_before, ref_sizes, sent_at)
     if got is None:
-        return {"code": EXIT_GATE3}
+        # 这一轮结束了却没出图（实测 011 出现过"26 秒结束、既无图也无输出"）→ 催它一次
+        for attempt in range(1, args.max_nudges + 1):
+            log(f"  → 催一次：请现在直接调用出图工具生成（第 {attempt}/{args.max_nudges} 次）")
+            imgs_before = page.evaluate(JS_LIST_IMAGES)
+            ref_sizes = {probe_image(p) for p in images}
+            _type_text(page, NUDGE_TEXT)
+            disk_before = snapshot_generated()
+            sent_at = time.time()
+            if not send_now(page):
+                break
+            got = wait_new_image(page, disk_before, imgs_before, ref_sizes, sent_at)
+            if got is not None:
+                break
+        if got is None:
+            log("  ✗ 催过之后仍然没有产出图片 → 本作品停止")
+            return {"code": EXIT_GATE3}
 
     width, height = probe_image(got)
     ratio = width / height
@@ -875,6 +945,8 @@ def main() -> int:
                         help="跳过身份体检")
     parser.add_argument("--max-ratio-repairs", type=int, default=1,
                         help="画幅比例不对时回「比例硬要求」让它重做的最大次数")
+    parser.add_argument("--max-nudges", type=int, default=1,
+                        help="这一轮结束却没出图时，催它「直接出图」的最大次数")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--no-instance", action="store_true", help="不自动起专用实例（假定已在跑）")
     args = parser.parse_args()
