@@ -529,15 +529,11 @@ def ratio_feedback(want_ratio: float) -> str:
             "\n人物身份、场景、构图内容、造型全部保持不变，只改画幅比例。")
 
 
-# 封面背景规则（用户 2026-09-19：「如果背景是凌乱的不需要和背景统一 只要适合comfyui就可以了」）
-# 旧规则是「封面背景必须与人物图完全一致」（2026-09-16），现在放宽：优先沿用，凌乱就别照搬。
-COVER_BACKGROUND_RULE = (
-    "【背景规则】优先沿用参考图（人物图）的背景；**但如果参考图的背景凌乱、杂物多、"
-    "高频纹理多，就不要照搬** —— 换成一个简洁、干净、有纵深、低细节的背景，"
-    "要适合后续 ComfyUI 出片（不要碎钻闪光、散景光点、密集装饰，"
-    "也不要格栅/百叶窗/栏杆这类密集重复线条）。\n"
-    "人物必须沿用参考图：同一张脸、同一发型发色、同一服装配饰，不要换人、不要生成第二个人。"
-)
+# 封面背景口径（用户 2026-09-19）：
+#   ① 「如果背景是凌乱的不需要和背景统一 只要适合comfyui就可以了」——凌乱就别硬套人物图的背景；
+#   ② 紧接着又明确「封面图不需要出现 背景规则」——所以**不把这段写成提示词文本**，
+#      封面提示词保持用户原话那几行（cover_common.build_prompt）＋比例硬要求即可。
+#      上面那条口径作为"人工/后续判断"的准则，不进提示词。
 
 
 def _type_text(page, text: str) -> None:
@@ -796,9 +792,9 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
         want_ratio = BILI_RATIO if step == "bili" else DOUYIN_RATIO
         images = [person] if step == "bili" else []
         prompt_file = None
+        # 封面提示词 = 用户原话那几行（cover_common.build_prompt）＋ 比例硬要求。
+        # **不追加背景规则文本**（用户 2026-09-19：「封面图不需要出现 背景规则」）。
         body = build_prompt(title, intro, step)
-        # 封面背景规则（用户 2026-09-19）：优先沿用人物图背景，凌乱就别照搬，改成适合 ComfyUI 的简洁背景
-        body = body + "\n\n" + COVER_BACKGROUND_RULE
         rl = ratio_line(want_ratio)
         if rl:
             body = body + "\n" + rl
