@@ -96,6 +96,9 @@ IMAGE_TIMEOUT = float(os.getenv("H3_CHATGPT_IMAGE_TIMEOUT", "900"))
 # 于是白催一次、甚至误判失败。现在放到 600s，配合 900s 的总上限使用。
 IDLE_GRACE = float(os.getenv("H3_CHATGPT_IDLE_GRACE", "600"))
 NO_ACTIVITY_TIMEOUT = float(os.getenv("H3_CHATGPT_NO_ACTIVITY_TIMEOUT", "600"))
+# 遇到限流（页面提示「请求过多 / Too many requests」）时，最多额外等这么久（默认 30 分钟），
+# 每次检测到就给等待截止时间 +60 秒，直到用完这个预算
+RATE_LIMIT_BUDGET = float(os.getenv("H3_CHATGPT_RATE_LIMIT_BUDGET", "1800"))
 
 EXIT_OK, EXIT_GATE1, EXIT_GATE2, EXIT_GATE3 = 0, 1, 2, 3
 
@@ -397,6 +400,15 @@ NUDGE_TEXT = (
 )
 
 
+JS_RATE_LIMITED = r"""
+() => {
+  const t = (document.body ? document.body.innerText : '') || '';
+  return t.includes('请求过多') || t.includes('Too many requests')
+      || t.includes('too many requests') || t.includes('稍后再试');
+}
+"""
+
+
 def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: set,
                    sent_at: float, timeout: float | None = None,
                    scratch: Path | None = None, idle_grace: float | None = None) -> Path | None:
@@ -428,6 +440,8 @@ def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: 
     seen_activity = False
     idle_since: float | None = None
     no_activity_deadline = started_at + NO_ACTIVITY_TIMEOUT
+    rate_seen = False
+    rate_extension = 0.0
 
     while time.time() < deadline:
         # 4) 磁盘（Codex 侧出图才走这条，留作兜底）
@@ -480,6 +494,22 @@ def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: 
             activity = page.evaluate(JS_ACTIVITY)
         except Exception:
             activity = {"stop": True, "percent": True, "worked": False}
+        # 限流检测：ChatGPT 回「请求过多 / Too many requests」时**不能**当成"没出图"——
+        # 用户 2026-09-19 实测遇到限流，正确做法是继续等（并把截止时间往后推），
+        # 而不是催一次或判失败，否则会白烧一次生成、还可能留下缺口。
+        try:
+            rate_limited = bool(page.evaluate(JS_RATE_LIMITED))
+        except Exception:
+            rate_limited = False
+        if rate_limited:
+            if not rate_seen:
+                rate_seen = True
+                log("  ⚠ 页面提示「请求过多」（限流）→ 继续等待，不催不判失败")
+            if rate_extension < RATE_LIMIT_BUDGET:
+                deadline += 60.0
+                rate_extension += 60.0
+                page.wait_for_timeout(60000)
+                continue
         busy = bool(activity.get("stop") or activity.get("percent"))
         if busy:
             seen_activity = True
@@ -1021,6 +1051,8 @@ def main() -> int:
                              "用户 2026-09-19「记得把相似低于60的重跑」；0 = 不返工）")
     parser.add_argument("--fix-rounds", type=int, default=2,
                         help="身份返工最多做几轮（每轮重做后再体检一次）")
+    parser.add_argument("--cooldown", type=float, default=30.0,
+                        help="每个作品之间的冷却秒数（降低 ChatGPT 限流概率，默认 30；0 = 不冷却）")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--no-instance", action="store_true", help="不自动起专用实例（假定已在跑）")
     args = parser.parse_args()
@@ -1052,6 +1084,9 @@ def main() -> int:
         for folder in folders:
             if folder.is_dir():
                 run_work(page, folder, steps, args)
+                if args.cooldown > 0:
+                    log(f"冷却 {args.cooldown:.0f} 秒（降低被限流的概率）")
+                    time.sleep(args.cooldown)
         # 跑完再做一遍身份返工：低于门槛的人物图整条重做（连带两张封面）
         audit_person_identity(page, folders, args)
     return EXIT_OK
