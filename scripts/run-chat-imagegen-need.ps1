@@ -56,10 +56,11 @@ if ($Status) {
     if ($proc) { Write-Host ("running pid={0}" -f $proc.Id) } else { Write-Host 'not running' }
     if (Test-Path -LiteralPath $stdout) {
         Write-Host ("--- {0} (tail) ---" -f $stdout)
-        Get-Content -LiteralPath $stdout -Tail 15
+        # Python writes UTF-8; PowerShell 5.1 defaults to the ANSI codepage and would show mojibake.
+        Get-Content -LiteralPath $stdout -Tail 15 -Encoding UTF8
     }
     if (Test-Path -LiteralPath $stderr) {
-        $tail = Get-Content -LiteralPath $stderr -Tail 5
+        $tail = Get-Content -LiteralPath $stderr -Tail 5 -Encoding UTF8
         if ($tail) { Write-Host ("--- {0} (tail) ---" -f $stderr); $tail }
     }
     exit 0
