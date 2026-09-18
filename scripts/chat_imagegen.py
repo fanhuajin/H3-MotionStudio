@@ -83,13 +83,13 @@ SING_RATIO, DANCE_RATIO, BILI_RATIO, DOUYIN_RATIO = 4 / 3, 9 / 16, 4 / 3, 3 / 4
 RATIO_TOLERANCE = 0.06
 STEP_ORDER = ("person", "bili", "douyin")
 
-UPLOAD_TIMEOUT = float(os.getenv("H3_CHATGPT_UPLOAD_TIMEOUT", "900"))
-SEND_TIMEOUT = float(os.getenv("H3_CHATGPT_SEND_TIMEOUT", "600"))
-IMAGE_TIMEOUT = float(os.getenv("H3_CHATGPT_IMAGE_TIMEOUT", "1800"))
-# 「给一个最大时间，时间给大一点」（用户 2026-09-19）：宁可等久，也别把慢的判成失败。
-# 但**不能无限等**：实测 011 有一轮 26 秒就结束、既无图也无输出，旧实现会一直干等到出图超时。
-# 所以三个上限分工如下：
-#   IMAGE_TIMEOUT       单轮等出图的绝对上限（默认 1800 秒 = 30 分钟）
+UPLOAD_TIMEOUT = float(os.getenv("H3_CHATGPT_UPLOAD_TIMEOUT", "600"))
+SEND_TIMEOUT = float(os.getenv("H3_CHATGPT_SEND_TIMEOUT", "300"))
+IMAGE_TIMEOUT = float(os.getenv("H3_CHATGPT_IMAGE_TIMEOUT", "900"))
+# 三个等待上限**保持原有取值**（用户 2026-09-19：「这个你原来的就可以」）：
+#   UPLOAD_TIMEOUT 600s / SEND_TIMEOUT 300s / IMAGE_TIMEOUT 900s（都可用 H3_CHATGPT_* 覆盖）
+# 真正要解决的是「不能永远等下去」：实测 011 有一轮 26 秒就结束、既无图也无输出，
+# 旧实现会一直干等到出图超时。所以新增下面两个**静止判据**，把那种情况提前判掉：
 #   IDLE_GRACE          观察到"正在生成"之后又归于静止，再宽限多久才判本轮没出图（默认 120 秒）
 #   NO_ACTIVITY_TIMEOUT 发出后迟迟没观察到任何生成活动（没停止按钮、没百分比）的判定时限（默认 180 秒）
 IDLE_GRACE = float(os.getenv("H3_CHATGPT_IDLE_GRACE", "120"))
