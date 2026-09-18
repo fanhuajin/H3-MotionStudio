@@ -80,7 +80,14 @@ def _title(copy: str, fallback: str) -> str:
         if value and not value.startswith("#"):
             return value[:46]
     parts = fallback.split("_", 2)
-    return (parts[1] if len(parts) > 1 else fallback)[:46]
+    if len(parts) > 1:
+        # 发布目录名现在是 `编号_唱歌或跳舞_标题_作品号`：第二段若是类型标签就跳过，
+        # 第三段（`标题_作品号`）里再去掉作品号（2026-09-18 加了类型标签后这里会取到「唱歌」）。
+        title = parts[1]
+        if title in {"唱歌", "跳舞"} and len(parts) > 2:
+            title = parts[2].rsplit("_", 1)[0]
+        return title[:46]
+    return fallback[:46]
 
 
 def _copy_field(copy: str, name: str) -> str:

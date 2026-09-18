@@ -1,6 +1,6 @@
 """automation.publish_watcher — 监听发布成品目录，检测「人物图.png + 发布文案.txt」齐了。
 
-发布成品目录 {publish_root}/{编号}_{标题}_{作品号}/：
+发布成品目录 {publish_root}/{编号}_{唱歌或跳舞}_{标题}_{作品号}/：
   - 人物图.png + 发布文案.txt 在审核点就会提前落盘（deliver_review_materials）
   - 最终成片.mp4 在出片完成后补上
 监听「人物图+发布文案都出现」→ 触发封面生成（cover_flow）。

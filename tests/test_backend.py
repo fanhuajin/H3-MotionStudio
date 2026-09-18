@@ -3080,6 +3080,50 @@ class WorkflowPreparationTests(unittest.TestCase):
                 batch_store_module.DB_PATH = original_db
                 batch_worker.DATA_DIR = original_data
 
+    def test_publish_folder_name_includes_the_kind_label(self) -> None:
+        """发布目录名带上类型标签：`001_唱歌_标题_作品号` / `001_跳舞_标题_作品号`。
+
+        用户 2026-09-18：「在对应的标签后面加上唱歌还是跳舞，如
+        `001_唱歌_夜空中最亮的星_7686514674456574953`」。类型未知的历史条目不拼标签，
+        保持旧格式 `{编号}_{标题}_{作品号}`（老目录按作品号后缀照样能复用）。
+        """
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                singing = {
+                    "id": "s1", "index": 1, "kind": "singing",
+                    "awemeId": "7686514674456574953",
+                    "ai": {"song_name": "夜空中最亮的星"}, "outputs": {},
+                }
+                dance = {
+                    "id": "d1", "index": 2, "kind": "dance",
+                    "awemeId": "7686514674456574954",
+                    "ai": {"song_name": "舞蹈BGM"}, "outputs": {},
+                }
+                legacy = {
+                    "id": "l1", "index": 3, "kind": "",
+                    "awemeId": "7686514674456574955",
+                    "ai": {"title": "旧标题"}, "outputs": {},
+                }
+                self.assertEqual(
+                    batch_worker.publish_folder(singing).name,
+                    "001_唱歌_夜空中最亮的星_7686514674456574953",
+                )
+                self.assertEqual(
+                    batch_worker.publish_folder(dance).name,
+                    "002_跳舞_舞蹈BGM_7686514674456574954",
+                )
+                self.assertEqual(
+                    batch_worker.publish_folder(legacy).name,
+                    "003_旧标题_7686514674456574955",
+                )
+                # 旧格式目录（没有类型标签）按作品号照样被复用，不新建第二个
+                old = root / "001_老标题_7686514674456574953"
+                old.mkdir()
+                self.assertEqual(batch_worker.publish_folder(singing), old)
+
     def test_publish_folder_is_stable_when_the_title_changes(self) -> None:
         """一个条目只能有一个发布目录：标题变了就改名复用，**不许新建第二个**。
 
@@ -3165,7 +3209,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                 stranger = {"id": "it10", "index": 3, "kind": "dance", "awemeId": "7000000000000000000",
                             "ai": {"title": "全新标题"}, "outputs": {}}
                 created = batch_worker.publish_folder(stranger)
-                self.assertEqual(created.name, "003_全新标题_7000000000000000000")
+                self.assertEqual(created.name, "003_跳舞_全新标题_7000000000000000000")
 
     def test_batch_reuses_an_already_downloaded_source(self) -> None:
         """本地已经有这条作品就直接复用，**不启动下载器、也不提交下载任务**。
@@ -7211,7 +7255,7 @@ class PublishWatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback-frame")
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             self._image(folder / "人物图.png", b"user-portrait-A")
             batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
 
@@ -7234,7 +7278,7 @@ class PublishWatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             frame = self._image(root / "work" / "candidate_r0_frame.png", b"same-bytes")
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             self._image(folder / "人物图.png", b"same-bytes")
             batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
             self.assertEqual(watcher.pending_actions([batch], root=root / "发布成品"), [])
@@ -7246,7 +7290,7 @@ class PublishWatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             upload = self._image(root / "work" / "candidate_r0_upload.png", b"user-portrait")
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             self._image(folder / "人物图.png", b"user-portrait")
             batch = self._batch("awaiting_review", candidate=str(upload), folder=folder)
 
@@ -7260,7 +7304,7 @@ class PublishWatcherTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             image = self._image(folder / "人物图.png", b"user-portrait-A")
             sha = watcher.sha256_of(image)
             batch = self._batch("awaiting_review", candidate=str(image), marker_sha=sha,
@@ -7281,7 +7325,7 @@ class PublishWatcherTests(unittest.TestCase):
             frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
             for status in ("running", "revising", "pending", "skipped", "completed", "deleted"):
                 base = root / f"发布成品-{status}"
-                folder = base / "001_测试标题_7685308023212056420"
+                folder = base / "001_跳舞_测试标题_7685308023212056420"
                 self._image(folder / "人物图.png", f"user-{status}".encode())
                 batch = self._batch(status, candidate=str(frame), folder=folder)
                 self.assertEqual(
@@ -7295,7 +7339,7 @@ class PublishWatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             self._image(folder / "人物图.png", b"user-portrait-A")
             batch = self._batch("confirmed", candidate=str(frame), folder=folder)
             actions = watcher.pending_actions([batch], root=root / "发布成品")
@@ -7308,7 +7352,7 @@ class PublishWatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             self._image(folder / "人物图.png", b"user-portrait-A")
             failed = self._batch("failed", candidate=str(frame), folder=folder)
             self.assertEqual(
@@ -7325,7 +7369,7 @@ class PublishWatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             self._image(folder / "人物图.png", b"user-portrait-A")
             batch = self._batch("awaiting_review", candidate=str(frame))
             self.assertEqual(len(watcher.pending_actions([batch], root=root / "发布成品")), 1)
@@ -7334,7 +7378,7 @@ class PublishWatcherTests(unittest.TestCase):
             self._image(stranger / "人物图.png", b"other-portrait")
             actions = watcher.pending_actions([batch], root=root / "发布成品")
             self.assertEqual([a.folder.name for a in actions],
-                             ["001_测试标题_7685308023212056420"])
+                             ["001_跳舞_测试标题_7685308023212056420"])
 
     def test_watcher_can_be_switched_off(self):
         """页面勾选框关掉之后，一轮扫描什么都不做。"""
@@ -7362,7 +7406,7 @@ class PublishWatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             image = self._image(folder / "人物图.png", b"user-portrait-A")
             batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
             item_row = json.loads(json.dumps(batch["items"][0]))
@@ -7396,7 +7440,7 @@ class PublishWatcherTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             self._image(folder / "人物图.png", b"user-portrait-A")
             item_row = {"id": "item-1", "ai": {}, "status": "awaiting_review"}
             stub = _StubBatchStore({"item-1": item_row})
@@ -7436,7 +7480,7 @@ class PublishWatcherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_测试标题_7685308023212056420"
+            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
             self._image(folder / "人物图.png", b"user-portrait-A")
             batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
             client = _StubClient()

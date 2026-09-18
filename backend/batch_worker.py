@@ -2126,12 +2126,29 @@ def _deliverable_image(item: dict[str, Any]) -> Path | None:
     return path if raw and path.is_file() else None
 
 
+def kind_label(kind: str) -> str:
+    """发布目录/日志用的类型标签：唱歌 / 跳舞（未知类型返回空串，不拼标签）。"""
+    return {"singing": "唱歌", "dance": "跳舞"}.get(str(kind or "").strip(), "")
+
+
 def _ideal_publish_folder(item: dict[str, Any]) -> Path:
-    """发布目录的**理想名字**：`{三位编号}_{歌名或标题}_{作品号}`。"""
+    """发布目录的**理想名字**：`{三位编号}_{唱歌或跳舞}_{歌名或标题}_{作品号}`。
+
+    类型标签（唱歌 / 跳舞）是用户 2026-09-18 的要求（「在对应的标签后面加上唱歌还是跳舞」，
+    例：`001_唱歌_夜空中最亮的星_7686514674456574953`）。历史条目类型未知时不拼标签，
+    保持旧格式 `{编号}_{标题}_{作品号}`；`_existing_publish_folder` 按作品号后缀认目录，
+    新旧两种格式都能对上，老目录会在下次交付时顺手改名成新格式。
+    """
     ai = item.get("ai") or {}
     aweme_id = str(item.get("awemeId") or item.get("id"))
     base_name = _safe_name(str(ai.get("song_name") or ai.get("title") or item.get("title") or "作品"))
-    return BATCH_OUTPUT_ROOT / f"{int(item['index']):03d}_{base_name}_{aweme_id}"
+    label = kind_label(str(item.get("kind") or ""))
+    stem = (
+        f"{int(item['index']):03d}_{label}_{base_name}_{aweme_id}"
+        if label
+        else f"{int(item['index']):03d}_{base_name}_{aweme_id}"
+    )
+    return BATCH_OUTPUT_ROOT / stem
 
 
 def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
