@@ -1,0 +1,7 @@
+interface:
+  display_name: "H3 发布素材出图"
+  short_description: "一条命令跑完 人物图 → B站封面 → 抖音封面（聊天模式，不占 Codex 额度）"
+  default_prompt: "使用 $h3-publish-imagegen：先看 E:\\AI_Exports\\H3-MotionStudio\\发布成品 下缺哪些产物，然后用 scripts/chat_imagegen.py --all 补齐（已有的不要重做，五官必须与晚柠.png 一致）。"
+
+policy:
+  allow_implicit_invocation: false
