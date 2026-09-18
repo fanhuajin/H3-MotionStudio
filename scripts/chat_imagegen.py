@@ -1083,8 +1083,9 @@ def main() -> int:
         log(f"已连接聊天页：{page.url[:80]}")
         for folder in folders:
             if folder.is_dir():
-                run_work(page, folder, steps, args)
-                if args.cooldown > 0:
+                summary = run_work(page, folder, steps, args)
+                # 只有真的发过请求（有"完成"）才需要冷却；整条都跳过就不用白等
+                if args.cooldown > 0 and "完成" in summary:
                     log(f"冷却 {args.cooldown:.0f} 秒（降低被限流的概率）")
                     time.sleep(args.cooldown)
         # 跑完再做一遍身份返工：低于门槛的人物图整条重做（连带两张封面）
