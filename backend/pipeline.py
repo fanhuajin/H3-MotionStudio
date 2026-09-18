@@ -22,6 +22,7 @@ from .settings import (
     COMFY_MAIN,
     COMFY_OUTPUT,
     COMFY_PYTHON,
+    COMFY_PORT,
     COMFY_ROOT,
     COMFY_URL,
     COMFY_WS,
@@ -127,7 +128,7 @@ class ResourceManager:
                 "--listen",
                 "127.0.0.1",
                 "--port",
-                "8188",
+                str(COMFY_PORT),
             ],
             cwd=str(COMFY_HOME),
             env=comfy_env,
@@ -150,7 +151,7 @@ class ResourceManager:
         if sys.platform != "win32":
             return None
         command = (
-            "$c=Get-NetTCPConnection -LocalPort 8188 -State Listen -ErrorAction SilentlyContinue | "
+            f"$c=Get-NetTCPConnection -LocalPort {COMFY_PORT} -State Listen -ErrorAction SilentlyContinue | "
             "Select-Object -First 1; if($c){Get-CimInstance Win32_Process -Filter "
             "(\"ProcessId=\"+$c.OwningProcess) | Select-Object ProcessId,ExecutablePath,CommandLine | "
             "ConvertTo-Json -Compress}"
@@ -234,10 +235,13 @@ class ResourceManager:
                 continue
 
     def _kill_listener_process(self) -> None:
-        """taskkill 掉占用 8188 的进程；只认预期的 ComfyUI，其它进程拒绝关闭。"""
+        """taskkill 掉占用 COMFY_PORT 的进程；只认预期的 ComfyUI，其它进程拒绝关闭。"""
         process = self._listener_process()
         if not process:
-            raise PipelineError("无法安全关闭 ComfyUI", "8188 端口正在使用，但无法确认对应进程。")
+            raise PipelineError(
+                "无法安全关闭 ComfyUI",
+                f"{COMFY_PORT} 端口正在使用，但无法确认对应进程。",
+            )
         executable = str(process.get("ExecutablePath") or "")
         command_line = str(process.get("CommandLine") or "")
         expected_python = str(COMFY_PYTHON).lower()
@@ -247,7 +251,7 @@ class ResourceManager:
         if not is_expected:
             raise PipelineError(
                 "拒绝关闭未知进程",
-                f"8188 端口进程不是预期的 ComfyUI。PID={process.get('ProcessId')}\n{command_line}",
+                f"{COMFY_PORT} 端口进程不是预期的 ComfyUI。PID={process.get('ProcessId')}\n{command_line}",
             )
         result = subprocess.run(
             ["taskkill", "/PID", str(process["ProcessId"]), "/T", "/F"],
@@ -299,7 +303,7 @@ class ResourceManager:
                 _log_maybe(job_id, "ComfyUI 第一次没有被完全终止，正在重试关闭……")
                 await asyncio.to_thread(self._kill_listener_process)
         if await comfy_health():
-            raise PipelineError("ComfyUI 没有完全关闭", "服务仍在占用 8188 端口。")
+            raise PipelineError("ComfyUI 没有完全关闭", f"服务仍在占用 {COMFY_PORT} 端口。")
 
         if self.comfy_log_handle:
             self.comfy_log_handle.close()

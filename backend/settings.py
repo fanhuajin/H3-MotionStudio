@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,11 @@ COMFY_PYTHON = COMFY_HOME / "python_embeded" / "python.exe"
 COMFY_MAIN = COMFY_ROOT / "main.py"
 COMFY_URL = os.getenv("H3_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 COMFY_WS = COMFY_URL.replace("http://", "ws://").replace("https://", "wss://")
+# ComfyUI 的**监听端口与 URL 同源**，不要再在 pipeline 里另写一个 8188：
+# 2026-09-19 本机的 8188 落进 Windows 保留区间（winerror 10013，Hyper-V/WSL 的 NAT
+# 预留），启动脚本会把 H3_COMFY_URL 换成别的端口，拉起来的那份必须跟着一起换，
+# 否则「后端起在 15188、ComfyUI 却监听 8188」，健康检查永远不过。
+COMFY_PORT = urlparse(COMFY_URL).port or 8188
 
 # Windows 用户级环境变量的一次性缓存：后端常由 .bat / 计划任务 / npm 启动，
 # 这些方式不继承用户级变量，不补读会让凭据配置静默失效。

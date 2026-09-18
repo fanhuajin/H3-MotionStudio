@@ -704,7 +704,7 @@ def _heal_stalled_batch(state: dict[str, Any] | None) -> dict[str, Any] | None:
 async def _prewarm_comfy() -> None:
     """点「启动」时先把 ComfyUI 拉起来（用户 2026-09-10 要求）。
 
-    在 `pipeline_lock` 里启动，避免和正在跑的任务同时拉起两个 ComfyUI 抢 8188；
+    在 `pipeline_lock` 里启动，避免和正在跑的任务同时拉起两个 ComfyUI 抢同一个端口；
     预热失败只记日志不拦批次——备料阶段（下载 + 分析 + 备图）本来就不需要 ComfyUI，
     真正出片时 pipeline 会再 ensure 一次并报出真实错误。
     """

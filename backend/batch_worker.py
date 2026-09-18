@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -2609,7 +2610,8 @@ async def _stop_comfy_if_idle() -> bool:
     try:
         from .settings import COMFY_URL
     except Exception:
-        COMFY_URL = "http://127.0.0.1:8188"
+        # 兜底也要认 H3_COMFY_URL：ComfyUI 的端口可能被启动脚本换掉（8188 被系统保留区间占住时）
+        COMFY_URL = os.getenv("H3_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             # **先掐掉残留的 prompt**：取消任务后 ComfyUI 队列里常常还留着它，

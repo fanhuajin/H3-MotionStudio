@@ -12,6 +12,8 @@ $healthPath = '/api/config'
 # 8114-8213（`netsh interface ipv4 show excludedportrange protocol=tcp`），8111 正好
 # 被圈进去。这些预留**每次开机重新分配**，所以相邻的低端口（8112/8113）同样随时
 # 会被抢 —— 历史上本项目还因此从 8011 搬到过 8111（见 design-qa.md）。
+# **ComfyUI 的 8188 当时也落在 8114-8213 里**（同样 10013，批量条目全部
+# 「ComfyUI 启动失败」），所以下面用同一套探测给它留了 15188 兜底。
 # 15000 以上不在动态端口范围内，NAT 不会再预留，所以兜底端口是稳定的；
 # 顺序固定，8111 不可用时每次都落到同一个端口，书签不会天天变。
 $portCandidates = @(8111, 15111, 15222, 18333)
@@ -100,6 +102,34 @@ $serviceUrl = 'http://127.0.0.1:' + $servicePort
 if ($servicePort -ne 8111) {
     Write-Host ('8111 不可用，改用 ' + $servicePort + '。') -ForegroundColor Yellow
     foreach ($line in $failed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
+}
+
+# ComfyUI 的端口同样会被保留区间圈住（2026-09-19 实测 8188 落在 8114-8213 里，
+# comfyui.log 报 winerror 10013，批量条目全部「ComfyUI 启动失败」）。它的端口由
+# settings.COMFY_PORT 从 H3_COMFY_URL 解析（pipeline 拉起 ComfyUI 时用的是同一个值），
+# 所以这里选好端口后必须把 H3_COMFY_URL 一起交给后端 —— 否则「后端起在 15188、
+# ComfyUI 却监听 8188」，健康检查永远不过。
+# 用户自己配过 H3_COMFY_URL 就以他的为准，不覆盖。
+if ($env:H3_COMFY_URL) {
+    Write-Host ('ComfyUI 使用已配置的地址：' + $env:H3_COMFY_URL) -ForegroundColor DarkGray
+} else {
+    $comfyPort = 0
+    $comfyFailed = @()
+    foreach ($port in @(8188, 15188)) {
+        $probe = Test-PortBind -Port $port
+        if ($probe.Ok) { $comfyPort = $port; break }
+        $comfyFailed += (Format-BindFailure -Probe $probe)
+    }
+    if ($comfyPort -eq 0) {
+        Write-Host '警告：8188 与 15188 都无法绑定，ComfyUI 可能起不来。' -ForegroundColor Yellow
+        foreach ($line in $comfyFailed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
+    } else {
+        $env:H3_COMFY_URL = 'http://127.0.0.1:' + $comfyPort
+        if ($comfyPort -ne 8188) {
+            Write-Host ('8188 不可用，ComfyUI 改用 ' + $comfyPort + '。') -ForegroundColor Yellow
+            foreach ($line in $comfyFailed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
+        }
+    }
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'node_modules'))) {
