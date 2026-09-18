@@ -408,9 +408,12 @@ def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: 
             items = []
         for item in items:
             src, w, h = item["src"], item["w"], item["h"]
-            if (w, h) in ref_sizes or src in seen_before:
+            if src in seen_before:
                 continue
             if src.startswith("data:image"):
+                # 聊天模式的生成结果就是 data: 内联图。
+                # **故意不按尺寸排除**：封面（1448x1086）与人物图（1448x1086）可能同尺寸，
+                # 按尺寸排会把刚生成的封面误当成参考图丢掉（2026-09-19 实测卡死在这）。
                 out = _write_data_url(src, scratch)
                 if out.stat().st_size >= 20 * 1024:
                     log(f"  ✓ 生成图（data 内联）{w}x{h} {out.stat().st_size // 1024}KB")
@@ -421,6 +424,9 @@ def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: 
                     log(f"  ✓ 生成图（本地文件）{w}x{h} {cand.name}")
                     return cand
             elif src.startswith("blob:"):
+                # 老外壳的 blob 结果：参考图也渲染成 blob，所以**只有这条**按尺寸排除参考图
+                if (w, h) in ref_sizes:
+                    continue
                 try:
                     data = page.evaluate(JS_CANVAS_EXPORT, src)
                     if data and data.startswith("data:image"):
@@ -498,8 +504,6 @@ def judge_face(identity: Path, candidate: Path) -> dict | None:
     没护栏的旧图 55/100（判不是）、带护栏的新图 86/100（判是）、原型对自己 97/100。
     """
     try:
-        import asyncio
-
         from backend import batch_ai
 
         content = [
@@ -507,7 +511,7 @@ def judge_face(identity: Path, candidate: Path) -> dict | None:
             {"type": "image_url", "image_url": {"url": batch_ai._data_url(identity), "detail": "high"}},
             {"type": "image_url", "image_url": {"url": batch_ai._data_url(candidate), "detail": "high"}},
         ]
-        return asyncio.run(batch_ai._chat_structured(
+        return _run_async(batch_ai._chat_structured(
             content=content, schema=FACE_SCHEMA, name="face_compare", label="人脸比对失败"))
     except Exception as exc:
         log(f"  ⚠ 人脸比对不可用：{type(exc).__name__}: {exc}")
@@ -564,6 +568,20 @@ def probe_image(path: Path) -> tuple[int, int]:
         return img.size
 
 
+def _run_async(coro):
+    """在**独立线程**里跑协程。
+
+    为什么不能直接 `asyncio.run()`：Playwright 的 sync API 会在当前线程占住事件循环，
+    直接调用会抛 `RuntimeError: asyncio.run() cannot be called from a running event loop`
+    —— 实测导致 002 之后「糊脸」和「身份复核」全部静默失效（图一=原图）。
+    """
+    import asyncio
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def identity_block() -> str:
     """仓库里的身份优先级块（延迟导入，避免拖慢启动）。"""
     try:
@@ -589,12 +607,10 @@ def defocus_scene(scene: Path, folder: Path) -> Path:
         log(f"  ↷ 复用已糊脸的图一：{cache.name}")
         return cache
     try:
-        import asyncio
-
         from backend.batch_image import defocus_reference_face
 
         work.mkdir(parents=True, exist_ok=True)
-        path, ok = asyncio.run(defocus_reference_face(scene, work))
+        path, ok = _run_async(defocus_reference_face(scene, work))
         if ok and Path(path).is_file():
             log(f"  ✓ 图一已糊脸：{Path(path).name}（模型看不到源视频那个人的五官了）")
             return Path(path)
