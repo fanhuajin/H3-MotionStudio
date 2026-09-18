@@ -69,6 +69,8 @@ PORT = int(os.getenv("H3_CHATGPT_CDP_PORT", "9444"))
 ENDPOINT = f"http://127.0.0.1:{PORT}"
 PROFILE = Path(os.getenv("H3_CHATGPT_AUTOMATION_PROFILE") or (Path.home() / ".codex-automation" / "profile"))
 GENERATED_DIR = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex")) / "generated_images"
+# 糊脸后的「图一」缓存（每个作品一个子目录，避免都叫 抽帧-noface.png 互相覆盖）
+GUARD_DIR = PROJECT_ROOT / "data" / "identity_guard"
 
 IDENTITY = "晚柠.png"
 SCENE = "抽帧.jpg"
@@ -442,10 +444,164 @@ def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: 
     return None
 
 
+def _type_text(page, text: str) -> None:
+    """把短文本写进输入框（长提示词一律走 .txt 附件，这里只用于短指令/反馈）。"""
+    page.evaluate(
+        """(text) => { const el = document.querySelector('div.ProseMirror[role="textbox"], [contenteditable="true"][role="textbox"]');
+           if (!el) return false; el.focus();
+           try { document.execCommand('selectAll'); document.execCommand('delete');
+                 if (document.execCommand('insertText', false, text)) return true; } catch (e) {}
+           el.replaceChildren(document.createTextNode(text));
+           el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
+           return true; }""",
+        text)
+    page.wait_for_timeout(600)
+
+
+# 身份不达标时的反馈话术：短、明确、只说一件事 —— 让模型重新出图
+IDENTITY_FEEDBACK = (
+    "五官不对。这张脸和图二（晚柠.png）不是同一个人。\n"
+    "请重新生成：以图二为**唯一**的面部来源，脸型、五官比例、眼距、眼型、眼皮结构、眉形、"
+    "鼻梁、鼻头、鼻翼、唇形、唇厚、面颊、下颌线、年龄感都必须与图二完全一致，"
+    "一眼就能认出是同一个人。\n"
+    "图一只提供造型、服装、场景、灯光和构图，**不提供任何面部信息**（它的脸已经被模糊处理）。\n"
+    "禁止把两张脸融合；禁止网红脸、模板脸、过度幼态、过度瘦脸；"
+    "禁止为了好看去改脸型、放大眼睛、重塑鼻子、改变唇形与下颌线。\n"
+    "其余构图与规格要求不变，直接重新生成最终图片。"
+)
+
+FACE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "same_person": {"type": "boolean"},
+        "similarity": {"type": "integer"},
+        "differences": {"type": "array", "items": {"type": "string"}},
+        "verdict": {"type": "string"},
+    },
+    "required": ["same_person", "similarity", "differences", "verdict"],
+}
+
+FACE_INSTRUCTION = (
+    "第一张图是**身份原型**（唯一身份锚点）。第二张图是**生成图**。\n"
+    "判断第二张图里人物的脸是否与第一张图是**同一个人**。\n"
+    "只依据面部结构：脸型、五官比例、眼型与眼距、眼皮结构、眉形、鼻梁鼻头鼻翼、"
+    "唇形与唇厚、面颊、下颌线、年龄感。\n"
+    "**不要**被发型、发色、妆容、服装、配饰、光线、背景、姿态、镜头角度影响。\n"
+    "similarity：0-100 整数（90+ 一眼同一人；60-89 像但有差别；40-59 气质相近但不是同一张脸；"
+    "40 以下明显不是）。differences：中文逐条列出具体五官差异（没有就空数组）。"
+)
+
+
+def judge_face(identity: Path, candidate: Path) -> dict | None:
+    """用视觉模型判「这张脸是不是图二本人」。判据已在 001 上标定：
+    没护栏的旧图 55/100（判不是）、带护栏的新图 86/100（判是）、原型对自己 97/100。
+    """
+    try:
+        import asyncio
+
+        from backend import batch_ai
+
+        content = [
+            {"type": "text", "text": FACE_INSTRUCTION},
+            {"type": "image_url", "image_url": {"url": batch_ai._data_url(identity), "detail": "high"}},
+            {"type": "image_url", "image_url": {"url": batch_ai._data_url(candidate), "detail": "high"}},
+        ]
+        return asyncio.run(batch_ai._chat_structured(
+            content=content, schema=FACE_SCHEMA, name="face_compare", label="人脸比对失败"))
+    except Exception as exc:
+        log(f"  ⚠ 人脸比对不可用：{type(exc).__name__}: {exc}")
+        return None
+
+
+def refine_identity(page, identity: Path, target: Path, want_ratio: float, args) -> None:
+    """身份复核闭环：不达标就回一句「五官不对」，让它重做，直到达标或用完次数。"""
+    if args.min_similarity <= 0:
+        return
+    for attempt in range(args.max_repairs + 1):
+        verdict = judge_face(identity, target)
+        if verdict is None:
+            log("  ⚠ 判据不可用，跳过身份复核")
+            return
+        score = int(verdict.get("similarity") or 0)
+        ok = bool(verdict.get("same_person")) and score >= args.min_similarity
+        log(f"  身份复核 #{attempt}：same_person={verdict.get('same_person')} "
+            f"相似度={score}/100（门槛 {args.min_similarity}）→ {'通过 ✅' if ok else '不通过 ❌'}")
+        for diff in (verdict.get("differences") or [])[:4]:
+            log(f"      · {diff}")
+        if ok:
+            return
+        if attempt >= args.max_repairs:
+            log("  ⚠ 修复次数用尽，保留当前这张（可选：调高 --max-repairs）")
+            return
+
+        # 回 Codex 一句「五官不对」→ 等它重做 → 覆盖目标
+        log("  → 回 Codex：五官不对，要求以图二为准重新生成")
+        imgs_before = page.evaluate(JS_LIST_IMAGES)
+        ref_sizes = {probe_image(identity), probe_image(target)}
+        _type_text(page, IDENTITY_FEEDBACK)
+        disk_before = snapshot_generated()
+        sent_at = time.time()
+        if not send_now(page):
+            log("  ✗ 反馈没发出去，停止修复")
+            return
+        got = wait_new_image(page, disk_before, imgs_before, ref_sizes, sent_at)
+        if got is None:
+            log("  ✗ 重做后没等到新图，保留当前这张")
+            return
+        width, height = probe_image(got)
+        drift = abs(width / height - want_ratio) / want_ratio
+        if drift > RATIO_TOLERANCE:
+            log(f"  ✗ 重做的图比例不对 {width}x{height}（偏差 {drift:.1%}），保留当前这张")
+            return
+        shutil.copy2(got, target)
+        log(f"  ↻ 已用重做的图覆盖 {target.name}（{width}x{height}）")
+
+
 def probe_image(path: Path) -> tuple[int, int]:
     with Image.open(path) as img:
         img.load()
         return img.size
+
+
+def identity_block() -> str:
+    """仓库里的身份优先级块（延迟导入，避免拖慢启动）。"""
+    try:
+        from backend.batch_ai import IDENTITY_PRIORITY_BLOCK
+
+        return IDENTITY_PRIORITY_BLOCK
+    except Exception as exc:
+        log(f"  ⚠ 取身份优先级块失败：{type(exc).__name__}: {exc}")
+        return ""
+
+
+def defocus_scene(scene: Path, folder: Path) -> Path:
+    """把「图一」（抽帧.jpg）里的人脸糊掉。
+
+    为什么必须糊：图一里是**源视频那个人**的脸。原样送进去，模型会把那个人的五官
+    混进成图，而用户要求「五官必须与晚柠.png 一致」—— 实测就是这条出的问题。
+    糊掉之后图一仍然提供发型轮廓、服装、场景、灯光，但不再提供任何可换脸的面部信息。
+    （复用仓库既有的 `batch_image.defocus_reference_face`，它用视觉模型定位人脸框。）
+    """
+    work = GUARD_DIR / folder.name
+    cache = work / f"{scene.stem}-noface.png"
+    if cache.is_file():
+        log(f"  ↷ 复用已糊脸的图一：{cache.name}")
+        return cache
+    try:
+        import asyncio
+
+        from backend.batch_image import defocus_reference_face
+
+        work.mkdir(parents=True, exist_ok=True)
+        path, ok = asyncio.run(defocus_reference_face(scene, work))
+        if ok and Path(path).is_file():
+            log(f"  ✓ 图一已糊脸：{Path(path).name}（模型看不到源视频那个人的五官了）")
+            return Path(path)
+        log("  ⚠ 没定位到人脸，仍用原图当图一")
+    except Exception as exc:  # 糊脸失败绝不阻断出图
+        log(f"  ⚠ 糊脸失败：{type(exc).__name__}: {exc}（仍用原图）")
+    return scene
 
 
 # --------------------------------------------------------------------------
@@ -475,8 +631,13 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
                 log(f"门1 ✗ 缺少{label}：{path}")
                 return {"code": EXIT_GATE1}
         want_ratio = SING_RATIO if kind == "singing" else DANCE_RATIO
-        images, prompt_file, body = [scene, identity], rule, ""
-        log(f"门1 ✓ {scene.name}{probe_image(scene)} {identity.name}{probe_image(identity)} 规则={rule.name}")
+        scene_used = defocus_scene(scene, folder) if args.identity_guard else scene
+        # 身份优先级块放在**消息正文**里：它排在 .txt 附件之后，是模型最后读到的东西
+        body = identity_block() if args.identity_guard else ""
+        images, prompt_file = [scene_used, identity], rule
+        log(f"门1 ✓ {scene.name}{probe_image(scene)} {identity.name}{probe_image(identity)} "
+            f"规则={rule.name} ｜ 图一={'已糊脸' if scene_used != scene else '原图'}"
+            f" ｜ 身份块={'开' if body else '关'}")
     else:
         person = folder / PERSON
         copy_path = folder / COPY
@@ -509,16 +670,7 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
         return {"code": EXIT_GATE2}
 
     if body.strip():
-        page.evaluate(
-            """(text) => { const el = document.querySelector('div.ProseMirror[role="textbox"], [contenteditable="true"][role="textbox"]');
-               if (!el) return false; el.focus();
-               try { document.execCommand('selectAll'); document.execCommand('delete');
-                     if (document.execCommand('insertText', false, text)) return true; } catch (e) {}
-               el.replaceChildren(document.createTextNode(text));
-               el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
-               return true; }""",
-            body)
-        page.wait_for_timeout(600)
+        _type_text(page, body)
 
     if step == "person":
         ref_sizes = {probe_image(scene), probe_image(identity)}
@@ -547,6 +699,10 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(got, target)
     log(f"  门3 ✓ 已落盘 {target.name} {probe_image(target)} {target.stat().st_size // 1024}KB")
+
+    # 人物图：用标定好的判据复核身份，不达标就回「五官不对」让它重做
+    if step == "person":
+        refine_identity(page, identity, target, want_ratio, args)
     return {"code": EXIT_OK}
 
 
@@ -594,6 +750,14 @@ def main() -> int:
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--steps", default="person,bili,douyin")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--identity-guard", dest="identity_guard", action="store_true", default=True,
+                        help="糊掉图一的脸并在末尾追加身份优先级块（默认开）")
+    parser.add_argument("--no-identity-guard", dest="identity_guard", action="store_false",
+                        help="关掉身份护栏（用于对比测试）")
+    parser.add_argument("--min-similarity", type=int, default=80,
+                        help="人物图身份相似度门槛（0-100，判据已标定：不合 55 / 合 86 / 原型 97）；0 = 不复核")
+    parser.add_argument("--max-repairs", type=int, default=2,
+                        help="身份不达标时回「五官不对」让它重做的最大次数")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--no-instance", action="store_true", help="不自动起专用实例（假定已在跑）")
     args = parser.parse_args()
