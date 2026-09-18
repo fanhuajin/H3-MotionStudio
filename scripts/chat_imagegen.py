@@ -450,6 +450,30 @@ def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: 
     return None
 
 
+def ratio_line(want_ratio: float) -> str:
+    """画面比例的硬要求，放在消息末尾（模型对末尾最敏感）。
+
+    为什么必须写死：实测 009 那次按 9比16图片.txt 出图，模型给了 1086x1448（3:4）——
+    提示词里虽然写了 9:16，但不够硬。历史产出统计里 941x1672（真 9:16）出现过 24 次，
+    说明模型支持这个比例，只是需要被明确要求。
+    """
+    if abs(want_ratio - 9 / 16) < 0.01:
+        return ("【画面比例·硬要求】必须是 9:16 竖版（宽:高 = 9:16，例如 941x1672）。"
+                "不要 3:4、不要 4:3、不要 1:1。")
+    if abs(want_ratio - 4 / 3) < 0.01:
+        return ("【画面比例·硬要求】必须是 4:3 横版（宽:高 = 4:3，例如 1448x1086）。"
+                "不要 3:4、不要 16:9、不要 1:1。")
+    if abs(want_ratio - 3 / 4) < 0.01:
+        return ("【画面比例·硬要求】必须是 3:4 竖版（宽:高 = 3:4，例如 1086x1448）。"
+                "不要 9:16、不要 4:3、不要 1:1。")
+    return ""
+
+
+def ratio_feedback(want_ratio: float) -> str:
+    return ("画面比例不对。请重新生成同一张图，但" + ratio_line(want_ratio) +
+            "\n人物身份、场景、构图内容、造型全部保持不变，只改画幅比例。")
+
+
 def _type_text(page, text: str) -> None:
     """把短文本写进输入框（长提示词一律走 .txt 附件，这里只用于短指令/反馈）。"""
     page.evaluate(
@@ -650,6 +674,9 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
         scene_used = defocus_scene(scene, folder) if args.identity_guard else scene
         # 身份优先级块放在**消息正文**里：它排在 .txt 附件之后，是模型最后读到的东西
         body = identity_block() if args.identity_guard else ""
+        rl = ratio_line(want_ratio)
+        if rl:
+            body = (body + "\n\n" + rl).strip()
         images, prompt_file = [scene_used, identity], rule
         log(f"门1 ✓ {scene.name}{probe_image(scene)} {identity.name}{probe_image(identity)} "
             f"规则={rule.name} ｜ 图一={'已糊脸' if scene_used != scene else '原图'}"
@@ -663,7 +690,11 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
         title, intro = parse_copy(copy_path)
         want_ratio = BILI_RATIO if step == "bili" else DOUYIN_RATIO
         images = [person] if step == "bili" else []
-        prompt_file, body = None, build_prompt(title, intro, step)
+        prompt_file = None
+        body = build_prompt(title, intro, step)
+        rl = ratio_line(want_ratio)
+        if rl:
+            body = body + "\n" + rl
         log(f"门1 ✓ 人物图{probe_image(person)} 标题「{title}」 简介「{intro[:30]}」")
 
     if step == "person":
@@ -706,8 +737,32 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
     ratio = width / height
     drift = abs(ratio - want_ratio) / want_ratio
     log(f"  产物 {width}x{height} 比例{ratio:.3f}（期望{want_ratio:.3f} 偏差{drift:.1%}）")
+
+    # 比例不对就回一句「比例硬要求」让它重做（和身份复核同一个思路）
+    repairs = 0
+    while drift > RATIO_TOLERANCE and repairs < args.max_ratio_repairs:
+        repairs += 1
+        log(f"  → 回 Codex：画面比例不对，要求 {want_ratio:.4f} 重做（第 {repairs} 次）")
+        imgs_before = page.evaluate(JS_LIST_IMAGES)
+        ref_sizes = {probe_image(p) for p in images}
+        _type_text(page, ratio_feedback(want_ratio))
+        disk_before = snapshot_generated()
+        sent_at = time.time()
+        if not send_now(page):
+            log("  ✗ 比例反馈没发出去")
+            break
+        redo = wait_new_image(page, disk_before, imgs_before, ref_sizes, sent_at)
+        if redo is None:
+            log("  ✗ 重做后没等到新图")
+            break
+        got = redo
+        width, height = probe_image(got)
+        ratio = width / height
+        drift = abs(ratio - want_ratio) / want_ratio
+        log(f"  重做产物 {width}x{height} 比例{ratio:.3f}（偏差{drift:.1%}）")
+
     if drift > RATIO_TOLERANCE:
-        log("  门3 ✗ 宽高比不合格")
+        log(f"  门3 ✗ 宽高比仍不合格（偏差 {drift:.1%}）")
         return {"code": EXIT_GATE3}
     if target.exists() and not args.force:
         log(f"  门3 ✗ 目标已存在（未加 --force）：{target}")
@@ -774,6 +829,8 @@ def main() -> int:
                         help="人物图身份相似度门槛（0-100，判据已标定：不合 55 / 合 86 / 原型 97）；0 = 不复核")
     parser.add_argument("--max-repairs", type=int, default=2,
                         help="身份不达标时回「五官不对」让它重做的最大次数")
+    parser.add_argument("--max-ratio-repairs", type=int, default=1,
+                        help="画幅比例不对时回「比例硬要求」让它重做的最大次数")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--no-instance", action="store_true", help="不自动起专用实例（假定已在跑）")
     args = parser.parse_args()
