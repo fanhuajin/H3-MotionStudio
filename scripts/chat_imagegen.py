@@ -543,28 +543,50 @@ def judge_face(identity: Path, candidate: Path) -> dict | None:
 
 
 def refine_identity(page, identity: Path, target: Path, want_ratio: float, args) -> None:
-    """身份复核闭环：不达标就回一句「五官不对」，让它重做，直到达标或用完次数。"""
-    if args.min_similarity <= 0:
-        return
-    for attempt in range(args.max_repairs + 1):
-        verdict = judge_face(identity, target)
-        if verdict is None:
-            log("  ⚠ 判据不可用，跳过身份复核")
-            return
-        score = int(verdict.get("similarity") or 0)
-        ok = bool(verdict.get("same_person")) and score >= args.min_similarity
-        log(f"  身份复核 #{attempt}：same_person={verdict.get('same_person')} "
-            f"相似度={score}/100（门槛 {args.min_similarity}）→ {'通过 ✅' if ok else '不通过 ❌'}")
-        for diff in (verdict.get("differences") or [])[:4]:
-            log(f"      · {diff}")
-        if ok:
-            return
-        if attempt >= args.max_repairs:
-            log("  ⚠ 修复次数用尽，保留当前这张（可选：调高 --max-repairs）")
-            return
+    """身份复核闭环：不达标就回一句「五官不对」让它重做；**始终保留分数最高的那张**。
 
-        # 回 Codex 一句「五官不对」→ 等它重做 → 覆盖目标
-        log("  → 回 Codex：五官不对，要求以图二为准重新生成")
+    通过条件 = 判据的**二值结论 same_person=True**。
+    分数只作参考：`--min-similarity > 0` 时才额外要求分数（默认 0 = 不额外卡分）。
+
+    为什么这么改（2026-09-19 用户反馈「是不是太严格了，我看着像同一个人」+「怎么一直重复生成同一张」）：
+    010 首图判 78/same_person=True（就是同一个人），却被 80 分线否掉 → 白重做两次，
+    其中一次还把更好的那张覆盖成了 68/False。**判据说像就不该重做。**
+    仍然依赖判据的硬结论：已知错例是 55/same_person=False，会被正确拦下。
+
+    只在需要重做时才动手，且**始终保留分数最高的那张**（重做更差就丢弃）。
+    """
+    if not args.identity_check:
+        return
+
+    def passed(verdict: dict) -> bool:
+        if not verdict.get("same_person"):
+            return False
+        if args.min_similarity <= 0:
+            return True
+        return int(verdict.get("similarity") or 0) >= args.min_similarity
+
+    verdict = judge_face(identity, target)
+    if verdict is None:
+        log("  ⚠ 判据不可用，跳过身份复核")
+        return
+    best_score = int(verdict.get("similarity") or 0)
+    best_ok = passed(verdict)
+    extra = "" if args.min_similarity <= 0 else f"，分数门槛 {args.min_similarity}"
+    log(f"  身份体检：same_person={verdict.get('same_person')} 相似度={best_score}/100"
+        f"（只看二值结论{extra}）→ {'通过 ✅ 不重做' if best_ok else '判为不是同一个人 ❌'}")
+    for diff in (verdict.get("differences") or [])[:4]:
+        log(f"      · {diff}")
+    if best_ok or args.max_repairs <= 0:
+        if not best_ok and args.max_repairs <= 0:
+            log("  （--max-repairs 0：只体检不重做，保留这张）")
+        return
+
+    # 把当前这张记为「最佳」，后面只在重做更好时才替换
+    best_file = Path(os.getenv("TEMP", ".")) / f"idbest_{target.stem}_{int(time.time())}.png"
+    shutil.copy2(target, best_file)
+
+    for attempt in range(1, args.max_repairs + 1):
+        log(f"  → 回 Codex：五官不对，要求以图二为准重新生成（第 {attempt} 次）")
         imgs_before = page.evaluate(JS_LIST_IMAGES)
         ref_sizes = {probe_image(identity), probe_image(target)}
         _type_text(page, IDENTITY_FEEDBACK)
@@ -572,18 +594,33 @@ def refine_identity(page, identity: Path, target: Path, want_ratio: float, args)
         sent_at = time.time()
         if not send_now(page):
             log("  ✗ 反馈没发出去，停止修复")
-            return
+            break
         got = wait_new_image(page, disk_before, imgs_before, ref_sizes, sent_at)
         if got is None:
-            log("  ✗ 重做后没等到新图，保留当前这张")
-            return
+            log("  ✗ 重做后没等到新图")
+            break
         width, height = probe_image(got)
         drift = abs(width / height - want_ratio) / want_ratio
         if drift > RATIO_TOLERANCE:
-            log(f"  ✗ 重做的图比例不对 {width}x{height}（偏差 {drift:.1%}），保留当前这张")
-            return
-        shutil.copy2(got, target)
-        log(f"  ↻ 已用重做的图覆盖 {target.name}（{width}x{height}）")
+            log(f"  ✗ 重做的图比例不对 {width}x{height}（偏差 {drift:.1%}），弃用")
+            continue
+
+        verdict2 = judge_face(identity, got)
+        if verdict2 is None:
+            log("  ⚠ 重做图判据不可用，弃用")
+            continue
+        score2 = int(verdict2.get("similarity") or 0)
+        ok2 = bool(verdict2.get("same_person")) and score2 >= args.min_similarity
+        log(f"  重做后 #{attempt}：same_person={verdict2.get('same_person')} "
+            f"相似度={score2}/100（当前最佳 {best_score}）→ {'更好 ✅' if score2 > best_score else '没更好，弃用'}")
+        if score2 > best_score:
+            shutil.copy2(got, best_file)
+            best_score, best_ok = score2, ok2
+        if ok2:
+            break
+
+    shutil.copy2(best_file, target)
+    log(f"  身份复核收尾：采用 {best_score}/100 的那张（{'达标 ✅' if best_ok else '仍未达标，保留最佳一张' }）")
 
 
 def probe_image(path: Path) -> tuple[int, int]:
@@ -825,10 +862,15 @@ def main() -> int:
                         help="糊掉图一的脸并在末尾追加身份优先级块（默认开）")
     parser.add_argument("--no-identity-guard", dest="identity_guard", action="store_false",
                         help="关掉身份护栏（用于对比测试）")
-    parser.add_argument("--min-similarity", type=int, default=80,
-                        help="人物图身份相似度门槛（0-100，判据已标定：不合 55 / 合 86 / 原型 97）；0 = 不复核")
-    parser.add_argument("--max-repairs", type=int, default=2,
-                        help="身份不达标时回「五官不对」让它重做的最大次数")
+    parser.add_argument("--min-similarity", type=int, default=0,
+                        help="可选的额外分数门槛（0=不卡分，只看判据二值结论 same_person；"
+                             "标定：已知错例 55/False、合格 78~97/True）")
+    parser.add_argument("--max-repairs", type=int, default=1,
+                        help="判据判为「不是同一个人」时回「五官不对」重做的最大次数；0 = 只体检不重做")
+    parser.add_argument("--identity-check", dest="identity_check", action="store_true", default=True,
+                        help="出图后做身份体检（默认开）")
+    parser.add_argument("--no-identity-check", dest="identity_check", action="store_false",
+                        help="跳过身份体检")
     parser.add_argument("--max-ratio-repairs", type=int, default=1,
                         help="画幅比例不对时回「比例硬要求」让它重做的最大次数")
     parser.add_argument("--list", action="store_true")
