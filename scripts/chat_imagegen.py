@@ -749,6 +749,64 @@ def defocus_scene(scene: Path, folder: Path) -> Path:
 # 步骤 / 作品
 # --------------------------------------------------------------------------
 
+def audit_person_identity(page, folders: list[Path], args) -> int:
+    """身份返工：把「人物图身份分低于门槛」的作品整条重做。
+
+    用户 2026-09-19：「记得把相似低于60的重跑」。
+
+    - 逐个体检已有 `人物图.png`（判据 `judge_face`，门槛 `--fix-below`，默认 60）
+    - 低于门槛的**整条重做**（person → bili → douyin，强制 `--force`）：
+      人物图换掉之后，两张封面还是旧的那张脸就图文不一致了，所以必须一起重做
+    - 最多 `--fix-rounds` 轮（默认 2），每轮重做完再体检一次，直到没有低于门槛的
+    返回最终仍低于门槛的作品数。
+    """
+    if args.fix_below <= 0:
+        return 0
+    identity = PUBLISH_ROOT / IDENTITY_IMAGE
+    if not identity.is_file():
+        log(f"身份原型不存在，跳过身份返工：{identity}")
+        return 0
+
+    def judge_existing() -> list[tuple[Path, int]]:
+        lows: list[tuple[Path, int]] = []
+        for folder in folders:
+            if not folder.is_dir():
+                continue
+            person = folder / PERSON
+            if not person.is_file() or person.stat().st_size < MIN_VALID_BYTES:
+                continue
+            verdict = judge_face(identity, person)
+            if verdict is None:
+                continue
+            score = int(verdict.get("similarity") or 0)
+            log(f"  体检 {folder.name[:34]:36s} {score:>3}/100"
+                f"（门槛 {args.fix_below}）→ {'达标 ✅' if score >= args.fix_below else '要返工 ❌'}")
+            if score < args.fix_below:
+                lows.append((folder, score))
+        return lows
+
+    for round_no in range(1, args.fix_rounds + 1):
+        log(f"──── 身份返工 第 {round_no}/{args.fix_rounds} 轮：体检所有人物图 ────")
+        lows = judge_existing()
+        if not lows:
+            log(f"身份返工：没有低于 {args.fix_below} 分的人物图 ✅")
+            return 0
+        log(f"身份返工：发现 {len(lows)} 张低于 {args.fix_below} 分 → 整条重做（人物图+两张封面）")
+        forced = argparse.Namespace(**vars(args))
+        forced.force = True
+        for folder, score in lows:
+            log(f"  ↻ {folder.name}（{score} 分）")
+            run_work(page, folder, list(STEP_ORDER), forced)
+
+    rest = judge_existing()
+    if rest:
+        log(f"⚠ 身份返工结束，仍有 {len(rest)} 张低于 {args.fix_below} 分："
+            + "、".join(f"{f.name[:20]}({s})" for f, s in rest))
+    else:
+        log("身份返工：全部达标 ✅")
+    return len(rest)
+
+
 def detect_kind(folder: Path) -> str | None:
     if "_唱歌_" in folder.name:
         return "singing"
@@ -956,6 +1014,11 @@ def main() -> int:
                         help="画幅比例不对时回「比例硬要求」让它重做的最大次数")
     parser.add_argument("--max-nudges", type=int, default=1,
                         help="这一轮结束却没出图时，催它「直接出图」的最大次数")
+    parser.add_argument("--fix-below", type=int, default=60,
+                        help="身份返工门槛：跑完后把人物图身份分低于它的作品整条重做（默认 60，"
+                             "用户 2026-09-19「记得把相似低于60的重跑」；0 = 不返工）")
+    parser.add_argument("--fix-rounds", type=int, default=2,
+                        help="身份返工最多做几轮（每轮重做后再体检一次）")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--no-instance", action="store_true", help="不自动起专用实例（假定已在跑）")
     args = parser.parse_args()
@@ -987,6 +1050,8 @@ def main() -> int:
         for folder in folders:
             if folder.is_dir():
                 run_work(page, folder, steps, args)
+        # 跑完再做一遍身份返工：低于门槛的人物图整条重做（连带两张封面）
+        audit_person_identity(page, folders, args)
     return EXIT_OK
 
 
