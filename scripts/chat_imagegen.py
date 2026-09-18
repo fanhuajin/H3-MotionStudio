@@ -559,10 +559,12 @@ def refine_identity(page, identity: Path, target: Path, want_ratio: float, args)
         return
 
     def passed(verdict: dict) -> bool:
-        if not verdict.get("same_person"):
-            return False
-        if args.min_similarity <= 0:
-            return True
+        """通过条件 = 相似度 ≥ 门槛（默认 60）。
+
+        用户 2026-09-19 定的规格：「**只有人物图要像，60 以上就可以了，封面图不需要管**」。
+        所以这里只看分数，不再额外要求判据的二值结论（same_person 仍会打进日志供参考）。
+        封面两步**不做**身份体检 —— 只校验画幅比例。
+        """
         return int(verdict.get("similarity") or 0) >= args.min_similarity
 
     verdict = judge_face(identity, target)
@@ -571,9 +573,9 @@ def refine_identity(page, identity: Path, target: Path, want_ratio: float, args)
         return
     best_score = int(verdict.get("similarity") or 0)
     best_ok = passed(verdict)
-    extra = "" if args.min_similarity <= 0 else f"，分数门槛 {args.min_similarity}"
-    log(f"  身份体检：same_person={verdict.get('same_person')} 相似度={best_score}/100"
-        f"（只看二值结论{extra}）→ {'通过 ✅ 不重做' if best_ok else '判为不是同一个人 ❌'}")
+    log(f"  人物图身份体检：相似度={best_score}/100（门槛 {args.min_similarity}，"
+        f"判据二值结论 same_person={verdict.get('same_person')}）→ "
+        f"{'通过 ✅ 不重做' if best_ok else '低于门槛 ❌'}")
     for diff in (verdict.get("differences") or [])[:4]:
         log(f"      · {diff}")
     if best_ok or args.max_repairs <= 0:
@@ -862,9 +864,9 @@ def main() -> int:
                         help="糊掉图一的脸并在末尾追加身份优先级块（默认开）")
     parser.add_argument("--no-identity-guard", dest="identity_guard", action="store_false",
                         help="关掉身份护栏（用于对比测试）")
-    parser.add_argument("--min-similarity", type=int, default=0,
-                        help="可选的额外分数门槛（0=不卡分，只看判据二值结论 same_person；"
-                             "标定：已知错例 55/False、合格 78~97/True）")
+    parser.add_argument("--min-similarity", type=int, default=60,
+                        help="人物图身份相似度门槛（默认 60，用户 2026-09-19 定的规格："
+                             "60 以上就可以；封面不判身份）。0 = 只要判据返回就通过")
     parser.add_argument("--max-repairs", type=int, default=1,
                         help="判据判为「不是同一个人」时回「五官不对」重做的最大次数；0 = 只体检不重做")
     parser.add_argument("--identity-check", dest="identity_check", action="store_true", default=True,
