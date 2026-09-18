@@ -2,13 +2,59 @@
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $projectRoot
 
-$serviceUrl = 'http://127.0.0.1:8111'
 $healthPath = '/api/config'
 
-function Test-ServiceReady {
-    param([int]$TimeoutSeconds = 5)
+# 首选端口仍是 8111（沿用旧地址与书签）。**为什么必须有兜底端口**：2026-09-19 实测
+# 8111 会让 uvicorn 报 `[Errno 13] ... [winerror 10013]`，这不是"端口被占用"
+# （被占用是 10048），而是**端口落在 Windows 保留的排除区间里**：本机 TCP 动态
+# 端口范围被改成了 1024~15000（`netsh int ipv4 show dynamicport tcp`），Hyper-V/WSL
+# 的 NAT（hns/winnat）会从这段范围按 100 个一组预留端口，当时预留了 8014-8113 与
+# 8114-8213（`netsh interface ipv4 show excludedportrange protocol=tcp`），8111 正好
+# 被圈进去。这些预留**每次开机重新分配**，所以相邻的低端口（8112/8113）同样随时
+# 会被抢 —— 历史上本项目还因此从 8011 搬到过 8111（见 design-qa.md）。
+# 15000 以上不在动态端口范围内，NAT 不会再预留，所以兜底端口是稳定的；
+# 顺序固定，8111 不可用时每次都落到同一个端口，书签不会天天变。
+$portCandidates = @(8111, 15111, 15222, 18333)
+if ($env:H3_PORT) { $portCandidates = @([int]$env:H3_PORT) + $portCandidates }
+
+function Get-SocketErrorCode {
+    param($ErrorRecord)
+    $exception = $ErrorRecord.Exception
+    while ($exception) {
+        if ($exception -is [System.Net.Sockets.SocketException]) { return [int]$exception.ErrorCode }
+        $exception = $exception.InnerException
+    }
+    return -1
+}
+
+# 试绑一次来判断这个端口到底能不能用，并把失败原因（错误码）带出来。
+function Test-PortBind {
+    param([int]$Port)
+    $listener = $null
     try {
-        $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec $TimeoutSeconds ($serviceUrl + $healthPath)
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return @{ Port = $Port; Ok = $true; ErrorCode = 0 }
+    } catch {
+        return @{ Port = $Port; Ok = $false; ErrorCode = (Get-SocketErrorCode $_) }
+    } finally {
+        if ($listener) { try { $listener.Stop() } catch { } }
+    }
+}
+
+function Format-BindFailure {
+    param($Probe)
+    switch ($Probe.ErrorCode) {
+        10013 { return ('{0}：被系统保留（winerror 10013，Hyper-V/WSL 预留的端口区间）' -f $Probe.Port) }
+        10048 { return ('{0}：已被其它程序占用（winerror 10048）' -f $Probe.Port) }
+        default { return ('{0}：无法绑定（winerror {1}）' -f $Probe.Port, $Probe.ErrorCode) }
+    }
+}
+
+function Test-ServiceReady {
+    param([string]$Url, [int]$TimeoutSeconds = 5)
+    try {
+        $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec $TimeoutSeconds ($Url + $healthPath)
         return $true
     } catch {
         return $false
@@ -21,11 +67,39 @@ Write-Host '   H3 影动高清工作台 - 正在启动'
 Write-Host '============================================'
 Write-Host ''
 
-# 已在运行则直接打开浏览器，避免再起一个实例抢 8111 端口
-if (Test-ServiceReady) {
-    Write-Host ('检测到工作台已在运行（' + $serviceUrl + '），直接打开窗口。')
-    Start-Process $serviceUrl
-    exit 0
+# 已在运行则直接打开浏览器，避免再起一个实例抢端口。逐个候选端口探测：
+# 上一次可能是靠兜底端口起来的。
+foreach ($port in $portCandidates) {
+    $existingUrl = 'http://127.0.0.1:' + $port
+    if (Test-ServiceReady -Url $existingUrl) {
+        Write-Host ('检测到工作台已在运行（' + $existingUrl + '），直接打开窗口。')
+        Start-Process $existingUrl
+        exit 0
+    }
+}
+
+# 选一个能绑的端口：先 8111，不可用就换 15000 以上的稳定端口。
+$servicePort = 0
+$failed = @()
+foreach ($port in $portCandidates) {
+    $probe = Test-PortBind -Port $port
+    if ($probe.Ok) { $servicePort = $port; break }
+    $failed += (Format-BindFailure -Probe $probe)
+}
+if ($servicePort -eq 0) {
+    Write-Host '启动失败：所有候选端口都无法绑定。' -ForegroundColor Red
+    foreach ($line in $failed) { Write-Host ('  - ' + $line) -ForegroundColor Yellow }
+    Write-Host '排查命令：' -ForegroundColor Yellow
+    Write-Host '  端口是否被占用： netstat -ano | findstr :8111' -ForegroundColor Yellow
+    Write-Host '  是否被系统保留： netsh interface ipv4 show excludedportrange protocol=tcp' -ForegroundColor Yellow
+    Write-Host '  动态端口范围：   netsh int ipv4 show dynamicport tcp' -ForegroundColor Yellow
+    Write-Host '  指定端口启动：   set H3_PORT=<端口> 后再运行本脚本' -ForegroundColor Yellow
+    exit 1
+}
+$serviceUrl = 'http://127.0.0.1:' + $servicePort
+if ($servicePort -ne 8111) {
+    Write-Host ('8111 不可用，改用 ' + $servicePort + '。') -ForegroundColor Yellow
+    foreach ($line in $failed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'node_modules'))) {
@@ -47,8 +121,11 @@ Write-Host '正在启动本地服务……'
 # 但当时的实例没有重定向输出，500 的 traceback 直接丢了，只能靠猜。
 $logDir = Join-Path $projectRoot 'data'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+# 后端有一批"调用自己"的链路（batch_worker / publish_watcher / chatgpt_image 都走
+# settings.BATCH_SELF_URL），端口换掉时必须一起告诉它，否则这些自调用会打到空端口。
+$env:H3_SELF_URL = $serviceUrl
 $backend = Start-Process -FilePath $venvPython `
-    -ArgumentList @('-m', 'uvicorn', 'backend.app:app', '--host', '127.0.0.1', '--port', '8111') `
+    -ArgumentList @('-m', 'uvicorn', 'backend.app:app', '--host', '127.0.0.1', '--port', "$servicePort") `
     -WorkingDirectory $projectRoot `
     -WindowStyle Hidden `
     -RedirectStandardOutput (Join-Path $logDir 'backend-stdout.log') `
@@ -62,11 +139,14 @@ try {
     for ($attempt = 1; $attempt -le 24; $attempt++) {
         if ($backend.HasExited) {
             Write-Host ('本地服务进程意外退出（退出码 ' + $backend.ExitCode + '）。') -ForegroundColor Red
-            Write-Host '可能原因：8111 端口已被其它程序占用。' -ForegroundColor Yellow
-            Write-Host ('可运行命令检查：netstat -ano | findstr :8111') -ForegroundColor Yellow
+            Write-Host ('真实原因在日志里：' + (Join-Path $logDir 'backend-stderr.log')) -ForegroundColor Yellow
+            Write-Host '  查看最后几行： Get-Content data\backend-stderr.log -Tail 20' -ForegroundColor Yellow
+            Write-Host ('  若含 "winerror 10013"：端口 ' + $servicePort + ' 被系统保留；' +
+                '若含 "winerror 10048"：端口被其它程序占用。') -ForegroundColor Yellow
+            Write-Host '  可换端口重试： set H3_PORT=15111 后再运行本脚本' -ForegroundColor Yellow
             exit 1
         }
-        if (Test-ServiceReady) {
+        if (Test-ServiceReady -Url $serviceUrl) {
             $ready = $true
             break
         }
@@ -77,9 +157,9 @@ try {
         Write-Host '' -ForegroundColor Red
         Write-Host '启动失败：服务在等待 24 次后仍无响应。' -ForegroundColor Red
         Write-Host '请检查：' -ForegroundColor Yellow
-        Write-Host ('  1. 8111 端口是否被占用：netstat -ano | findstr :8111') -ForegroundColor Yellow
-        Write-Host '  2. 后端是否报错：在项目目录手动运行' -ForegroundColor Yellow
-        Write-Host '     .venv\Scripts\python.exe -m uvicorn backend.app:app --port 8111' -ForegroundColor Yellow
+        Write-Host ('  1. 后端是否报错：Get-Content ' + (Join-Path $logDir 'backend-stderr.log') + ' -Tail 20') -ForegroundColor Yellow
+        Write-Host ('  2. 端口 ' + $servicePort + ' 是否被占用：netstat -ano | findstr :' + $servicePort) -ForegroundColor Yellow
+        Write-Host ('  3. 是否被系统保留：netsh interface ipv4 show excludedportrange protocol=tcp') -ForegroundColor Yellow
         exit 1
     }
 

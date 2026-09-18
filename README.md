@@ -45,6 +45,7 @@ H3 影动高清工作台：把本地 ComfyUI 唱歌生成、RealESRGAN 高清增
 - ComfyUI 目录：`D:\Comfyui`
 - ComfyUI 默认地址：`http://127.0.0.1:8188`
 - H3 MotionStudio 默认地址：`http://127.0.0.1:8111`
+  - 8111 若被 Windows 保留区间占用（启动时报 `winerror 10013`），启动脚本会自动改用 `15111` 并打开对应地址；一键修复见根目录 `修复端口启动失败.bat`。
 - 抖音下载器目录：`D:\project\douyin-downloader`
 - 抖音下载服务默认地址：`http://127.0.0.1:9000`
 
