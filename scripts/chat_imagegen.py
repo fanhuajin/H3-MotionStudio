@@ -36,6 +36,17 @@
   python scripts/chat_imagegen.py --dir 001_唱歌_... --steps person
   python scripts/chat_imagegen.py --dir 001_唱歌_... --steps person,bili,douyin
   python scripts/chat_imagegen.py --all --steps person,bili,douyin
+
+按需模式（常驻小循环，2026-09-19 用户指定的流程）
+------------------------------------------------
+  python scripts/chat_imagegen.py --need-one --loop 300
+
+「当批量任务中没有可以运行的任务、全部都是需要人物图的时候再去跑」，而且
+「出图也是只需要运行的时候的那条出图」——所以每一轮只做三件事：
+  ① 问后端 `GET /api/batches/latest`：批量自己还有事干（待备料/已确认/出片中）就**什么都不做**；
+     后端读不出来也**什么都不做**（除非 --need-assume-idle）——避免后端一停就把缺的图全刷出来；
+  ② 批量是空档时，**只挑批量里真实存在的、还缺图的那一条**（按编号最靠前，已删除/已跳过不碰）；
+  ③ 人物图落盘后**先等后端把发布文案按新图重写完，再出封面**（封面大字取自发布文案的标题）。
 """
 
 from __future__ import annotations
@@ -112,7 +123,14 @@ def log(message: str) -> None:
 # --------------------------------------------------------------------------
 
 def find_exe() -> str:
+    """找桌面端 exe：跑着的进程 → Get-AppxPackage → glob。
+
+    **实测坑（2026-09-19）**：桌面端自动更新过版本（26.915.3509.0 → 26.915.4065.0），
+    旧路径直接消失；而 `C:\\Program Files\\WindowsApps` **普通权限列不出目录**，
+    所以 `glob` 那条永远拿不到东西 —— 必须靠 `Get-AppxPackage`（不需要管理员）。
+    """
     import glob
+
     out = subprocess.run(
         ["powershell", "-NoProfile", "-Command",
          "(Get-Process ChatGPT -ErrorAction SilentlyContinue | Select-Object -First 1).Path"],
@@ -120,10 +138,21 @@ def find_exe() -> str:
     path = (out.stdout or "").strip()
     if path and Path(path).is_file():
         return path
+
+    out = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "(Get-AppxPackage OpenAI.Codex | Select-Object -First 1).InstallLocation"],
+        capture_output=True, text=True, timeout=60)
+    location = (out.stdout or "").strip()
+    if location:
+        cand = Path(location) / "app" / "ChatGPT.exe"
+        if cand.is_file():
+            return str(cand)
+
     cands = sorted(glob.glob(r"C:\Program Files\WindowsApps\OpenAI.Codex_*\app\ChatGPT.exe"))
     if cands:
         return cands[-1]
-    raise FileNotFoundError("找不到 ChatGPT 桌面端 exe")
+    raise FileNotFoundError("找不到 ChatGPT 桌面端 exe（进程/Get-AppxPackage/glob 三条路都失败）")
 
 
 def cdp_ready() -> bool:
@@ -839,6 +868,186 @@ def audit_person_identity(page, folders: list[Path], args) -> int:
     return len(rest)
 
 
+# 后端可能不在 8111：`scripts/start-local.ps1` 在本机端口被 Windows 保留区间抢占时
+# （winerror 10013，Hyper-V NAT 按 100 个一组预留）会依次退到 15111 / 15222 / 18333。
+# 这里按**同一份候选顺序**探活，否则后端明明活着、脚本却报「后端不可达」。
+BACKEND_PORT_CANDIDATES = (8111, 15111, 15222, 18333)
+
+
+def backend_url() -> str | None:
+    """找到活着的后端地址（H3_BACKEND_URL / H3_SELF_URL 优先，其次按候选端口探活）。"""
+    import httpx
+
+    explicit = (os.getenv("H3_BACKEND_URL") or os.getenv("H3_SELF_URL") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    for port in BACKEND_PORT_CANDIDATES:
+        url = f"http://127.0.0.1:{port}"
+        try:
+            if httpx.get(f"{url}/api/batches/latest", timeout=5).status_code == 200:
+                return url
+        except Exception:
+            continue
+    return None
+
+
+def batch_state() -> tuple[str, str, list[dict] | None]:
+    """问 H3 后端：批量制作现在是什么状态，以及它有哪些条目。
+
+    返回 (state, note, items)，state ∈ {"runnable", "idle", "unknown"}：
+      - runnable：批量自己还有事干（待备料 / 已确认等出片 / 出片中 / 重新备料）
+                  → **不要出图**，让批量先跑
+      - idle    ：批量没事干了（全停在审核点等你确认，或已跳过/已完成）→ 这才是补图的空档
+      - unknown ：后端读不出来 → **保守，不出图**（否则后端一停就会把缺的图一条条全刷出来，
+                  正是 2026-09-19 触发 GPT 高频出图限制后要避免的）。要照跑传 --need-assume-idle。
+
+    `items` 在 unknown 时是 None。用户 2026-09-19 的新流程：「当批量任务中没有可以运行的任务、
+    全部都是需要人物图的时候再去跑」，而且「出图也是只需要运行的时候的那条出图」——只跑那一条。
+    """
+    import httpx
+
+    url = backend_url()
+    if url is None:
+        return "unknown", f"后端不可达（试过 {', '.join(str(p) for p in BACKEND_PORT_CANDIDATES)}）", None
+    try:
+        resp = httpx.get(f"{url}/api/batches/latest", timeout=10)
+        if resp.status_code != 200:
+            return "unknown", f"后端 HTTP {resp.status_code}（{url}）", None
+        state = resp.json()
+    except Exception as exc:
+        return "unknown", f"后端不可达（{type(exc).__name__}，{url}）", None
+    items = [i for i in (state.get("items") or []) if str(i.get("status") or "") != "deleted"]
+    busy = [i for i in items if str(i.get("status") or "") in BATCH_BUSY_STATUSES]
+    note = (f"{url} status={state.get('status')} runnerActive={state.get('runnerActive')} "
+            f"｜批量在干 {len(busy)} 条 / 缺东西 {len([i for i in items if _item_steps(i, PUBLISH_ROOT)])} 条 "
+            f"/ 共 {len(items)} 条")
+    return ("runnable" if busy else "idle"), note, items
+
+
+# 批量「自己还有事干」的状态：等出片、出片中、重新备料、还没备料
+BATCH_BUSY_STATUSES = {"pending", "confirmed", "running", "revising"}
+# 这一轮可以替它出图的条目状态（已删除/已跳过的绝不复活）
+GENERATABLE_STATUSES = {"awaiting_review", "failed", "confirmed", "completed"}
+
+STEP_FILES = {"person": PERSON, "bili": SPECS["bili"][1], "douyin": SPECS["douyin"][1]}
+
+
+def missing_steps(folder: Path) -> list[str]:
+    """这个发布目录还缺哪几步（按 STEP_ORDER 返回）。"""
+    out = []
+    for step in STEP_ORDER:
+        path = folder / STEP_FILES[step]
+        if not path.is_file() or path.stat().st_size < MIN_VALID_BYTES:
+            out.append(step)
+    return out
+
+
+def folder_for_item(publish_root: Path, item: dict) -> Path | None:
+    """条目 → 它的发布目录。
+
+    先认条目自己记的 `outputs.folder`（最准），再按**目录名末尾的作品号**
+    （`_<awemeId>`，与 `backend/publish_watcher.match_item` 同一口径）匹配。
+    """
+    recorded = str((item.get("outputs") or {}).get("folder") or "").strip()
+    if recorded and Path(recorded).is_dir():
+        return Path(recorded)
+    aweme = str(item.get("awemeId") or "").strip()
+    if aweme.isdigit():
+        for folder in publish_root.iterdir():
+            if folder.is_dir() and folder.name.rsplit("_", 1)[-1] == aweme:
+                return folder
+    return None
+
+
+def _item_steps(item: dict, publish_root: Path) -> list[str]:
+    folder = folder_for_item(publish_root, item)
+    return missing_steps(folder) if folder is not None else []
+
+
+def find_next_needed(publish_root: Path, items: list[dict] | None) -> tuple[Path, list[str]] | None:
+    """挑出「这一轮该出图的那一条」→ (发布目录, 还缺的步骤)。
+
+    **只认批量里真实存在的条目**（按 `awemeId` / `outputs.folder` 对上发布目录）；已删除、
+    已跳过、以及不在批量里的历史目录一律不碰 —— 用户 2026-09-19 的原话是「出图也是只需要
+    运行的时候的那条出图」，而多余的出图正是触发 GPT 高频限制的原因。
+    只有读不到批量（`items is None`，即 --need-assume-idle）时才退回「按目录名顺序找」。
+    """
+    if items is None:
+        for folder in sorted(p for p in publish_root.iterdir() if p.is_dir()):
+            steps = missing_steps(folder)
+            if steps:
+                return folder, steps
+        return None
+    for item in sorted(items, key=lambda i: i.get("index") or 0):
+        if str(item.get("status") or "") not in GENERATABLE_STATUSES:
+            continue
+        folder = folder_for_item(publish_root, item)
+        if folder is None:
+            continue
+        steps = missing_steps(folder)
+        if steps:
+            return folder, steps
+    return None
+
+
+def _copy_stamp(path: Path) -> tuple[float, int]:
+    try:
+        st = path.stat()
+    except OSError:
+        return (0.0, 0)
+    return (st.st_mtime, st.st_size)
+
+
+def _wait_copy_rewrite(path: Path, before: tuple[float, int], timeout: float) -> None:
+    """等后端把发布文案按新人物图重写完 —— **必须先等到，再出封面**。
+
+    封面上的大字取自 `发布文案.txt` 的标题，而「挂候选人物图」这一步会让后端
+    `write_copy()` 按最终画面**重写标题**（`backend/publish_watcher` 每 5 秒扫一次发布目录，
+    看到新的 `人物图.png` 就走上传接口）。先出封面就会把**旧标题**画进图里 ——
+    2026-09-19 实测 001~017 的 34 张封面就是这么和最终发布文案对不上的。
+    等不到就照现有文案出封面，但记一条日志，别让它静默变成「封面写着旧标题」。
+    """
+    if timeout <= 0:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _copy_stamp(path) != before:
+            log("✓ 发布文案已按新人物图重写 → 封面用新标题")
+            return
+        time.sleep(5)
+    log(f"⚠ 等了 {timeout:.0f} 秒发布文案也没重写 → 按现有文案出封面（标题可能与最终文案不一致）")
+
+
+def run_need_one(page, args) -> int:
+    """按需模式（--need-one）：批量没得跑时，**只补当时那一条**缺的图。"""
+    state, note, items = batch_state()
+    if state == "runnable":
+        log(f"↷ 批量自己还有事干（{note}）→ 本次不出图，让批量先跑")
+        return EXIT_OK
+    if state == "unknown" and not args.need_assume_idle:
+        log(f"↷ 批量状态读不出来（{note}）→ 保守起见本次不出图（要照跑加 --need-assume-idle）")
+        return EXIT_OK
+    pick = find_next_needed(PUBLISH_ROOT, items)
+    if pick is None:
+        log(f"↷ 批量里没有缺东西的作品 → 本次不出图（{note}）")
+        return EXIT_OK
+    folder, steps = pick
+    log(f"✓ 批量是空档（{note}）→ 只跑这一条：{folder.name}（{'→'.join(steps)}）")
+
+    if steps and steps[0] == "person":
+        before = _copy_stamp(folder / COPY)
+        run_work(page, folder, ["person"], args)
+        if not (folder / PERSON).is_file():
+            log("⛔ 人物图没落盘 → 当前作品立即停止（不进入封面）")
+            return EXIT_OK
+        _wait_copy_rewrite(folder / COPY, before, args.copy_wait)
+        steps = [s for s in steps if s != "person"]
+
+    if steps:
+        run_work(page, folder, steps, args)
+    return EXIT_OK
+
+
 def detect_kind(folder: Path) -> str | None:
     if "_唱歌_" in folder.name:
         return "singing"
@@ -1053,6 +1262,14 @@ def main() -> int:
                         help="身份返工最多做几轮（每轮重做后再体检一次）")
     parser.add_argument("--cooldown", type=float, default=30.0,
                         help="每个作品之间的冷却秒数（降低 ChatGPT 限流概率，默认 30；0 = 不冷却）")
+    parser.add_argument("--need-one", dest="need_one", action="store_true",
+                        help="按需模式（新默认流程）：批量没得跑时，只补批量里那一条还缺的图")
+    parser.add_argument("--loop", type=float, default=0.0,
+                        help="配合 --need-one：每隔这么多秒再判断一次（0 = 只判断一轮就退出）")
+    parser.add_argument("--need-assume-idle", dest="need_assume_idle", action="store_true",
+                        help="--need-one 时：即使读不到批量状态也照跑（默认读不到就不跑）")
+    parser.add_argument("--copy-wait", dest="copy_wait", type=float, default=180.0,
+                        help="--need-one 时：人物图落盘后，等后端按新图重写发布文案的秒数（默认 180；0 = 不等）")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--no-instance", action="store_true", help="不自动起专用实例（假定已在跑）")
     args = parser.parse_args()
@@ -1065,13 +1282,15 @@ def main() -> int:
     if steps != [s for s in STEP_ORDER if s in steps] or any(s not in STEP_ORDER for s in steps):
         parser.error(f"步骤必须严格按 {STEP_ORDER} 顺序，收到 {steps}")
 
-    if args.all:
+    if args.need_one:
+        folders = []
+    elif args.all:
         folders = sorted(p for p in PUBLISH_ROOT.iterdir() if p.is_dir())
     elif args.dir_name:
         p = Path(args.dir_name)
         folders = [p if p.is_absolute() else PUBLISH_ROOT / p]
     else:
-        parser.error("需要 --dir 或 --all")
+        parser.error("需要 --need-one / --dir / --all 之一")
 
     if not args.no_instance and not ensure_instance():
         return 2
@@ -1081,6 +1300,16 @@ def main() -> int:
         browser = pw.chromium.connect_over_cdp(ENDPOINT)
         page = pick_page(browser)
         log(f"已连接聊天页：{page.url[:80]}")
+
+        # 按需模式：只在批量有空档、且某条缺人物图时，跑那一条
+        if args.need_one:
+            while True:
+                run_need_one(page, args)
+                if args.loop <= 0:
+                    return EXIT_OK
+                log(f"按需模式：{args.loop:.0f} 秒后再判断一次（停掉这个进程即可结束）")
+                time.sleep(args.loop)
+
         for folder in folders:
             if folder.is_dir():
                 summary = run_work(page, folder, steps, args)
