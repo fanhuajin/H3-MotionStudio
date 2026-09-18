@@ -1849,9 +1849,18 @@ async def _wait_for_free_pipeline(batch_id: str, item_id: str) -> None:
     deadline = _pipeline_wait_clock() + PIPELINE_FREE_WAIT_SECONDS
     announced = False
     while True:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(f"{BATCH_SELF_URL}/api/comfy/queue")
-            payload = response.json() if response.is_success else {}
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.get(f"{BATCH_SELF_URL}/api/comfy/queue")
+                payload = response.json() if response.is_success else {}
+        except Exception:  # noqa: BLE001
+            # 自调用打不通时**既不能当成「流水线被占」、更不能把这条作品判失败**：
+            # 2026-09-19 实测 8111 被 Windows 保留区间占住（winerror 10013）后，默认的
+            # BATCH_SELF_URL（127.0.0.1:8111）连不上，这里抛 ConnectError 会让每一条
+            # 已确认作品在提交前直接失败。记一条日志放行，交给提交逻辑 —— 那边本来就有
+            # 409 重试（SUBMIT_BUSY_*），打不通自调用时它是更准的判据。
+            logger.warning("查询流水线占用状态失败（按空闲放行）：%s", BATCH_SELF_URL, exc_info=True)
+            return
         active = payload.get("app")
         if not active or active.get("status") not in {"queued", "running"}:
             return
