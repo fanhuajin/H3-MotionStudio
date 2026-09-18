@@ -254,6 +254,26 @@ def _page(browser):
     return pages[0]
 
 
+
+def wait_for_composer(page, timeout: float = 20.0):
+    """等待新版聊天输入框真正挂载并有可用尺寸。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            info = page.evaluate("""() => {
+                const el = document.querySelector('div.ProseMirror[role="textbox"], [contenteditable="true"][role="textbox"]');
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                return {x:r.x, y:r.y, w:r.width, h:r.height};
+            }""")
+            if info and info.get("w", 0) > 50 and info.get("h", 0) > 5:
+                return page.locator('div.ProseMirror[role="textbox"], [contenteditable="true"][role="textbox"]').first
+        except Exception:
+            pass
+        page.wait_for_timeout(300)
+    return None
+
+
 def _new_chat(page) -> None:
     """开一个新对话。
 
@@ -262,19 +282,20 @@ def _new_chat(page) -> None:
     """
     ok = page.evaluate(
         """() => {
-            // 优先点「新对话 / 新聊天」按钮本身（aria-label 命中按钮，不会误点侧栏图标）
+            const all = Array.from(document.querySelectorAll('*'));
+            const direct = all.find(e => /^(新聊天|新对话|新的聊天|New chat)$/i.test((e.innerText || '').trim()));
+            if (direct) {
+                const clickable = direct.closest('button, a, [role="button"]') || direct;
+                clickable.click();
+                return 'text';
+            }
             const byLabel = Array.from(document.querySelectorAll('button, a, [role="button"]'))
-                .find(e => {
-                    const label = (e.getAttribute('aria-label') || '') + ' ' +
-                                  (e.getAttribute('title') || '') + ' ' +
-                                  (e.getAttribute('data-testid') || '');
-                    return /新聊天|新对话|新的聊天|开始新聊天|New chat/i.test(label);
-                });
+                .find(e => /新聊天|新对话|新的聊天|开始新聊天|New chat/i.test(
+                    (e.getAttribute('aria-label') || '') + ' ' +
+                    (e.getAttribute('title') || '') + ' ' +
+                    (e.getAttribute('data-testid') || '')
+                ));
             if (byLabel) { byLabel.click(); return 'label'; }
-            // 退一步：按可见文本找（侧栏那一项的文字就是「新对话」）
-            const cands = Array.from(document.querySelectorAll('button, a, [role="button"], div'));
-            const hit = cands.find(e => /^(新聊天|新对话|新的聊天)$/.test((e.innerText || '').trim()));
-            if (hit) { hit.click(); return 'text'; }
             return null;
         }"""
     )
@@ -284,46 +305,60 @@ def _new_chat(page) -> None:
         logger.warning("没找到「新对话」入口，继续用当前对话")
 
 
-def _focus_composer(page) -> None:
-    """把真实焦点放进输入框，**且不滚动页面**。
 
-    要点：JS `el.focus()` 能让文字插进去，但**不足以让 Enter 触发发送**
-    （实测：内容留在输入框里发不出去）。所以这里用 `page.mouse.click` 在输入框
-    的包围盒中心点一下——真实鼠标事件能建立焦点，而 `mouse.click` 不像
-    `locator.click()` 那样会自动把元素滚进可视区，所以不会「滑来滑去」。
-    """
+def ensure_chat_mode(page, timeout: float = 15.0) -> bool:
+    """强制切到「聊天」模式，避免误入 Work/Codex 额度。"""
     try:
-        box = page.locator("div.ProseMirror").first
-        bb = box.bounding_box()
-        if bb:
-            # **必须点靠近底部**：长提示词会把输入框撑得很高（实测 1740px），
-            # 顶部 y 变成负值（跑到视口外面），点中心会落到视口外 → 拿不到焦点。
-            vh = page.evaluate("() => window.innerHeight") or 900
-            y = min(bb["y"] + bb["height"] - 25, vh - 15)
-            y = max(y, 10)
-            x = bb["x"] + bb["width"] / 2
-            page.mouse.click(x, y)
-            page.wait_for_timeout(300)
-            focused = page.evaluate(
-                """() => {
-                    const a = document.activeElement;
-                    if (!a) return false;
-                    return a.closest('div.ProseMirror') !== null || a.tagName === 'BODY' ? 
-                           a.closest('div.ProseMirror') !== null : false;
-                }"""
-            )
-            if focused:
-                return
+        state = page.evaluate("""() => {
+            const txt = document.body ? (document.body.innerText || '') : '';
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'));
+            const chat = buttons.find(e => /^(聊天|Chat)$/i.test((e.innerText || '').trim()));
+            const work = buttons.find(e => /^(工作|Work)$/i.test((e.innerText || '').trim()));
+            const out = /out of Codex and Work usage/i.test(txt);
+            return {hasChat: !!chat, hasWork: !!work, out};
+        }""")
+        if state and state.get("hasChat"):
+            clicked = page.evaluate("""() => {
+                const buttons = Array.from(document.querySelectorAll('button, [role="button"], a'));
+                const chat = buttons.find(e => /^(聊天|Chat)$/i.test((e.innerText || '').trim()));
+                if (!chat) return false;
+                chat.click();
+                return true;
+            }""")
+            if clicked:
+                page.wait_for_timeout(1200)
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            body = page.evaluate("() => document.body ? (document.body.innerText || '') : ''")
+            if not re.search(r"out of Codex and Work usage", body or "", re.I):
+                logger.info("已确认处于聊天模式，不使用 Work/Codex 额度")
+                return True
+            page.wait_for_timeout(500)
+
+        logger.warning("仍检测到 Work/Codex 额度耗尽提示，未能切回聊天模式")
+        return False
+    except Exception:
+        logger.exception("切换聊天模式失败")
+        return False
+
+
+def _focus_composer(page) -> None:
+    """只用 DOM 聚焦输入框，不调用 page.mouse.click，不抢用户鼠标/前台。"""
+    try:
+        page.evaluate(
+            """() => {
+                const el = document.querySelector('div.ProseMirror');
+                if (el) {
+                    el.focus({preventScroll: true});
+                    return true;
+                }
+                return false;
+            }"""
+        )
+        page.wait_for_timeout(100)
     except Exception:
         pass
-    # 兜底：JS 聚焦
-    page.evaluate(
-        """() => {
-            const el = document.querySelector('div.ProseMirror');
-            if (el) el.focus();
-        }"""
-    )
-    page.wait_for_timeout(250)
 
 
 def _clear_composer(page, box) -> None:
@@ -928,8 +963,7 @@ def _send(page, box, *, timeout: float | None = None, what: str = "") -> bool:
                     )
                 )
                 if not clicked:
-                    page.mouse.click(btn["x"], btn["y"])
-                    clicked = True
+                    logger.warning("JS 找到了发送按钮但点击未生效；为避免抢用户鼠标，本轮不使用 page.mouse.click")
             if attempts <= 2 or attempts % 5 == 0:
                 logger.info("尝试发送（第 %d 次）%s", attempts, f"｜{what}" if what else "")
             page.wait_for_timeout(1600)
@@ -1047,6 +1081,12 @@ def generate(
     try:
         browser = pw.chromium.connect_over_cdp(ep)
         page = _page(browser)
+        if not ensure_chat_mode(page):
+            logger.warning("无法进入聊天模式，本次生成停止：%s", save_to.name)
+            return None
+        if wait_for_composer(page, 20.0) is None:
+            logger.warning("聊天模式已切换，但输入框 20 秒内未就绪：%s", save_to.name)
+            return None
 
         if new_chat:
             # 新对话必须真的清空页面：否则残留的旧生成图会被当成「新图」取走
@@ -1058,8 +1098,11 @@ def generate(
             leftover = _list_blobs(page)
             if leftover:
                 logger.warning("新对话后页面仍有 %d 张图，可能取到旧图", len(leftover))
+            if wait_for_composer(page, 20.0) is None:
+                logger.warning("新对话后输入框没有重新就绪：%s", save_to.name)
+                return None
 
-        box = page.locator("div.ProseMirror").first
+        box = page.locator('div.ProseMirror[role="textbox"], [contenteditable="true"][role="textbox"]').first
         # **先等上一轮回复结束**：还在生成时发下一条，内容会卡在输入框里发不出去
         wait_until_idle(page, what=save_to.name)
         # 生成前**彻底清空**（文字 + 附件），否则残留会叠加进这次请求
@@ -1096,19 +1139,46 @@ def generate(
 
         # 输入：默认把提示词作为**消息正文**发出去；附件模式下这里通常是空的
         if typed_prompt.strip():
+            logger.info("开始写入提示词（%d 字符）｜%s", len(typed_prompt), save_to.name)
+            landed = ""
             for attempt in range(3):
-                _focus_composer(page)
-                page.keyboard.insert_text(typed_prompt)
-                page.wait_for_timeout(1200)
+                try:
+                    ok = page.evaluate(
+                        """(text) => {
+                            const el = document.querySelector('div.ProseMirror[role="textbox"], [contenteditable="true"][role="textbox"]');
+                            if (!el) return false;
+                            el.focus({preventScroll:true});
+                            try {
+                                document.execCommand('selectAll', false, null);
+                                document.execCommand('delete', false, null);
+                                const inserted = document.execCommand('insertText', false, text);
+                                if (inserted) return true;
+                            } catch (e) {}
+                            el.replaceChildren(document.createTextNode(text));
+                            el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
+                            return true;
+                        }""",
+                        typed_prompt,
+                    )
+                    if not ok:
+                        logger.warning("DOM 写入提示词未找到输入框（第 %d 次）", attempt + 1)
+                except Exception as exc:
+                    logger.warning("DOM 写入提示词失败（第 %d 次）：%s", attempt + 1, exc)
+                page.wait_for_timeout(500)
                 try:
                     landed = box.inner_text().strip()
                 except Exception:
-                    landed = typed_prompt
+                    landed = ""
                 if landed:
+                    logger.info("提示词已写入输入框（读取到 %d 字符）｜%s", len(landed), save_to.name)
                     break
-                logger.warning("正文没进输入框（第 %d 次），重新聚焦再插一次", attempt + 1)
-            else:
-                logger.warning("正文三次都没插进输入框：%s", save_to.name)
+                logger.warning("正文没进输入框（第 %d 次），重新写入", attempt + 1)
+            if not landed:
+                logger.warning("提示词没有写入输入框，禁止发送：%s", save_to.name)
+                return None
+        elif not as_file:
+            logger.warning("提示词为空，禁止发送：%s", save_to.name)
+            return None
 
         if _send(page, box, what=save_to.name):
             logger.info(
