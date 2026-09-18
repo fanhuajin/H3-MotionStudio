@@ -88,12 +88,14 @@ SEND_TIMEOUT = float(os.getenv("H3_CHATGPT_SEND_TIMEOUT", "300"))
 IMAGE_TIMEOUT = float(os.getenv("H3_CHATGPT_IMAGE_TIMEOUT", "900"))
 # 三个等待上限**保持原有取值**（用户 2026-09-19：「这个你原来的就可以」）：
 #   UPLOAD_TIMEOUT 600s / SEND_TIMEOUT 300s / IMAGE_TIMEOUT 900s（都可用 H3_CHATGPT_* 覆盖）
-# 真正要解决的是「不能永远等下去」：实测 011 有一轮 26 秒就结束、既无图也无输出，
-# 旧实现会一直干等到出图超时。所以新增下面两个**静止判据**，把那种情况提前判掉：
-#   IDLE_GRACE          观察到"正在生成"之后又归于静止，再宽限多久才判本轮没出图（默认 120 秒）
-#   NO_ACTIVITY_TIMEOUT 发出后迟迟没观察到任何生成活动（没停止按钮、没百分比）的判定时限（默认 180 秒）
-IDLE_GRACE = float(os.getenv("H3_CHATGPT_IDLE_GRACE", "120"))
-NO_ACTIVITY_TIMEOUT = float(os.getenv("H3_CHATGPT_NO_ACTIVITY_TIMEOUT", "180"))
+#
+# 下面两个"静止判据"是用来避免**永远等下去**的兜底，必须**放得很长**：
+# 用户 2026-09-19 指出「她有生产图片 只是我们等待时间不够」——页面显示
+# 「Worked for 26s」/没有停止按钮、没有百分比，**并不代表出图已经结束**，
+# 图可能几十秒甚至几分钟后才出现。早先设成 120s/180s 会把还在路上的图判成"没出图"，
+# 于是白催一次、甚至误判失败。现在放到 600s，配合 900s 的总上限使用。
+IDLE_GRACE = float(os.getenv("H3_CHATGPT_IDLE_GRACE", "600"))
+NO_ACTIVITY_TIMEOUT = float(os.getenv("H3_CHATGPT_NO_ACTIVITY_TIMEOUT", "600"))
 
 EXIT_OK, EXIT_GATE1, EXIT_GATE2, EXIT_GATE3 = 0, 1, 2, 3
 
