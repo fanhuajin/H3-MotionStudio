@@ -2661,6 +2661,26 @@ async def cancel_job(job_id: str):
         )
         store.add_log(job_id, "已取消：还在排队、没有开始识别，也没有动正在跑的出片任务。")
         return store.get(job_id)
+    if state.get("status") == "paused":
+        # 暂停中的任务（目前只有「一键批量加字幕」）：没有任何东西在跑，直接收尾即可。
+        # 以前这里会落到下面那句 409「任务已结束，无法取消」—— 用户在暂停态点「取消」
+        # 根本点不动（2026-09-19 实测反馈「取消任务点击不了吗」）。也不需要中断 ComfyUI/剪映。
+        store.set_milestone(job_id, "batch", status="skipped")
+        store.update(
+            job_id,
+            status="cancelled",
+            cancelRequested=True,
+            pauseRequested=False,
+            stage="cancelled",
+            currentNodeId=None,
+            currentNodeTitle=None,
+            progress=None,
+            errorSummary=None,
+            errorDetail=None,
+            finishedAt=now_iso(),
+        )
+        store.add_log(job_id, "已取消：任务处于暂停、没有正在跑的识别，直接收尾（没碰剪映/ComfyUI）。")
+        return store.get(job_id)
     if state.get("status") not in ("queued", "running", "cancelling"):
         raise HTTPException(409, "任务已结束，无法取消")
     active = store.active()

@@ -6023,6 +6023,39 @@ class SubtitleStepTests(unittest.TestCase):
                 self.assertIsNone(state["subtitlePublishPath"])
                 self.assertIn("发布目录被占用", state["subtitlePublishError"])
 
+    def test_cancel_works_while_the_batch_is_paused(self):
+        """暂停中的「一键批量加字幕」必须能取消。
+
+        2026-09-19 用户实测反馈「取消任务点击不了吗」——`cancel_job` 只认
+        queued/running/cancelling，暂停态直接落到那句 409「任务已结束，无法取消」，
+        于是暂停的批量永远取消不掉。暂停态没有任何东西在跑，直接收尾即可，
+        也不能去碰剪映/ComfyUI。
+        """
+        import asyncio
+        import tempfile
+
+        from backend import app as app_module
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            with self._temp_job_db(Path(folder)) as job_store:
+                created = now_iso()
+                job_store.create({
+                    "id": "paused-batch", "kind": "subtitle_batch", "status": "paused",
+                    "stage": "paused", "createdAt": created, "updatedAt": created,
+                    "pauseRequested": True, "subtitleQueue": [],
+                    "milestones": [{"id": "batch", "label": "批量生成字幕",
+                                    "subtitle": "逐条剪映识别 → 官方歌词核对 → 烧录",
+                                    "status": "running"}],
+                    "logs": [],
+                })
+                state = asyncio.run(app_module.cancel_job("paused-batch"))
+
+        self.assertEqual(state["status"], "cancelled")
+        self.assertFalse(state["pauseRequested"], "取消后不能再留着暂停标记")
+        self.assertEqual(state["milestones"][0]["status"], "skipped")
+        self.assertTrue(any("已取消" in str(row.get("message")) for row in state["logs"]),
+                        "要留下一条取消日志")
+
     def test_subtitle_endpoint_needs_a_source_and_refuses_a_busy_queue(self):
         """接口层：没给输入 → 400；已有任务在跑 → **不再 409，而是接单排队**。
 
