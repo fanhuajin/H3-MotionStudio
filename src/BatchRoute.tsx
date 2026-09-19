@@ -414,11 +414,6 @@ export function BatchRoute() {
   const [notice, setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [imageToken, setImageToken] = useState(0);
-  // 发布目录监听（2026-09-17 用户要求）：发布目录里出现新的 人物图.png 就自动挂成候选图
-  // 并自动「确认并出片」。开关落盘在后端（data/publish_watch.json），页面只读写它。
-  const [watchOn, setWatchOn] = useState(true);
-  const [watchBusy, setWatchBusy] = useState(false);
-  const [watchHint, setWatchHint] = useState("");
   // 「替换源视频」：贴错链接 / 放错槽位（唱歌视频贴进跳舞口）时不用删了重加
   const [replacingSource, setReplacingSource] = useState(false);
   const [replaceUrl, setReplaceUrl] = useState("");
@@ -506,43 +501,8 @@ export function BatchRoute() {
     };
   }, []);
 
-  useEffect(() => {
-    let alive = true;
-    const load = () => {
-      fetch("/api/watch/publish-portrait", { cache: "no-store" })
-        .then((response) => (response.ok ? response.json() : null))
-        .then((data: { enabled?: boolean } | null) => {
-          if (alive && data && typeof data.enabled === "boolean") setWatchOn(data.enabled);
-        })
-        .catch(() => undefined);
-    };
-    load();
-    const timer = window.setInterval(load, 10000);
-    return () => {
-      alive = false;
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  const togglePublishWatch = async () => {
-    const next = !watchOn;
-    setWatchBusy(true);
-    setWatchHint("");
-    try {
-      const response = await fetch("/api/watch/publish-portrait", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
-      });
-      const data = await readJson<{ enabled?: boolean }>(response, "切换监听失败");
-      setWatchOn(Boolean(data.enabled));
-      setWatchHint(next ? "已开启：发布目录里出现新的人物图就会自动确认出片" : "已关闭：仍需要你手动确认");
-    } catch (reason) {
-      setWatchHint(String((reason as Error).message || reason));
-    } finally {
-      setWatchBusy(false);
-    }
-  };
+  // 发布目录监听的状态读取与开关已随勾选框一起移除（见下方渲染处的说明）：
+  // 全自动链路里它看不到任何新东西，留着只是每 10 秒白打一次接口。
 
   useEffect(() => {
     if (!batch?.id) return;
@@ -1729,24 +1689,14 @@ export function BatchRoute() {
                 {batch.status === "paused" && !batch.recoveryActive && (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 )}
-                {/* 发布目录监听（2026-09-17 用户：「出现了人物图.png 你直接放到候选人物图里
-                    并直接开始确认并出片 不需要我去点击了」）：把这个开关放在表格右上角，
-                    随时能看见状态、随时能关掉。 */}
-                <label
-                  className={`batch-watch ${watchOn ? "on" : ""}`}
-                  title={"发布目录：E:\\AI_Exports\\H3-MotionStudio\\发布成品\\…\\人物图.png\n出现新的人物图就自动挂成候选图并自动「确认并出片」；已经处理过的那张不会重复跑。"}
-                >
-                  <input
-                    type="checkbox"
-                    checked={watchOn}
-                    disabled={watchBusy}
-                    onChange={() => void togglePublishWatch()}
-                  />
-                  <span>监听发布目录人物图</span>
-                </label>
+                {/* 「监听发布目录人物图」的勾选框已按用户要求去掉（2026-09-19：「去掉」）：
+                    全自动链路里人物图由后端自己出并直接登记成候选图，这条监听看不到任何新东西
+                    （发布目录那份与候选图 sha 相同、条目同时已被自动放行），属于空转。
+                    后端实现与 `/api/watch/publish-portrait` 接口**原样保留**（H3_FULL_AUTO=0
+                    的老流程、以及「手动往发布目录丢一张人物图就自动出片」都还要用它），
+                    要关掉设 `H3_WATCH_PUBLISH_PORTRAIT=0`。 */}
               </div>
             </div>
-            {watchHint && <div className="batch-watch-hint">{watchHint}</div>}
 
             {/* 批量操作栏：勾选任意一条后出现 */}
             {selectedIds.size > 0 && (
