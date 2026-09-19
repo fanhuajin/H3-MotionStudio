@@ -90,6 +90,51 @@ def _last_stderr_line(stderr: str) -> str:
     return lines[-1][:160] if lines else ""
 
 
+def probe_duration_seconds(path: str | Path) -> float | None:
+    """读容器声明的时长（秒）；读不出给 None。"""
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=PROBE_TIMEOUT_SECONDS, creationflags=CREATE_NO_WINDOW,
+    )
+    try:
+        value = float((result.stdout or "").strip())
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def duration_mismatch_reason(
+    path: str | Path, expected_seconds: float | None, *, tolerance_seconds: float = 1.0
+) -> str | None:
+    """对照**平台声明的时长**：文件短太多就判为不完整（返回原因），否则 None。
+
+    为什么还要这一条（帧数校验不是已经够了吗）：帧数校验比的是「容器声明 vs 实际解码」，
+    如果拿到的是一份**自洽的短文件**（容器和内容都短），它查不出来 —— 只有跟官方时长对照
+    才发现少了一截。探测不出结果时一律放行。
+    """
+    if not expected_seconds or expected_seconds <= 0:
+        return None
+    source = Path(path)
+    if not source.is_file():
+        return None
+    try:
+        actual = probe_duration_seconds(source)
+    except (OSError, subprocess.SubprocessError) as error:
+        logger.warning("时长探测失败，跳过对照：%s（%s）", source, error)
+        return None
+    if actual is None:
+        return None
+    if actual < expected_seconds - tolerance_seconds:
+        return (
+            f"源视频比平台声明的短：平台说 {expected_seconds:.2f} 秒，"
+            f"下载到的只有 {actual:.2f} 秒（少了 {expected_seconds - actual:.2f} 秒）"
+            f" —— {source.name}"
+        )
+    return None
+
+
 def truncation_reason(path: str | Path) -> str | None:
     """完整返回 None；确认被截断时返回一句能直接给用户看的中文原因。
 

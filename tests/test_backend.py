@@ -8023,5 +8023,91 @@ class DirectDownloadResumeTests(unittest.TestCase):
         self.assertIsNone(client.headers_seen[1], "太短的内容不值得续传，第二次仍要整份重下")
 
 
+class _StubHttpxClient:
+    """`httpx.Client` 的替身（只当上下文管理器用，请求都被 mock 掉了）。"""
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class DownloadDurationGateTests(unittest.TestCase):
+    """下载完还要跟**分享页声明的时长**对一次：字节数对得上 ≠ 内容对。
+
+    012 那种「moov 完整、内容少一半」由帧数校验抓住；但如果 CDN 给的是一份**自洽的短文件**
+    （容器和内容都是短的），帧数校验查不出来 —— 只有跟平台自己声明的时长对照才发现少了一截。
+    """
+
+    def test_the_duration_is_read_from_the_video_object_only(self):
+        """页面里 `"video":{` 不止一处，音乐那边还有以「秒」为单位的 duration，别拿错。"""
+        from backend import douyin_direct as D
+
+        html = (
+            '{"music":{"duration":11,"cover":{"width":720}},'
+            '"video":{"chunkIds":["8242","3361"],"bitRate":null},'
+            '"aweme":{"video":{"play_addr":{"uri":"v1e00fgi0000d9aqe1nog65rjkh964cg"},'
+            '"height":3378,"width":1900,"bit_rate":null,"duration":11434,"big_thumbs":null}}}'
+        )
+        self.assertEqual(D.extract_video_duration_ms(html), 11434)
+
+    def test_a_page_without_a_video_object_gives_nothing(self):
+        from backend import douyin_direct as D
+
+        self.assertIsNone(D.extract_video_duration_ms('{"music":{"duration":11}}'))
+
+    def test_a_short_file_is_flagged_and_a_close_one_is_not(self):
+        from backend.video_integrity import duration_mismatch_reason
+
+        with tempfile.TemporaryDirectory() as folder:
+            video = Path(folder) / "v.mp4"
+            video.write_bytes(b"x" * 4096)
+            with patch("backend.video_integrity.probe_duration_seconds", return_value=7.0):
+                reason = duration_mismatch_reason(video, 11.434)
+            self.assertIsNotNone(reason, "只有 7 秒、平台说 11.43 秒，必须判为不完整")
+            self.assertIn("11.43", reason)
+            with patch("backend.video_integrity.probe_duration_seconds", return_value=11.0):
+                self.assertIsNone(
+                    duration_mismatch_reason(video, 11.434), "1 秒容差内的抖动不算不完整"
+                )
+            with patch("backend.video_integrity.probe_duration_seconds", return_value=3.0):
+                self.assertIsNone(
+                    duration_mismatch_reason(video, None), "没有官方时长时不许拦"
+                )
+
+    def test_fetch_rejects_a_file_shorter_than_the_share_page_says(self):
+        """走一遍 `fetch`：时长对不上就删掉文件并抛错（再去试 REST 兜底）。"""
+        from backend import douyin_direct as D
+
+        written: list[Path] = []
+
+        def fake_download(_client, _cdn, dest, on_progress=None):
+            dest.write_bytes(b"x" * 20_000)
+            written.append(dest)
+            return 20_000
+
+        with tempfile.TemporaryDirectory() as folder:
+            payload = {
+                "desc": "测试作品", "tags": [], "nickname": "n",
+                "videoId": "v1e00fgi0000d9aqe1nog65rjkh964cg", "durationMs": 11434,
+            }
+            with patch.object(D, "load_cookies", return_value={}), \
+                 patch.object(D.httpx, "Client", _StubHttpxClient), \
+                 patch.object(D, "resolve_aweme_id", return_value="7662214161216508389"), \
+                 patch.object(D, "share_payload", return_value=payload), \
+                 patch.object(D, "play_url", return_value=("https://cdn.example/v.mp4", "1080p")), \
+                 patch.object(D, "download_cdn_file", side_effect=fake_download), \
+                 patch.object(D, "duration_mismatch_reason",
+                              return_value="平台说 11.43 秒，下载到的只有 7.00 秒"):
+                with self.assertRaises(D.DouyinDirectError):
+                    D.fetch("https://www.douyin.com/video/7662214161216508389", Path(folder))
+            self.assertTrue(written, "应该真的走到下载这一步")
+            self.assertFalse(written[0].exists(), "时长短一截的文件不许留在下载目录里")
+
+
 if __name__ == "__main__":
     unittest.main()

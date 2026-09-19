@@ -49,6 +49,8 @@ from typing import Any, Callable
 
 import httpx
 
+from .video_integrity import duration_mismatch_reason
+
 logger = logging.getLogger("batch.douyin_direct")
 
 IPHONE_UA = (
@@ -81,6 +83,11 @@ CONTENT_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+)")
 PLAY_ADDR_URI = re.compile(r'"play_addr[^"]*"\s*:\s*\{[^{}]*?"uri"\s*:\s*"(v[0-9a-zA-Z]{10,})"')
 ANY_VIDEO_URI = re.compile(r'"uri"\s*:\s*"(v[0-9a-zA-Z]{10,})"')
 URL_VIDEO_ID = re.compile(r"[?&]video_id=(v[0-9a-zA-Z]{10,})")
+# 分享页里 `"video":{...}` 那个对象自己的 duration（**毫秒**）。页面别处还有
+# `"duration":11`（音乐/封面那一段，单位是秒），所以必须先锚定 video 对象再找。
+VIDEO_OBJECT = re.compile(r'"video"\s*:\s*\{')
+VIDEO_DURATION = re.compile(r'"duration"\s*:\s*(\d+)')
+VIDEO_OBJECT_WINDOW = 4000
 
 
 class DouyinDirectError(RuntimeError):
@@ -159,6 +166,30 @@ def _decode_json_string(value: str) -> str:
         return value
 
 
+def extract_video_duration_ms(html: str) -> int | None:
+    """分享页里视频对象的时长（毫秒）；取不到给 None。
+
+    这是「下载下来的文件到底该有多长」的**唯一官方口径** —— 只比帧数还不够：如果 CDN 给的
+    是一份自洽的短文件（moov 和实际内容都是短的），帧数校验查不出来，时长对照才拦得住。
+
+    页面里 `"video":{` 不止一处（实测第一处是 `"chunkIds"` 那种无关结构），所以逐个窗口找，
+    并优先认**带 `play_addr`** 的那个 —— 那才是作品自己的视频对象。小于 100 的值是音乐/封面
+    的「秒」时长（实测同一页有 `"duration":11`），直接跳过。
+    """
+    fallback: int | None = None
+    for anchor in VIDEO_OBJECT.finditer(html):
+        window = html[anchor.end():anchor.end() + VIDEO_OBJECT_WINDOW]
+        for hit in VIDEO_DURATION.finditer(window):
+            value = int(hit.group(1))
+            if value < 100:
+                continue
+            if '"play_addr"' in window[:400]:
+                return value
+            if fallback is None:
+                fallback = value
+    return fallback
+
+
 def _share_metadata(html: str) -> dict[str, Any]:
     desc = re.search(r'"desc"\s*:\s*"((?:[^"\\]|\\.)*)"', html)
     nickname = re.search(r'"nickname"\s*:\s*"((?:[^"\\]|\\.)*)"', html)
@@ -167,6 +198,7 @@ def _share_metadata(html: str) -> dict[str, Any]:
         "desc": _decode_json_string(desc.group(1)) if desc else "",
         "nickname": _decode_json_string(nickname.group(1)) if nickname else "",
         "tags": [_decode_json_string(item) for item in tags][:20],
+        "durationMs": extract_video_duration_ms(html),
     }
 
 
@@ -359,6 +391,12 @@ def fetch(
         if not dest.is_file() or written < 10_000:
             dest.unlink(missing_ok=True)
             raise DouyinDirectError("下载到的文件过小（可能只拿到错误页）")
+        # 字节数对得上 ≠ 内容对：再跟分享页声明的时长对照一次，抓「自洽但偏短」的文件。
+        expected_ms = int(payload.get("durationMs") or 0)
+        mismatch = duration_mismatch_reason(dest, expected_ms / 1000 if expected_ms else None)
+        if mismatch:
+            dest.unlink(missing_ok=True)
+            raise DouyinDirectError(mismatch)
 
         return dest, {
             "awemeId": aweme_id,
@@ -367,5 +405,6 @@ def fetch(
             "nickname": payload["nickname"],
             "videoId": payload["videoId"],
             "ratio": ratio,
+            "durationMs": expected_ms or None,
             "source": "direct",
         }
