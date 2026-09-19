@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -159,6 +160,90 @@ class PublishCopyLockTests(unittest.TestCase):
     def test_copy_stays_editable_when_no_cover_exists_yet(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             self.assertIsNone(self._locked(Path(raw), with_cover=False))
+
+
+class FullAutoImageTests(unittest.TestCase):
+    """全自动链路：备料直接出图、封面走中转站、自动放行 —— 但**已经有的绝不重出**。
+
+    用户 2026-09-19：「全自动吧。不要我去备料了。现在直接用api生成」＋
+    「对于已经有的不要重复得去生成」。
+    """
+
+    def _item(self, *, image="", covers=(), copy=True):
+        root = Path(tempfile.mkdtemp(prefix="h3-fullauto-")) / "发布成品"
+        self.addCleanup(shutil.rmtree, root.parent, ignore_errors=True)
+        folder = root / "001_跳舞_标题_7674846165070563451"
+        folder.mkdir(parents=True)
+        if copy:
+            (folder / "发布文案.txt").write_text("标题：\n标题\n\n简介：\n简介\n", encoding="utf-8")
+        if image:
+            (folder / "人物图.png").write_bytes(b"person")
+        for name in covers:
+            (folder / name).write_bytes(b"cover")
+        item = {
+            "id": "item-1",
+            "kind": "dance",
+            "awemeId": "7674846165070563451",
+            "ai": {"title": "标题"},
+            "outputs": {"folder": str(folder)},
+        }
+        return root, folder, item
+
+    def test_existing_covers_are_never_regenerated(self) -> None:
+        from backend import batch_worker
+
+        root, folder, item = self._item(image="x", covers=("B站4x3.png", "抖音3x4.png"))
+        with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), patch.object(
+            batch_worker, "_item", lambda *_: item
+        ):
+            self.assertFalse(batch_worker.spawn_api_covers("b", "item-1"))
+
+    def test_missing_cover_is_scheduled_without_touching_the_existing_one(self) -> None:
+        from backend import batch_worker
+
+        root, folder, item = self._item(image="x", covers=("B站4x3.png",))
+        created: list[str] = []
+
+        def fake_create_task(coro):
+            created.append(getattr(coro, "__qualname__", "task"))
+            coro.close()
+            return type("T", (), {"add_done_callback": lambda self, cb: None})()
+
+        with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), patch.object(
+            batch_worker, "_item", lambda *_: item
+        ), patch.object(batch_worker.asyncio, "create_task", fake_create_task):
+            self.assertTrue(batch_worker.spawn_api_covers("b", "item-1"))
+        self.assertEqual(len(created), 1)
+
+    def test_cover_task_skips_a_cover_that_is_already_there(self) -> None:
+        """任务真的跑起来时也要逐张跳过已有的那张（不能因为另一张缺就两张都重出）。"""
+        from backend import batch_worker, image_workbench
+
+        root, folder, item = self._item(image="x", covers=("B站4x3.png",))
+        calls: list[str] = []
+
+        async def fake_generate(folder_arg, stage, kind):
+            calls.append(stage)
+
+        with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), patch.object(
+            batch_worker, "_item", lambda *_: item
+        ), patch.object(batch_worker.batch_store, "add_item_log", lambda *a, **k: None), patch.object(
+            image_workbench, "_generate_cover", fake_generate
+        ):
+            asyncio.run(batch_worker._generate_covers_via_api("b", "item-1", folder))
+
+        self.assertEqual(calls, ["douyin"])  # B站那张已经在 → 只出抖音
+
+    def test_prepare_reuses_an_existing_person_image(self) -> None:
+        """备料时已经有候选人物图 → 直接沿用，绝不重复烧出图钱（源码级：生成前先看 previous_image）。"""
+        source = Path(_batch_worker_module.__file__).read_text(encoding="utf-8")
+        marker = 'if provider in {"api", "local"} and mode != "image" and previous_image.is_file():'
+        self.assertIn(marker, source)
+        # 全自动开着时，来源必须是中转站（而不是「只备料」）
+        with process_env_only(), patch.object(
+            _batch_worker_module.batch_image, "configured", lambda: True
+        ):
+            self.assertEqual(_image_provider(), "api")
 
 
 class WorkflowPreparationTests(unittest.TestCase):
@@ -1118,16 +1203,18 @@ class WorkflowPreparationTests(unittest.TestCase):
                         # 同作品号的既有目录，先建出来就测不到「三件都缺」那一档了。
 
                         # ① 三件都缺：一次调用内就把能补的人物图补上，只剩两张封面
+                        #    （封面名两代都要认：现在是 `B站4x3.png` / `抖音3x4.png`，
+                        #     早期是 `封面_*.png` —— 只认老名字会让新目录永远报「缺封面」）
                         empty = batch_worker.publish_image_state(target)  # 目录还不存在
                         self.assertEqual(
                             sorted(empty["missing"]),
-                            sorted(["人物图.png", "封面_B站4x3.png", "封面_抖音3x4.png"]),
+                            sorted(["人物图.png", "B站4x3.png", "抖音3x4.png"]),
                         )
                         got = batch_worker._sync_publish_images(state["id"], item_id)
                         self.assertNotIn("人物图.png", got["missing"])
                         self.assertEqual(
                             sorted(got["missing"]),
-                            sorted(["封面_B站4x3.png", "封面_抖音3x4.png"]),
+                            sorted(["B站4x3.png", "抖音3x4.png"]),
                         )
                         self.assertTrue(got["needs_covers"])
                         # 候选图还在 → 人物图被补进发布目录
@@ -1144,7 +1231,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                         self.assertNotIn("人物图.png", again["missing"])
                         self.assertEqual(
                             sorted(again["missing"]),
-                            sorted(["封面_B站4x3.png", "封面_抖音3x4.png"]),
+                            sorted(["B站4x3.png", "抖音3x4.png"]),
                         )
                         self.assertTrue(again["needs_covers"])
 
@@ -1905,19 +1992,34 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertEqual(calls, ["image[]", "image", "image[]"])
 
     def test_batch_image_provider_selection(self) -> None:
-        """默认必须是 manual（用户自己出图）；显式配置才走 api/local/frame。"""
+        """全自动开着 → 用中转站出图；关掉才回到「用户自己出图」的老默认。
+
+        用户 2026-09-19：「全自动吧。不要我去备料了。现在直接用api生成」。
+        注意机器上还留着老流程要求的 `H3_BATCH_IMAGE_PROVIDER=manual`（当初为避免批量备料
+        与页面按钮**生成两遍**才钉死），全自动开着时它**不许**把链路降级成「只备料」。
+        """
         with process_env_only():
-            with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "local"}, clear=False):
-                self.assertEqual(_image_provider(), "local")
-            with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "api"}, clear=False):
-                self.assertEqual(_image_provider(), "api")
-            # 非法值回落到默认值
-            with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "没这个值"}, clear=False):
-                self.assertEqual(_image_provider(), "manual")
-            # 未设置时也必须是 manual：绝不能在用户没要求时自动出图
-            with patch.dict(os.environ, {}, clear=False):
+            with patch.object(_batch_worker_module.batch_image, "configured", lambda: True):
+                with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "manual"}, clear=False):
+                    self.assertEqual(_image_provider(), "api")
+                # 显式指名 local / frame 有明显用途，仍然听环境变量
+                with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "local"}, clear=False):
+                    self.assertEqual(_image_provider(), "local")
+                with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "frame"}, clear=False):
+                    self.assertEqual(_image_provider(), "frame")
+            # 中转站没配好（没有 base_url / key）→ 只能退回手动，绝不空跑
+            with patch.object(_batch_worker_module.batch_image, "configured", lambda: False):
+                with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "api"}, clear=False):
+                    self.assertEqual(_image_provider(), "manual")
+            # 关掉全自动 → 完全回到老流程
+            with patch.dict(os.environ, {"H3_FULL_AUTO": "0"}, clear=False):
                 os.environ.pop("H3_BATCH_IMAGE_PROVIDER", None)
                 self.assertEqual(_image_provider(), "manual")
+                with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "api"}, clear=False):
+                    self.assertEqual(_image_provider(), "api")
+                # 非法值回落到默认值
+                with patch.dict(os.environ, {"H3_BATCH_IMAGE_PROVIDER": "没这个值"}, clear=False):
+                    self.assertEqual(_image_provider(), "manual")
 
     def test_batch_ai_image_prompt_carries_review_feedback(self) -> None:
         """审核修改意见必须进入出图提示词，否则「调整图片」只会改文案、图不动。"""

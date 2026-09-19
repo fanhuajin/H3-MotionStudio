@@ -35,6 +35,7 @@ from .settings import (
     DATA_DIR,
     batch_default_ratio,
     env_value,
+    full_auto_enabled,
     normalize_batch_ratio,
 )
 from .store import now_iso, store
@@ -288,9 +289,15 @@ RETRYABLE_ITEM_STATUSES = {"failed", "skipped", "completed"}
 
 # 发布目录里「必须有」的图片（用户 2026-09-16：「点击重新开始的时候要检查发布成品是否
 # 人物图.png 和 封面_抖音3x4.png 和 封面_B站4x3.png 是否完整 如果不完整看下是不是需要补充」）。
-# 封面名字与 `chatgpt_image.COVER_TASKS` 里写死的一致，改一处必须改两处。
+# ⚠️ 封面名字有两代：现在的 `B站4x3.png` / `抖音3x4.png`（`image_workbench.save_upload` 写的）
+# 与早期的 `封面_B站4x3.png` / `封面_抖音3x4.png`。体检必须**两代都认**，否则新目录永远报「缺封面」。
 PUBLISH_IMAGE_NAME = "人物图.png"
-PUBLISH_COVER_NAMES = ("封面_B站4x3.png", "封面_抖音3x4.png")
+PUBLISH_COVER_NAMES = ("B站4x3.png", "抖音3x4.png")
+LEGACY_PUBLISH_COVER_NAMES = ("封面_B站4x3.png", "封面_抖音3x4.png")
+PUBLISH_COVER_ALIASES = {
+    "bilibili": ("B站4x3.png", "封面_B站4x3.png"),
+    "douyin": ("抖音3x4.png", "封面_抖音3x4.png"),
+}
 # 源视频抽帧（图一）也复制一份进发布目录，方便直接拿去出图（用户 2026-09-16 要求）
 PUBLISH_FRAME_NAME = "抽帧.jpg"
 
@@ -1434,7 +1441,14 @@ async def _prepare_review_work(
 
     image_path: Path | None = None
 
-    if mode == "copy" and previous_image.is_file():
+    # 已经有候选人物图就直接沿用：全自动链路里「重新开始」不该再烧一次出图钱
+    # （要重出图走 /images 页面的「重新生成这一步」，那是明确的意图）。
+    if provider in {"api", "local"} and mode != "image" and previous_image.is_file():
+        image_path = previous_image
+        batch_store.add_item_log(
+            batch_id, item_id, "这条已经有候选人物图，直接沿用（没有重复出图）。"
+        )
+    elif mode == "copy" and previous_image.is_file():
         image_path = previous_image
     elif provider == "manual":
         if previous_image.is_file():
@@ -1490,7 +1504,9 @@ async def _prepare_review_work(
                     on_progress=report,
                 )
             else:
-                await batch_image.generate_candidate_image(
+                # 人物图**自带身份自检**：相似度 <70 自动重做（最多 3 次），最后留分数最高的
+                # 那张（用户 2026-09-19：「人物相似度 必须70%以上」）。与 /images 页面同一条实现。
+                _, similarity = await batch_image.generate_person_image(
                     scene_image=scene,
                     identity_image=IDENTITY_PATH,
                     prompt=image_prompt,
@@ -1498,6 +1514,16 @@ async def _prepare_review_work(
                     output_path=target_image,
                     on_progress=report,
                 )
+                if similarity >= 0:
+                    batch_store.add_item_log(
+                        batch_id, item_id,
+                        f"候选人物图已生成，身份相似度 {similarity}/100"
+                        f"（门槛 {batch_image.PERSON_MIN_SIMILARITY}，不够会自动重做）。",
+                    )
+                else:
+                    batch_store.add_item_log(
+                        batch_id, item_id, "候选人物图已生成；身份自检这次没跑成（不影响出片）。"
+                    )
             image_path = target_image
         except asyncio.CancelledError:
             raise
@@ -1659,6 +1685,12 @@ async def _prepare_review_work(
     if _cgi_auto_cover():
         _maybe_spawn_covers(batch_id, item_id)
 
+    # 【全自动】封面走**中转站**（用户 2026-09-19：「全自动吧…现在直接用api生成」）：
+    # 人物图与发布文案刚刚由 `deliver_review_materials()` 落进发布目录，现在出封面
+    # 才能保证图上的标题/简介就是最终那一版。与出片**并行**（API 出图不吃显卡）。
+    if full_auto_enabled() and result.get("reference_image_path"):
+        spawn_api_covers(batch_id, item_id)
+
     # **自动放行出片**：默认也已关闭（图片自动化的一部分）——上传人物图后停在
     # 「等待你的确认」，点「确认并出片」才走视频链路。想恢复自动放行：`H3_AUTO_CONFIRM=1`。
     if _cgi_auto_confirm():
@@ -1678,6 +1710,9 @@ def _cgi_auto_cover() -> bool:
 
 
 def _cgi_auto_confirm() -> bool:
+    """够不够格自动放行出片：**全自动链路开着就放行**，否则看 `H3_AUTO_CONFIRM`。"""
+    if full_auto_enabled():
+        return True
     from . import chatgpt_image as _cgi
 
     try:
@@ -1715,8 +1750,69 @@ def publish_published_image(folder: Path | None) -> Path | None:
     return None
 
 
+# 全自动链路里封面出图要**严格串行**（一条一条跑，避免同时打十几个中转站请求被限流）。
+_COVER_LOCK = asyncio.Lock()
+
+
+def spawn_api_covers(batch_id: str, item_id: str, *, only_missing: bool = True) -> bool:
+    """【全自动】用**中转站**出这条的两张封面（后台任务，与出片并行）。
+
+    时机很重要（踩过坑）：必须在「人物图 + 发布文案」都落进发布目录**之后**才出封面 ——
+    封面上的大字就是 `发布文案.txt` 的标题、小字是简介，先出封面就会把旧标题画进图里。
+    所以调用点是 `_prepare_review_work()` 里 `deliver_review_materials()` 之后，
+    以及提交出片前的那道体检（`ensure_publish_images`）。
+
+    `only_missing=True`：两张封面都在就直接返回，不白跑（重新开始时避免重复出图）。
+    返回是否真的排上了任务。**不是** ChatGPT 桌面端那条路（那条仍归 `H3_AUTO_CHATGPT_COVER`）。
+    """
+    item = _item(batch_id, item_id)
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    if folder is None or not folder.is_dir():
+        return False
+    if publish_published_image(folder) is None:
+        return False
+    if not (folder / "发布文案.txt").is_file():
+        return False
+    if only_missing and all(
+        any(_present_file(folder, name) for name in names)
+        for names in PUBLISH_COVER_ALIASES.values()
+    ):
+        return False
+    task = asyncio.create_task(_generate_covers_via_api(batch_id, item_id, folder))
+    _COVER_TASKS.add(task)
+    task.add_done_callback(_COVER_TASKS.discard)
+    return True
+
+
+async def _generate_covers_via_api(batch_id: str, item_id: str, folder: Path) -> None:
+    """走中转站出两张封面：`B站4x3.png`（4:3）与 `抖音3x4.png`（3:4）。
+
+    与 `/images` 页面「API 自动生成这一步」是同一个实现（`image_workbench._generate_cover`），
+    失败只写日志标黄，**绝不影响出片**。
+    """
+    from . import image_workbench
+
+    item = _item(batch_id, item_id)
+    kind = str(item.get("kind") or "singing")
+    async with _COVER_LOCK:
+        for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
+            if any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
+                continue
+            batch_store.add_item_log(batch_id, item_id, f"正在用中转站生成{label}……")
+            try:
+                await image_workbench._generate_cover(folder, stage, kind)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001 - 封面失败不该把整条作品判失败
+                batch_store.add_item_log(
+                    batch_id, item_id, f"{label}自动生成失败（不影响出片）：{error}"
+                )
+                continue
+            batch_store.add_item_log(batch_id, item_id, f"{label}已生成并放进发布目录。")
+
+
 def _maybe_spawn_covers(batch_id: str, item_id: str, *, only_missing: bool = False) -> bool:
-    """若已开启封面自动化且该条的人物图+发布文案都齐了，就后台触发封面生成。
+    """若已开启封面自动化且该条的人物图+发布文案都齐了，就后台触发封面生成（ChatGPT 桌面端）。
 
     后台 fire-and-forget，不阻塞备料/出片；`_IMAGE_LOCK` 保证全局串行。
     `only_missing=True`：**两张封面都已在发布目录里就不触发**（正在出片前的那道检查用，
@@ -1772,11 +1868,19 @@ async def ensure_publish_images(
         )
     spawned = False
     if allow_spawn and state.get("needs_covers"):
-        spawned = _maybe_spawn_covers(batch_id, item_id, only_missing=True)
-        if spawned:
-            batch_store.add_item_log(
-                batch_id, item_id, "正在补齐缺失的封面图（ChatGPT 桌面端，已有的一张会跳过）……"
-            )
+        if full_auto_enabled():
+            # 全自动：封面走中转站（与备料后那次是同一实现，`only_missing` 保证已有的不重出）
+            spawned = spawn_api_covers(batch_id, item_id)
+            if spawned:
+                batch_store.add_item_log(
+                    batch_id, item_id, "正在用中转站补齐缺失的封面（已有的一张会跳过）……"
+                )
+        elif not spawned:
+            spawned = _maybe_spawn_covers(batch_id, item_id, only_missing=True)
+            if spawned:
+                batch_store.add_item_log(
+                    batch_id, item_id, "正在补齐缺失的封面图（ChatGPT 桌面端，已有的一张会跳过）……"
+                )
     return {**state, "spawned": spawned}
 
 
@@ -1816,11 +1920,12 @@ def publish_image_state(folder: Path | None) -> dict[str, Any]:
     if image is None:
         missing.append(PUBLISH_IMAGE_NAME)  # 交付统一用 .png 这个名字
     needs_covers = False
-    for name in PUBLISH_COVER_NAMES:
-        if _present_file(folder, name):
-            present.append(name)
+    for stage, names in PUBLISH_COVER_ALIASES.items():
+        found = next((name for name in names if _present_file(folder, name)), "")
+        if found:
+            present.append(found)
         else:
-            missing.append(name)
+            missing.append(PUBLISH_COVER_NAMES[0 if stage == "bilibili" else 1])
             needs_covers = True
     return {
         "folder": str(folder),
@@ -1946,14 +2051,22 @@ IMAGE_PROVIDERS = {"auto", "api", "local", "frame", "manual"}
 
 
 def _image_provider() -> str:
-    """候选人物图来源：`manual` 用户自己在 GPT 聊天里做（**默认**）/ `api` 中转站 /
+    """候选人物图来源：`api` 中转站（**全自动链路的默认**）/ `manual` 用户自己出图 /
     `local` 本地 Krea2 / `frame` 源视频取帧 / `auto`。
 
-    默认 `manual`：用户明确要求「去掉图片生成，图片由我自己去 gpt 聊天补充」。
-    出图质量与五官由用户把关，批量只负责备料（提示词 + 图一 + 图二）并接收成图。
+    **全自动开着时以「用中转站出图」为准**（用户 2026-09-19：「全自动吧。不要我去备料了。
+    现在直接用api生成」）：机器上还留着老流程要求的 `H3_BATCH_IMAGE_PROVIDER=manual`
+    （当初是为了避免批量备料和页面按钮**生成两遍**才钉死 manual 的），那条约定已被本条取代 ——
+    留着它会把全自动悄悄降级成「只备料」，所以这里以 `H3_FULL_AUTO` 为准；
+    只有显式指名 `local` / `frame` 这两个有明显用途的来源才听环境变量。
+    全自动关掉（`H3_FULL_AUTO=0`）时完全回到老行为。
     """
-    value = env_value("H3_BATCH_IMAGE_PROVIDER", "manual").strip().lower()
-    return value if value in IMAGE_PROVIDERS else "manual"
+    explicit = env_value("H3_BATCH_IMAGE_PROVIDER", "").strip().lower()
+    if full_auto_enabled():
+        if explicit in {"local", "frame"}:
+            return explicit
+        return "api" if batch_image.configured() else "manual"
+    return explicit if explicit in IMAGE_PROVIDERS else "manual"
 
 
 def reuse_previous_analysis(mode: str, previous: dict[str, Any]) -> dict[str, Any] | None:

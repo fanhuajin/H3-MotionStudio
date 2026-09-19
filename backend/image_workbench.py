@@ -391,30 +391,18 @@ async def _generate_person(folder: Path, kind: str) -> int:
     work = Path(tempfile.mkdtemp(prefix="h3-auto-person-"))
     try:
         scene, _ = await batch_image.defocus_reference_face(frame, work)
-        best_bytes: bytes | None = None
-        best_score = -1
-        for attempt in range(1, PERSON_MAX_ATTEMPTS + 1):
-            candidate = work / f"candidate_{attempt}.png"
-            await batch_image.generate_candidate_image(
-                scene_image=scene,
-                identity_image=IDENTITY_PATH,
-                prompt=person_prompt(folder, kind),
-                ratio=ratio,
-                output_path=candidate,
-            )
-            try:
-                result = await batch_ai.judge_identity(IDENTITY_PATH, candidate)
-                score = max(0, min(100, int(result.get("similarity") or 0)))
-            except Exception:
-                save_upload(folder, "person", candidate.read_bytes(), kind)
-                return -1
-            if best_bytes is None or score > best_score:
-                best_bytes = candidate.read_bytes()
-                best_score = score
-            if score >= PERSON_MIN_SIMILARITY:
-                break
-        save_upload(folder, "person", best_bytes, kind)
-        return max(0, best_score)
+        candidate = work / "person.png"
+        # 生成 + 身份自检（<70 重做、留最高分）与**批量全自动链路共用同一份实现**：
+        # `batch_image.generate_person_image`，两边的行为不会跑偏。
+        _, similarity = await batch_image.generate_person_image(
+            scene_image=scene,
+            identity_image=IDENTITY_PATH,
+            prompt=person_prompt(folder, kind),
+            ratio=ratio,
+            output_path=candidate,
+        )
+        save_upload(folder, "person", candidate.read_bytes(), kind)
+        return similarity
     finally:
         import shutil
         shutil.rmtree(work, ignore_errors=True)

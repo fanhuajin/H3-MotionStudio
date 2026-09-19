@@ -33,8 +33,12 @@ REQUEST_TIMEOUT = 900.0
 # （都是 16 的倍数、长宽比 ≤3:1、总像素落在中转站允许区间，落在 2K 计费档）。
 # 3:4 是给**抖音封面**用的（1086×1448）—— 用户 2026-09-19：「封面也用api生成 不需要本地」。
 IMAGE_SIZES = {"4:3": "1536x1152", "9:16": "1152x2048", "3:4": "1152x1536"}
-
 ProgressCallback = Callable[[float, str], Awaitable[None]]
+
+# 人物图身份自检：相似度必须 ≥70，不够就重做，最多 3 次，留分数最高的那张
+# （用户 2026-09-19：「人物相似度 必须70%以上」）。批量备料与 /images 页面共用。
+PERSON_MIN_SIMILARITY = 70
+PERSON_MAX_ATTEMPTS = 3
 
 
 def base_url() -> str:
@@ -378,6 +382,58 @@ async def generate_candidate_image(
     if len(failures) >= 2:
         hint = "。若中转站只支持单图编辑，请设置 H3_BATCH_IMAGE_MODE=composite"
     raise RuntimeError(f"中转站出图失败：{detail}{hint}")
+
+
+async def generate_person_image(
+    *,
+    scene_image: Path,
+    identity_image: Path | None,
+    prompt: str,
+    ratio: str,
+    output_path: Path,
+    on_progress: ProgressCallback | None = None,
+    min_similarity: int = PERSON_MIN_SIMILARITY,
+    max_attempts: int = PERSON_MAX_ATTEMPTS,
+) -> tuple[Path, int]:
+    """出人物图并**自带身份自检**：不够门槛就重做，最后留下分数最高的那张。
+
+    用户 2026-09-19：「人物相似度 必须70%以上」。批量备料（全自动链路）与 `/images`
+    页面的「生成/重新生成这一步」以前各写一份循环，现在共用这一份，行为不会跑偏。
+
+    返回 `(output_path, 相似度)`；**判据本身失败时**（视觉端点不可用等）不重试、不卡链路，
+    直接收下当次结果并返回 -1 —— 自检只是质量门槛，不是出片前提。
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = output_path.parent
+    best_bytes: bytes | None = None
+    best_score = -1
+    for attempt in range(1, max(1, max_attempts) + 1):
+        candidate = work_dir / f"{output_path.stem}_attempt{attempt}{output_path.suffix}"
+        await generate_candidate_image(
+            scene_image=Path(scene_image),
+            identity_image=Path(identity_image) if identity_image is not None else None,
+            prompt=prompt,
+            ratio=ratio,
+            output_path=candidate,
+            on_progress=on_progress,
+        )
+        try:
+            from . import batch_ai
+
+            result = await batch_ai.judge_identity(Path(identity_image), candidate)
+            score = max(0, min(100, int(result.get("similarity") or 0)))
+        except Exception:  # noqa: BLE001 - 自检失败不该把出图判失败
+            candidate.replace(output_path)
+            return output_path, -1
+        if best_bytes is None or score > best_score:
+            best_bytes = candidate.read_bytes()
+            best_score = score
+        candidate.unlink(missing_ok=True)
+        if score >= min_similarity:
+            break
+    output_path.write_bytes(best_bytes or b"")
+    return output_path, max(0, best_score)
 
 
 async def generate_single_edit(

@@ -41,7 +41,27 @@ _USER_ENV_CACHE: dict[str, str] = {}
 #  仍然是「自动出图开」——因为后端是 DSH/终端拉起的，继承了它们启动时的旧环境变量，
 #  `os.environ` 里还是 1，把用户刚改的 0 盖掉了）。
 # 这几个开关的语义是「用户现在要不要图片自动化」，所以**以注册表为准**。
-_REGISTRY_FIRST_KEYS = {"H3_AUTO_CHATGPT_IMAGE", "H3_AUTO_CHATGPT_COVER", "H3_AUTO_CONFIRM"}
+_REGISTRY_FIRST_KEYS = {
+    "H3_AUTO_CHATGPT_IMAGE",
+    "H3_AUTO_CHATGPT_COVER",
+    "H3_AUTO_CONFIRM",
+    "H3_FULL_AUTO",
+}
+
+
+def full_auto_enabled() -> bool:
+    """**全自动链路**（用户 2026-09-19：「全自动吧。不要我去备料了。现在直接用api生成」）。
+
+    打开时批量备料自己把三张图都出了、并自动放行出片，用户只需要贴链接：
+
+      · 人物图：备料阶段直接用中转站出（糊脸 + 身份图 + 相似度 <70 自动重做）；
+      · 两张封面：人物图与发布文案落进发布目录之后，同样走中转站出（与出片并行）；
+      · 自动放行：出完图直接确认出片，不再停在审核点等人点。
+
+    `H3_FULL_AUTO=0` 可以整体退回「只备料、图由用户自己出、审核点手动确认」的老流程。
+    """
+    raw = str(env_value("H3_FULL_AUTO", "1") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def env_value(name: str, default: str = "") -> str:

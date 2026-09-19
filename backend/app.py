@@ -43,6 +43,7 @@ from .batch_worker import (
     ensure_shutdown_watcher,
     heal_terminal_item_milestones,
     image_ratio_note,
+    locked_publish_copy,
     item_ratio,
     mark_items_deleted,
     mark_items_skipped,
@@ -1491,9 +1492,18 @@ async def upload_batch_item_image(
     ai = dict(item.get("ai") or {})
     ai["reference_image_path"] = str(target)
 
-    # 图文一致：文案要看着用户给的那张图来写
+    # 图文一致：文案要看着用户给的那张图来写。
+    # ⚠️ **封面已经出过的条目不重写文案**（用户 2026-09-19：「都用原来的啊 不然封面都得改」）：
+    # 封面上印的就是这份文案，重写会让封面全部作废。全自动链路里发布目录监听也会走这个接口，
+    # 少了这道闸，监听就会在封面出好之后把标题改掉。
+    locked_copy = locked_publish_copy(item)
     rewrite_note = ""
-    if batch_ai.configured():
+    if locked_copy:
+        for key in ("title", "introduction", "tags"):
+            if locked_copy.get(key):
+                ai[key] = locked_copy[key]
+        rewrite_note = "发布目录里已经出过封面，沿用原来的发布文案（不重写）。"
+    elif batch_ai.configured():
         try:
             copy = await batch_ai.write_copy(
                 kind=str(item.get("kind") or "singing"),
