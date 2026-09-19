@@ -277,6 +277,14 @@ def fetch(
                         on_progress(written, total)
         if not dest.is_file() or dest.stat().st_size < 10_000:
             raise DouyinDirectError("下载到的文件过小（可能只拿到错误页）")
+        # CDN 声称的 content-length 没拿满 = 只写了半截文件。httpx 对 content-length
+        # 不匹配通常会自己抛，但 206/分块响应下会静默收尾，落到 ComfyUI 里才炸成
+        # 「No frames generated」（2026-09-19 条目 012 就是这种半截文件）。
+        if total and written < total:
+            dest.unlink(missing_ok=True)
+            raise DouyinDirectError(
+                f"CDN 直链只传了 {written} 字节（应为 {total} 字节），文件不完整，已丢弃"
+            )
 
         return dest, {
             "awemeId": aweme_id,

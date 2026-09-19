@@ -51,6 +51,7 @@ from .settings import (
     singing_canvas_params,
 )
 from .store import now_iso, store
+from .video_integrity import truncation_reason
 from .workflows import (
     graph_to_api_prompt,
     patch_h3_lyrics_canvas,
@@ -1184,6 +1185,37 @@ async def _complete_without_rvc(job_id: str, output: Path) -> None:
     store.add_log(job_id, "RVC 音色转换开关已关闭：跳过转换流程，成片即最终输出（保留原声）。")
 
 
+async def _guard_source_video(job_id: str, state: dict[str, Any]) -> None:
+    """进 ComfyUI 之前先验源视频完整性（半截下载不进 GPU）。
+
+    2026-09-19 事故：条目 012 的驱动视频是半截文件（moov 声明 343 帧、mdat 只够 209 帧），
+    动作迁移的 Mie 循环跑到第 3 段（`skip_first_frames=228`）时 VHS 解出 0 帧，ComfyUI 只回
+    一句 `No frames generated` —— 用户等了 15 分钟 GPU 才知道白跑。这条闸门把它变成
+    「一开始就失败 + 一句人话」。唱歌链路的源视频同时是音轨来源，半截文件会把歌截短，
+    所以两个入口都过这道门。
+
+    只看**容器声明帧数 vs 实际可解码帧数**；探测不出来时一律放行（校验是质量门槛，
+    不是出片前提）。
+    """
+    candidates: list[Path] = [Path(str(state.get("sourcePath") or ""))]
+    input_name = str(state.get("sourceInputName") or "")
+    if input_name:
+        candidates.append(COMFY_INPUT / input_name)
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        reason = await asyncio.to_thread(truncation_reason, candidate)
+        if reason is not None:
+            store.add_log(job_id, f"源视频完整性校验未通过：{reason}")
+            raise PipelineError(
+                "源视频文件不完整，已阻止出片",
+                f"{reason}\n"
+                "这是下载时只写到一半的文件。请在批量里点「重新开始」重新下载本条；"
+                "仍不完整就先在抖音里确认这条作品能正常播放。",
+            )
+        return
+
+
 async def run_pipeline(job_id: str) -> None:
     async with pipeline_lock:
         state = store.get(job_id)
@@ -1193,6 +1225,7 @@ async def run_pipeline(job_id: str) -> None:
         if not await claim_job_run(job_id, stage="starting"):
             return
         try:
+            await _guard_source_video(job_id, state)
             await resources.ensure_comfy(job_id)
             state = store.get(job_id) or state
             canvas_ratio = state.get("canvas") or DEFAULT_SINGING_CANVAS
@@ -1739,6 +1772,7 @@ async def run_migrate_pipeline(job_id: str) -> None:
         if not await claim_job_run(job_id, stage="starting"):
             return
         try:
+            await _guard_source_video(job_id, state)
             await resources.ensure_comfy(job_id)
             # 刚把 ComfyUI 拉起来就发现被取消：**绝不提交工作流**（否则又会白烧一次显存）。
             raise_if_cancelled(job_id)

@@ -39,6 +39,7 @@ from .settings import (
     normalize_batch_ratio,
 )
 from .store import now_iso, store
+from .video_integrity import truncation_reason
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -820,6 +821,34 @@ def duplicate_item_by_aweme(
     return None
 
 
+def _park_truncated_source(path: Path) -> str | None:
+    """半截下载的文件：改名搁置并返回原因；完整/探测不出返回 None。
+
+    **必须挪走**：`_download()` 开头的 `existing.is_file()` 和 `cached_download_path()`
+    都会先认本地文件，坏文件留在原地会让之后每次「重新开始」都复用它、原地复现同一个
+    失败（2026-09-19 条目 012 就是这样白跑了五次）。不静默删除（用户素材），改名成
+    `xxx.truncated.mp4` 并在搜索时排除。
+    """
+    reason = truncation_reason(path)
+    if reason is None or not path.is_file():
+        return None
+    try:
+        parked = path.with_name(f"{path.stem}.truncated{path.suffix}")
+        counter = 1
+        while parked.exists():
+            parked = path.with_name(f"{path.stem}.truncated{counter}{path.suffix}")
+            counter += 1
+        try:
+            path.replace(parked)
+        except OSError:
+            # 改名失败（被占用等）时**不能留着它**：调用方接下来必然要重新下载，
+            # 而本地已有的坏文件会挡住下载。此时才走到删除这一步。
+            path.unlink(missing_ok=True)
+    except OSError as error:  # 挪不动也不该把整条链路拖死
+        logger.warning("搁置不完整的源视频失败：%s（%s）", path, error)
+    return reason
+
+
 def cached_download_path(url: str) -> Path | None:
     """本地已经有这条作品（按作品号能对上文件）时返回它，否则 None。
 
@@ -845,7 +874,7 @@ def cached_download_path(url: str) -> Path | None:
     for relative in metadata.get("file_paths") or []:
         for root in roots:
             candidate = root / str(relative)
-            if candidate.is_file():
+            if candidate.is_file() and ".truncated" not in candidate.name:
                 return candidate
     for root in roots:
         matches = [
@@ -855,6 +884,7 @@ def cached_download_path(url: str) -> Path | None:
             and path.suffix.lower() in VIDEO_SUFFIXES
             and ".h3-converted" not in path.name
             and ".part." not in path.name
+            and ".truncated" not in path.name
         ]
         if matches:
             return max(matches, key=lambda path: path.stat().st_mtime)
@@ -900,6 +930,11 @@ async def _fetch_source_direct(item: dict[str, Any]) -> tuple[Path, str, dict[st
 
     path, meta = await asyncio.to_thread(douyin_direct.fetch, str(item["url"]), DOUYIN_OUTPUT)
     aweme_id = str(meta["awemeId"])
+    raw_reason = await asyncio.to_thread(_park_truncated_source, Path(path))
+    if raw_reason is not None:
+        # 先验原始下载文件再转码：转码会把「能解出来的那部分」重新封装成一个帧数自洽的
+        # 短片，之后再比对帧数就查不出来了（音频也会跟着短一截）。
+        raise RuntimeError(f"{raw_reason}（直连下载没有拿到完整文件）")
     source = await ensure_download_playable(Path(path), aweme_id)
     metadata = {
         "desc": meta.get("desc") or "",
@@ -939,7 +974,11 @@ async def _fetch_source_via_service(
     if not result:
         raise RuntimeError("下载完成但没有找到视频文件")
     aweme_id = str(result["awemeId"])
-    source = await ensure_download_playable(Path(result["path"]), aweme_id)
+    raw = Path(result["path"])
+    raw_reason = await asyncio.to_thread(_park_truncated_source, raw)
+    if raw_reason is not None:
+        raise RuntimeError(f"{raw_reason}（下载器报告的「成功」其实是半截文件）")
+    source = await ensure_download_playable(raw, aweme_id)
     return source, aweme_id, _manifest_metadata(aweme_id)
 
 
@@ -975,9 +1014,23 @@ async def _download(batch_id: str, item_id: str) -> Path:
     item = _item(batch_id, item_id)
     existing = Path(item.get("sourcePath") or "")
     if existing.is_file():
-        return existing
+        # ⚠️ 登记过的 sourcePath 也要验一遍：半截文件留在这里，「重新开始」只会原地复现。
+        reason = await asyncio.to_thread(_park_truncated_source, existing)
+        if reason is None:
+            return existing
+        batch_store.add_item_log(
+            batch_id, item_id, f"上次登记的源视频不完整（{reason}），已搁置坏文件，重新下载本条。"
+        )
+        _set_item(batch_id, item_id, sourcePath="")
     # 这条作品本地已经有了（之前下过、或另一条用过同一条素材）→ 直接用，不启动下载器
     cached = await asyncio.to_thread(cached_download_path, str(item.get("url") or ""))
+    if cached is not None:
+        reason = await asyncio.to_thread(_park_truncated_source, cached)
+        if reason is not None:
+            batch_store.add_item_log(
+                batch_id, item_id, f"本地已有的源视频不完整（{reason}），已搁置坏文件，改为重新下载。"
+            )
+            cached = None
     if cached is not None:
         batch_store.set_item_milestone(batch_id, item_id, "download", status="running", progress=5)
         _set_item(batch_id, item_id, stage="download", status="running", error=None)
@@ -1007,6 +1060,12 @@ async def _download(batch_id: str, item_id: str) -> Path:
                 raise RuntimeError(
                     douyin_download_failure_note(direct_failure, service_failure)
                 ) from service_error
+
+        # 转码兜底：两条路由都已验过**原始**下载文件，这里再验一遍最终要送进 ComfyUI 的
+        # 那一份（转码/换封装出问题时同样拦下来，别等 Mie 循环跑到第 3 段才报 No frames）。
+        final_reason = await asyncio.to_thread(_park_truncated_source, source)
+        if final_reason is not None:
+            raise RuntimeError(f"{final_reason}。坏文件已移走，请点「重新开始」重新下载本条。")
 
         # 链接写法不同的同一条作品只有下载后才知道，这里再兜一次重复过滤
         duplicate = duplicate_item_by_aweme(

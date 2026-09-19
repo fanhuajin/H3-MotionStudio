@@ -7739,5 +7739,172 @@ class PublishWatcherTests(unittest.TestCase):
         self.assertIn("监听发布目录人物图", page)
 
 
+class SourceVideoIntegrityTests(unittest.TestCase):
+    """源视频完整性闸门：半截下载不许进 ComfyUI（2026-09-19 条目 012 事故）。
+
+    012 的驱动视频 moov 里声明 343 帧、mdat 只够 209 帧（ffprobe：`stream 1, offset
+    0x1c20ac: partial file`）。Mie 循环按 343 帧排了 5 段，跑到第 3 段
+    （`skip_first_frames=228`）时 VHS 解出 0 帧、只回一句 `No frames generated`：
+    15 分钟 GPU 白跑；更糟的是 `sourcePath` 已经登记了这个坏文件，之后每次
+    「重新开始」都复用它、原地复现同一个失败。
+    """
+
+    def setUp(self):
+        from backend import video_integrity
+
+        video_integrity._VALIDATED.clear()
+        self.addCleanup(video_integrity._VALIDATED.clear)
+
+    @staticmethod
+    def _probe(claimed, decoded, stderr=""):
+        return patch(
+            "backend.video_integrity.probe_frame_counts",
+            return_value=(claimed, decoded, stderr),
+        )
+
+    def _write_video(self, folder: str, name: str = "012.mp4") -> Path:
+        video = Path(folder) / name
+        video.write_bytes(b"x" * 4096)
+        return video
+
+    def test_a_truncated_download_is_reported_with_both_counts(self):
+        """容器声明多少帧、实际只能解出多少帧 —— 两边的数字都要出现在原因里。"""
+        from backend import video_integrity
+
+        with tempfile.TemporaryDirectory() as folder:
+            video = self._write_video(folder)
+            with self._probe(343, 209, "[mov,mp4] stream 1, offset 0x1c20ac: partial file"):
+                reason = video_integrity.truncation_reason(video)
+        self.assertIsNotNone(reason, "343 声明帧 / 209 实际帧必须判为截断")
+        self.assertIn("343", reason)
+        self.assertIn("209", reason)
+
+    def test_a_complete_download_passes_and_is_cached(self):
+        from backend import video_integrity
+
+        with tempfile.TemporaryDirectory() as folder:
+            video = self._write_video(folder)
+            with self._probe(343, 343) as probe:
+                self.assertIsNone(video_integrity.truncation_reason(video))
+                # 第二次再问同一份文件不该再整条解码一遍（下载校验 + 提交前校验会各问一次）。
+                self.assertIsNone(video_integrity.truncation_reason(video))
+                self.assertEqual(probe.call_count, 1)
+
+    def test_an_unreadable_file_never_blocks_the_run(self):
+        """这条判据只管「声明帧数 > 实际帧数」；读不出来的文件交给 ComfyUI 自己报。"""
+        from backend import video_integrity
+
+        with tempfile.TemporaryDirectory() as folder:
+            video = self._write_video(folder)
+            for claimed, decoded in ((None, None), (343, None), (None, 209)):
+                with self._probe(claimed, decoded, "Invalid data found when processing input"):
+                    self.assertIsNone(
+                        video_integrity.truncation_reason(video),
+                        f"({claimed}, {decoded}) 拿不到正面证据时不许拦",
+                    )
+
+    def test_a_truncated_file_is_parked_so_the_retry_redownloads(self):
+        """坏文件必须改名挪走：留原地的话「重新开始」会再次复用它。"""
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory() as folder:
+            video = self._write_video(folder)
+            with patch.object(batch_worker, "truncation_reason", return_value="343 帧只解出 209 帧"):
+                reason = batch_worker._park_truncated_source(video)
+            self.assertEqual(reason, "343 帧只解出 209 帧")
+            self.assertFalse(video.exists(), "坏文件不许留在原路径")
+            self.assertTrue(
+                video.with_name("012.truncated.mp4").is_file(),
+                "坏文件应该改名成 .truncated.mp4 留着（不静默删除）",
+            )
+            # 完整文件一律不动它。
+            keep = self._write_video(folder, "013.mp4")
+            with patch.object(batch_worker, "truncation_reason", return_value=None):
+                self.assertIsNone(batch_worker._park_truncated_source(keep))
+            self.assertTrue(keep.is_file())
+
+    def test_parked_files_are_never_reused_as_cache(self):
+        """`.truncated.mp4` 不许再被当成「本地已有这条作品」捡回来。"""
+        from backend import batch_worker
+
+        aweme = "7684126327402778850"
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / f"你在哪_{aweme}.truncated.mp4").write_bytes(b"x" * 4096)
+            with patch.object(batch_worker, "DOUYIN_OUTPUT", root), \
+                 patch.object(batch_worker, "MANIFEST_PATH", root / "download_manifest.jsonl"), \
+                 patch.object(batch_worker, "_manifest_metadata", return_value={}):
+                self.assertIsNone(
+                    batch_worker.cached_download_path(f"https://www.douyin.com/video/{aweme}")
+                )
+
+    def test_a_truncated_source_never_starts_comfyui(self):
+        """端到端：源视频是半截文件时，迁移任务**一开局**就失败，绝不拉起 ComfyUI。"""
+        from backend import pipeline
+
+        comfy_calls: list[str] = []
+
+        class _Store:
+            def get(self, _job_id):
+                return state
+
+            def update(self, _job_id, **changes):
+                state.update(changes)
+                return state
+
+            def add_log(self, _job_id, message):
+                state.setdefault("logs", []).append({"time": "t", "message": message})
+                return state
+
+            def set_milestone(self, _job_id, milestone_id, **changes):
+                for milestone in state.get("milestones") or []:
+                    if milestone["id"] == milestone_id:
+                        milestone.update(changes)
+                return state
+
+        async def fake_ensure(*_args, **_kwargs):
+            comfy_calls.append("ensure")
+
+        async def fake_health():
+            return None
+
+        with tempfile.TemporaryDirectory() as folder:
+            source = self._write_video(folder)
+            state = {
+                "id": "j-bad", "kind": "migrate", "status": "queued",
+                "sourcePath": str(source),
+                "milestones": [{"id": "migrate", "status": "pending"}],
+            }
+
+            async def scenario():
+                with patch.object(pipeline, "store", _Store()), \
+                     patch.object(pipeline, "pipeline_lock", asyncio.Lock()), \
+                     patch.object(pipeline, "comfy_health", new=fake_health), \
+                     patch("backend.pipeline.truncation_reason",
+                           return_value="容器声明 343 帧，实际只能解出 209 帧"), \
+                     patch.object(pipeline.resources, "ensure_comfy", new=fake_ensure):
+                    await pipeline.run_migrate_pipeline("j-bad")
+
+            asyncio.run(scenario())
+        self.assertEqual(comfy_calls, [], "半截源视频绝不许拉起 ComfyUI 白跑十几分钟")
+        self.assertEqual(state["status"], "failed")
+        self.assertIn("不完整", str(state.get("errorSummary") or ""))
+        self.assertIn(
+            "343",
+            json.dumps(state.get("logs") or [], ensure_ascii=False),
+            "原因要写进任务日志，页面才看得到到底是哪一半截了",
+        )
+
+    def test_both_pipeline_entries_walk_through_the_source_gate(self):
+        """源码级断言：唱歌与迁移两条链路都要过 `_guard_source_video`。"""
+        import inspect
+
+        from backend import pipeline
+
+        for name in ("run_pipeline", "run_migrate_pipeline"):
+            source = inspect.getsource(getattr(pipeline, name))
+            self.assertIn("_guard_source_video", source, f"{name} 必须过源视频完整性闸门")
+
+
 if __name__ == "__main__":
     unittest.main()
