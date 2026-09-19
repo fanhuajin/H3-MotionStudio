@@ -2453,8 +2453,11 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("prompt_say_enabled", source)
         # 打字必须是**有条件**的（没内容就不碰输入框）
         self.assertIn("if typed_prompt.strip():", source)
+        # 2026-09-19 修正：写入提示词的实现从命名辅助函数 `insert_text(typed_prompt)` 换成了
+        # 内联 `page.evaluate(JS, typed_prompt)`（见 chatgpt_cdp.generate），所以旧标记已不存在。
+        # 断言意图不变：**真正的写入必须发生在非空判据之内**，用紧跟该判据的日志行做锚点。
         self.assertLess(
-            source.index("if typed_prompt.strip():"), source.index("insert_text(typed_prompt)")
+            source.index("if typed_prompt.strip():"), source.index("开始写入提示词")
         )
         # 挂不上时不能静默发一条空规则，也不能再粘进输入框 → 只能当消息正文发
         self.assertIn("改为把提示词作为消息正文发出", source)
