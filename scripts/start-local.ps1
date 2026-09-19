@@ -4,19 +4,18 @@ Set-Location $projectRoot
 
 $healthPath = '/api/config'
 
-# 首选端口仍是 8111（沿用旧地址与书签）。**为什么必须有兜底端口**：2026-09-19 实测
-# 8111 会让 uvicorn 报 `[Errno 13] ... [winerror 10013]`，这不是"端口被占用"
-# （被占用是 10048），而是**端口落在 Windows 保留的排除区间里**：本机 TCP 动态
-# 端口范围被改成了 1024~15000（`netsh int ipv4 show dynamicport tcp`），Hyper-V/WSL
-# 的 NAT（hns/winnat）会从这段范围按 100 个一组预留端口，当时预留了 8014-8113 与
-# 8114-8213（`netsh interface ipv4 show excludedportrange protocol=tcp`），8111 正好
-# 被圈进去。这些预留**每次开机重新分配**，所以相邻的低端口（8112/8113）同样随时
-# 会被抢 —— 历史上本项目还因此从 8011 搬到过 8111（见 design-qa.md）。
-# **ComfyUI 的 8188 当时也落在 8114-8213 里**（同样 10013，批量条目全部
-# 「ComfyUI 启动失败」），所以下面用同一套探测给它留了 15188 兜底。
-# 15000 以上不在动态端口范围内，NAT 不会再预留，所以兜底端口是稳定的；
-# 顺序固定，8111 不可用时每次都落到同一个端口，书签不会天天变。
-$portCandidates = @(8111, 15111, 15222, 18333)
+# **首选端口改成 15111（ComfyUI 同理改成 15188）** —— 用户 2026-09-19 明确要求：
+# 「直接帮我改掉 不要用这些端口了 改成系统不要的」。原来首选 8111/8188，但这两个端口
+# 落在 Windows 的**保留（排除）区间**里，每次开机都可能绑不上：
+#   uvicorn 报 `[Errno 13] ... [winerror 10013]` —— 注意 10013 是"拒绝访问"，
+#   **不是"端口被占用"**（被占用是 10048），所以旧提示"端口已被其它程序占用"是误导。
+# 根因：本机 TCP 动态端口范围被改成了 1024~15000（`netsh int ipv4 show dynamicport tcp`），
+# Hyper-V/WSL 的 NAT（hns/winnat）会从这段范围按 100 个一组预留，8014-8113 与 8114-8213
+# 就是这么来的（`netsh interface ipv4 show excludedportrange protocol=tcp`），8111/8188
+# 正好被圈进去；而且这些预留**每次开机重新分配**（历史上本项目已因此从 8011 搬到 8111）。
+# **15000 以上不在动态端口范围内，NAT 不会再预留**，所以直接把首选放在 15000 以上，
+# 低端口不再尝试；后面仍留两个兜底，顺序固定 ⇒ 地址稳定、书签不会天天变。
+$portCandidates = @(15111, 15222, 18333)
 if ($env:H3_PORT) { $portCandidates = @([int]$env:H3_PORT) + $portCandidates }
 
 function Get-SocketErrorCode {
@@ -99,34 +98,33 @@ if ($servicePort -eq 0) {
     exit 1
 }
 $serviceUrl = 'http://127.0.0.1:' + $servicePort
-if ($servicePort -ne 8111) {
-    Write-Host ('8111 不可用，改用 ' + $servicePort + '。') -ForegroundColor Yellow
+if ($servicePort -ne 15111) {
+    Write-Host ('15111 不可用，改用 ' + $servicePort + '。') -ForegroundColor Yellow
     foreach ($line in $failed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
 }
 
-# ComfyUI 的端口同样会被保留区间圈住（2026-09-19 实测 8188 落在 8114-8213 里，
-# comfyui.log 报 winerror 10013，批量条目全部「ComfyUI 启动失败」）。它的端口由
-# settings.COMFY_PORT 从 H3_COMFY_URL 解析（pipeline 拉起 ComfyUI 时用的是同一个值），
-# 所以这里选好端口后必须把 H3_COMFY_URL 一起交给后端 —— 否则「后端起在 15188、
-# ComfyUI 却监听 8188」，健康检查永远不过。
+# ComfyUI 的端口同理：**首选 15188**（15000 以上不在 Windows 动态端口范围内，NAT 不会预留），
+# 不再先试会被保留区间圈住的 8188。端口由 settings.COMFY_PORT 从 H3_COMFY_URL 解析
+# （pipeline 拉起 ComfyUI 时用同一个值），所以这里选好之后必须把 H3_COMFY_URL 一起交给后端 ——
+# 否则「后端起在 15188、ComfyUI 却监听 8188」，健康检查永远不过。
 # 用户自己配过 H3_COMFY_URL 就以他的为准，不覆盖。
 if ($env:H3_COMFY_URL) {
     Write-Host ('ComfyUI 使用已配置的地址：' + $env:H3_COMFY_URL) -ForegroundColor DarkGray
 } else {
     $comfyPort = 0
     $comfyFailed = @()
-    foreach ($port in @(8188, 15188)) {
+    foreach ($port in @(15188, 18188)) {
         $probe = Test-PortBind -Port $port
         if ($probe.Ok) { $comfyPort = $port; break }
         $comfyFailed += (Format-BindFailure -Probe $probe)
     }
     if ($comfyPort -eq 0) {
-        Write-Host '警告：8188 与 15188 都无法绑定，ComfyUI 可能起不来。' -ForegroundColor Yellow
+        Write-Host '警告：15188 与 18188 都无法绑定，ComfyUI 可能起不来。' -ForegroundColor Yellow
         foreach ($line in $comfyFailed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
     } else {
         $env:H3_COMFY_URL = 'http://127.0.0.1:' + $comfyPort
-        if ($comfyPort -ne 8188) {
-            Write-Host ('8188 不可用，ComfyUI 改用 ' + $comfyPort + '。') -ForegroundColor Yellow
+        if ($comfyPort -ne 15188) {
+            Write-Host ('15188 不可用，ComfyUI 改用 ' + $comfyPort + '。') -ForegroundColor Yellow
             foreach ($line in $comfyFailed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
         }
     }

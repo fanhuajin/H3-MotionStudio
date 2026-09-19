@@ -13,7 +13,11 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 BATCH_OUTPUT_ROOT = Path(
     os.getenv("H3_BATCH_OUTPUT", r"E:\AI_Exports\H3-MotionStudio\发布成品")
 )
-BATCH_SELF_URL = os.getenv("H3_SELF_URL", "http://127.0.0.1:8111").rstrip("/")
+# **默认端口都挪到 15000 以上**（用户 2026-09-19：「直接帮我改掉 不要用这些端口了 改成系统不要的」）。
+# 原因：本机 TCP 动态端口范围被改成 1024~15000，Hyper-V/WSL 的 NAT 会在这段里按 100 个一组
+# 预留端口，8111/8188 正好被圈进去（uvicorn/comfyui 报 winerror 10013 —— 是"拒绝访问"，
+# 不是"已被占用"），而且**每次开机重新分配**。15000 以上不在动态范围，系统不会预留。
+BATCH_SELF_URL = os.getenv("H3_SELF_URL", "http://127.0.0.1:15111").rstrip("/")
 
 COMFY_HOME = Path(os.getenv("H3_COMFY_HOME", r"D:\Comfyui")).resolve()
 COMFY_ROOT = COMFY_HOME / "ComfyUI"
@@ -21,13 +25,12 @@ COMFY_INPUT = COMFY_ROOT / "input"
 COMFY_OUTPUT = COMFY_ROOT / "output"
 COMFY_PYTHON = COMFY_HOME / "python_embeded" / "python.exe"
 COMFY_MAIN = COMFY_ROOT / "main.py"
-COMFY_URL = os.getenv("H3_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
+COMFY_URL = os.getenv("H3_COMFY_URL", "http://127.0.0.1:15188").rstrip("/")
 COMFY_WS = COMFY_URL.replace("http://", "ws://").replace("https://", "wss://")
-# ComfyUI 的**监听端口与 URL 同源**，不要再在 pipeline 里另写一个 8188：
-# 2026-09-19 本机的 8188 落进 Windows 保留区间（winerror 10013，Hyper-V/WSL 的 NAT
-# 预留），启动脚本会把 H3_COMFY_URL 换成别的端口，拉起来的那份必须跟着一起换，
-# 否则「后端起在 15188、ComfyUI 却监听 8188」，健康检查永远不过。
-COMFY_PORT = urlparse(COMFY_URL).port or 8188
+# ComfyUI 的**监听端口与 URL 同源**，不要再在 pipeline 里另写死端口：
+# 启动脚本会把端口选好并通过 H3_COMFY_URL 交给后端，pipeline 拉起的那份必须跟着一起换，
+# 否则「后端起在 15188、ComfyUI 却监听别的端口」，健康检查永远不过。
+COMFY_PORT = urlparse(COMFY_URL).port or 15188
 
 # Windows 用户级环境变量的一次性缓存：后端常由 .bat / 计划任务 / npm 启动，
 # 这些方式不继承用户级变量，不补读会让凭据配置静默失效。

@@ -220,7 +220,7 @@ def _safe_detail(resp: httpx.Response) -> str:
 
 # 便捷：单次请求版（不持有连接）
 def quick_create(
-    singing_urls=None, dance_urls=None, *, base_url="http://127.0.0.1:8111", **kw
+    singing_urls=None, dance_urls=None, *, base_url="http://127.0.0.1:15111", **kw
 ) -> dict:
     c = H3Client(base_url)
     try:

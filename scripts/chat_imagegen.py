@@ -868,10 +868,10 @@ def audit_person_identity(page, folders: list[Path], args) -> int:
     return len(rest)
 
 
-# 后端可能不在 8111：`scripts/start-local.ps1` 在本机端口被 Windows 保留区间抢占时
-# （winerror 10013，Hyper-V NAT 按 100 个一组预留）会依次退到 15111 / 15222 / 18333。
-# 这里按**同一份候选顺序**探活，否则后端明明活着、脚本却报「后端不可达」。
-BACKEND_PORT_CANDIDATES = (8111, 15111, 15222, 18333)
+# 后端地址按 `scripts/start-local.ps1` 同一份候选顺序探活（**首选 15111**：
+# 用户 2026-09-19 要求默认端口全部挪到系统不会预留的 15000 以上），
+# 否则后端明明活着、脚本却报「后端不可达」。
+BACKEND_PORT_CANDIDATES = (15111, 15222, 18333)
 
 
 def backend_url() -> str | None:
