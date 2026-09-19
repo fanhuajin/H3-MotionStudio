@@ -97,19 +97,26 @@ export function ImageWorkbenchRoute() {
     }
   }, [items]);
 
-  /** 用第三方图片接口自动出图。`stage` 为空 = 这条作品三张一次跑完。 */
+  /** 用第三方图片接口自动出图。
+   *
+   *  - 单步（`stageArg`）：**总是带 `force=true`** —— 用户点这一下就是要「重新生成这一张」。
+   *    不带 force 的话后端看到文件已存在会直接跳过、只在页面上回一句「已完成生成」，
+   *    用户会以为按钮坏了（2026-09-19 反馈：「已完成生成 如果我点击之后需要运行我重新生成」）。
+   *  - 整条（不带 `stageArg`）：不 force，只补齐缺的那几张，不无谓重做。
+   */
   const startAuto = useCallback(async (itemId: string, stageArg?: Stage) => {
     if (busy) return;
     setBusy(true);
     try {
-      const query = stageArg ? `?stage=${stageArg}` : "";
+      const label = STAGES.find((row) => row.id === stageArg)?.label || stageArg;
+      const query = stageArg ? `?stage=${stageArg}&force=true` : "";
       await readJson(
         fetch(`/api/image-workbench/${itemId}/automatic${query}`, { method: "POST" }),
         "启动自动生成失败",
       );
       setNotice(stageArg
-        ? `已开始自动生成${STAGES.find((row) => row.id === stageArg)?.label || stageArg}。`
-        : "已开始自动生成这条作品的人物图与两张封面。");
+        ? `已开始重新生成${label}（会用新图覆盖现有那张）。`
+        : "已开始自动生成这条作品缺的人物图与封面。");
       await refresh();
     } catch (error) {
       setNotice(String((error as Error).message || error));
@@ -259,7 +266,7 @@ export function ImageWorkbenchRoute() {
                     onClick={() => startAuto(item.id, stage)}
                     disabled={busy || (stage !== "person" && !item.assets.person)}
                     title={stage !== "person" && !item.assets.person ? "请先生成人物图，再做封面" : undefined}
-                  ><SpinnerGap className={busy ? "spin" : undefined} />API 自动生成这一步</button>
+                  ><SpinnerGap className={busy ? "spin" : undefined} />{stageAsset ? "重新生成这一步" : "API 自动生成这一步"}</button>
                   <button onClick={openWebChatGPT} disabled={busy}><ClipboardText />打开网页 ChatGPT</button>
                   <button onClick={copyPrompt} disabled={busy}>仅复制提示词</button>
                 </div>
