@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageOps
 
 from . import batch_ai, batch_image
 from .batch_store import batch_store
@@ -352,24 +352,31 @@ async def _generate_person(folder: Path, kind: str) -> int:
         shutil.rmtree(work, ignore_errors=True)
 
 
-async def _generate_cover(folder: Path, stage: str) -> None:
-    # Covers must never redraw the approved person. Build them deterministically
-    # from 人物图.png: a softly extended version of the same scene supplies the
-    # canvas, while the original remains sharp in front. This also avoids relay
-    # moderation failures and keeps face, clothing and background consistent.
-    target_size = TARGETS[stage]
-    with Image.open(asset_path(folder, "person")) as opened:
-        source = ImageOps.exif_transpose(opened).convert("RGB")
-    background = ImageOps.fit(source, target_size, method=Image.Resampling.LANCZOS)
-    background = background.filter(ImageFilter.GaussianBlur(radius=max(target_size) / 90))
-    background = ImageEnhance.Brightness(background).enhance(0.72)
-    foreground = ImageOps.contain(source, target_size, method=Image.Resampling.LANCZOS)
-    left = (target_size[0] - foreground.width) // 2
-    top = (target_size[1] - foreground.height) // 2
-    background.paste(foreground, (left, top))
-    payload = io.BytesIO()
-    background.save(payload, format="PNG", optimize=True)
-    save_upload(folder, stage, payload.getvalue())
+async def _generate_cover(folder: Path, stage: str, kind: str) -> None:
+    """封面也走**第三方 API**出带标题文字的成图（用户 2026-09-19：「封面也用api生成 不需要本地」）。
+
+    提示词用 `prompt(folder, stage, kind)`（里面就是发布文案的标题与简介）；
+    参考图 = 这条自己的 `人物图.png`（保住人物与画面），身份图照旧给固定参考以稳住五官。
+    出图比例 4:3（B站）/ 3:4（抖音），`save_upload()` 会按 `TARGETS` 精确裁到
+    1448×1086 / 1086×1448 并做比例校验。
+
+    历史上这里曾是「本地确定性合成」（人物图 + 模糊背景垫底），因为中转站对封面类请求
+    偶有审核失败；现在改为 API 直出，失败会如实写进 automation.message 由页面显示。
+    """
+    work = Path(tempfile.mkdtemp(prefix="h3-auto-cover-"))
+    try:
+        candidate = work / f"{stage}.png"
+        await batch_image.generate_candidate_image(
+            scene_image=asset_path(folder, "person"),
+            identity_image=IDENTITY_PATH,
+            prompt=prompt(folder, stage, kind),
+            ratio="4:3" if stage == "bilibili" else "3:4",
+            output_path=candidate,
+        )
+        save_upload(folder, stage, candidate.read_bytes())
+    finally:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
 
 
 async def run_automatic(folder_id: str, *, force: bool = False,
@@ -403,7 +410,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                     continue
                 _set_auto(folder_id, status="running", stage=step,
                           message=f"正在生成{label}", kind=kind)
-                await _generate_cover(folder, step)
+                await _generate_cover(folder, step, kind)
             done = "人物图与封面已自动补齐" if not stage else "已完成生成"
             if stage in (None, "person") and person_score >= 0:
                 done += f"（人物图相似度 {person_score}/100）"

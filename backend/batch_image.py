@@ -29,8 +29,10 @@ from .settings import env_value
 OFFICIAL_URL = "https://api.openai.com/v1"
 REQUEST_TIMEOUT = 900.0
 
-# 真 4:3 = 1536x1152、真 9:16 = 1152x2048（都是 16 的倍数，落在 2K 计费档）。
-IMAGE_SIZES = {"4:3": "1536x1152", "9:16": "1152x2048"}
+# 真 4:3 = 1536x1152、真 9:16 = 1152x2048、真 3:4 = 1152x1536
+# （都是 16 的倍数、长宽比 ≤3:1、总像素落在中转站允许区间，落在 2K 计费档）。
+# 3:4 是给**抖音封面**用的（1086×1448）—— 用户 2026-09-19：「封面也用api生成 不需要本地」。
+IMAGE_SIZES = {"4:3": "1536x1152", "9:16": "1152x2048", "3:4": "1152x1536"}
 
 ProgressCallback = Callable[[float, str], Awaitable[None]]
 
