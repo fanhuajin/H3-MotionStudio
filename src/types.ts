@@ -21,8 +21,9 @@ export interface JobLog {
 export interface JobState {
   id: string;
   kind?: string;
-  /** `waiting` = 已接单、在等流水线空闲（目前只有独立「生成字幕」用：剪映要独占桌面与显存） */
-  status: "waiting" | "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  /** `waiting` = 已接单、在等流水线空闲（目前只有独立「生成字幕」用：剪映要独占桌面与显存）。
+   *  `paused` = 一键批量字幕被暂停（在视频之间暂停，可「继续」）。 */
+  status: "waiting" | "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "interrupted";
   stage: string;
   createdAt: string;
   updatedAt: string;

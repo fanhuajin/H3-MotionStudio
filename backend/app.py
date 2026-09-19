@@ -131,9 +131,14 @@ from .store import (
     upscale_milestones,
 )
 from .subtitle_step import (  # noqa: E402
+    BATCH_MILESTONES,
     request_restart,
+    request_publish_batch_pause,
     reset_subtitle_job,
+    resume_publish_batch,
+    run_publish_subtitle_batch,
     run_subtitle_job,
+    scan_singing_publish_videos,
 )
 from .jianying_recognize import kill_app  # noqa: E402
 from .workflows import load_workflow, node_by_id
@@ -191,6 +196,26 @@ def spawn(coroutine) -> None:
         _SPAWNED_BATCH_IDS.add(owner)
     else:
         _SPAWNED_JOB_IDS.add(owner)
+
+
+def _active_subtitle_job() -> dict[str, Any] | None:
+    """正在跑 / 排队 / 取消中的「生成字幕」任务（单条或一键批量），没有就 None。
+
+    单条与一键批量共用同一把互斥：剪映一次只能占一条。`store.active_all()` 只覆盖
+    queued/running，这里再并上 `store.waiting()`（排队）与最新字幕任务的 cancelling 态。
+    """
+    for _job in store.active_all() + store.waiting():
+        if _job.get("kind") in ("subtitle", "subtitle_batch"):
+            return _job
+    for _kind in ("subtitle", "subtitle_batch"):
+        latest = store.latest(_kind)
+        if latest and latest.get("status") == "cancelling":
+            return latest
+        # 一键批量暂停后也算「占用」：要先「继续」或取消，才能再开新的字幕任务，
+        # 免得一条暂停的批量跟后面新起的单条/批量抢剪映
+        if _kind == "subtitle_batch" and latest and latest.get("status") == "paused":
+            return latest
+    return None
 
 
 # 成片入口（media key → (state 字段, 就绪标记, 显示名)）：只暴露「最终成片」与
@@ -2252,13 +2277,12 @@ async def create_subtitle_job(
     """
     if video is None and not source_job_id:
         raise HTTPException(400, "请上传视频或选择最近任务成片")
-    # 同一时间只留一条字幕任务（页面在跑时按钮本来就是禁用的，这里防接口直连）
-    existing_subtitle = store.latest("subtitle")
-    if existing_subtitle and existing_subtitle.get("status") in (
-        "waiting", "queued", "running", "cancelling"
-    ):
+    # 同一时间只留一条字幕任务（页面在跑时按钮本来就是禁用的，这里防接口直连）。
+    # 单条与「一键批量」共用同一把互斥：剪映一次只能占一条。
+    _busy_subtitle = _active_subtitle_job()
+    if _busy_subtitle:
         raise HTTPException(
-            409, f"已有一条「生成字幕」任务在跑或排队：{existing_subtitle['id'][:8]}"
+            409, f"已有一条「生成字幕」任务在跑或排队：{_busy_subtitle['id'][:8]}"
         )
     queue_note = None
 
@@ -2346,6 +2370,98 @@ async def create_subtitle_job(
     store.create(state)
     spawn(run_subtitle_job(job_id))
     return state
+
+
+@app.post("/api/jobs/subtitle/publish-batch")
+async def create_subtitle_publish_batch():
+    """一键给发布根里所有**缺字幕版**的唱歌视频生成字幕（逐条串行，一次占一个剪映）。
+
+    扫描 `E:\\AI_Exports\\H3-MotionStudio\\发布成品` 下带「唱歌」标签、有无字幕成片
+    `最终成片.mp4`、且还没有 `最终成片_字幕版.mp4` 的目录；把每条排进队列，后台逐条
+    剪映识别时间轴 + 官方歌词核对 + 剪映手书烧录（与独立路由同一条 `burn_for_video`），
+    产物直接落回各自的发布目录，与无字幕版并存。**已存在字幕版的不重复生成**。
+    """
+    # 与单条「生成字幕」共用同一把互斥：剪映一次只能占一条
+    _busy_subtitle = _active_subtitle_job()
+    if _busy_subtitle:
+        raise HTTPException(
+            409, f"已有一条「生成字幕」任务在跑或排队：{_busy_subtitle['id'][:8]}"
+        )
+    queue = scan_singing_publish_videos()
+    job_id = uuid.uuid4().hex
+    created_at = now_iso()
+    logs = [{
+        "time": created_at,
+        "message": (
+            f"一键批量加字幕：扫描到 {len(queue)} 条缺字幕版的唱歌视频。"
+            if queue
+            else "发布根里没有需要补字幕的唱歌视频（都已存在字幕版或没有无字幕成片）。"
+        ),
+    }]
+    state = {
+        "id": job_id,
+        "kind": "subtitle_batch",
+        "status": "queued",
+        "stage": "subtitle",
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "sourceName": f"发布成品批量（{len(queue)} 条）",
+        "sourceSize": 0,
+        "sourceDuration": None,
+        "sourceFps": None,
+        "sourcePath": "",
+        "sourceJobId": "",
+        "sourceKey": "",
+        "songName": None,
+        "subtitleQueue": queue,
+        "subtitleIndex": 0,
+        "subtitleDone": 0,
+        "subtitleFailed": 0,
+        "subtitleStarted": False,
+        "pauseRequested": False,
+        "subtitleSource": str(BATCH_OUTPUT_ROOT),
+        "subtitleDir": "",
+        "subtitleOutPath": "",
+        "subtitleOutDir": str(BATCH_OUTPUT_ROOT),
+        "currentNodeId": None,
+        "currentNodeTitle": (
+            f"共 {len(queue)} 条唱歌视频待加字幕" if queue else "没有待加字幕的视频"
+        ),
+        "progress": None,
+        "progressValue": None,
+        "progressMax": None,
+        "milestones": BATCH_MILESTONES,
+        "logs": logs,
+        "errorSummary": None,
+        "errorDetail": None,
+        "originalReady": False,
+        "originalOutput": None,
+        "finalReady": False,
+        "finalOutput": None,
+        "output": None,
+        "promptIds": {},
+    }
+    store.create(state)
+    spawn(run_publish_subtitle_batch(job_id))
+    return state
+
+
+@app.post("/api/jobs/{job_id}/pause")
+async def pause_subtitle_batch(job_id: str):
+    """暂停一键批量（在**下一条开始之前**生效，当前这条跑完即停）。"""
+    updated = request_publish_batch_pause(job_id)
+    if updated is None:
+        raise HTTPException(400, "只有「一键批量」任务支持暂停")
+    return updated
+
+
+@app.post("/api/jobs/{job_id}/resume")
+async def resume_subtitle_batch(job_id: str):
+    """继续一条已暂停的一键批量，从暂停处接着生成字幕。"""
+    updated = resume_publish_batch(job_id)
+    if updated is None:
+        raise HTTPException(400, "只有「已暂停」的一键批量任务可以继续")
+    return updated
 
 
 @app.post("/api/jobs/{job_id}/open-publish")

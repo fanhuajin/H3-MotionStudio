@@ -59,6 +59,7 @@ from backend.pipeline import (  # noqa: E402
     media_metadata,
     raise_if_cancelled,
 )
+from backend.settings import BATCH_OUTPUT_ROOT  # noqa: E402
 from backend.store import now_iso, store, subtitle_milestones  # noqa: E402
 
 _SONG_IN_TITLE = re.compile(r"《([^》]{1,40})》")
@@ -645,6 +646,212 @@ async def _run_subtitle_once(job_id: str) -> None:
         # 成功、失败、取消三条路都要关。recognize_video 的正常路径已经关了，
         # 这里只是兜底；从没打开过剪映时它会立刻返回。
         await asyncio.to_thread(close_jianying_quietly)
+
+
+# ---------------------------------------------------------------------------
+# 一键批量：给发布根里「所有缺字幕版的唱歌视频」逐条生成字幕
+# ---------------------------------------------------------------------------
+BATCH_MILESTONES: list[dict[str, Any]] = [
+    {
+        "id": "batch",
+        "label": "批量生成字幕",
+        "subtitle": "逐条剪映识别 → 官方歌词核对 → 烧录",
+        "status": "pending",
+    },
+]
+
+
+def _publish_song_from_folder(name: str) -> str:
+    """从 `{编号}_唱歌_{歌名或标题}_{作品号}` 里抽出歌名/标题（作品号是末尾那串数字）。
+
+    发布目录名是批量那套命名（`_ideal_publish_folder`），歌名或标题可能带下划线
+    （英文歌名常有），所以只把「唱歌标签之后、末尾作品号之前」的内容原样拼回来。
+    """
+    parts = str(name or "").strip().split("_")
+    if "唱歌" in parts:
+        idx = parts.index("唱歌")
+        rest = parts[idx + 1:]
+        if rest and len(rest[-1]) >= 8 and rest[-1].isdigit():
+            rest = rest[:-1]
+        return "_".join(rest).strip()
+    return ""
+
+
+def _publish_folder_aweme_id(name: str) -> str:
+    """发布目录名末尾的作品号（`…_{作品号}`）；认不出来返回空串。"""
+    parts = str(name or "").strip().split("_")
+    if parts and len(parts[-1]) >= 8 and parts[-1].isdigit():
+        return parts[-1]
+    return ""
+
+
+def scan_singing_publish_videos(*, root: Path | None = None) -> list[dict[str, Any]]:
+    """扫发布根：返回**缺字幕版**的唱歌视频，每个目录一条。
+
+    判定口径（2026-09-19 用户：「一键生成 E:\\AI_Exports\\H3-MotionStudio\\发布成品
+    下所有带唱歌的视频生成字幕，已存在字幕就不生成」）：
+      · 目录名带「唱歌」标签（`_唱歌_`）—— 只给唱歌视频加字幕，跳舞不动；
+      · 目录里有无字幕成片 `最终成片.mp4`；
+      · 目录里**没有** `最终成片_字幕版.mp4` —— 已经出过字幕就不重复生成。
+
+    返回 `[{folder, source, out, song, aweme_id}]`。歌名优先从批量数据库按作品号取
+    （`ai.song_name` 更准），取不到再退回从目录名猜。
+    """
+    root = Path(root or BATCH_OUTPUT_ROOT)
+    if not root.is_dir():
+        return []
+    jobs: list[dict[str, Any]] = []
+    for folder in sorted(root.iterdir(), key=lambda p: p.name):
+        if not folder.is_dir():
+            continue
+        if "唱歌" not in folder.name:
+            continue                          # 只给唱歌标签的视频加字幕
+        clean = folder / "最终成片.mp4"
+        sub = folder / "最终成片_字幕版.mp4"
+        if not clean.is_file():
+            continue                          # 没有无字幕成片，跳过
+        if sub.is_file():
+            continue                          # 已经有字幕版，不重复生成
+        song = ""
+        aweme_id = _publish_folder_aweme_id(folder.name)
+        if aweme_id:
+            try:
+                item = next(iter(batch_store.items_for_aweme(aweme_id)), None)
+            except Exception:                            # noqa: BLE001 —— 批量库不可用就退回猜歌名
+                item = None
+            if item:
+                song = song_name_for(item)
+        if not song:
+            song = _publish_song_from_folder(folder.name)
+        jobs.append({
+            "folder": folder.name,
+            "source": str(clean.resolve()),
+            "out": str(sub.resolve()),
+            "song": song,
+            "aweme_id": aweme_id,
+        })
+    return jobs
+
+
+async def run_publish_subtitle_batch(job_id: str) -> None:
+    """一键批量：逐条给缺字幕版的唱歌视频生成字幕（串行，一次占一个剪映）。
+
+    与独立路由是同一条 `burn_for_video`（剪映识别时间轴 + 官方歌词核对 + 剪映手书烧录）。
+    产物直接落回各自的发布目录 `最终成片_字幕版.mp4`（与无字幕版并存）。
+
+    **支持暂停/继续**（用户 2026-09-19：「也可以暂停任务」）：暂停在**视频之间**生效
+    （剪映识别进行到一半没法安全打断）——当前这条跑完，就在下一条开始之前停下来，把
+    光标（`subtitleIndex`）与成功/失败计数（`subtitleDone`/`subtitleFailed`）写进状态；
+    「继续」从光标处接着往下跑。
+    """
+    if is_job_cancelled(job_id):
+        return
+    state = store.get(job_id) or {}
+    queue = list(state.get("subtitleQueue") or [])
+    total = len(queue)
+    if total == 0:
+        store.add_log(job_id, "发布根里没有需要补字幕的唱歌视频（都已存在字幕版或没有成片）。")
+        store.update(job_id, status="completed", stage="completed",
+                     currentNodeId=None, currentNodeTitle=None, progress=100, finishedAt=now_iso())
+        return
+
+    cursor = int(state.get("subtitleIndex") or 0)
+    cursor = max(0, min(cursor, total))
+    done = int(state.get("subtitleDone") or 0)
+    failed = int(state.get("subtitleFailed") or 0)
+    store.set_milestone(job_id, "batch", status="running", progress=1)
+    store.update(job_id, status="running", stage="subtitle", finishedAt=None,
+                 currentNodeId=None, currentNodeTitle=f"批量加字幕：共 {total} 条")
+    if cursor == 0 and not state.get("subtitleStarted"):
+        store.add_log(job_id, f"一键批量加字幕：共 {total} 条唱歌视频缺字幕版。")
+        store.update(job_id, subtitleStarted=True, startedAt=now_iso())
+
+    try:
+        for i in range(cursor, total):
+            # 暂停检查在每一条**开始之前**：当前这条跑完就停（光标已记录，续跑从 i 继续）
+            if (store.get(job_id) or {}).get("pauseRequested"):
+                store.update(job_id, status="paused", stage="paused",
+                             currentNodeId=None, currentNodeTitle=f"已暂停（{done + failed}/{total}）",
+                             pauseRequested=False)
+                store.add_log(job_id, f"已暂停：已完成 {done + failed}/{total} 条，继续后从第 {i + 1} 条接着跑。")
+                return
+            raise_if_cancelled(job_id)
+            entry = queue[i]
+            source = Path(str(entry.get("source") or ""))
+            out = Path(str(entry.get("out") or ""))
+            song = str(entry.get("song") or "").strip()
+            label = str(entry.get("folder") or source.parent.name)
+            store.update(job_id, currentNodeTitle=f"正在给 {label} 加字幕（{i + 1}/{total}）",
+                         progress=round((i + 1) / total * 100))
+            if not source.is_file():
+                failed += 1
+                store.add_log(job_id, f"[{i + 1}/{total}] 跳过：{label} 无字幕成片已不存在")
+                store.update(job_id, subtitleIndex=i + 1, subtitleDone=done, subtitleFailed=failed)
+                continue
+            store.add_log(job_id, f"[{i + 1}/{total}] 开始：{label}"
+                          + (f"《{song}》" if song else "（没有歌名，用识别歌词反查）"))
+            stats: dict[str, Any] = {}
+            try:
+                _path, notes = await burn_for_video(source, song, out, stats=stats)
+                done += 1
+                store.add_log(job_id, f"[{i + 1}/{total}] 完成：{out.name}"
+                              + (f"（{stats.get('lines') or 0} 句字幕）" if stats.get("lines") else ""))
+                for note in notes:
+                    store.add_log(job_id, f"    文字核对：{note}")
+            except Exception as error:                    # noqa: BLE001 —— 单条失败不阻断整批
+                failed += 1
+                store.add_log(job_id, f"[{i + 1}/{total}] 失败：{label} —— {error}")
+            store.update(job_id, subtitleIndex=i + 1, subtitleDone=done, subtitleFailed=failed)
+        raise_if_cancelled(job_id)
+        store.set_milestone(job_id, "batch", status="completed", progress=100)
+        store.update(job_id, status="completed", stage="completed",
+                     currentNodeId=None, currentNodeTitle=None, progress=100, finishedAt=now_iso())
+        store.add_log(job_id, f"批量加字幕结束：成功 {done} 条，失败 {failed} 条。")
+    except Exception as error:                            # noqa: BLE001 —— 独立任务：如实报错
+        if is_job_cancelled(job_id):
+            await finish_cancelled(job_id)
+            return
+        store.set_milestone(job_id, "batch", status="error")
+        store.update(job_id, status="failed", stage="failed",
+                     errorSummary=f"批量加字幕失败：{error}", errorDetail=repr(error),
+                     finishedAt=now_iso())
+        store.add_log(job_id, f"批量加字幕失败：{error}")
+    finally:
+        await asyncio.to_thread(close_jianying_quietly)
+
+
+# 一键批量「继续」重排的任务强引用（不持引用会被 GC 掉）
+_BATCH_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_batch_restart(job_id: str) -> None:
+    task = asyncio.create_task(run_publish_subtitle_batch(job_id))
+    _BATCH_TASKS.add(task)
+    task.add_done_callback(_BATCH_TASKS.discard)
+
+
+def request_publish_batch_pause(job_id: str) -> dict[str, Any] | None:
+    """请求暂停一键批量：在**下一条开始之前**生效（当前这条跑完就停）。不是批量任务返回 None。"""
+    state = store.get(job_id)
+    if not state or state.get("kind") != "subtitle_batch":
+        return None
+    if state.get("status") == "running":
+        store.add_log(job_id, "收到暂停请求：当前这条跑完即暂停。")
+    store.update(job_id, pauseRequested=True)
+    return store.get(job_id)
+
+
+def resume_publish_batch(job_id: str) -> dict[str, Any] | None:
+    """继续一条**已暂停**的一键批量，从光标处接着跑。不是批量任务/不在暂停态返回 None。"""
+    state = store.get(job_id)
+    if not state or state.get("kind") != "subtitle_batch":
+        return None
+    if state.get("status") != "paused":
+        return None
+    store.update(job_id, pauseRequested=False, errorSummary=None, errorDetail=None)
+    store.add_log(job_id, "收到继续请求：从暂停处接着生成字幕。")
+    _spawn_batch_restart(job_id)
+    return store.get(job_id)
 
 
 # ---------------------------------------------------------------------------

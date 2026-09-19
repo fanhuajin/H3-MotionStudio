@@ -127,5 +127,71 @@ class SubtitleFlowHardeningTests(unittest.TestCase):
         self.assertIn("最终成片_字幕版.mp4", source, "交付文件名必须与两条链路一致")
 
 
+class PublishBatchScanTests(unittest.TestCase):
+    """一键批量：扫发布根只挑「缺字幕版的唱歌视频」（已存在字幕版/跳舞/无成片都跳过）。"""
+
+    def _make_root(self):
+        import tempfile
+        return Path(tempfile.mkdtemp(prefix="h3_subtitle_batch_"))
+
+    def test_scans_only_singing_folders_missing_subtitles(self):
+        """只挑：目录名带「唱歌」+ 有无字幕成片 + 还没有字幕版。"""
+        from backend import subtitle_step
+
+        root = self._make_root()
+        try:
+            # 唱歌 + 有成片 + 无字幕版 → 要生成
+            singing = root / "001_唱歌_夜空中最亮的星_7686514674456574953"
+            singing.mkdir()
+            (singing / "最终成片.mp4").write_bytes(b"v")
+            # 唱歌 + 已存在字幕版 → 跳过
+            done = root / "002_唱歌_开始懂了_7685337147331345894"
+            done.mkdir()
+            (done / "最终成片.mp4").write_bytes(b"v")
+            (done / "最终成片_字幕版.mp4").write_bytes(b"s")
+            # 跳舞 → 跳过
+            dance = root / "003_跳舞_随性摇摆_1234567890123456789"
+            dance.mkdir()
+            (dance / "最终成片.mp4").write_bytes(b"v")
+            # 唱歌但没有无字幕成片 → 跳过
+            no_clean = root / "004_唱歌_只有字幕版_9876543210987654321"
+            no_clean.mkdir()
+            (no_clean / "最终成片_字幕版.mp4").write_bytes(b"s")
+
+            jobs = subtitle_step.scan_singing_publish_videos(root=root)
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0]["folder"], "001_唱歌_夜空中最亮的星_7686514674456574953")
+            self.assertEqual(jobs[0]["out"], str(singing / "最终成片_字幕版.mp4"))
+            # 歌名从目录名「唱歌标签后、作品号前」抽出
+            self.assertEqual(jobs[0]["song"], "夜空中最亮的星")
+        finally:
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_empty_or_missing_root(self):
+        """发布根不存在 → 空列表，不报错。"""
+        from backend import subtitle_step
+        root = self._make_root()
+        try:
+            self.assertEqual(subtitle_step.scan_singing_publish_videos(root=root), [])
+            self.assertEqual(subtitle_step.scan_singing_publish_videos(root=root / "nope"), [])
+        finally:
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_batch_endpoint_and_pause_resume_are_wired(self):
+        """批量端点、暂停、继续都已注册到 FastAPI。"""
+        import backend.app as app
+
+        paths = [route.path for route in app.app.routes]
+        self.assertIn("/api/jobs/subtitle/publish-batch", paths)
+        self.assertIn("/api/jobs/{job_id}/pause", paths)
+        self.assertIn("/api/jobs/{job_id}/resume", paths)
+        from backend import subtitle_step
+        self.assertTrue(hasattr(subtitle_step, "run_publish_subtitle_batch"))
+        self.assertTrue(hasattr(subtitle_step, "request_publish_batch_pause"))
+        self.assertTrue(hasattr(subtitle_step, "resume_publish_batch"))
+
+
 if __name__ == "__main__":
     unittest.main()

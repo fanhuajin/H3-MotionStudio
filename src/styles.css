@@ -1354,6 +1354,13 @@ body {
 .ghost-action:hover { border-color: #5b476f; color: #e6e1ee; }
 .action-hint { color: #6f6784; font-size: 10px; line-height: 1.6; }
 
+/* 一键批量：给发布成品里所有缺字幕版的唱歌视频生成字幕（+ 暂停/继续/取消） */
+.subtitle-batch-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.subtitle-batch-row .primary-action { width: auto; min-height: 44px; padding: 0 20px; font-size: 15px; flex: 0 0 auto; }
+.subtitle-batch-row .primary-action svg { width: 20px; height: 20px; }
+.subtitle-batch-row .action-hint { max-width: 340px; }
+.subtitle-batch-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--shell-line); }
+
 /* 生成完成放进对应的发布目录：一行说明 + 打开文件夹 */
 .publish-line {
   display: flex; align-items: center; gap: 10px;

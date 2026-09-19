@@ -12,6 +12,7 @@ import {
   FolderOpen,
   Graph,
   Info,
+  Pause,
   Play,
   SpinnerGap,
   Subtitles,
@@ -128,11 +129,16 @@ export function SubtitleRoute() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [batchSubmitting, setBatchSubmitting] = useState(false);
 
   // 「进行中」含 cancelling：点了取消/重新开始之后到真正收尾之间，按钮不该又变得可点
   // 「waiting」= 已接单、在等流水线空闲（这条链路不用 ComfyUI，但剪映要独占桌面与显存）
   const LIVE_STATUSES = ["waiting", "queued", "running", "cancelling"];
   const jobActive = Boolean(job && LIVE_STATUSES.includes(job.status));
+  // 一键批量任务（kind === "subtitle_batch"）：跑着/暂停时占用这条链路，单条 UI 让位；
+  // 已经跑完/失败的批量只是「上一次任务」，不该把单条生成入口藏起来。
+  const isBatch = job?.kind === "subtitle_batch";
+  const batchBusy = Boolean(isBatch && ["waiting", "queued", "running", "cancelling", "paused"].includes(job?.status || ""));
   // 失败/取消/中断（以及已完成的）都能「重新开始」：源成片留在任务目录里，不用重新上传
   const canRestart = Boolean(job && ["failed", "cancelled", "interrupted", "completed"].includes(job.status));
   const tickNow = useNowTick(jobActive);
@@ -175,12 +181,23 @@ export function SubtitleRoute() {
 
   useEffect(() => {
     let cancelled = false;
-    readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=subtitle", { cache: "no-store" }), "读取上次任务失败")
-      .then((latest) => {
-        if (cancelled || !latest?.id) return;
+    const single = readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=subtitle", { cache: "no-store" }), "读取上次任务失败");
+    const batch = readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=subtitle_batch", { cache: "no-store" }), "读取上次批量失败");
+    Promise.all([single, batch])
+      .then(([singleJob, batchJob]) => {
+        if (cancelled) return;
+        const live = ["waiting", "queued", "running", "paused", "cancelling"];
+        const activeBatch = batchJob && live.includes(batchJob.status) ? batchJob : null;
+        const activeSingle = singleJob && live.includes(singleJob.status) ? singleJob : null;
+        // 优先恢复「正在跑/暂停」的任务（批量优先），都没有就显示最近一次结束的任务，让上次结果还看得见
+        const terminal = [batchJob, singleJob]
+          .filter((item): item is JobState => Boolean(item && !live.includes(item.status)))
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] || null;
+        const latest = activeBatch || activeSingle || terminal;
+        if (!latest?.id) return;
         setJob(latest);
         if (latest.songName) setSong(latest.songName);
-        if (["waiting", "queued", "running"].includes(latest.status)) connectJob(latest.id);
+        if (["waiting", "queued", "running", "cancelling"].includes(latest.status)) connectJob(latest.id);
       })
       .catch(() => setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。"));
     return () => {
@@ -310,6 +327,59 @@ export function SubtitleRoute() {
     }
   };
 
+  /** 一键批量：给发布成品里所有缺字幕版的唱歌视频逐条生成字幕（后端串行，已存在的不重复）。 */
+  const startBatch = async () => {
+    if (jobActive) return;
+    setBatchSubmitting(true);
+    setLocalError(null);
+    try {
+      const response = await fetch("/api/jobs/subtitle/publish-batch", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "一键批量启动失败");
+      setJob(payload);
+      connectJob(payload.id);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "一键批量启动失败");
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+
+  /** 暂停一键批量：当前这条跑完即停（剪映识别进行到一半没法安全打断）。 */
+  const pauseBatch = async () => {
+    if (!job) return;
+    setBatchSubmitting(true);
+    setLocalError(null);
+    try {
+      const response = await fetch(`/api/jobs/${job.id}/pause`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "暂停失败");
+      setJob(payload);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "暂停失败");
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+
+  /** 继续一条已暂停的一键批量，从暂停处接着生成字幕。 */
+  const resumeBatch = async () => {
+    if (!job) return;
+    setBatchSubmitting(true);
+    setLocalError(null);
+    try {
+      const response = await fetch(`/api/jobs/${job.id}/resume`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "继续失败");
+      setJob(payload);
+      connectJob(payload.id);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "继续失败");
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+
   return (
     <div className="subtitle-route">
       <header className="route-hero">
@@ -323,7 +393,9 @@ export function SubtitleRoute() {
         </div>
         <span className={`connection ${job?.status === "running" ? "connected" : queued ? "queued" : "idle"}`}>
           <span className="connection-dot" />
-          {job?.status === "running" ? "剪映识别中" : queued ? "已排队，轮到自动开始" : "资源空闲，按需启动"}
+          {jobActive
+            ? isBatch ? "批量生成字幕中" : "剪映识别中"
+            : queued ? "已排队，轮到自动开始" : "资源空闲，按需启动"}
         </span>
       </header>
 
@@ -392,6 +464,37 @@ export function SubtitleRoute() {
             )}
           </div>
 
+          <div className="field-block">
+            <div className="field-heading"><h2><span>⚡</span> 一键批量 <em>（发布成品里的唱歌视频）</em></h2></div>
+            <div className="subtitle-batch-row">
+              <button className="primary-action batch-action" onClick={startBatch} disabled={batchSubmitting || batchBusy || Boolean(job && jobActive)}>
+                {batchSubmitting ? <SpinnerGap className="spin" /> : <Subtitles weight="fill" />}
+                {batchSubmitting ? "正在扫描…" : "一键给所有唱歌视频生成字幕"}
+              </button>
+              <span className="action-hint">
+                扫描 E:\AI_Exports\H3-MotionStudio\发布成品，给缺字幕版的唱歌视频逐条生成；
+                已经出过字幕版的不重复生成。
+              </span>
+            </div>
+            {batchBusy && (
+              <div className="subtitle-batch-controls">
+                {job?.status === "running" && (
+                  <button className="ghost-action" onClick={pauseBatch} disabled={batchSubmitting}>
+                    <Pause weight="fill" /> 暂停（当前这条跑完即停）
+                  </button>
+                )}
+                {job?.status === "paused" && (
+                  <button className="secondary-action" onClick={resumeBatch} disabled={batchSubmitting}>
+                    <Play weight="fill" /> 继续生成
+                  </button>
+                )}
+                {["paused", "running"].includes(job?.status || "") && (
+                  <button className="ghost-action" onClick={cancelRun}>取消</button>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="field-block text-field">
             <div className="field-heading"><h2><span>2.</span> 歌名 <em>（可选）</em></h2><span>{song.length} / 60</span></div>
             <textarea
@@ -429,7 +532,7 @@ export function SubtitleRoute() {
             </div>
           )}
 
-          {canRestart && (
+          {canRestart && !batchBusy && (
             <div className="subtitle-actions">
               <button className="secondary-action" onClick={restart} disabled={restarting}>
                 {restarting ? <SpinnerGap className="spin" /> : <ArrowsClockwise weight="bold" />}
@@ -441,15 +544,19 @@ export function SubtitleRoute() {
             </div>
           )}
 
-          <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
-            {submitting || jobActive ? <SpinnerGap className="spin" /> : <Subtitles weight="fill" />}
-            {submitting ? "正在创建任务…" : queued ? "已排队，轮到自动开始" : jobActive ? "生成字幕任务运行中" : "开始生成字幕"}
-          </button>
-          {jobActive && (
-            <div className="subtitle-actions">
-              <button className="ghost-action" onClick={cancelRun}>取消这一次</button>
-              <span className="action-hint">取消后可以点「重新开始」再来一次。</span>
-            </div>
+          {!batchBusy && (
+            <>
+              <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
+                {submitting || jobActive ? <SpinnerGap className="spin" /> : <Subtitles weight="fill" />}
+                {submitting ? "正在创建任务…" : queued ? "已排队，轮到自动开始" : jobActive ? "生成字幕任务运行中" : "开始生成字幕"}
+              </button>
+              {jobActive && (
+                <div className="subtitle-actions">
+                  <button className="ghost-action" onClick={cancelRun}>取消这一次</button>
+                  <span className="action-hint">取消后可以点「重新开始」再来一次。</span>
+                </div>
+              )}
+            </>
           )}
         </section>
 
