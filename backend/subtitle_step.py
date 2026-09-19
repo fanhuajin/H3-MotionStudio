@@ -857,14 +857,23 @@ def request_publish_batch_pause(job_id: str) -> dict[str, Any] | None:
 
 
 def resume_publish_batch(job_id: str) -> dict[str, Any] | None:
-    """继续一条**已暂停**的一键批量，从光标处接着跑。不是批量任务/不在暂停态返回 None。"""
+    """继续一条**已暂停**的一键批量（重扫发布根、只补还缺字幕的）。
+
+    不是批量任务 / 不在暂停态就返回 None。
+
+    ⚠️ **必须清掉取消印记 `cancelRequested`**：`is_job_cancelled()` 见了印记就为真，
+    runner 第一行 `if is_job_cancelled(job_id): return` 会直接退回去 —— 表现就是
+    「点击继续没有效果」（2026-09-19 实测：用户在暂停态点过一次「取消」，印记被永久留下，
+    之后每次「继续」都空转）。跟 `reset_subtitle_job` 那条规矩一样：重排前一定清印记。
+    """
     state = store.get(job_id)
     if not state or state.get("kind") != "subtitle_batch":
         return None
     if state.get("status") != "paused":
         return None
-    store.update(job_id, pauseRequested=False, errorSummary=None, errorDetail=None)
-    store.add_log(job_id, "收到继续请求：从暂停处接着生成字幕。")
+    store.update(job_id, pauseRequested=False, cancelRequested=False,
+                 errorSummary=None, errorDetail=None)
+    store.add_log(job_id, "收到继续请求：重扫发布根，只补还缺字幕的那几条。")
     _spawn_batch_restart(job_id)
     return store.get(job_id)
 

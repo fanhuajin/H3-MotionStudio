@@ -6056,6 +6056,40 @@ class SubtitleStepTests(unittest.TestCase):
         self.assertTrue(any("已取消" in str(row.get("message")) for row in state["logs"]),
                         "要留下一条取消日志")
 
+    def test_resuming_a_paused_batch_clears_the_cancel_imprint(self):
+        """「继续」必须清掉取消印记，否则 runner 一开跑就被 `is_job_cancelled` 挡回去。
+
+        2026-09-19 用户实测「点击继续没有效果」：他在暂停态点过一次「取消」，
+        `cancelRequested` 被永久留在状态里（旧 runner 的暂停分支把取消吞了），
+        之后每次「继续」都在 runner 第一行 `if is_job_cancelled(...): return` 空转。
+        跟 `reset_subtitle_job` 一样：重排前一定清印记。
+        """
+        import tempfile
+
+        from backend import subtitle_step
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            with self._temp_job_db(Path(folder)) as job_store:
+                created = now_iso()
+                job_store.create({
+                    "id": "paused-batch", "kind": "subtitle_batch", "status": "paused",
+                    "stage": "paused", "createdAt": created, "updatedAt": created,
+                    "pauseRequested": False, "cancelRequested": True,
+                    "subtitleQueue": [], "milestones": [], "logs": [],
+                })
+                spawned: list[str] = []
+                with unittest.mock.patch.object(
+                        subtitle_step, "_spawn_batch_restart",
+                        lambda job_id: spawned.append(job_id)):
+                    state = subtitle_step.resume_publish_batch("paused-batch")
+
+                self.assertIsNotNone(state, "暂停态必须能继续")
+                self.assertFalse(state["cancelRequested"], "继续时必须清掉取消印记")
+                self.assertFalse(state["pauseRequested"])
+                self.assertEqual(spawned, ["paused-batch"], "要继续排一轮 runner")
+                self.assertFalse(subtitle_step.is_job_cancelled("paused-batch"),
+                                 "清掉印记后 runner 才不会被第一行挡回去")
+
     def test_subtitle_endpoint_needs_a_source_and_refuses_a_busy_queue(self):
         """接口层：没给输入 → 400；已有任务在跑 → **不再 409，而是接单排队**。
 
