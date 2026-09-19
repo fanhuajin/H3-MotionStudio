@@ -1774,6 +1774,12 @@ body {
 .image-auto-controls { display: flex; align-items: center; gap: 9px; }
 .image-auto-controls > span { padding: 7px 10px; border: 1px solid #392f51; border-radius: 7px; color: #9a92aa; background: #100c27; font-size: 9px; }
 .image-auto-controls button { min-height: 34px; }
+/* 自动出图的进度 / 结果提示（有任务在跑时页面每 2 秒刷新一次） */
+.image-auto-progress,.image-auto-done,.image-auto-failed { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; padding: 8px 11px; border-radius: 8px; font-size: 11px; }
+.image-auto-progress { border: 1px solid rgba(55,216,230,.35); color: #bdf0f5; background: rgba(25,46,58,.5); }
+.image-auto-done { border: 1px solid rgba(96,214,150,.35); color: #b8f0d0; background: rgba(20,52,38,.5); }
+.image-auto-failed { border: 1px solid rgba(240,120,120,.4); color: #ffc4c4; background: rgba(58,24,28,.5); }
+.image-auto-progress svg,.image-auto-done svg,.image-auto-failed svg { width: 14px; height: 14px; flex: 0 0 auto; }
 .image-kind-switch { display: flex; padding: 3px; border: 1px solid #33294a; border-radius: 8px; background: #080619; }
 .image-kind-switch > span { align-self: center; padding: 0 8px 0 5px; color: #746c87; font-size: 9px; }
 .image-kind-switch button { padding: 7px 11px; border: 0; border-radius: 6px; color: #817890; background: transparent; font-size: 10px; cursor: pointer; }

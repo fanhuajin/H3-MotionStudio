@@ -5,12 +5,18 @@ import {
 import { readJson } from "./api";
 
 type Asset = { name: string; width: number; height: number; bytes: number } | null;
+/** 后端 image_workbench.AUTOMATIONS 里的单条状态（list_items 会带出来）。 */
+type AutomationState = { status?: string; stage?: string; message?: string } | null;
 type WorkItem = {
   id: string; folderName: string; title: string; copy: string;
   kind: "singing" | "dance" | null;
   assets: { frame: Asset; identity: Asset; person: Asset; bilibili: Asset; douyin: Asset };
+  automation?: AutomationState;
 };
 type Stage = "person" | "bilibili" | "douyin";
+
+/** 自动化任务的活跃状态：只要还有一条在这个集合里，页面就继续轮询。 */
+const AUTO_LIVE = ["queued", "running"];
 
 const STAGES: Array<{ id: Stage; label: string; spec: string }> = [
   { id: "person", label: "人物图", spec: "图一场景 + 图二五官" },
@@ -68,6 +74,55 @@ export function ImageWorkbenchRoute() {
   const complete = (row: WorkItem) => Boolean(row.assets.person && row.assets.bilibili && row.assets.douyin);
   const visible = useMemo(() => filter === "pending" ? items.filter((row) => !complete(row)) : items, [filter, items]);
   const finished = items.filter(complete).length;
+  /** 有自动化任务在跑就持续刷新，直到全部落定 —— 页面上的进度就靠这个更新。 */
+  const autoLive = items.some((row) => AUTO_LIVE.includes(row.automation?.status || ""));
+
+  useEffect(() => {
+    if (!autoLive) return;
+    const timer = window.setInterval(() => {
+      refresh().catch(() => { /* 下一轮再试，瞬时失败不该中断轮询 */ });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [autoLive, refresh]);
+
+  /** 用第三方图片接口自动出图。`stage` 为空 = 这条作品三张一次跑完。 */
+  const startAuto = useCallback(async (itemId: string, stageArg?: Stage) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const query = stageArg ? `?stage=${stageArg}` : "";
+      await readJson(
+        fetch(`/api/image-workbench/${itemId}/automatic${query}`, { method: "POST" }),
+        "启动自动生成失败",
+      );
+      setNotice(stageArg
+        ? `已开始自动生成${STAGES.find((row) => row.id === stageArg)?.label || stageArg}。`
+        : "已开始自动生成这条作品的人物图与两张封面。");
+      await refresh();
+    } catch (error) {
+      setNotice(String((error as Error).message || error));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, refresh]);
+
+  /** 把所有缺图的作品排上队列（后端严格一条一条跑，不并发）。 */
+  const startAllMissing = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const data = await readJson<{ queued: number }>(
+        fetch("/api/image-workbench/automatic-all", { method: "POST" }),
+        "一键生成全部失败",
+      );
+      setNotice(data.queued ? `已把 ${data.queued} 条缺图作品排上队列，系统会一条一条跑。` : "没有缺图的作品。");
+      await refresh();
+    } catch (error) {
+      setNotice(String((error as Error).message || error));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, refresh]);
 
   useEffect(() => {
     const selected = items.find((row) => row.id === selectedId);
@@ -153,8 +208,11 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">网页 ChatGPT 辅助</span><h1>图片与封面</h1><p>先用抽帧和任务类型生成最终人物图，再由网页 ChatGPT 生成两张封面；下载后自动归档。</p></div>
-        <div className="image-workbench-head-actions"><div className="image-workbench-stats"><strong>{finished}<small>已全部完成</small></strong><strong>{items.length - finished}<small>待处理</small></strong></div></div>
+        <div><span className="image-workbench-kicker">第三方图片接口 + 网页 ChatGPT</span><h1>图片与封面</h1><p>「API 自动生成这一步」直接用第三方接口出当前这张（人物图相似度不足 70 会自动重做）；也可以打开网页 ChatGPT 手动做，下载后自动归档。</p></div>
+        <div className="image-workbench-head-actions">
+          <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
+          <div className="image-workbench-stats"><strong>{finished}<small>已全部完成</small></strong><strong>{items.length - finished}<small>待处理</small></strong></div>
+        </div>
       </header>
 
       <section className="image-workbench-shell">
@@ -168,7 +226,10 @@ export function ImageWorkbenchRoute() {
 
         <div className="image-workbench-main">
           {!item ? <div className="image-workbench-blank"><ImageSquare /><p>发布目录里暂时没有可处理的作品。</p></div> : <>
-            <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span></div></div>
+            <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span><button onClick={() => startAuto(item.id)} disabled={busy}>本条三张一次跑完</button></div></div>
+            {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><SpinnerGap className="spin" />{item.automation.message || "正在自动生成…"}</p>}
+            {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><Check weight="bold" />{item.automation.message}</p>}
+            {item.automation?.status === "failed" && <p className="image-auto-failed"><WarningCircle />{item.automation.message || "自动生成失败"}</p>}
             <div className="image-stage-tabs">{STAGES.map((entry, index) => { const ready = Boolean(item.assets[entry.id]); return <button key={entry.id} className={stage === entry.id ? "active" : ""} onClick={() => setStage(entry.id)}><i>{ready ? <Check weight="bold" /> : index + 1}</i><span><strong>{entry.label}</strong><small>{entry.spec}</small></span></button>; })}</div>
 
             <div className="image-workbench-content">
@@ -180,7 +241,16 @@ export function ImageWorkbenchRoute() {
                 <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点击下方参考图复制，直接粘贴到网页 ChatGPT</li><li>点击“打开网页 ChatGPT”会复制提示词并开始等待下载</li><li>在网页 ChatGPT 生图后点击下载，系统会自动校验并保存</li></ol></div>
                 {stage === "person" && <div className="image-reference-pair"><figure onClick={() => copyImage("frame", "图一场景造型")} role="button" tabIndex={0} title="点击复制图一">{item.assets.frame ? <img src={assetUrl(item, "frame")} alt="图一抽帧" /> : <div>缺少抽帧</div>}<figcaption><ClipboardText />图一 · 点击复制</figcaption></figure><figure onClick={() => copyImage("identity", "图二固定五官")} role="button" tabIndex={0} title="点击复制图二">{item.assets.identity ? <img src={assetUrl(item, "identity")} alt="图二固定五官" /> : <div>缺少参考</div>}<figcaption><ClipboardText />图二 · 点击复制</figcaption></figure></div>}
                 {stage !== "person" && <div className="image-cover-reference"><strong>生成这张封面使用的人物图</strong><figure onClick={() => copyImage("person", "人物图")} role="button" tabIndex={0} title="点击复制人物图">{item.assets.person ? <img src={assetUrl(item, "person")} alt="人物图" /> : <div><ImageSquare />缺少人物图</div>}<figcaption><ClipboardText />人物图 · 点击复制到 ChatGPT</figcaption></figure></div>}
-                <div className="image-action-grid"><button className="primary" onClick={openWebChatGPT} disabled={busy}><ClipboardText />打开网页 ChatGPT</button><button onClick={copyPrompt} disabled={busy}>仅复制提示词</button></div>
+                <div className="image-action-grid">
+                  <button
+                    className="primary"
+                    onClick={() => startAuto(item.id, stage)}
+                    disabled={busy || (stage !== "person" && !item.assets.person)}
+                    title={stage !== "person" && !item.assets.person ? "请先生成人物图，再做封面" : undefined}
+                  ><SpinnerGap className={busy ? "spin" : undefined} />API 自动生成这一步</button>
+                  <button onClick={openWebChatGPT} disabled={busy}><ClipboardText />打开网页 ChatGPT</button>
+                  <button onClick={copyPrompt} disabled={busy}>仅复制提示词</button>
+                </div>
                 <label className="image-drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file) upload(file); }}>
                   <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) upload(file); }} />
                   {busy ? <SpinnerGap className="spin" /> : <UploadSimple />}<strong>{stageAsset ? "粘贴、拖入或选择图片替换" : "按 Ctrl+V 粘贴，或拖入、选择生成好的图片"}</strong><small>{stage === "person" ? "保存为 人物图.png" : `自动校验并保存为 ${stage === "bilibili" ? "B站4x3.png" : "抖音3x4.png"}`}</small>
