@@ -14,7 +14,7 @@ from typing import Any
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
-from . import batch_image
+from . import batch_ai, batch_image
 from .batch_store import batch_store
 from .batch_worker import IDENTITY_PATH
 from .settings import BATCH_OUTPUT_ROOT, PROJECT_ROOT
@@ -284,6 +284,29 @@ def _set_auto(folder_id: str, **changes: Any) -> None:
     AUTOMATIONS[folder_id] = current
 
 
+def person_prompt(folder: Path, kind: str) -> str:
+    """人物图提示词：**和批量备料用的是同一份**（`batch_ai.compose_image_prompt`）。
+
+    用户 2026-09-19 实测后明确：「按照你刚刚生成的图片流程来 你刚刚生成的很好」——
+    那一版是「造型提示词文件（`9x16跳舞构图.txt` / `4x3唱歌构图.txt`）+ 构图规格 +
+    歌曲信息 + 末尾身份优先级块」，约 5400 字，效果明显优于本模块原先的精简版。
+    所以**自动出图**改用这一份；`prompt()` 原样保留给「复制提示词 / 下载素材包」两个
+    手动入口，不改动用户已有的手工流程。
+    """
+    song_name, song_mood = "", ""
+    aweme = folder.name.rsplit("_", 1)[-1].strip()
+    for item in batch_store.items_for_aweme(aweme) or []:
+        ai = item.get("ai") or {}
+        song_name = song_name or str(ai.get("song_name") or "")
+        song_mood = song_mood or str(ai.get("song_mood") or "")
+    return batch_ai.compose_image_prompt(
+        kind, "video", "", "both",
+        song_name=song_name,
+        song_mood=song_mood,
+        ratio="4:3" if kind == "singing" else "9:16",
+    )
+
+
 async def _generate_person(folder: Path, kind: str) -> None:
     frame = asset_path(folder, "frame")
     ratio = "4:3" if kind == "singing" else "9:16"
@@ -294,7 +317,7 @@ async def _generate_person(folder: Path, kind: str) -> None:
         await batch_image.generate_candidate_image(
             scene_image=scene,
             identity_image=IDENTITY_PATH,
-            prompt=prompt(folder, "person", kind),
+            prompt=person_prompt(folder, kind),
             ratio=ratio,
             output_path=candidate,
         )
@@ -324,33 +347,51 @@ async def _generate_cover(folder: Path, stage: str) -> None:
     save_upload(folder, stage, payload.getvalue())
 
 
-async def run_automatic(folder_id: str, *, force: bool = False) -> None:
+async def run_automatic(folder_id: str, *, force: bool = False,
+                        stage: str | None = None) -> None:
+    """自动出图。`stage` 给定就**只跑那一步**（用户在页面上单独点某一张）。
+
+    stage ∈ {None(整条三步), "person", "bilibili", "douyin"}；封面**必须先有合格人物图**，
+    否则直接失败并把原因写进状态（页面上那两个按钮也据此置灰）。
+    """
     folder = resolve_folder(folder_id)
     kind = infer_kind(folder)
     if not kind:
         _set_auto(folder_id, status="failed", stage="type", message="无法从批量任务确定唱歌/跳舞类型")
         return
+    steps = [stage] if stage else ["person", "bilibili", "douyin"]
     _set_auto(folder_id, status="queued", stage="waiting", message="已加入自动生成队列", kind=kind)
     async with _AUTO_LOCK:
         try:
-            if force or not (folder / PERSON_NAME).is_file():
-                _set_auto(folder_id, status="running", stage="person", message="正在生成2K人物图", kind=kind)
-                await _generate_person(folder, kind)
-            for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
-                if not force and (folder / COVER_NAMES[stage]).is_file():
+            for step in steps:
+                label = {"bilibili": "B站封面", "douyin": "抖音封面"}.get(step, "人物图")
+                if step == "person":
+                    if force or not (folder / PERSON_NAME).is_file():
+                        _set_auto(folder_id, status="running", stage="person",
+                                  message="正在生成2K人物图", kind=kind)
+                        await _generate_person(folder, kind)
                     continue
-                _set_auto(folder_id, status="running", stage=stage, message=f"正在生成{label}", kind=kind)
-                await _generate_cover(folder, stage)
-            _set_auto(folder_id, status="completed", stage="done", message="人物图与封面已自动补齐", kind=kind)
+                if not (folder / PERSON_NAME).is_file():
+                    raise RuntimeError("请先生成人物图，再做封面")
+                if not force and (folder / COVER_NAMES[step]).is_file():
+                    continue
+                _set_auto(folder_id, status="running", stage=step,
+                          message=f"正在生成{label}", kind=kind)
+                await _generate_cover(folder, step)
+            done = "人物图与封面已自动补齐" if not stage else "已完成生成"
+            _set_auto(folder_id, status="completed", stage="done", message=done, kind=kind)
         except Exception as exc:  # noqa: BLE001 - status is surfaced to the page
             _set_auto(folder_id, status="failed", message=str(exc), kind=kind)
 
 
-def start_automatic(folder_id: str, *, force: bool = False) -> dict[str, Any]:
+def start_automatic(folder_id: str, *, force: bool = False,
+                    stage: str | None = None) -> dict[str, Any]:
+    if stage not in {None, "person", "bilibili", "douyin"}:
+        raise ValueError(f"不支持的步骤：{stage}")
     current = AUTOMATIONS.get(folder_id) or {}
     if current.get("status") in {"queued", "running"}:
         return current
-    asyncio.create_task(run_automatic(folder_id, force=force))
+    asyncio.create_task(run_automatic(folder_id, force=force, stage=stage))
     _set_auto(folder_id, status="queued", stage="waiting", message="正在准备自动生成")
     return AUTOMATIONS[folder_id]
 
