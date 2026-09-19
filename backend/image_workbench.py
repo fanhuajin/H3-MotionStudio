@@ -26,6 +26,8 @@ LEGACY_COVER_NAMES = {"bilibili": "封面_B站4x3.png", "douyin": "封面_抖音
 TARGETS = {"bilibili": (1448, 1086), "douyin": (1086, 1448)}
 # 人物图身份自检：相似度必须 ≥70（用户 2026-09-19：「人物相似度 必须70%以上」），
 # 不够就重做，最多 PERSON_MAX_ATTEMPTS 次，保留分数最高的那张。
+# ⚠️ 手部**没有**自动判据：三个视觉模型标定下来都不可靠（见 `_generate_person` 的说明），
+# 手部只靠提示词约束 + 用户看图后自己点「重新生成这一步」。
 PERSON_MIN_SIMILARITY = 70
 PERSON_MAX_ATTEMPTS = 3
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -183,7 +185,13 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
 标题：
 {title}
 简介：
-{introduction}""".strip()
+{introduction}
+
+【手部硬要求 · 用户 2026-09-19：手可以入镜，但不能出问题】
+- 人物的姿势与手势**沿用参考图**，不要自行设计新手势（不要比心、不要剪刀手、不要指尖相触）。
+- 手可以入镜，但手指必须结构完全正确：五指分明、数量正确、手指不交叉、不打结、不粘连，
+  指节弯曲方向与指甲朝向自然；画不准就把手改成简单自然的姿势（自然垂放或轻放身侧）。
+- 手部出现任何结构错误都算不合格，必须重画到正确为止。""".strip()
 
 
 def material_zip(folder: Path, stage: str, kind: str) -> bytes:
@@ -339,12 +347,32 @@ def person_prompt(folder: Path, kind: str) -> str:
     )
 
 
+async def _hands_verdict(candidate: Path) -> tuple[bool, int]:
+    """手部自检：返回 (是否合格, 问题条数)。
+
+    判据本身失败（视觉端点不可用等）时**不阻断链路**：按合格放行、不重试 ——
+    自检是质量门槛，不是出片前提（与身份自检同一条口径）。
+    """
+    try:
+        result = await batch_ai.judge_hands(candidate)
+    except Exception:  # noqa: BLE001 - 自检失败不该把整条链路判失败
+        return True, 0
+    problems = [str(item) for item in (result.get("problems") or [])]
+    return bool(result.get("hands_ok")), len(problems)
+
+
 async def _generate_person(folder: Path, kind: str) -> int:
     """API 出人物图 + 身份自检：**相似度 <70 就重做**（上限 3 次），**留分数最高的那张**。
 
     用户 2026-09-19：「人物相似度 必须70%以上」。
     返回最终保留那张的相似度；判据本身失败（模型不可用等）时不重试、不卡链路，
     直接收下当次结果并返回 -1 —— 自检只是质量门槛，不是出片前提。
+
+    ⚠️ **手指不再做自动判据**（2026-09-19 实测记录见 `AGENTS.md`）：同一条「手部结构对不对」
+    的判据换 DeepSeek / gemini-3.1-pro / gpt-5.6 三个模型标定，结果是「严格提示词把用户认可的
+    图也全判不合格、放宽提示词把你指出的坏图也判成合格」——跟着措辞走而不是看图，不能当门槛。
+    所以手部靠**提示词约束**（`batch_ai.VIDEO_READY_BLOCK` 禁止比心/剪刀手、要求结构正确），
+    出图后由用户在页面上看一眼，不对就点「重新生成这一步」。
     """
     frame = asset_path(folder, "frame")
     ratio = "4:3" if kind == "singing" else "9:16"
@@ -381,10 +409,10 @@ async def _generate_person(folder: Path, kind: str) -> int:
 
 
 async def _generate_cover(folder: Path, stage: str, kind: str) -> None:
-    """封面也走**第三方 API**出带标题文字的成图（用户 2026-09-19：「封面也用api生成 不需要本地」）。
+    """封面走**第三方 API** 出带标题文字的成图（用户 2026-09-19：「封面也用api生成 不需要本地」）。
 
     提示词用 `prompt(folder, stage, kind)`（里面就是发布文案的标题与简介）；
-    参考图 = 这条自己的 `人物图.png`（保住人物与画面），身份图照旧给固定参考以稳住五官。
+    参考图 = 这条自己的 `人物图.png`（保住人物与画面）。
     出图比例 4:3（B站）/ 3:4（抖音），`save_upload()` 会按 `TARGETS` 精确裁到
     1448×1086 / 1086×1448 并做比例校验。
 
@@ -398,6 +426,7 @@ async def _generate_cover(folder: Path, stage: str, kind: str) -> None:
             scene_image=asset_path(folder, "person"),
             # **封面只发这一张参考**（identity_image=None）：再给一张「本人固定参考」的话，
             # 两张图是同一人的不同服装/场景，模型会把**两个人一起画进封面**（实测踩过）。
+            identity_image=None,
             prompt=prompt(folder, stage, kind),
             ratio="4:3" if stage == "bilibili" else "3:4",
             output_path=candidate,
@@ -435,7 +464,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                 if step == "person":
                     if force or not (folder / PERSON_NAME).is_file():
                         _set_auto(folder_id, status="running", stage="person",
-                                  message=f"正在生成2K人物图（相似度需≥{PERSON_MIN_SIMILARITY}）", kind=kind)
+                                  message=f"正在生成人物图（相似度需≥{PERSON_MIN_SIMILARITY}）", kind=kind)
                         person_score = await _generate_person(folder, kind)
                     continue
                 if not (folder / PERSON_NAME).is_file():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import tempfile
 import unittest
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
+from backend import batch_ai
 from backend import image_workbench as workbench
 
 
@@ -15,6 +17,22 @@ def png(width: int, height: int) -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (width, height), (42, 56, 78)).save(output, "PNG")
     return output.getvalue()
+
+
+def png_shade(width: int, height: int, shade: int) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (width, height), (shade, shade, shade)).save(output, "PNG")
+    return output.getvalue()
+
+
+def shade_of(path: Path) -> int:
+    with Image.open(path) as image:
+        return image.convert("RGB").getpixel((5, 5))[0]
+
+
+async def fake_defocus(frame: Path, work: Path) -> tuple[Path, bool]:
+    """糊脸那一步在单测里不做真事（它要调用视觉端点定位人脸）。"""
+    return frame, True
 
 
 class ImageWorkbenchTests(unittest.TestCase):
@@ -54,6 +72,46 @@ class ImageWorkbenchTests(unittest.TestCase):
             with patch.object(workbench, "BATCH_OUTPUT_ROOT", Path(raw)):
                 with self.assertRaises((ValueError, FileNotFoundError)):
                     workbench.resolve_folder("2e2e2f2e2e")
+
+    def test_person_image_keeps_the_highest_similarity_and_never_judges_hands(self) -> None:
+        """人物图只按相似度重做；**手部没有自动判据**（三模型标定都不可靠，见 AGENTS.md）。"""
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            Image.new("RGB", (1080, 1920)).save(folder / "抽帧.jpg")
+            attempts: list[int] = []
+
+            async def fake_generate(*, scene_image, identity_image, prompt, ratio, output_path, **_: object):
+                attempts.append(len(attempts) + 1)
+                Path(output_path).write_bytes(png_shade(1152, 2048, 10 * len(attempts)))
+                return Path(output_path)
+
+            async def fake_identity(identity, candidate):
+                # 第一张 50 分（不够 70）→ 重做；第二张 80 分（够）→ 留下第二张
+                return {"same_person": True, "similarity": 50 if len(attempts) == 1 else 80,
+                        "differences": [], "verdict": "ok"}
+
+            with patch.object(workbench.batch_image, "defocus_reference_face", fake_defocus), \
+                 patch.object(workbench.batch_image, "generate_candidate_image", fake_generate), \
+                 patch.object(workbench.batch_ai, "judge_identity", fake_identity), \
+                 patch.object(workbench, "person_prompt", lambda folder, kind: "提示词"):
+                score = asyncio.run(workbench._generate_person(folder, "dance"))
+
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(score, 80)
+            self.assertEqual(shade_of(folder / workbench.PERSON_NAME), 20)
+            self.assertFalse(hasattr(workbench.batch_ai, "judge_hands"))
+
+    def test_prompts_forbid_broken_hands(self) -> None:
+        """手部只靠提示词约束：不许自创手势、不许画崩（用户 2026-09-19）。"""
+        self.assertIn("手**可以入镜**", batch_ai.VIDEO_READY_BLOCK)
+        self.assertIn("禁止手指比心、剪刀手、指尖相触", batch_ai.VIDEO_READY_BLOCK)
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
+            cover = workbench.prompt(folder, "bilibili", "dance")
+        self.assertIn("手部硬要求", cover)
+        self.assertIn("五指分明", cover)
+        self.assertIn("不要自行设计新手势", cover)
 
 
 if __name__ == "__main__":
