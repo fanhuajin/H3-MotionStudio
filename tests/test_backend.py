@@ -127,6 +127,40 @@ def process_env_only():
         yield
 
 
+class PublishCopyLockTests(unittest.TestCase):
+    """封面一旦出好，发布文案就锁住 —— 否则「重新开始」改标题会把封面全部作废。
+
+    用户 2026-09-19：「都用原来的啊 不然封面都得改」（019 的标题在一次「重新开始」里
+    从「成熟与天真之间，刚好是我」被改成「成熟里藏着天真的一支舞」，两张封面当场作废）。
+    """
+
+    def _locked(self, root, *, with_cover: bool, recorded: bool = True):
+        folder = root / "019_跳舞_旧标题_123"
+        folder.mkdir(exist_ok=True)
+        if with_cover:
+            (folder / "B站4x3.png").write_bytes(b"cover")
+        item = {
+            "title": "旧标题",
+            "awemeId": "123",
+            "ai": {"title": "旧标题", "introduction": "旧简介", "tags": ["a", "b"]},
+            "outputs": {"folder": str(folder)} if recorded else {},
+        }
+        with patch.object(_batch_worker_module, "BATCH_OUTPUT_ROOT", root):
+            return _batch_worker_module.locked_publish_copy(item)
+
+    def test_copy_is_locked_when_a_cover_is_already_published(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            locked = self._locked(Path(raw), with_cover=True)
+        self.assertIsNotNone(locked)
+        self.assertEqual(locked["title"], "旧标题")
+        self.assertEqual(locked["introduction"], "旧简介")
+        self.assertEqual(locked["tags"], ["a", "b"])
+
+    def test_copy_stays_editable_when_no_cover_exists_yet(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            self.assertIsNone(self._locked(Path(raw), with_cover=False))
+
+
 class WorkflowPreparationTests(unittest.TestCase):
     def test_batch_state_is_serial_and_requires_review_before_video(self) -> None:
         singing = "https://v.douyin.com/song"

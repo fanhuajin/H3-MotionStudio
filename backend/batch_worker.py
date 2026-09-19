@@ -1320,6 +1320,7 @@ async def _prepare_review_work(
 
     # 1) 模型分析：造型来源判断 + 发布文案 + 动作/运镜（或迁移提示词）。
     #    「只调图片」不重跑模型；失败不抛错，降级到源作品信息继续，避免单个条目把整批卡死。
+    locked_copy = locked_publish_copy(item)
     previous_ai = dict(item.get("ai") or {})
     result = reuse_previous_analysis(mode, previous_ai)
     if result is not None:
@@ -1345,6 +1346,23 @@ async def _prepare_review_work(
             result = batch_ai.fallback_result(kind=item["kind"], description=meta_desc, tags=meta_tags)
             warning = f"模型分析不可用，已降级为源作品信息：{error}"
             batch_store.add_item_log(batch_id, item_id, warning)
+
+    # 封面已经出好的条目：**文案锁住，一个字都不许改**
+    # （用户 2026-09-19：「都用原来的啊 不然封面都得改」；见 `locked_publish_copy`）。
+    if locked_copy:
+        changed = [
+            key for key in ("title", "introduction", "tags")
+            if locked_copy.get(key) and result.get(key) != locked_copy[key]
+        ]
+        for key in ("title", "introduction", "tags"):
+            if locked_copy.get(key):
+                result[key] = locked_copy[key]
+        if changed:
+            batch_store.add_item_log(
+                batch_id, item_id,
+                "发布目录里已经出过封面，沿用原来的发布文案（"
+                + "、".join(changed) + " 不许重写，否则封面就得重做）。",
+            )
 
     # 歌曲条目的动作/运镜要能在审核时就给用户看，缺了就现在补上保守时间轴
     # （提交时 `_post_video_job` 还会再兜一次，两边逻辑一致）。
@@ -1536,7 +1554,15 @@ async def _prepare_review_work(
     #    预审的分析只看得到源视频联系表、看不到之后生成的图，两者一旦不一致
     #    （实测出图换成黑发水晶场景、文案却还在写「粉色氛围」），文案就会和画面脱节。
     #    「只调图片」按用户约定不动文案，所以那条路径不重写。
-    if mode != "image" and result.get("reference_image_path"):
+    #    **封面已经出过的条目也不重写**：封面上印的就是这份文案，改了封面就作废
+    #    （用户 2026-09-19：「都用原来的啊 不然封面都得改」）。
+    if locked_copy:
+        if result.get("reference_image_path"):
+            batch_store.add_item_log(
+                batch_id, item_id,
+                "发布目录里已经出过封面，这次跳过「按最终画面重写文案」（封面上的字取自这份文案）。",
+            )
+    elif mode != "image" and result.get("reference_image_path"):
         batch_store.set_item_milestone(
             batch_id, item_id, "prepare", status="running", progress=99, currentNode="正在看着最终图写发布文案"
         )
@@ -2159,6 +2185,33 @@ def _ideal_publish_folder(item: dict[str, Any]) -> Path:
         else f"{int(item['index']):03d}_{base_name}_{aweme_id}"
     )
     return BATCH_OUTPUT_ROOT / stem
+
+
+def locked_publish_copy(item: dict[str, Any]) -> dict[str, Any] | None:
+    """发布目录里**已经出过封面**时，那条作品的发布文案不许再重写。
+
+    用户 2026-09-19：「都用原来的啊 不然封面都得改」——封面上的大字就是 `title`、
+    小字就是 `introduction`，两者在出封面那一刻就被**画进图里**了；之后再重写文案
+    （重新备料会重跑预审、`write_copy` 也会按新图重写），封面立刻和文案对不上，
+    用户只能把封面全部重做。实测事故：019 的 `成熟与天真之间，刚好是我` 在一次
+    「重新开始」里被改成 `成熟里藏着天真的一支舞`，两张封面当场作废。
+
+    所以规则是：**封面一旦落进发布目录，这份文案就锁住**；要改文案，就得连封面一起
+    重做（用户显式要求时）。返回锁住的那份文案（`{title, introduction, tags}`），
+    没有封面就返回 None（照旧可以自由生成/重写）。
+    """
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    if folder is None or not folder.is_dir():
+        return None
+    names = PUBLISH_COVER_NAMES + ("B站4x3.png", "抖音3x4.png")
+    if not any((folder / name).is_file() for name in names):
+        return None
+    ai = dict(item.get("ai") or {})
+    locked = {
+        key: ai.get(key) or item.get(key)
+        for key in ("title", "introduction", "tags")
+    }
+    return locked if any(locked.values()) else None
 
 
 def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
