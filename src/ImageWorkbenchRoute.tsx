@@ -97,6 +97,15 @@ export function ImageWorkbenchRoute() {
     }
   }, [items]);
 
+  // 「已用 N 秒」要 1 秒 1 秒地走：轮询是每 2 秒一次，光靠它秒数会一格格跳
+  // （用户 2026-09-19：「已用多少秒 1秒 1秒的跳」）。这里挂一个独立心跳只做重渲染。
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!autoLive) return;
+    const timer = window.setInterval(() => setTick((n) => n + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [autoLive]);
+
   /** 用第三方图片接口自动出图。
    *
    *  - 单步（`stageArg`）：**总是带 `force=true`** —— 用户点这一下就是要「重新生成这一张」。
