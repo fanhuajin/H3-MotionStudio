@@ -2338,16 +2338,34 @@ def deliver_subtitle_output(
 
 
 def _write_publish_image(folder: Path, image: Path | None) -> Path | None:
-    """写 `人物图.<原后缀>`；先清掉同名其它后缀，避免换图后目录里留两张。"""
+    """写 `人物图.<原后缀>`；换了图就清掉旧后缀，避免目录里留两张。
+
+    ⚠️ **没有新图时什么都不做**（2026-09-19 事故，实测丢了 019/020/023 三张人物图）：
+    原实现先**无条件**删掉目录里所有 `人物图.*`，再在 `image is None` 时直接 return ——
+    于是「本条没有候选图」这种情况（发布目录里那张是 `/images` 页面直接生成的、
+    只落在发布目录、没登记进条目的 `ai.reference_image_path`）会把**已经出好的人物图
+    删干净且不补回来**，而且没有任何副本可恢复。现在改成**先确认有新图才动手删**，
+    并且先写临时文件、成功后再替换，复制失败也不会把旧图弄丢。
+    """
+    if image is None:
+        return None
+    suffix = image.suffix.lower() if image.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+    target = folder / f"人物图{suffix}"
+    staging = folder / f".人物图{suffix}.incoming"
+    try:
+        _copy_file(image, staging)
+    except OSError:
+        staging.unlink(missing_ok=True)
+        raise
     for stale in folder.glob("人物图.*"):
+        if stale.name == target.name:
+            continue
         try:
             stale.unlink()
         except OSError:
             pass
-    if image is None:
-        return None
-    suffix = image.suffix.lower() if image.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
-    return _copy_file(image, folder / f"人物图{suffix}")
+    os.replace(staging, target)
+    return target
 
 
 def _item_frame(item: dict[str, Any]) -> Path | None:

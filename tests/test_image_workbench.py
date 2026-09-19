@@ -116,6 +116,33 @@ class ImageWorkbenchTests(unittest.TestCase):
             workbench._set_auto("work", status="queued", message="已加入自动生成队列")
             self.assertGreater(workbench.AUTOMATIONS["work"]["startedAt"], started)
 
+    def test_refreshing_publish_materials_never_deletes_a_person_image_it_cannot_replace(self) -> None:
+        """2026-09-19 事故：没有候选图时 `_write_publish_image` 会把已有的人物图删掉且不补回来。"""
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / "人物图.png").write_bytes(png(1152, 2048))
+            self.assertIsNone(batch_worker._write_publish_image(folder, None))
+            self.assertTrue((folder / "人物图.png").is_file())
+
+    def test_refreshing_publish_materials_swaps_the_image_and_clears_old_suffixes(self) -> None:
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            folder = root / "发布"
+            folder.mkdir()
+            (folder / "人物图.jpg").write_bytes(png(1152, 2048))
+            fresh = root / "新图.png"
+            fresh.write_bytes(png_shade(1152, 2048, 200))
+
+            written = batch_worker._write_publish_image(folder, fresh)
+
+            self.assertEqual(written, folder / "人物图.png")
+            self.assertEqual(shade_of(folder / "人物图.png"), 200)
+            self.assertFalse((folder / "人物图.jpg").is_file())
+
     def test_prompts_forbid_broken_hands(self) -> None:
         """手部只靠提示词约束：不许自创手势、不许画崩（用户 2026-09-19）。"""
         self.assertIn("手**可以入镜**", batch_ai.VIDEO_READY_BLOCK)
