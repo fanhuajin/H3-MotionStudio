@@ -1836,7 +1836,10 @@ export function BatchRoute() {
                               )}
                             </span>
                             {item.childJob?.currentSegment && item.childJob.estimatedSegments && (
-                              <small>分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
+                              <small className="batch-seg">H3 分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
+                            )}
+                            {item.childJob?.upscaleBatch && item.childJob.upscaleBatches && (
+                              <small className="batch-seg">二采分段 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</small>
                             )}
                             {batch?.recoveryActive
                               && item.id === batch.currentItemId
