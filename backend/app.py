@@ -2982,6 +2982,15 @@ async def image_workbench_automatic_all():
     return {"queued": image_workbench.start_all_missing()}
 
 
+@app.post("/api/image-workbench/automatic-stop")
+async def image_workbench_automatic_stop():
+    """停止自动出图（用户 2026-09-19：「启动后如果我要暂停怎么办」）。
+
+    软停止：正在跑的那一步跑完就停（中转站的 HTTP 请求没法中断），排队的条目立刻取消。
+    """
+    return {"cancelled": image_workbench.stop_automatic()}
+
+
 dist_dir = PROJECT_ROOT / "dist" / "client"
 if dist_dir.is_dir():
     def _spa_index() -> FileResponse:

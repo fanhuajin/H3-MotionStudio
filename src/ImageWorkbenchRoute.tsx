@@ -135,6 +135,24 @@ export function ImageWorkbenchRoute() {
   }, [busy, refresh]);
 
   /** 把所有缺图的作品排上队列（后端严格一条一条跑，不并发）。 */
+  /** 停止自动出图队列：正在跑的那一步跑完就停，排队的立刻取消。 */
+  const stopAuto = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const data = await readJson<{ cancelled: number }>(
+        fetch("/api/image-workbench/automatic-stop", { method: "POST" }),
+        "停止失败",
+      );
+      setNotice(`已请求停止：正在跑的那一步会跑完，另有 ${data.cancelled} 条排队已取消。`);
+      await refresh();
+    } catch (error) {
+      setNotice(String((error as Error).message || error));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, refresh]);
+
   const startAllMissing = useCallback(async () => {
     if (busy) return;
     setBusy(true);
@@ -239,6 +257,7 @@ export function ImageWorkbenchRoute() {
         <div><span className="image-workbench-kicker">第三方图片接口 + 网页 ChatGPT</span><h1>图片与封面</h1><p>「API 自动生成这一步」直接用第三方接口出当前这张（人物图相似度不足 70 会自动重做）；也可以打开网页 ChatGPT 手动做，下载后自动归档。</p></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
+          {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}
           <div className="image-workbench-stats"><strong>{finished}<small>已全部完成</small></strong><strong>{items.length - finished}<small>待处理</small></strong></div>
         </div>
       </header>

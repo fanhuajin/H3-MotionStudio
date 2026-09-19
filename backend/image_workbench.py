@@ -288,6 +288,34 @@ def _set_auto(folder_id: str, **changes: Any) -> None:
     AUTOMATIONS[folder_id] = current
 
 
+# 自动出图的「停止」开关（用户 2026-09-19：「启动后如果我要暂停怎么办」）。
+# 之前一键生成启动后**没有任何停止途径** —— 排队里的任务只能等它跑完，或者重启后端
+# （而任务状态在内存里，重启会把它整个丢掉）。这里给一个软停止：
+#   · 正在跑的那一步**跑完就停**（中转站的 HTTP 请求没法中断，硬砍会留下半张图）；
+#   · 还在排队的条目立刻转成 cancelled，不再往下走；
+#   · 下一次用户主动点生成时自动清掉这个开关。
+_STOP = {"requested": False}
+
+
+def stop_automatic() -> int:
+    """请求停止自动出图，返回被取消的排队条目数。"""
+    _STOP["requested"] = True
+    cancelled = 0
+    for folder_id, state in list(AUTOMATIONS.items()):
+        if str(state.get("status") or "") == "queued":
+            _set_auto(folder_id, status="cancelled", stage="stopped", message="已停止（排队已清空）")
+            cancelled += 1
+    return cancelled
+
+
+def _stop_requested() -> bool:
+    return bool(_STOP.get("requested"))
+
+
+def _clear_stop() -> None:
+    _STOP["requested"] = False
+
+
 def person_prompt(folder: Path, kind: str) -> str:
     """人物图提示词：**和批量备料用的是同一份**（`batch_ai.compose_image_prompt`）。
 
@@ -398,6 +426,11 @@ async def run_automatic(folder_id: str, *, force: bool = False,
         try:
             person_score = -1
             for step in steps:
+                # 用户点了「停止」：正在跑的那一步跑完就停，后面的步骤不再开始。
+                if _stop_requested():
+                    _set_auto(folder_id, status="cancelled", stage="stopped",
+                              message="已停止（这一步跑完就停）", kind=kind)
+                    return
                 label = {"bilibili": "B站封面", "douyin": "抖音封面"}.get(step, "人物图")
                 if step == "person":
                     if force or not (folder / PERSON_NAME).is_file():
@@ -427,12 +460,14 @@ def start_automatic(folder_id: str, *, force: bool = False,
     current = AUTOMATIONS.get(folder_id) or {}
     if current.get("status") in {"queued", "running"}:
         return current
+    _clear_stop()  # 用户主动点生成 = 新的一轮意图，清掉上次的停止开关
     asyncio.create_task(run_automatic(folder_id, force=force, stage=stage))
     _set_auto(folder_id, status="queued", stage="waiting", message="正在准备自动生成")
     return AUTOMATIONS[folder_id]
 
 
 def start_all_missing() -> int:
+    _clear_stop()  # 一键生成 = 新的一轮意图
     count = 0
     for item in list_items():
         assets = item["assets"]

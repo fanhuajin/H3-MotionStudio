@@ -1745,6 +1745,8 @@ body {
 .image-workbench-head-actions { display: flex; align-items: stretch; gap: 10px; }
 .image-workbench-head-actions > button,.image-auto-controls button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 16px; border: 1px solid var(--shell-accent); border-radius: 9px; color: #071316; background: var(--shell-accent); font-size: 11px; font-weight: 750; cursor: pointer; }
 .image-workbench-head-actions > button:disabled,.image-auto-controls button:disabled { opacity: .45; cursor: default; }
+/* 停止按钮：红色系，与「一键生成」的青色主按钮区分开 */
+.image-workbench-head-actions > button.danger { border-color: #7d3140; background: #3b1c24; color: #ffc9c9; }
 .image-workbench-head-actions svg,.image-auto-controls svg { width: 15px; height: 15px; }
 .image-workbench-stats strong { min-width: 112px; padding: 10px 13px; border: 1px solid var(--shell-line); border-radius: 9px; color: #e8e2f3; background: #100c28; font-size: 18px; }
 .image-workbench-stats small { display: block; margin-top: 2px; color: #786f8e; font-size: 9px; font-weight: 500; }
