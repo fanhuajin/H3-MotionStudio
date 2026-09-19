@@ -1,4 +1,4 @@
-# H3 chat-mode image generation, on demand (resident loop).
+﻿# H3 chat-mode image generation, on demand (resident loop).
 #
 # User's flow (2026-09-19): only when the batch has nothing runnable left, and only for
 # THE ONE work that is stuck waiting for its person image -- then generate just that one.
