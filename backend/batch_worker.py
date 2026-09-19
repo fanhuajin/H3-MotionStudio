@@ -1501,6 +1501,18 @@ async def _prepare_review_work(
             batch_store.set_item_milestone(
                 batch_id, item_id, "prepare", status="running", progress=32, currentNode="正在生成候选人物图"
             )
+            # **显式记一条「请求已发出」**：中转站同尺寸也可能 40 秒到 4 分钟不等
+            # （实测 019 56s / 023 62s / 020 251s），用户看不到「开始了没有」会以为卡住
+            # （2026-09-19：「怎么确定发送了请求 感觉有的时候快有的时候慢 我都不知道开始了没有」）。
+            image_started = time.monotonic()
+            if provider == "local":
+                batch_store.add_item_log(batch_id, item_id, "已向本地 Krea2 发出人物图请求（本地采样）……")
+            else:
+                batch_store.add_item_log(
+                    batch_id, item_id,
+                    f"已向中转站发出人物图请求（相似度门槛 {batch_image.PERSON_MIN_SIMILARITY}，"
+                    f"不够会自动重做，最多 {batch_image.PERSON_MAX_ATTEMPTS} 次）……",
+                )
             if provider == "local":
                 await batch_portrait.generate_portrait(
                     scene_image=scene,
@@ -1522,15 +1534,17 @@ async def _prepare_review_work(
                     output_path=target_image,
                     on_progress=report,
                 )
+                spent = int(time.monotonic() - image_started)
                 if similarity >= 0:
                     batch_store.add_item_log(
                         batch_id, item_id,
-                        f"候选人物图已生成，身份相似度 {similarity}/100"
-                        f"（门槛 {batch_image.PERSON_MIN_SIMILARITY}，不够会自动重做）。",
+                        f"候选人物图已生成：身份相似度 {similarity}/100，用时 {spent} 秒"
+                        f"（门槛 {batch_image.PERSON_MIN_SIMILARITY}）。",
                     )
                 else:
                     batch_store.add_item_log(
-                        batch_id, item_id, "候选人物图已生成；身份自检这次没跑成（不影响出片）。"
+                        batch_id, item_id,
+                        f"候选人物图已生成（用时 {spent} 秒）；身份自检这次没跑成，不影响出片。",
                     )
             image_path = target_image
         except asyncio.CancelledError:
@@ -1806,17 +1820,22 @@ async def _generate_covers_via_api(batch_id: str, item_id: str, folder: Path) ->
         for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
             if any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
                 continue
-            batch_store.add_item_log(batch_id, item_id, f"正在用中转站生成{label}……")
+            batch_store.add_item_log(batch_id, item_id, f"已向中转站发出{label}请求……")
+            started = time.monotonic()
             try:
                 await image_workbench._generate_cover(folder, stage, kind)
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001 - 封面失败不该把整条作品判失败
                 batch_store.add_item_log(
-                    batch_id, item_id, f"{label}自动生成失败（不影响出片）：{error}"
+                    batch_id, item_id,
+                    f"{label}自动生成失败（不影响出片，用时 {int(time.monotonic() - started)} 秒）：{error}",
                 )
                 continue
-            batch_store.add_item_log(batch_id, item_id, f"{label}已生成并放进发布目录。")
+            batch_store.add_item_log(
+                batch_id, item_id,
+                f"{label}已生成并放进发布目录（用时 {int(time.monotonic() - started)} 秒）。",
+            )
 
 
 def _maybe_spawn_covers(batch_id: str, item_id: str, *, only_missing: bool = False) -> bool:
