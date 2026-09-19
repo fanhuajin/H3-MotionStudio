@@ -54,6 +54,9 @@ export interface JobState {
   /** 字幕版最终落在哪个发布目录（生成完成即拷进对应的 `{编号}_{歌名}_{作品号}`） */
   subtitlePublishPath?: string | null;
   subtitlePublishError?: string | null;
+  /** 一键批量字幕（kind === "subtitle_batch"）：本次成功 / 失败的条数 */
+  subtitleDone?: number | null;
+  subtitleFailed?: number | null;
   /** 长视频分段：预估总段数与当前段（每段81帧、重叠5帧衔接） */
   estimatedSegments?: number | null;
   currentSegment?: number | null;

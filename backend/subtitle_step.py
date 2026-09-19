@@ -734,79 +734,94 @@ def scan_singing_publish_videos(*, root: Path | None = None) -> list[dict[str, A
 
 
 async def run_publish_subtitle_batch(job_id: str) -> None:
-    """一键批量：逐条给缺字幕版的唱歌视频生成字幕（串行，一次占一个剪映）。
+    """一键批量：逐条给缺字幕版的唱歌视频生成字幕（**严格串行**，一次只占一个剪映）。
 
     与独立路由是同一条 `burn_for_video`（剪映识别时间轴 + 官方歌词核对 + 剪映手书烧录）。
     产物直接落回各自的发布目录 `最终成片_字幕版.mp4`（与无字幕版并存）。
 
-    **支持暂停/继续**（用户 2026-09-19：「也可以暂停任务」）：暂停在**视频之间**生效
-    （剪映识别进行到一半没法安全打断）——当前这条跑完，就在下一条开始之前停下来，把
-    光标（`subtitleIndex`）与成功/失败计数（`subtitleDone`/`subtitleFailed`）写进状态；
-    「继续」从光标处接着往下跑。
+    **每次都重新扫一遍发布根**（不沿用上次的队列/光标）：已经出过 `最终成片_字幕版.mp4`
+    的自动排除，**上次失败或被中断的那条会自动回到队列**。2026-09-19 实测踩到过：
+    第 2 条在剪映识别中被中断判失败后，旧实现把光标推过去了，点「继续」直接从第 3 条
+    开始跑，第 2 条就永远补不上字幕。改成重扫之后这个入口是**幂等**的 ——
+    「继续生成」/再点一次「一键给所有唱歌视频生成字幕」= 把还缺字幕的重跑一遍。
+
+    **暂停/继续**：剪映识别进行到一半没法安全打断，所以暂停在**视频之间**生效：
+    当前这条跑完、在下一条开始之前停下；取消优先于暂停。
     """
     if is_job_cancelled(job_id):
         return
     state = store.get(job_id) or {}
-    queue = list(state.get("subtitleQueue") or [])
+    queue = scan_singing_publish_videos()          # 每次重扫：已完成的不再出现，失败的回来
     total = len(queue)
     if total == 0:
         store.add_log(job_id, "发布根里没有需要补字幕的唱歌视频（都已存在字幕版或没有成片）。")
-        store.update(job_id, status="completed", stage="completed",
-                     currentNodeId=None, currentNodeTitle=None, progress=100, finishedAt=now_iso())
+        store.set_milestone(job_id, "batch", status="completed", progress=100)
+        store.update(job_id, status="completed", stage="completed", subtitleQueue=[],
+                     subtitleIndex=0, currentNodeId=None, currentNodeTitle=None,
+                     progress=100, finishedAt=now_iso())
         return
 
-    cursor = int(state.get("subtitleIndex") or 0)
-    cursor = max(0, min(cursor, total))
-    done = int(state.get("subtitleDone") or 0)
-    failed = int(state.get("subtitleFailed") or 0)
     store.set_milestone(job_id, "batch", status="running", progress=1)
     store.update(job_id, status="running", stage="subtitle", finishedAt=None,
-                 currentNodeId=None, currentNodeTitle=f"批量加字幕：共 {total} 条")
-    if cursor == 0 and not state.get("subtitleStarted"):
-        store.add_log(job_id, f"一键批量加字幕：共 {total} 条唱歌视频缺字幕版。")
+                 subtitleQueue=queue, subtitleIndex=0,
+                 currentNodeId=None, currentNodeTitle=f"待加字幕：{total} 条")
+    if not state.get("subtitleStarted"):
+        store.add_log(job_id, f"一键批量加字幕：{total} 条唱歌视频缺字幕版。")
         store.update(job_id, subtitleStarted=True, startedAt=now_iso())
+    else:
+        store.add_log(job_id, f"继续加字幕：发布根里还剩 {total} 条缺字幕版。")
 
+    done = failed = 0
+    failed_labels: list[str] = []
     try:
-        for i in range(cursor, total):
-            # 暂停检查在每一条**开始之前**：当前这条跑完就停（光标已记录，续跑从 i 继续）
-            if (store.get(job_id) or {}).get("pauseRequested"):
-                store.update(job_id, status="paused", stage="paused",
-                             currentNodeId=None, currentNodeTitle=f"已暂停（{done + failed}/{total}）",
-                             pauseRequested=False)
-                store.add_log(job_id, f"已暂停：已完成 {done + failed}/{total} 条，继续后从第 {i + 1} 条接着跑。")
-                return
+        for index, entry in enumerate(queue, start=1):
+            # 取消优先于暂停：取消端点已把状态写成 cancelled，这里不能再改回 paused
             raise_if_cancelled(job_id)
-            entry = queue[i]
+            if (store.get(job_id) or {}).get("pauseRequested"):
+                remaining = total - index + 1
+                store.update(job_id, status="paused", stage="paused", pauseRequested=False,
+                             currentNodeId=None, currentNodeTitle=f"已暂停（还剩 {remaining} 条）")
+                store.add_log(job_id, f"已暂停：还剩 {remaining} 条没做，点「继续生成」接着跑。")
+                return
             source = Path(str(entry.get("source") or ""))
             out = Path(str(entry.get("out") or ""))
             song = str(entry.get("song") or "").strip()
             label = str(entry.get("folder") or source.parent.name)
-            store.update(job_id, currentNodeTitle=f"正在给 {label} 加字幕（{i + 1}/{total}）",
-                         progress=round((i + 1) / total * 100))
+            store.update(job_id, currentNodeTitle=f"正在给 {label} 加字幕（{index}/{total}）",
+                         subtitleIndex=index, progress=round(index / total * 100))
             if not source.is_file():
                 failed += 1
-                store.add_log(job_id, f"[{i + 1}/{total}] 跳过：{label} 无字幕成片已不存在")
-                store.update(job_id, subtitleIndex=i + 1, subtitleDone=done, subtitleFailed=failed)
+                failed_labels.append(label)
+                store.add_log(job_id, f"[{index}/{total}] 跳过：{label} 无字幕成片已不存在")
+                store.update(job_id, subtitleDone=done, subtitleFailed=failed)
                 continue
-            store.add_log(job_id, f"[{i + 1}/{total}] 开始：{label}"
+            store.add_log(job_id, f"[{index}/{total}] 开始：{label}"
                           + (f"《{song}》" if song else "（没有歌名，用识别歌词反查）"))
             stats: dict[str, Any] = {}
             try:
                 _path, notes = await burn_for_video(source, song, out, stats=stats)
                 done += 1
-                store.add_log(job_id, f"[{i + 1}/{total}] 完成：{out.name}"
+                store.add_log(job_id, f"[{index}/{total}] 完成：{out.name}"
                               + (f"（{stats.get('lines') or 0} 句字幕）" if stats.get("lines") else ""))
                 for note in notes:
                     store.add_log(job_id, f"    文字核对：{note}")
             except Exception as error:                    # noqa: BLE001 —— 单条失败不阻断整批
                 failed += 1
-                store.add_log(job_id, f"[{i + 1}/{total}] 失败：{label} —— {error}")
-            store.update(job_id, subtitleIndex=i + 1, subtitleDone=done, subtitleFailed=failed)
+                failed_labels.append(label)
+                store.add_log(job_id, f"[{index}/{total}] 失败：{label} —— {error}")
+            store.update(job_id, subtitleDone=done, subtitleFailed=failed)
         raise_if_cancelled(job_id)
         store.set_milestone(job_id, "batch", status="completed", progress=100)
         store.update(job_id, status="completed", stage="completed",
                      currentNodeId=None, currentNodeTitle=None, progress=100, finishedAt=now_iso())
-        store.add_log(job_id, f"批量加字幕结束：成功 {done} 条，失败 {failed} 条。")
+        store.add_log(job_id, f"批量加字幕结束：本次成功 {done} 条，失败 {failed} 条。")
+        if failed:
+            store.add_log(
+                job_id,
+                "失败的：" + "、".join(failed_labels)
+                + "。它们还没有 `最终成片_字幕版.mp4` —— 再点一次「一键给所有唱歌视频生成字幕」"
+                  "（或「继续生成」）会重扫发布根，只补还缺字幕的那几条。",
+            )
     except Exception as error:                            # noqa: BLE001 —— 独立任务：如实报错
         if is_job_cancelled(job_id):
             await finish_cancelled(job_id)

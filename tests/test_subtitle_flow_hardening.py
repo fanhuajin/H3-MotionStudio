@@ -192,6 +192,30 @@ class PublishBatchScanTests(unittest.TestCase):
         self.assertTrue(hasattr(subtitle_step, "request_publish_batch_pause"))
         self.assertTrue(hasattr(subtitle_step, "resume_publish_batch"))
 
+    def test_batch_runner_rescans_so_failed_items_come_back(self):
+        """每次开跑/继续都重扫发布根 —— 失败/被中断的那条必须回到队列。
+
+        2026-09-19 实测：第 2 条在剪映识别中被中断判失败后，旧实现把光标推过去了，
+        点「继续」直接从第 3 条开始跑，第 2 条永远补不上字幕。所以队列必须**每次重扫**：
+        已出 `最终成片_字幕版.mp4` 的排除、失败的回来 —— 这个入口才是幂等的。
+        """
+        from backend import subtitle_step
+
+        code = code_only(subtitle_step.run_publish_subtitle_batch)
+        self.assertIn("scan_singing_publish_videos()", code,
+                      "必须每次重扫发布根，才能让上次失败的条目回到队列")
+        self.assertIn("enumerate(queue", code, "要跑的是这次扫出来的队列")
+        self.assertNotIn("state.get('subtitleQueue')", code,
+                         "不允许再拿上一次存的队列/光标接着跑（那会永久跳过失败项）")
+
+    def test_cancel_wins_over_pause_in_the_batch_loop(self):
+        """循环里先查取消、再查暂停：否则取消会被暂停分支吞掉（实测状态停在 paused）。"""
+        from backend import subtitle_step
+
+        code = code_only(subtitle_step.run_publish_subtitle_batch)
+        self.assertLess(code.index("raise_if_cancelled"), code.index("pauseRequested"),
+                        "必须先 raise_if_cancelled，再判断 pauseRequested")
+
 
 if __name__ == "__main__":
     unittest.main()

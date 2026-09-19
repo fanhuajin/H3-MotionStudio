@@ -431,6 +431,12 @@ export function SubtitleRoute() {
                 )}
               </div>
             )}
+            {isBatch && job?.status !== "running" && job?.status !== "paused" && (job?.subtitleFailed ?? 0) > 0 && (
+              <p className="field-note">
+                本次有 {job?.subtitleFailed} 条没成功（大多是剪映被关掉或崩了）。再点一次上面的按钮即可 ——
+                它会重扫发布根，只补还缺 `最终成片_字幕版.mp4` 的那几条。
+              </p>
+            )}
           </div>
 
           <div className="field-block">
