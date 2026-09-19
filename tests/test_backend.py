@@ -245,6 +245,32 @@ class FullAutoImageTests(unittest.TestCase):
         ):
             self.assertEqual(_image_provider(), "api")
 
+    def test_publish_folder_image_is_adopted_instead_of_regenerated(self) -> None:
+        """发布目录里已经有出好的人物图 → 收编成候选图，**不重新出图**（用户：「已经有的不要重复得去生成」）。"""
+        from backend import batch_worker
+
+        root, folder, item = self._item(image="x")
+        work = Path(tempfile.mkdtemp(prefix="h3-adopt-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), patch.object(
+            batch_worker.batch_store, "add_item_log", lambda *a, **k: None
+        ):
+            adopted = batch_worker._adopt_published_image("b", "item-1", item, work, 0)
+        self.assertIsNotNone(adopted)
+        self.assertEqual(Path(adopted).read_bytes(), b"person")
+        self.assertEqual(Path(adopted).parent, work)
+
+    def test_nothing_to_adopt_when_the_publish_folder_has_no_image(self) -> None:
+        from backend import batch_worker
+
+        root, folder, item = self._item()  # 没有人物图
+        work = Path(tempfile.mkdtemp(prefix="h3-adopt-"))
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), patch.object(
+            batch_worker.batch_store, "add_item_log", lambda *a, **k: None
+        ):
+            self.assertIsNone(batch_worker._adopt_published_image("b", "item-1", item, work, 0))
+
 
 class WorkflowPreparationTests(unittest.TestCase):
     def test_batch_state_is_serial_and_requires_review_before_video(self) -> None:

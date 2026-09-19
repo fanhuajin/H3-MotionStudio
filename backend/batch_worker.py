@@ -1448,6 +1448,14 @@ async def _prepare_review_work(
         batch_store.add_item_log(
             batch_id, item_id, "这条已经有候选人物图，直接沿用（没有重复出图）。"
         )
+    # 本条没有候选图、但**发布目录里已经有一张出好的人物图** → 直接收编，不重出
+    # （用户 2026-09-19：「对于已经有的不要重复得去生成」）。这类图是 `/images` 页面直接
+    # 生成、只落进发布目录的，以前既会被白烧一次出图、又会因为「条目没有候选图」在下次
+    # 刷新发布目录物料时被当成空的。
+    elif mode != "image" and provider in {"api", "local"} and (
+        adopted := _adopt_published_image(batch_id, item_id, item, work, revision)
+    ) is not None:
+        image_path = adopted
     elif mode == "copy" and previous_image.is_file():
         image_path = previous_image
     elif provider == "manual":
@@ -2325,6 +2333,33 @@ def locked_publish_copy(item: dict[str, Any]) -> dict[str, Any] | None:
         for key in ("title", "introduction", "tags")
     }
     return locked if any(locked.values()) else None
+
+
+def _adopt_published_image(
+    batch_id: str, item_id: str, item: dict[str, Any], work: Path, revision: int
+) -> Path | None:
+    """把**发布目录里已经有的人物图**收编成本条的候选图（复制进条目目录），没有就返回 None。
+
+    用户 2026-09-19：「对于已经有的不要重复得去生成」。`/images` 页面出图是直接写进发布目录的，
+    条目上不登记 —— 重新备料时系统以为「没有候选图」，于是又烧一次出图（钱白花），
+    而且发布目录那张在下次刷新物料时还会被当成空的。收编之后两件事一起解决。
+    """
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    published = publish_published_image(folder)
+    if published is None or not published.is_file():
+        return None
+    suffix = published.suffix.lower() if published.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
+    try:
+        adopted = work / f"candidate_r{revision}_adopted{suffix}"
+        shutil.copy2(published, adopted)
+    except OSError as error:
+        batch_store.add_item_log(batch_id, item_id, f"发布目录里的人物图收编失败，将重新出图：{error}")
+        return None
+    batch_store.add_item_log(
+        batch_id, item_id,
+        "发布目录里已经有出好的人物图，直接收编成这一条的候选图（没有重复出图）。",
+    )
+    return adopted
 
 
 def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
