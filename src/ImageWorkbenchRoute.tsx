@@ -45,6 +45,8 @@ export function ImageWorkbenchRoute() {
   const [notice, setNotice] = useState("");
   const [watchId, setWatchId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  /** 每条自动化任务的本地开始时刻（后端不给百分比，就显示「已用 N 秒」避免看着像卡死）。 */
+  const autoClock = useRef<Record<string, number>>({});
 
   const refresh = useCallback(async () => {
     const data = await readJson<{ items: WorkItem[] }>(fetch("/api/image-workbench/items"), "读取发布目录失败");
@@ -84,6 +86,16 @@ export function ImageWorkbenchRoute() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [autoLive, refresh]);
+
+  // 记录/清除每条任务的开始时刻（每次刷新 items 都会重跑，正好跟着轮询走）。
+  useEffect(() => {
+    const now = Date.now();
+    for (const row of items) {
+      const live = AUTO_LIVE.includes(row.automation?.status || "");
+      if (live && !autoClock.current[row.id]) autoClock.current[row.id] = now;
+      if (!live) delete autoClock.current[row.id];
+    }
+  }, [items]);
 
   /** 用第三方图片接口自动出图。`stage` 为空 = 这条作品三张一次跑完。 */
   const startAuto = useCallback(async (itemId: string, stageArg?: Stage) => {
@@ -227,7 +239,7 @@ export function ImageWorkbenchRoute() {
         <div className="image-workbench-main">
           {!item ? <div className="image-workbench-blank"><ImageSquare /><p>发布目录里暂时没有可处理的作品。</p></div> : <>
             <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span><button onClick={() => startAuto(item.id)} disabled={busy}>本条三张一次跑完</button></div></div>
-            {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><SpinnerGap className="spin" />{item.automation.message || "正在自动生成…"}</p>}
+            {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><SpinnerGap className="spin" />{item.automation.message || "正在自动生成…"}{autoClock.current[item.id] ? `（已用 ${Math.max(0, Math.round((Date.now() - autoClock.current[item.id]) / 1000))} 秒）` : ""}</p>}
             {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><Check weight="bold" />{item.automation.message}</p>}
             {item.automation?.status === "failed" && <p className="image-auto-failed"><WarningCircle />{item.automation.message || "自动生成失败"}</p>}
             <div className="image-stage-tabs">{STAGES.map((entry, index) => { const ready = Boolean(item.assets[entry.id]); return <button key={entry.id} className={stage === entry.id ? "active" : ""} onClick={() => setStage(entry.id)}><i>{ready ? <Check weight="bold" /> : index + 1}</i><span><strong>{entry.label}</strong><small>{entry.spec}</small></span></button>; })}</div>
