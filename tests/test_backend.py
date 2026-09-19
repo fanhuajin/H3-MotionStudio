@@ -7906,5 +7906,122 @@ class SourceVideoIntegrityTests(unittest.TestCase):
             self.assertIn("_guard_source_video", source, f"{name} 必须过源视频完整性闸门")
 
 
+class _StubCdnStream:
+    """httpx 的 `client.stream(...)` 上下文替身：按脚本吐字节，可以在中途断流。"""
+
+    def __init__(self, status_code: int, headers: dict, body: bytes, error: Exception | None = None):
+        self.status_code = status_code
+        self.headers = headers
+        self.body = body
+        self.error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def iter_bytes(self, _size: int):
+        if self.body:
+            yield self.body
+        if self.error is not None:
+            raise self.error
+
+
+class _StubCdnClient:
+    """直连下载用的 httpx.Client 替身：按脚本返回 response，并记下每次请求的头。"""
+
+    def __init__(self, streams: list[_StubCdnStream]):
+        self.streams = list(streams)
+        self.headers_seen: list[dict | None] = []
+
+    def stream(self, _method, _url, follow_redirects=True, headers=None):
+        self.headers_seen.append(headers)
+        if not self.streams:
+            raise AssertionError("替身没有更多响应了（请求次数超出预期）")
+        return self.streams.pop(0)
+
+
+class DirectDownloadResumeTests(unittest.TestCase):
+    """直连 CDN 断流必须**续传**，不许把半截文件交出去（2026-09-19 用户：
+
+    「怎么保证视频一定是下载成功的感觉直连下载先经常失败要不要用下载器 REST 下载不要直连了」）。
+
+    实测这一批 61 次直连只失败 1 次，但那次的代价是：直连一断流就交给 REST，REST 交出来的
+    又是另一个半截文件（还报「下载成功」）—— 就是 012 事故的源头。所以直连要自己扛住断流。
+    """
+
+    def setUp(self):
+        self.sleep = patch("time.sleep").start()
+        self.addCleanup(patch.stopall)
+
+    def _call(self, client, dest: Path, **kwargs):
+        from backend.douyin_direct import download_cdn_file
+
+        return download_cdn_file(client, "https://cdn.example/v.mp4", dest, **kwargs)
+
+    def test_a_dropped_connection_resumes_instead_of_restarting(self):
+        """第一次传了 200000/300000 就断 → 第二次带 Range 续传，最终拿到完整文件。"""
+        head, tail = b"a" * 200_000, b"b" * 100_000
+        from backend import douyin_direct as D
+
+        client = _StubCdnClient([
+            _StubCdnStream(200, {"content-length": "300000"}, head, D.httpx.ReadError("peer closed")),
+            _StubCdnStream(206, {"content-range": "bytes 200000-299999/300000"}, tail),
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / "v.mp4"
+            written = self._call(client, dest)
+            self.assertEqual(written, 300_000)
+            self.assertEqual(dest.read_bytes(), head + tail, "续传拼出来的必须是完整文件")
+        self.assertIsNone(client.headers_seen[0], "第一次不该带 Range")
+        self.assertEqual(client.headers_seen[1], {"Range": "bytes=200000-"})
+
+    def test_a_wrong_range_is_never_appended(self):
+        """服务器给的范围不是我们要的那一段 → 丢弃重下，绝不拼出一份「长度对、内容错」的视频。"""
+        full = b"c" * 300_000
+        from backend import douyin_direct as D
+
+        client = _StubCdnClient([
+            _StubCdnStream(200, {"content-length": "300000"}, b"a" * 200_000, D.httpx.ReadError("cut")),
+            _StubCdnStream(206, {"content-range": "bytes 50-299999/300000"}, b"b" * 250_000),
+            _StubCdnStream(200, {"content-length": "300000"}, full),
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / "v.mp4"
+            self.assertEqual(self._call(client, dest), 300_000)
+            self.assertEqual(dest.read_bytes(), full)
+        self.assertIsNone(client.headers_seen[2], "丢弃后第三次是整份重下，不该再带 Range")
+
+    def test_giving_up_deletes_the_half_file(self):
+        """重试用尽仍失败：抛错，而且半截文件必须消失（留着会被当成「本地已有」捡回去）。"""
+        from backend import douyin_direct as D
+
+        client = _StubCdnClient([
+            _StubCdnStream(200, {"content-length": "300000"}, b"a" * 200_000, D.httpx.ReadError("cut")),
+            _StubCdnStream(200, {"content-length": "300000"}, b"a" * 200_000, D.httpx.ReadError("cut")),
+            _StubCdnStream(200, {"content-length": "300000"}, b"a" * 200_000, D.httpx.ReadError("cut")),
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / "v.mp4"
+            with self.assertRaises(D.DouyinDirectError):
+                self._call(client, dest)
+            self.assertFalse(dest.exists(), "半截文件不许留在下载目录里")
+
+    def test_a_tiny_partial_file_is_not_resumed(self):
+        """只拿到 1KB（多半是错误页）：不值得续传，直接从头重下并覆盖。"""
+        from backend import douyin_direct as D
+
+        client = _StubCdnClient([
+            _StubCdnStream(200, {"content-length": "300000"}, b"x" * 1024, D.httpx.ReadError("cut")),
+            _StubCdnStream(200, {"content-length": "300000"}, b"y" * 300_000),
+        ])
+        with tempfile.TemporaryDirectory() as folder:
+            dest = Path(folder) / "v.mp4"
+            self.assertEqual(self._call(client, dest), 300_000)
+            self.assertEqual(dest.read_bytes(), b"y" * 300_000)
+        self.assertIsNone(client.headers_seen[1], "太短的内容不值得续传，第二次仍要整份重下")
+
+
 if __name__ == "__main__":
     unittest.main()

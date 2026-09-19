@@ -66,6 +66,17 @@ RATIOS = ("1080p", "720p", "540p")
 SHARE_ATTEMPTS = 4
 SHARE_RETRY_SECONDS = 1.5
 
+# CDN 传输：断了就带着 Range 续传重试，不再「一断就整条换路由」。
+# 用户 2026-09-19：「感觉直连经常失败，要不要改用下载器 REST」——实测这一批 61 次直连只失败
+# 1 次，而那次的代价是：直连一断流就交给 REST，REST 交出来的又是**另一个半截文件**（还报
+# 「下载成功」），就是 012 事故的源头。所以直连要自己扛住断流，而不是急着换人。
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_RETRY_SECONDS = 3.0
+DOWNLOAD_CHUNK = 256 * 1024
+# 只拿到一丁点时（多半是错误页/空响应）不值得续传，直接重来。
+RESUME_MIN_BYTES = 64 * 1024
+CONTENT_RANGE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+)")
+
 # 锚定 play_addr 再取里面的 uri：不锁 `v0` 前缀（实测有 v2/v3 开头），也避开封面等其它 uri。
 PLAY_ADDR_URI = re.compile(r'"play_addr[^"]*"\s*:\s*\{[^{}]*?"uri"\s*:\s*"(v[0-9a-zA-Z]{10,})"')
 ANY_VIDEO_URI = re.compile(r'"uri"\s*:\s*"(v[0-9a-zA-Z]{10,})"')
@@ -229,6 +240,86 @@ def play_url(
     return None
 
 
+def _resolve_attempts(value: int | None) -> int:
+    if value is not None:
+        return max(1, int(value))
+    import os
+
+    try:
+        return max(1, int(os.getenv("H3_DOUYIN_DOWNLOAD_ATTEMPTS", "") or DOWNLOAD_ATTEMPTS))
+    except ValueError:
+        return DOWNLOAD_ATTEMPTS
+
+
+def download_cdn_file(
+    client: httpx.Client,
+    cdn: str,
+    dest: Path,
+    *,
+    on_progress: Callable[[int, int], None] | None = None,
+    attempts: int | None = None,
+) -> int:
+    """把 CDN 直链写成**完整**文件；中途断流就带 `Range` 续传重试。返回最终字节数。
+
+    三条硬约束（都是踩出来的）：
+    ① 每一轮都必须对得上长度：拿到的字节 < CDN 声明的长度 → 不算成功，续传再来。
+    ② 续传前先验服务器给的范围：`Content-Range` 的起点和我们请求的不一致就不能往文件后面
+       追加（否则拼出一份长度对、内容是错的视频 —— 比半截文件更难发现）。
+    ③ 抛错前把半截文件删掉：它留在下载目录里会被「本地已有这条作品」当成缓存捡回去。
+    """
+    total_attempts = _resolve_attempts(attempts)
+    last_error: Exception | None = None
+    for attempt in range(1, total_attempts + 1):
+        written = dest.stat().st_size if dest.is_file() else 0
+        if written < RESUME_MIN_BYTES:
+            written = 0
+            dest.unlink(missing_ok=True)
+        headers = {"Range": f"bytes={written}-"} if written else None
+        try:
+            with client.stream("GET", cdn, follow_redirects=True, headers=headers) as resp:
+                if resp.status_code == 416:
+                    # 「请求的范围越界」= 服务器认为文件已经齐了。
+                    break
+                if resp.status_code not in (200, 206):
+                    raise DouyinDirectError(f"CDN 直链下载失败：HTTP {resp.status_code}")
+                if resp.status_code == 206:
+                    match = CONTENT_RANGE.search(resp.headers.get("content-range") or "")
+                    if not match or int(match.group(1)) != written:
+                        # 服务器给的范围不是我们要的那一段：这份内容接不上去，丢弃后重来。
+                        dest.unlink(missing_ok=True)
+                        raise DouyinDirectError("CDN 返回的 Range 与请求不符，已丢弃重下")
+                    total = int(match.group(3))
+                else:
+                    # 200 = 完整响应（服务器不支持/忽略了 Range）：从头写。
+                    written = 0
+                    total = int(resp.headers.get("content-length") or 0)
+                with open(dest, "ab" if written else "wb") as handle:
+                    for chunk in resp.iter_bytes(DOWNLOAD_CHUNK):
+                        handle.write(chunk)
+                        written += len(chunk)
+                        if on_progress:
+                            on_progress(written, total)
+            if total and written < total:
+                raise DouyinDirectError(
+                    f"CDN 只传了 {written} 字节（应为 {total} 字节），继续续传"
+                )
+            return written
+        except Exception as error:  # noqa: BLE001 - 传输类异常一律走续传重试
+            last_error = error
+            if attempt >= total_attempts:
+                break
+            pending = dest.stat().st_size if dest.is_file() else 0
+            if pending < RESUME_MIN_BYTES:
+                pending = 0
+            logger.warning(
+                "直连下载第 %d/%d 次没传完（%s），%s 秒后从 %d 字节续传",
+                attempt, total_attempts, error, DOWNLOAD_RETRY_SECONDS, pending,
+            )
+            time.sleep(DOWNLOAD_RETRY_SECONDS)
+    dest.unlink(missing_ok=True)
+    raise DouyinDirectError(f"CDN 直链连续 {total_attempts} 次都没传完：{last_error}")
+
+
 def fetch(
     url: str,
     dest_dir: Path,
@@ -264,27 +355,10 @@ def fetch(
         safe = re.sub(r'[\\/:*?"<>|\s#]+', " ", first_line)[:60].strip() or "douyin"
         dest = dest_dir / f"{safe}_{aweme_id}.mp4"
 
-        with client.stream("GET", cdn, follow_redirects=True) as resp:
-            if resp.status_code not in (200, 206):
-                raise DouyinDirectError(f"CDN 直链下载失败：HTTP {resp.status_code}")
-            total = int(resp.headers.get("content-length") or 0)
-            written = 0
-            with open(dest, "wb") as fh:
-                for chunk in resp.iter_bytes(256 * 1024):
-                    fh.write(chunk)
-                    written += len(chunk)
-                    if on_progress:
-                        on_progress(written, total)
-        if not dest.is_file() or dest.stat().st_size < 10_000:
-            raise DouyinDirectError("下载到的文件过小（可能只拿到错误页）")
-        # CDN 声称的 content-length 没拿满 = 只写了半截文件。httpx 对 content-length
-        # 不匹配通常会自己抛，但 206/分块响应下会静默收尾，落到 ComfyUI 里才炸成
-        # 「No frames generated」（2026-09-19 条目 012 就是这种半截文件）。
-        if total and written < total:
+        written = download_cdn_file(client, cdn, dest, on_progress=on_progress)
+        if not dest.is_file() or written < 10_000:
             dest.unlink(missing_ok=True)
-            raise DouyinDirectError(
-                f"CDN 直链只传了 {written} 字节（应为 {total} 字节），文件不完整，已丢弃"
-            )
+            raise DouyinDirectError("下载到的文件过小（可能只拿到错误页）")
 
         return dest, {
             "awemeId": aweme_id,
