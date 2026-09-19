@@ -125,7 +125,7 @@ def _build_request(
     field: str,
     *,
     scene_image: Path,
-    identity_image: Path,
+    identity_image: Path | None = None,
     prompt: str,
     ratio: str,
     work_dir: Path,
@@ -133,6 +133,8 @@ def _build_request(
     files: list[tuple[str, tuple[str, bytes, str]]] = []
     text = prompt
     if plan == "composite":
+        if identity_image is None:
+            raise RuntimeError("composite 模式必须同时给场景图与身份图")
         combined = compose_reference(scene_image, identity_image, work_dir / "reference-combined.png")
         text = (
             "输入图是一张左右拼合的参考图：左半部分是「图一」（造型、服装、场景、灯光参考），"
@@ -141,7 +143,12 @@ def _build_request(
         )
         paths = [(combined, f"image[]")]
     else:
-        paths = [(Path(scene_image), field), (Path(identity_image), field)]
+        # **单参考**（identity_image=None）是给**封面**用的：封面以该条 `人物图.png` 为准，
+        # 只发一张。early 版本封面误传了「人物图 + 本人固定参考」两张**不同服装**的人像，
+        # 模型直接把两个人一起画进封面（用户 2026-09-19 截图确认）—— 封面必须只发一张。
+        paths = [(Path(scene_image), field)]
+        if identity_image is not None:
+            paths.append((Path(identity_image), field))
     for path, name in paths:
         if not path.is_file():
             raise RuntimeError(f"候选人物图缺少输入图片：{path}")
@@ -290,13 +297,17 @@ def _store(response: httpx.Response, output_path: Path) -> Path:
 async def generate_candidate_image(
     *,
     scene_image: Path,
-    identity_image: Path,
+    identity_image: Path | None = None,
     prompt: str,
     ratio: str,
     output_path: Path,
     on_progress: ProgressCallback | None = None,
 ) -> Path:
-    """用「图像-1 造型场景 + 图像-2 唯一身份」做图片编辑，产出候选人物图。"""
+    """用「图像-1 造型场景 + 图像-2 唯一身份」做图片编辑，产出候选人物图。
+
+    `identity_image=None` 时**只发一张参考图** —— 封面就是这么用的（见 `_build_request`
+    里那段说明：两张不同服装的人像会让模型画出两个人）。
+    """
     if ratio not in IMAGE_SIZES:
         raise RuntimeError(f"候选人物图不支持的比例：{ratio}")
     if not api_key():
@@ -332,7 +343,9 @@ async def generate_candidate_image(
                 plan,
                 field,
                 scene_image=Path(scene_image),
-                identity_image=Path(identity_image),
+                # 注意**不能**写 Path(identity_image)：封面走单参考时它是 None，Path(None) 会抛
+                # TypeError（"argument should be a str or an os.PathLike ... not 'NoneType'"）。
+                identity_image=Path(identity_image) if identity_image is not None else None,
                 prompt=prompt,
                 ratio=ratio,
                 work_dir=work_dir,

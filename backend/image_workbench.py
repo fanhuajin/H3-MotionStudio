@@ -368,7 +368,8 @@ async def _generate_cover(folder: Path, stage: str, kind: str) -> None:
         candidate = work / f"{stage}.png"
         await batch_image.generate_candidate_image(
             scene_image=asset_path(folder, "person"),
-            identity_image=IDENTITY_PATH,
+            # **封面只发这一张参考**（identity_image=None）：再给一张「本人固定参考」的话，
+            # 两张图是同一人的不同服装/场景，模型会把**两个人一起画进封面**（实测踩过）。
             prompt=prompt(folder, stage, kind),
             ratio="4:3" if stage == "bilibili" else "3:4",
             output_path=candidate,
