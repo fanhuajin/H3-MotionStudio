@@ -401,6 +401,38 @@ export function SubtitleRoute() {
 
       <main className="workspace">
         <section className="input-panel" aria-label="生成字幕设置">
+          {/* 一键批量放最上面：这是这个页面最常用的入口（用户 2026-09-19：「一键批量 放到最上边」） */}
+          <div className="field-block">
+            <div className="field-heading"><h2><span>⚡</span> 一键批量 <em>（发布成品里的唱歌视频）</em></h2></div>
+            <div className="subtitle-batch-row">
+              <button className="primary-action batch-action" onClick={startBatch} disabled={batchSubmitting || batchBusy || Boolean(job && jobActive)}>
+                {batchSubmitting ? <SpinnerGap className="spin" /> : <Subtitles weight="fill" />}
+                {batchSubmitting ? "正在扫描…" : "一键给所有唱歌视频生成字幕"}
+              </button>
+              <span className="action-hint">
+                扫描 E:\AI_Exports\H3-MotionStudio\发布成品，给缺字幕版的唱歌视频逐条生成；
+                已经出过字幕版的不重复生成。
+              </span>
+            </div>
+            {batchBusy && (
+              <div className="subtitle-batch-controls">
+                {job?.status === "running" && (
+                  <button className="ghost-action" onClick={pauseBatch} disabled={batchSubmitting}>
+                    <Pause weight="fill" /> 暂停（当前这条跑完即停）
+                  </button>
+                )}
+                {job?.status === "paused" && (
+                  <button className="secondary-action" onClick={resumeBatch} disabled={batchSubmitting}>
+                    <Play weight="fill" /> 继续生成
+                  </button>
+                )}
+                {["paused", "running"].includes(job?.status || "") && (
+                  <button className="ghost-action" onClick={cancelRun}>取消</button>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="field-block">
             <div className="field-heading"><h2><span>1.</span> 输入成片 <em>（要加字幕的那一条）</em></h2></div>
             <div className="ratio-cards" role="radiogroup" aria-label="输入来源">
@@ -461,37 +493,6 @@ export function SubtitleRoute() {
             )}
             {mode === "recent" && picked && (
               <p className="field-note">将给任务 {picked.id.slice(0, 8)} 的最终成片（{kindLabel(picked.kind)}）加字幕。</p>
-            )}
-          </div>
-
-          <div className="field-block">
-            <div className="field-heading"><h2><span>⚡</span> 一键批量 <em>（发布成品里的唱歌视频）</em></h2></div>
-            <div className="subtitle-batch-row">
-              <button className="primary-action batch-action" onClick={startBatch} disabled={batchSubmitting || batchBusy || Boolean(job && jobActive)}>
-                {batchSubmitting ? <SpinnerGap className="spin" /> : <Subtitles weight="fill" />}
-                {batchSubmitting ? "正在扫描…" : "一键给所有唱歌视频生成字幕"}
-              </button>
-              <span className="action-hint">
-                扫描 E:\AI_Exports\H3-MotionStudio\发布成品，给缺字幕版的唱歌视频逐条生成；
-                已经出过字幕版的不重复生成。
-              </span>
-            </div>
-            {batchBusy && (
-              <div className="subtitle-batch-controls">
-                {job?.status === "running" && (
-                  <button className="ghost-action" onClick={pauseBatch} disabled={batchSubmitting}>
-                    <Pause weight="fill" /> 暂停（当前这条跑完即停）
-                  </button>
-                )}
-                {job?.status === "paused" && (
-                  <button className="secondary-action" onClick={resumeBatch} disabled={batchSubmitting}>
-                    <Play weight="fill" /> 继续生成
-                  </button>
-                )}
-                {["paused", "running"].includes(job?.status || "") && (
-                  <button className="ghost-action" onClick={cancelRun}>取消</button>
-                )}
-              </div>
             )}
           </div>
 
