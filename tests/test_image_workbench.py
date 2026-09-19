@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -100,6 +101,20 @@ class ImageWorkbenchTests(unittest.TestCase):
             self.assertEqual(score, 80)
             self.assertEqual(shade_of(folder / workbench.PERSON_NAME), 20)
             self.assertFalse(hasattr(workbench.batch_ai, "judge_hands"))
+
+    def test_automation_started_at_does_not_restart_on_every_status_update(self) -> None:
+        """「已用 N 秒」用后端记的开始时间算 —— 页面切走再切回来不许从 0 重新数。"""
+        with patch.dict(workbench.AUTOMATIONS, {}, clear=True):
+            workbench._set_auto("work", status="queued", message="已加入自动生成队列")
+            started = workbench.AUTOMATIONS["work"]["startedAt"]
+            time.sleep(0.02)
+            workbench._set_auto("work", status="running", message="正在生成人物图")
+            self.assertEqual(workbench.AUTOMATIONS["work"]["startedAt"], started)
+            time.sleep(0.02)
+            workbench._set_auto("work", status="completed", message="已完成生成")
+            # 接着重新点一次生成 → 这是新的一轮，必须换一个开始时间
+            workbench._set_auto("work", status="queued", message="已加入自动生成队列")
+            self.assertGreater(workbench.AUTOMATIONS["work"]["startedAt"], started)
 
     def test_prompts_forbid_broken_hands(self) -> None:
         """手部只靠提示词约束：不许自创手势、不许画崩（用户 2026-09-19）。"""

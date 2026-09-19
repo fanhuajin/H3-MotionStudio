@@ -6,7 +6,7 @@ import { readJson } from "./api";
 
 type Asset = { name: string; width: number; height: number; bytes: number } | null;
 /** 后端 image_workbench.AUTOMATIONS 里的单条状态（list_items 会带出来）。 */
-type AutomationState = { status?: string; stage?: string; message?: string } | null;
+type AutomationState = { status?: string; stage?: string; message?: string; startedAt?: number } | null;
 type WorkItem = {
   id: string; folderName: string; title: string; copy: string;
   kind: "singing" | "dance" | null;
@@ -88,6 +88,8 @@ export function ImageWorkbenchRoute() {
   }, [autoLive, refresh]);
 
   // 记录/清除每条任务的开始时刻（每次刷新 items 都会重跑，正好跟着轮询走）。
+  // 这只是**兜底**：真实开始时间以后端 `automation.startedAt` 为准 —— 切走再切回来时
+  // 组件重建、这里的本地时刻会丢，光靠它「已用 N 秒」会从 0 重新数（用户 2026-09-19 问过）。
   useEffect(() => {
     const now = Date.now();
     for (const row of items) {
@@ -96,6 +98,14 @@ export function ImageWorkbenchRoute() {
       if (!live) delete autoClock.current[row.id];
     }
   }, [items]);
+
+  /** 这一条当前这一步已经跑了多少秒（后端给了 startedAt 就用它，切页/刷新都不会归零）。 */
+  const elapsedOf = (row: WorkItem) => {
+    const started = row.automation?.startedAt;
+    if (started) return Math.max(0, Math.round(Date.now() / 1000 - started));
+    const local = autoClock.current[row.id];
+    return local ? Math.max(0, Math.round((Date.now() - local) / 1000)) : 0;
+  };
 
   // 「已用 N 秒」要 1 秒 1 秒地走：轮询是每 2 秒一次，光靠它秒数会一格格跳
   // （用户 2026-09-19：「已用多少秒 1秒 1秒的跳」）。这里挂一个独立心跳只做重渲染。
@@ -274,7 +284,7 @@ export function ImageWorkbenchRoute() {
         <div className="image-workbench-main">
           {!item ? <div className="image-workbench-blank"><ImageSquare /><p>发布目录里暂时没有可处理的作品。</p></div> : <>
             <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span><button onClick={() => startAuto(item.id)} disabled={busy}>本条三张一次跑完</button></div></div>
-            {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><SpinnerGap className="spin" />{item.automation.message || "正在自动生成…"}{autoClock.current[item.id] ? `（已用 ${Math.max(0, Math.round((Date.now() - autoClock.current[item.id]) / 1000))} 秒）` : ""}</p>}
+            {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><SpinnerGap className="spin" />{item.automation.message || "正在自动生成…"}{elapsedOf(item) ? `（已用 ${elapsedOf(item)} 秒）` : ""}</p>}
             {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><Check weight="bold" />{item.automation.message}</p>}
             {item.automation?.status === "failed" && <p className="image-auto-failed"><WarningCircle />{item.automation.message || "自动生成失败"}</p>}
             <div className="image-stage-tabs">{STAGES.map((entry, index) => { const ready = Boolean(item.assets[entry.id]); return <button key={entry.id} className={stage === entry.id ? "active" : ""} onClick={() => setStage(entry.id)}><i>{ready ? <Check weight="bold" /> : index + 1}</i><span><strong>{entry.label}</strong><small>{entry.spec}</small></span></button>; })}</div>

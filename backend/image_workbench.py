@@ -289,9 +289,21 @@ async def watch_downloads(folder: Path, stage: str, kind: str = "singing", timeo
     return watch_id
 
 
+AUTO_LIVE_STATUSES = {"queued", "running"}
+
+
 def _set_auto(folder_id: str, **changes: Any) -> None:
     current = dict(AUTOMATIONS.get(folder_id) or {})
+    # 本轮开始时间由**后端**记：页面切走再切回来会重建组件、丢掉本地计时，
+    # 于是「已用 N 秒」会从 0 重新数（看起来像重跑了一遍，用户 2026-09-19 问过）。
+    # 记在这里之后，切换/刷新页面都按真实开始时间接着数。
+    status = str(changes.get("status") or "")
+    was_live = str(current.get("status") or "") in AUTO_LIVE_STATUSES
+    if status in AUTO_LIVE_STATUSES and not was_live:
+        current["startedAt"] = time.time()
     current.update(changes)
+    if str(current.get("status") or "") in AUTO_LIVE_STATUSES and not current.get("startedAt"):
+        current["startedAt"] = time.time()
     current["updatedAt"] = time.time()
     AUTOMATIONS[folder_id] = current
 
