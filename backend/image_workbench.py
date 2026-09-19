@@ -24,6 +24,10 @@ PERSON_NAME = "人物图.png"
 COVER_NAMES = {"bilibili": "B站4x3.png", "douyin": "抖音3x4.png"}
 LEGACY_COVER_NAMES = {"bilibili": "封面_B站4x3.png", "douyin": "封面_抖音3x4.png"}
 TARGETS = {"bilibili": (1448, 1086), "douyin": (1086, 1448)}
+# 人物图身份自检：相似度必须 ≥70（用户 2026-09-19：「人物相似度 必须70%以上」），
+# 不够就重做，最多 PERSON_MAX_ATTEMPTS 次，保留分数最高的那张。
+PERSON_MIN_SIMILARITY = 70
+PERSON_MAX_ATTEMPTS = 3
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 WATCHES: dict[str, dict[str, Any]] = {}
 AUTOMATIONS: dict[str, dict[str, Any]] = {}
@@ -307,21 +311,42 @@ def person_prompt(folder: Path, kind: str) -> str:
     )
 
 
-async def _generate_person(folder: Path, kind: str) -> None:
+async def _generate_person(folder: Path, kind: str) -> int:
+    """API 出人物图 + 身份自检：**相似度 <70 就重做**（上限 3 次），**留分数最高的那张**。
+
+    用户 2026-09-19：「人物相似度 必须70%以上」。
+    返回最终保留那张的相似度；判据本身失败（模型不可用等）时不重试、不卡链路，
+    直接收下当次结果并返回 -1 —— 自检只是质量门槛，不是出片前提。
+    """
     frame = asset_path(folder, "frame")
     ratio = "4:3" if kind == "singing" else "9:16"
     work = Path(tempfile.mkdtemp(prefix="h3-auto-person-"))
     try:
         scene, _ = await batch_image.defocus_reference_face(frame, work)
-        candidate = work / "candidate.png"
-        await batch_image.generate_candidate_image(
-            scene_image=scene,
-            identity_image=IDENTITY_PATH,
-            prompt=person_prompt(folder, kind),
-            ratio=ratio,
-            output_path=candidate,
-        )
-        save_upload(folder, "person", candidate.read_bytes(), kind)
+        best_bytes: bytes | None = None
+        best_score = -1
+        for attempt in range(1, PERSON_MAX_ATTEMPTS + 1):
+            candidate = work / f"candidate_{attempt}.png"
+            await batch_image.generate_candidate_image(
+                scene_image=scene,
+                identity_image=IDENTITY_PATH,
+                prompt=person_prompt(folder, kind),
+                ratio=ratio,
+                output_path=candidate,
+            )
+            try:
+                result = await batch_ai.judge_identity(IDENTITY_PATH, candidate)
+                score = max(0, min(100, int(result.get("similarity") or 0)))
+            except Exception:
+                save_upload(folder, "person", candidate.read_bytes(), kind)
+                return -1
+            if best_bytes is None or score > best_score:
+                best_bytes = candidate.read_bytes()
+                best_score = score
+            if score >= PERSON_MIN_SIMILARITY:
+                break
+        save_upload(folder, "person", best_bytes, kind)
+        return max(0, best_score)
     finally:
         import shutil
         shutil.rmtree(work, ignore_errors=True)
@@ -363,13 +388,14 @@ async def run_automatic(folder_id: str, *, force: bool = False,
     _set_auto(folder_id, status="queued", stage="waiting", message="已加入自动生成队列", kind=kind)
     async with _AUTO_LOCK:
         try:
+            person_score = -1
             for step in steps:
                 label = {"bilibili": "B站封面", "douyin": "抖音封面"}.get(step, "人物图")
                 if step == "person":
                     if force or not (folder / PERSON_NAME).is_file():
                         _set_auto(folder_id, status="running", stage="person",
-                                  message="正在生成2K人物图", kind=kind)
-                        await _generate_person(folder, kind)
+                                  message=f"正在生成2K人物图（相似度需≥{PERSON_MIN_SIMILARITY}）", kind=kind)
+                        person_score = await _generate_person(folder, kind)
                     continue
                 if not (folder / PERSON_NAME).is_file():
                     raise RuntimeError("请先生成人物图，再做封面")
@@ -379,6 +405,8 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                           message=f"正在生成{label}", kind=kind)
                 await _generate_cover(folder, step)
             done = "人物图与封面已自动补齐" if not stage else "已完成生成"
+            if stage in (None, "person") and person_score >= 0:
+                done += f"（人物图相似度 {person_score}/100）"
             _set_auto(folder_id, status="completed", stage="done", message=done, kind=kind)
         except Exception as exc:  # noqa: BLE001 - status is surfaced to the page
             _set_auto(folder_id, status="failed", message=str(exc), kind=kind)

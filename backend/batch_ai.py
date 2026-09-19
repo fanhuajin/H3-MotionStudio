@@ -224,6 +224,46 @@ async def _chat_structured(
     raise RuntimeError(f"{label}：{last_error[:400]}")
 
 
+IDENTITY_JUDGE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "same_person": {"type": "boolean"},
+        "similarity": {"type": "integer"},
+        "differences": {"type": "array", "items": {"type": "string"}},
+        "verdict": {"type": "string"},
+    },
+    "required": ["same_person", "similarity", "differences", "verdict"],
+}
+
+IDENTITY_JUDGE_INSTRUCTION = (
+    "第一张图是**身份原型**（唯一身份锚点）。第二张图是**生成图**。\n"
+    "判断第二张图里人物的脸是否与第一张图是**同一个人**。\n"
+    "只依据面部结构：脸型、五官比例、眼型与眼距、眼皮结构、眉形、鼻梁鼻头鼻翼、"
+    "唇形与唇厚、面颊、下颌线、年龄感。\n"
+    "**不要**被发型、发色、妆容、服装、配饰、光线、背景、姿态、镜头角度影响。\n"
+    "similarity：0-100 整数（90+ 一眼同一人；60-89 像但有差别；40-59 气质相近但不是同一张脸；"
+    "40 以下明显不是）。differences：中文逐条列出具体五官差异（没有就空数组）。"
+)
+
+
+async def judge_identity(identity: Path, candidate: Path) -> dict[str, Any]:
+    """视觉模型判身份相似度：身份原型 vs 生成图 → {same_person, similarity, differences, verdict}。
+
+    与 `scripts/judge_identity.py` 同一套 schema/指令/端点（DeepSeek 视觉），
+    供自动出图链路在保存前自检（用户 2026-09-19：相似度必须 70 以上，不够就重做）。
+    """
+    content = [
+        {"type": "text", "text": IDENTITY_JUDGE_INSTRUCTION},
+        {"type": "image_url", "image_url": {"url": _data_url(identity), "detail": "high"}},
+        {"type": "image_url", "image_url": {"url": _data_url(candidate), "detail": "high"}},
+    ]
+    return await _chat_structured(
+        content=content, schema=IDENTITY_JUDGE_SCHEMA, name="face_compare", label="人脸比对失败"
+    )
+
+
+
 def compose_prompt(kind: str, style_source: str = "video", song_name: str = "") -> str:
     """取本地 Krea2 双图编辑要用的提示词正文（图像-1 造型场景 / 图像-2 身份）。
 
