@@ -272,22 +272,29 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("不要自行设计新手势", cover)
 
     def test_prompts_forbid_blurry_hands(self) -> None:
-        """2026-09-20 用户：「生成的图片有的手会模糊 禁止模糊」。
+        """2026-09-20 用户：「生成的图片有的手会模糊 禁止模糊」＋「复制提示词也是复制你的」。
 
-        手工入口读的是**用户桌面那份长提示词**（存在就优先），所以这条约束也必须写在
-        `prompt()` 的代码里；封面那条路（`_generate_cover`）同样要带，否则封面又会照抄
-        人物图/抽帧里的运动模糊。注意要和「不许照搬参考图的模糊」一起写：
-        只说「禁止虚化」挡不住"参考图本身就是糊的"这一路。
+        手工入口读的是**用户桌面那份长提示词**（存在就优先），所以这条约束必须写在
+        `prompt()` 的代码里；封面那条路（`_generate_cover`）同样要带。
+        ⚠️ 用户 2026-09-20 追加要求**复制出去的那份和自动出图那份是同一段**：所以这里
+        直接断言 `batch_ai.SHARPNESS_BLOCK` 原文出现，而不是"含某个词"——
+        以后改口径只改 `batch_ai` 一处，四个入口（自动出图 / 复制提示词 / 素材包 / 封面）一起变。
         """
+        block = batch_ai.SHARPNESS_BLOCK.strip()
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             person = workbench.prompt(folder, "person", "dance")
             cover = workbench.prompt(folder, "douyin", "dance")
-        self.assertIn("禁止景深虚化", person)
-        self.assertIn("不要照搬", person)
-        self.assertIn("禁止模糊", cover)
-        self.assertIn("不要照搬", cover)
+            # 素材包里的 提示词.txt 就是 `prompt()` 的产物，这里只验它带同一段
+            zipped = workbench.material_zip(folder, "person", "dance")
+        self.assertIn(block, person, "复制出去的人物图提示词必须是同一段禁止模糊口径")
+        self.assertIn(block, cover, "封面提示词也要带同一段")
+        import io
+        import zipfile
+
+        with zipfile.ZipFile(io.BytesIO(zipped)) as archive:
+            self.assertIn(block, archive.read("提示词.txt").decode("utf-8"))
         # 封面这条 CDP 链路（桌面端出封面）也要带
         self.assertIn("禁止模糊", chatgpt_image.COVER_SHARPNESS_RULE)
         for _tag, instruction, _name in chatgpt_image.COVER_TASKS:

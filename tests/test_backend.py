@@ -2612,6 +2612,24 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("不要进一步扩大领口", singing)
         self.assertNotIn("禁止吊带、抹胸、露肩", singing)
 
+    def test_desktop_cdp_person_prompt_carries_the_no_blur_rule(self) -> None:
+        """桌面 CDP 那条按需出图路（`scripts/chat_imagegen.py`）也要带「禁止模糊」。
+
+        那条路的人物图提示词走**用户桌面那份规则 .txt 附件**，正文里只有身份块 + 比例；
+        桌面文件里有【禁止虚化】但没有最关键的那句「参考图里的手若是模糊的，不要照搬」
+        （抽帧里手在动，模型会照抄）。所以这一句必须由 `person_body()` 补进正文，
+        且顺序是：禁止模糊 → 身份块 → 比例（身份与比例要最后读到）。
+        """
+        from scripts.chat_imagegen import SHARPNESS_NOTE, person_body
+
+        body = person_body("【身份优先级】保住本人", "【画面比例·硬要求】9:16")
+        self.assertIn("不要照搬那份模糊", body)
+        self.assertIn("禁止景深虚化/浅景深把手糊掉", SHARPNESS_NOTE)
+        self.assertLess(body.index("禁止模糊"), body.index("【身份优先级】"))
+        self.assertLess(body.index("【身份优先级】"), body.index("【画面比例·硬要求】"))
+        # 关掉身份块时也不会把比例弄丢
+        self.assertIn("【画面比例·硬要求】", person_body("", "【画面比例·硬要求】9:16"))
+
     def test_batch_tags_are_exactly_five(self) -> None:
         """发布标签固定 5 个。"""
         schema = json.loads((Path(__file__).parents[1] / "backend" / "batch_ai_schema.json").read_text(encoding="utf-8"))

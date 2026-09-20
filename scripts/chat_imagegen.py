@@ -567,6 +567,30 @@ def wait_new_image(page, disk_before: dict, imgs_before: list[dict], ref_sizes: 
     return None
 
 
+# 禁止模糊（用户 2026-09-20：「生成的图片有的手会模糊 禁止模糊」）。
+# 桌面那份规则文件（`9比16图片.txt` / `4比3图片.txt`）里有【禁止虚化】，但缺**最关键的那一句**：
+# 抽帧里手正在动、本身就是糊的，模型会把这层模糊**照抄**进成图（013 实测）。所以这一句补在
+# **消息正文**里 —— 正文排在 .txt 附件之后，是模型最后读到的东西。
+SHARPNESS_NOTE = (
+    "【禁止模糊 · 硬要求】整个人物必须落在清晰焦平面内：脸、头发、肩膀、手臂、双手、"
+    "每根手指与指甲都要锐利清晰，能看清指节与指甲边缘。禁止景深虚化/浅景深把手糊掉，"
+    "禁止运动模糊、局部模糊、涂抹感；背景也不要重度虚化。"
+    "**参考图里的手若是模糊的（运动模糊/失焦），不要照搬那份模糊**，要按清晰锐利的正常手重画；"
+    "实在画不清晰就把手势改简单（自然垂放或轻放身侧），或干脆让手不入镜 —— "
+    "宁可手不入镜，也不许出现模糊的手。"
+)
+
+
+def person_body(identity_text: str, ratio_text: str) -> str:
+    """人物图那一步发在**消息正文**里的短指令：禁止模糊 → 身份优先级 → 画面比例。
+
+    顺序不能反：身份块与比例要求必须排在最后（模型对末尾最敏感），禁止模糊排在它们之前。
+    规则本体仍走 `.txt` 附件（用户 2026-09-16 的风控要求：长提示词不当正文发）。
+    """
+    parts = [SHARPNESS_NOTE, (identity_text or "").strip(), (ratio_text or "").strip()]
+    return "\n\n".join(part for part in parts if part)
+
+
 def ratio_line(want_ratio: float) -> str:
     """画面比例的硬要求，放在消息末尾（模型对末尾最敏感）。
 
@@ -1075,11 +1099,8 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
                 return {"code": EXIT_GATE1}
         want_ratio = SING_RATIO if kind == "singing" else DANCE_RATIO
         scene_used = defocus_scene(scene, folder) if args.identity_guard else scene
-        # 身份优先级块放在**消息正文**里：它排在 .txt 附件之后，是模型最后读到的东西
-        body = identity_block() if args.identity_guard else ""
-        rl = ratio_line(want_ratio)
-        if rl:
-            body = (body + "\n\n" + rl).strip()
+        # 消息正文 = 禁止模糊 + 身份优先级 + 画面比例（身份与比例排在最后，模型最后读到）
+        body = person_body(identity_block() if args.identity_guard else "", ratio_line(want_ratio))
         images, prompt_file = [scene_used, identity], rule
         log(f"门1 ✓ {scene.name}{probe_image(scene)} {identity.name}{probe_image(identity)} "
             f"规则={rule.name} ｜ 图一={'已糊脸' if scene_used != scene else '原图'}"
