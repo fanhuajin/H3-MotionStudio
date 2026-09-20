@@ -3885,6 +3885,72 @@ def _retry_item_video_once(batch_id: str, item_id: str, message: str, *, attempt
     )
 
 
+def reset_dangling_running_items(
+    batch_id: str, live_job_ids: set[str] | None = None
+) -> list[str]:
+    """重启对账：把「写着 running、这一轮却没人接着跑」的条目放回可重跑的状态。
+
+    为什么必须对账（2026-09-20 引入并行编排之后）：runner 会**同时**跑两条（一条出片 +
+    一条备料），而重启时 `batch_store.interrupt_active()` **只看 `currentItemId` 那一条**
+    —— 另一条会孤零零停在 `running`：新一代 runner 看它是 running 就不挑它
+    （`_next_work` 只认 pending/revising/confirmed），页面上的「重新开始」又拒绝 running 的
+    条目（"正在出片，请先取消再重新开始"），等于要人工「取消 + 重新开始」两步才能救回来。
+    这与 `_cancel_stale_prep_task` 防的是同一件事（备料任务换代时也必须把条目放回 pending）。
+
+    判定逐条做，不猜：
+    · 出片那条的 ComfyUI 任务真被接回来了（`videoJobId` 在 `live_job_ids` 里，
+      见 `app._recover_or_interrupt_orphan_jobs`）→ **不动它**，交给恢复流程续跑；
+    · 其余 running：出片（`stage == "video"`）放回 `confirmed` —— runner 会重新出片；
+      备料（下载中 / 备料中）放回 `pending` —— 重跑是幂等的（源视频、抽帧、提示词都在，
+      `_adopt_previous_work` 与「已经有候选图就沿用」会跳过已完成的部分）。
+    """
+    live = {str(job) for job in (live_job_ids or set()) if str(job or "")}
+    state = batch_store.get(batch_id) or {}
+    touched: list[str] = []
+    for item in list(state.get("items") or []):
+        if str(item.get("status")) not in {"running", "revising"}:
+            continue
+        item_id = str(item.get("id") or "")
+        if not item_id:
+            continue
+        job_id = str(item.get("videoJobId") or "")
+        if job_id and job_id in live:
+            continue
+        rendering = str(item.get("stage") or "") == "video"
+        target, stage = ("confirmed", "confirmed") if rendering else ("pending", "queued")
+
+        def apply(row: dict[str, Any], target: str = target, stage: str = stage) -> None:
+            row.update(
+                status=target,
+                stage=stage,
+                childJob=None,
+                videoJobId=None,
+                error=None,
+                finishedAt=None,
+                deleteRequested=False,
+                skipRequested=False,
+            )
+            for milestone in row.get("milestones") or []:
+                if milestone.get("status") in {"running", "error"}:
+                    milestone.update(
+                        status="pending", progress=0, currentNode=None, finishedAt=None
+                    )
+
+        batch_store.mutate_item(batch_id, item_id, apply)
+        batch_store.add_item_log(
+            batch_id,
+            item_id,
+            (
+                "本地服务重启：这一条出片没人接着跑，已放回「已确认」，runner 会重新出片。"
+                if rendering
+                else "本地服务重启：这一条备料没人接着跑，已放回队列重新备料"
+                "（已备好的素材会沿用，不会重做）。"
+            ),
+        )
+        touched.append(item_id)
+    return touched
+
+
 async def run_batch(batch_id: str) -> None:
     """批次 runner：**出片优先、备料并行一条** —— 第一条备好就开跑，出片期间继续备下一条。
 

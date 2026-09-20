@@ -3445,8 +3445,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 「未完成」= 除 completed 以外的一切（含已跳过 / 已失败）
         self.assertIn('open: (item) => item.status !== "completed",', source)
         self.assertIn('completed: (item) => item.status === "completed",', source)
-        # 细状态没有被删掉：行内徽章仍按 item.status 显示
-        self.assertIn("batchStatusLabel(item.status)", source)
+        # 细状态没有被删掉：行内徽章仍按 item.status 显示（再带上 stage，好把并行的
+        # 「备料中」与「出片中」分开 —— 2026-09-20 用户看到两条「正在处理」问过为什么）
+        self.assertIn("batchStatusLabel(item.status, item.stage)", source)
         # 旧的细标签不该再出现在 TABS 里
         for gone in (
             '{ id: "preparing"',
@@ -3759,6 +3760,45 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(
             batch_worker._running_notice(prep_row, state, prep_row), "正在备料第 2 / 2 条。"
         )
+
+    def test_restart_puts_a_dangling_running_item_back_in_the_queue(self) -> None:
+        """重启对账：出片与备料并行时，重启只收得掉 `currentItemId` 那一条，另一条会卡死。
+
+        2026-09-20 起 runner 同时跑两条，而 `batch_store.interrupt_active()` 只看
+        `currentItemId` —— 落在 `running` 里的另一条：新一代 runner 不挑它（`_next_work`
+        只认 pending/revising/confirmed），页面上的「重新开始」又拒绝 running 的条目
+        （"正在出片，请先取消再重新开始"），只能人工两步救回来。所以启动时逐条对账。
+        """
+        from backend import batch_worker
+        from backend.batch_worker import new_batch_state
+
+        state = new_batch_state(["https://v.douyin.com/s1"], ["https://v.douyin.com/d1"])
+        prep_row, video_row = state["items"]        # 唱歌那条在备料、跳舞那条在出片
+        prep_row.update(status="running", stage="prepare")
+        video_row.update(status="running", stage="video", videoJobId="live-job")
+        box = {"state": state}
+
+        with patch.object(batch_worker, "batch_store", _BoxStore(box)):
+            # 出片那条的 ComfyUI 任务还在（恢复流程会接回来）→ 一个都不许动它
+            touched = batch_worker.reset_dangling_running_items("b1", {"live-job"})
+            self.assertEqual(touched, [prep_row["id"]])
+            self.assertEqual(prep_row["status"], "pending")
+            self.assertEqual(prep_row["stage"], "queued")
+            self.assertFalse(
+                [row for row in prep_row["milestones"] if row["status"] in {"running", "error"}],
+                prep_row["milestones"],
+            )
+            self.assertEqual(video_row["status"], "running")
+            self.assertEqual(video_row["videoJobId"], "live-job")
+
+            # 出片那条的 ComfyUI 任务也没了 → 放回 confirmed，runner 会重新出片
+            touched = batch_worker.reset_dangling_running_items("b1", set())
+            self.assertEqual(touched, [video_row["id"]])
+            self.assertEqual(video_row["status"], "confirmed")
+            self.assertIsNone(video_row["videoJobId"])
+
+            # 幂等：已经没有 running 的条目了，再对账一次什么都不做
+            self.assertEqual(batch_worker.reset_dangling_running_items("b1", set()), [])
 
     def test_confirmed_dance_renders_before_confirmed_singing(self) -> None:
         """已确认的两类都在排队时，GPU 先跑跳舞那一条（编号不动）。"""

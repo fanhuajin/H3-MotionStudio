@@ -61,6 +61,7 @@ from .batch_worker import (
     replace_item_source,
     replace_item_source_file,
     request_review_adjustment,
+    reset_dangling_running_items,
     reset_review_row,
     restart_batch_items,
     restart_item_log,
@@ -367,7 +368,17 @@ async def lifespan(_: FastAPI):
     # 2026-09-16 实测：一条僵尸字幕任务（剪映识别那一步随重启没了，状态永远停在 running）
     # 一直占着 `store.active()`，批量的出片等待循环被它无限期堵死 —— 条目全卡在
     # 「已有单链路任务运行，当前条目正在等待资源。」，用户看到的就是「点了重新开始没反应」。
-    await _recover_or_interrupt_orphan_jobs()
+    # 逐条对账（2026-09-20）：runner 会**同时**跑「一条出片 + 一条备料」，而上面那些收尾
+    # 逻辑（`interrupt_active()`）只看 `currentItemId` 那一条 —— 另一条会孤零零停在
+    # `running`：新一代 runner 不挑它、页面上的「重新开始」又拒绝 running 的条目。
+    # 接回来的出片条目原样保留，其余 running 的按类型放回 confirmed / pending。
+    recovered = await _recover_or_interrupt_orphan_jobs()
+    for batch in batch_store.active_batches():
+        batch_id = str(batch.get("id") or "")
+        try:
+            reset_dangling_running_items(batch_id, recovered)
+        except Exception:  # noqa: BLE001 - 对账失败不能把服务拦在启动阶段
+            logger.exception("重启对账条目失败（忽略）：%s", batch_id[:8])
     # 排队中的字幕任务在重启后没人再接单（runner 随进程一起没了）：标成 interrupted，
     # 页面就能给出「重新开始」（源成片还在任务目录里，不用重新上传）。
     for queued in store.waiting():
@@ -642,8 +653,12 @@ async def _resume_orphan_and_batch(job_id: str) -> None:
             logger.exception("恢复任务完成后整理批次交付失败：%s/%s", owner[0], owner[1])
 
 
-async def _recover_or_interrupt_orphan_jobs() -> None:
-    """Recover live ComfyUI prompts; interrupt only genuine orphan records."""
+async def _recover_or_interrupt_orphan_jobs() -> set[str]:
+    """Recover live ComfyUI prompts; interrupt only genuine orphan records.
+
+    返回**这一轮真接回来了**的任务 id 集合 —— 启动对账（`reset_dangling_running_items`）
+    靠它区分「出片那条还在 ComfyUI 里跑着」和「这条纯粹没人管了」。
+    """
     try:
         rows = store.active_all()
         async with httpx.AsyncClient(timeout=15) as client:
@@ -659,7 +674,7 @@ async def _recover_or_interrupt_orphan_jobs() -> None:
     except Exception:
         logger.exception("检查 ComfyUI 残留任务失败，退回安全中断逻辑")
         _interrupt_orphan_jobs()
-        return
+        return set()
 
     recovered: set[str] = set()
     for state in rows:
@@ -686,6 +701,8 @@ async def _recover_or_interrupt_orphan_jobs() -> None:
             finishedAt=now_iso(),
         )
         store.add_log(job_id, "本地服务重启后未找到仍在运行的 ComfyUI 任务，已标记为中断。")
+
+    return recovered
 
 
 def _heal_stalled_batch(state: dict[str, Any] | None) -> dict[str, Any] | None:
