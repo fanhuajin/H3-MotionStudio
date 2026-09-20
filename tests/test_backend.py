@@ -2081,28 +2081,33 @@ class WorkflowPreparationTests(unittest.TestCase):
                     self.assertEqual(_image_provider(), "manual")
 
     def test_batch_ai_image_prompt_carries_review_feedback(self) -> None:
-        """审核修改意见必须进入出图提示词，否则「调整图片」只会改文案、图不动。"""
-        base = batch_ai.compose_prompt("singing", "video")
-        # 出图提示词以造型提示词开头，后面追加构图规格、歌曲与身份约束
-        self.assertTrue(batch_ai.compose_image_prompt("singing", "video", "", "both").startswith(base))
+        """审核修改意见必须进入出图提示词，否则「调整图片」只会改文案、图不动。
+
+        ⚠️ 2026-09-20 起自动出图改走**精简模板**（`COMPACT_IMAGE_PROMPT`）：
+        实测长提示词（6.6k 字，以 `9x16跳舞构图.txt` 开头）会把着装合规要求淹掉，
+        模型照抄图一的低胸镂空蕾丝 → 着装判据不过；精简到 400 字后立刻合规。
+        所以这里**不再断言"以造型提示词文件开头"**，改断言确实是精简模板。
+        """
+        prompt = batch_ai.compose_image_prompt("singing", "video", "", "both")
+        self.assertTrue(prompt.startswith("以图像-1（源视频抽帧）"))
+        self.assertLess(len(prompt), 2000, "自动出图必须是精简提示词，别把长提示词拼回来")
+        self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
         # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
         copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
-        self.assertTrue(copy_prompt.startswith(base))
         self.assertNotIn("换背景", copy_prompt)
         for mode in ("image", "both"):
-            prompt = batch_ai.compose_image_prompt("singing", "video", "头顶留白压到 2%", mode)
-            self.assertIn("头顶留白压到 2%", prompt)
-            self.assertIn("本次必须优先满足的修改要求", prompt)
-            self.assertTrue(prompt.startswith(base))
+            changed = batch_ai.compose_image_prompt("singing", "video", "头顶留白压到 2%", mode)
+            self.assertIn("头顶留白压到 2%", changed)
+            self.assertIn("本次必须优先满足的修改要求", changed)
 
     def test_batch_ai_image_prompt_carries_the_song(self) -> None:
         """歌曲必须真的进入出图提示词，否则「图一给造型、歌曲给情绪」落不了地。"""
-        # 1) 《歌曲名》是源文件里的字面占位符，必须被真实歌名替换
+        # 1) 《歌曲名》是源文件里的字面占位符，必须被真实歌名替换（长提示词文件仍然要能替换）
         redesign = batch_ai.compose_prompt("singing", "redesign", "爱如潮水")
         self.assertIn("《爱如潮水》", redesign)
         self.assertNotIn(batch_ai.SONG_PLACEHOLDER, redesign)
 
-        # 2) 沿用源视频造型时：歌名 + 情绪进入提示词，并且把分工写清
+        # 2) 自动出图：歌名 + 情绪进入提示词，并且把分工写清
         prompt = batch_ai.compose_image_prompt(
             "singing",
             "video",
@@ -2111,8 +2116,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertIn("【本次歌曲】《爱如潮水》", prompt)
         self.assertIn("抒情慢板，克制的失恋感", prompt)
-        self.assertIn("图一决定人物的发型、发色、服装、配饰、场景、环境与灯光", prompt)
-        self.assertIn("不要因为歌曲而改动图一已经给出的造型要素", prompt)
+        self.assertIn("歌曲只用来决定人物的情绪表达", prompt)
+        self.assertIn("不要因为歌曲改动上面已经定好的服装与场景", prompt)
 
         # 3) 跳舞没有歌曲，不能凭空塞一个歌曲块
         self.assertNotIn("【本次歌曲】", batch_ai.compose_image_prompt("dance"))
@@ -7865,8 +7870,13 @@ class PublishWatcherTests(unittest.TestCase):
             self._image(folder / "人物图.png", b"user-portrait-A")
             batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
             client = _StubClient()
+            # 监听开关是**落盘的用户设置**：不换成临时文件的话，这台机器上页面把监听关掉之后
+            # 这个用例就会失败（2026-09-20 实测）。与同类用例保持一致，钉到临时文件。
+            settings_file = Path(tmp) / "publish_watch.json"
 
-            with patch.object(watcher, "store", lambda: _ExplodingStore()):
+            with patch.object(watcher, "store", lambda: _ExplodingStore()), \
+                 patch.object(watcher, "SETTINGS_FILE", settings_file), \
+                 patch.object(watcher.settings, "env_value", lambda name, default="": ""):
                 done = asyncio_module.run(
                     watcher.scan_once(client=client, batches=[batch],
                                       root=root / "发布成品", write_state=False)
