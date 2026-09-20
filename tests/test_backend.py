@@ -3704,11 +3704,12 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(len(always.calls), douyin_direct.SHARE_ATTEMPTS)
         self.assertGreater(len(set(always.calls)), 1)
 
-    def test_batch_download_prefers_direct_route(self) -> None:
-        """直连是主路由：它成功时**不许**再去起下载器进程（那条详情接口被 Argus 门禁）。
+    def test_batch_download_uses_rest_by_default_not_direct(self) -> None:
+        """用户 2026-09-20：「直连 CDN（断流自动续传）不要这个 直接用 REST」。
 
-        2026-09-16 改序：下载器 `/aweme/v1/web/aweme/detail/` 被门禁后，先走它每条都要白等
-        3 次重试（~17 秒）再起一个下载器进程，而直连 3 秒就下完了。
+        默认**只走下载器 REST**；直连那条（`_fetch_source_direct` / `backend.douyin_direct.fetch`）
+        **不许被调用** —— 要显式 `H3_DOUYIN_DIRECT=1` 才启用（启用后它做首选、失败再回退 REST）。
+        这条测试把当时的口径钉住，免得又被改回直连优先。
         """
         import asyncio
 
@@ -3743,16 +3744,17 @@ class WorkflowPreparationTests(unittest.TestCase):
 
                 def fake_direct(_url: str, _dest: Path, **_kwargs: object):
                     order.append("direct")
-                    return video, {
-                        "awemeId": aweme,
-                        "desc": "好想跟你表白",
-                        "tags": ["表白手势舞"],
-                        "nickname": "任白",
-                    }
+                    raise AssertionError("默认只走 REST，不该调用直连")
 
                 async def fake_submit(_url: str) -> dict:
                     order.append("service")
-                    raise AssertionError("直连成功时不该再提交下载器任务")
+                    return {"job_id": "job-1", "status": "success", "total": 1, "success": 1}
+
+                async def fake_job(_job_id: str) -> dict:
+                    return {"job_id": "job-1", "status": "success", "total": 1, "success": 1}
+
+                def fake_result(_job: dict) -> dict:
+                    return {"awemeId": aweme, "path": str(video)}
 
                 async def fake_stop() -> None:
                     return None
@@ -3765,23 +3767,27 @@ class WorkflowPreparationTests(unittest.TestCase):
                 ), patch.object(
                     batch_worker.douyin_service, "submit", fake_submit
                 ), patch.object(
+                    batch_worker.douyin_service, "job", fake_job
+                ), patch.object(
+                    batch_worker.douyin_service, "result_for", fake_result
+                ), patch.object(
                     batch_worker.douyin_service, "stop", fake_stop
+                ), patch.object(
+                    batch_worker, "mirror_upsert", lambda _jobs: None
                 ), patch.object(
                     batch_worker, "ensure_download_playable", fake_playable
                 ):
                     resolved = asyncio.run(batch_worker._download(state["id"], item["id"]))
 
-                self.assertEqual(order, ["direct"])
+                self.assertEqual(order, ["service"])
                 self.assertEqual(resolved, video)
                 fresh = store.get(state["id"])["items"][0]
                 self.assertEqual(fresh["awemeId"], aweme)
                 self.assertEqual(fresh["sourcePath"], str(video.resolve()))
-                self.assertEqual(fresh["title"], "好想跟你表白")
-                self.assertEqual(fresh["sourceMetadata"]["source"], "direct")
                 steps = {step["id"]: step["status"] for step in fresh["milestones"]}
                 self.assertEqual(steps["download"], "completed")
                 self.assertTrue(
-                    any("直连下载成功" in row["message"] for row in fresh.get("logs") or []),
+                    any("下载器 REST 下载成功" in row["message"] for row in fresh.get("logs") or []),
                     fresh.get("logs"),
                 )
             finally:
@@ -3839,13 +3845,33 @@ class WorkflowPreparationTests(unittest.TestCase):
                         asyncio.run(batch_worker._download(state["id"], item["id"]))
 
                 message = str(caught.exception)
-                # 两条路由各自的原因都要在
-                self.assertIn("直连路由", message)
-                self.assertIn("壳页", message)
+                # 默认只试了下载器 REST（用户 2026-09-20：「直接用 REST」）→ 不该再提直连
+                self.assertNotIn("直连路由", message)
                 self.assertIn("下载器路由", message)
                 self.assertIn("Argus", message)
                 # 不能只剩下载器那句误导人的话
                 self.assertNotEqual(message.strip(), "作品详情或媒体下载失败：Cookie 可能已失效，或当前请求触发了抖音风控")
+
+                # 只有显式打开 H3_DOUYIN_DIRECT=1 才会两条都试、两条原因都报出来
+                with patch.object(
+                    batch_worker, "env_value",
+                    lambda name, default="": "1" if name == "H3_DOUYIN_DIRECT" else default,
+                ), patch.object(
+                    batch_worker, "batch_store", store
+                ), patch(
+                    "backend.douyin_direct.fetch", failing_direct
+                ), patch.object(
+                    batch_worker.douyin_service, "submit", failing_submit
+                ), patch.object(
+                    batch_worker.douyin_service, "stop", fake_stop
+                ):
+                    with self.assertRaises(RuntimeError) as both_routes:
+                        asyncio.run(batch_worker._download(state["id"], item["id"]))
+
+                both = str(both_routes.exception)
+                self.assertIn("直连路由", both)
+                self.assertIn("壳页", both)
+                self.assertIn("下载器路由", both)
             finally:
                 batch_store_module.DB_PATH = original_db
                 batch_worker.MANIFEST_PATH = original_manifest

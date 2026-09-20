@@ -990,22 +990,29 @@ DOWNLOADER_COOKIE_HINT = "作品详情或媒体下载失败"
 def douyin_download_failure_note(
     direct: Exception | None, service: Exception | None
 ) -> str:
-    """两条下载路由都失败时给**能定位**的报错（别再只甩一句「Cookie 可能已失效」）。
+    """下载路由失败时给**能定位**的报错（别再只甩一句「Cookie 可能已失效」）。
 
     2026-09-16 用户实测：又看到这句「Cookie 可能已失效，或当前请求触发了抖音风控」，
     但真正的原因是我们自己的分享页正则写死了 `v0` 前缀，解析不出 video_id。
+
+    2026-09-20 起默认只走下载器 REST（`direct=None`），所以抬头按**实际试过的路由**拼，
+    不再写死「直连与下载器两条路由都没成功」。
     """
     parts: list[str] = []
+    attempted: list[str] = []
     if direct is not None:
+        attempted.append("直连")
         parts.append(f"直连路由：{str(direct).strip() or type(direct).__name__}")
     if service is not None:
+        attempted.append("下载器")
         text = str(service).strip() or type(service).__name__
         if DOWNLOADER_COOKIE_HINT in text:
             text = f"{text}〔下载器取的 /aweme/v1/web/aweme/detail/ 被抖音 Argus 风控门禁〕"
         parts.append(f"下载器路由：{text}")
     detail = "；".join(parts) or "原因未知"
+    routes = "与".join(attempted) or "全部"
     return (
-        f"抖音下载失败（直连与下载器两条路由都没成功）。{detail}。"
+        f"抖音下载失败（{routes}路由都没成功）。{detail}。"
         "请先在抖音里确认这条作品能正常播放；仍失败可稍后在批量里点「重新开始」重试本条。"
     )
 
@@ -1040,26 +1047,37 @@ async def _download(batch_id: str, item_id: str) -> Path:
     batch_store.add_item_log(batch_id, item_id, "正在下载抖音源视频……")
     direct_failure: Exception | None = None
     service_failure: Exception | None = None
+    # 下载路由（用户 2026-09-20：「直连 CDN（断流自动续传）不要这个 直接用 REST」）：
+    # **默认只走下载器 REST**。直连那条（分享页 → aweme/v1/play → CDN，`_fetch_source_direct`）
+    # 代码保留，但要显式 `H3_DOUYIN_DIRECT=1` 才启用 —— 启用后它作为首选、失败再回退 REST。
+    prefer_direct = (env_value("H3_DOUYIN_DIRECT") or "").strip().lower() in {"1", "true", "on", "yes"}
     try:
-        # 主路由是直连（分享页 + aweme/v1/play），它不走被 Argus 门禁的 Web 详情接口；
-        # 直连失败才回头找下载器 REST（下载器那边偶尔能过，且会写 metadata 清单）。
-        try:
-            source, aweme_id, metadata = await _fetch_source_direct(item)
-            batch_store.add_item_log(batch_id, item_id, "直连下载成功（分享页 → aweme/v1/play → CDN）。")
-        except Exception as error:  # noqa: BLE001 - 直连失败就换 REST
-            direct_failure = error
-            batch_store.add_item_log(
-                batch_id, item_id,
-                f"直连下载没有成功（{error}），改用下载器 REST 再试……",
-            )
+        if prefer_direct:
+            try:
+                source, aweme_id, metadata = await _fetch_source_direct(item)
+                batch_store.add_item_log(batch_id, item_id, "直连下载成功（分享页 → aweme/v1/play → CDN）。")
+            except Exception as error:  # noqa: BLE001 - 直连失败就换 REST
+                direct_failure = error
+                batch_store.add_item_log(
+                    batch_id, item_id,
+                    f"直连下载没有成功（{error}），改用下载器 REST 再试……",
+                )
+                try:
+                    source, aweme_id, metadata = await _fetch_source_via_service(batch_id, item_id, item)
+                    batch_store.add_item_log(batch_id, item_id, "下载器 REST 下载成功。")
+                except Exception as service_error:  # noqa: BLE001 - 两条都失败才报错
+                    service_failure = service_error
+                    raise RuntimeError(
+                        douyin_download_failure_note(direct_failure, service_failure)
+                    ) from service_error
+        else:
+            # 默认路径：只走下载器 REST（它同时会写 metadata 清单，方便以后本地复用）
             try:
                 source, aweme_id, metadata = await _fetch_source_via_service(batch_id, item_id, item)
                 batch_store.add_item_log(batch_id, item_id, "下载器 REST 下载成功。")
-            except Exception as service_error:  # noqa: BLE001 - 两条都失败才报错
-                service_failure = service_error
-                raise RuntimeError(
-                    douyin_download_failure_note(direct_failure, service_failure)
-                ) from service_error
+            except Exception as error:  # noqa: BLE001
+                service_failure = error
+                raise RuntimeError(douyin_download_failure_note(None, service_failure)) from error
 
         # 转码兜底：两条路由都已验过**原始**下载文件，这里再验一遍最终要送进 ComfyUI 的
         # 那一份（转码/换封装出问题时同样拦下来，别等 Mie 循环跑到第 3 段才报 No frames）。
