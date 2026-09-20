@@ -70,10 +70,10 @@ class ImageWorkbenchTests(unittest.TestCase):
                 folder_id = rows[0]["id"]
                 self.assertEqual(workbench.resolve_folder(folder_id).name, "001_唱歌_测试_111")
                 # 真正往外跑的编号（`../`）必须被拒
-                outside = root.parent / "外面"
-                outside.mkdir()
+                outside = root.parent / f"外面_{root.name}"
+                outside.mkdir(exist_ok=True)
                 with self.assertRaises(FileNotFoundError):
-                    workbench.resolve_folder(("../外面").encode("utf-8").hex())
+                    workbench.resolve_folder((f"../{outside.name}").encode("utf-8").hex())
 
     def test_cover_is_normalized_to_exact_publish_size(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
