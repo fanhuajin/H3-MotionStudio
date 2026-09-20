@@ -82,14 +82,19 @@ def main() -> int:
               "" if same else f"线上 {live or '（没有这个字段 = 旧进程）'} ≠ 本地 {local}"
                               " → **先重启后端再出图**")
         items = httpx.get(f"{BASE}/api/image-workbench/items", timeout=15).json()["items"]
-        row = items[0]
-        served = httpx.get(
-            f"{BASE}/api/image-workbench/{row['id']}/prompt/person",
-            params={"kind": row.get("kind") or "dance"}, timeout=15,
-        ).json()["prompt"]
-        carrying = "过度裸露" in served
-        check(carrying, "线上手工提示词也带着合规段",
-              "" if carrying else "手工入口的提示词里没有合规段，检查 image_workbench.prompt()")
+        if not items:
+            # 发布成品被清空时（2026-09-20 用户批量发布完就删光了）没有作品可探：
+            # 这一项只是"手工入口也带合规段"的加验，跳过即可，别把它算成失败。
+            print("↷ 发布成品里还没有作品 → 跳过「线上手工提示词」这一项")
+        else:
+            row = items[0]
+            served = httpx.get(
+                f"{BASE}/api/image-workbench/{row['id']}/prompt/person",
+                params={"kind": row.get("kind") or "dance"}, timeout=15,
+            ).json()["prompt"]
+            carrying = "过度裸露" in served
+            check(carrying, "线上手工提示词也带着合规段",
+                  "" if carrying else "手工入口的提示词里没有合规段，检查 image_workbench.prompt()")
     except Exception as error:  # noqa: BLE001
         check(False, f"线上服务可访问（{BASE}）", f"{type(error).__name__}: {str(error)[:80]}")
 
