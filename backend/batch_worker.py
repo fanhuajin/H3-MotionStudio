@@ -2410,11 +2410,20 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
             camera = camera or fallback_camera
             batch_store.add_item_log(batch_id, item_id, "动作/运镜缺少模型结果，已使用保守时间轴兜底。")
         _set_item(batch_id, item_id, actionPrompt=action, cameraPrompt=camera)
+        batch_store.add_item_log(
+            batch_id, item_id,
+            "批量出片只出**原声**成片（不在这条链路上转音色）：交付后在 /rvc 页点"
+            "「一键批量转换音色」补做音色版，再批量加字幕。",
+        )
         data = {
             "action_prompt": action,
             "camera_prompt": camera,
             "ratio": ratio,
-            "use_rvc": "1",
+            # **批量唱歌只出原声成片**（2026-09-20）：RVC 音色转换搬到「一键批量转换音色」
+            # 那个独立入口（用户要求：`最终成片.mp4` → 音色版 → 字幕版 → 发布）。
+            # 这么做还有个硬好处：`use_rvc=0` 时链路**不会为了 RVC 关闭 ComfyUI**
+            # （`_complete_without_rvc`），于是批量期间 ComfyUI 全程常驻、模型不用反复加载。
+            "use_rvc": "0",
             "use_upscale": "1",
         }
         endpoint = "/api/jobs"

@@ -5276,6 +5276,49 @@ class WorkflowPreparationTests(unittest.TestCase):
             ["input", "h3", "stitch", "upscale"],
         )
 
+    def test_batch_singing_jobs_skip_rvc_so_comfyui_never_stops(self) -> None:
+        """批量唱歌只出**原声**成片（`use_rvc=0`）：RVC 搬到「一键批量转换音色」独立入口。
+
+        这还有个硬好处：`use_rvc=0` 时收尾走 `_complete_without_rvc`，它**不关闭 ComfyUI**
+        —— 于是批量期间 ComfyUI 全程常驻，模型不用每条重新加载（用户要的提速）。
+        """
+        import asyncio
+        import inspect
+
+        from backend import batch_worker, pipeline
+
+        source = inspect.getsource(batch_worker._post_video_job)
+        self.assertIn('"use_rvc": "0"', source)
+        self.assertNotIn('"use_rvc": "1"', source)
+
+        stopped: list = []
+        updates: list[dict] = []
+
+        class _Store:
+            def set_milestone(self, *_args, **_kwargs):
+                return None
+
+            def add_log(self, *_args, **_kwargs):
+                return None
+
+            def update(self, _job_id, **changes):
+                updates.append(changes)
+                return changes
+
+        async def fake_meta(_path):
+            return {}
+
+        async def scenario() -> None:
+            with patch.object(pipeline, "store", _Store()), patch.object(
+                pipeline.resources, "stop_comfy", lambda *args, **kwargs: stopped.append(args)
+            ), patch.object(pipeline, "media_metadata", fake_meta):
+                await pipeline._complete_without_rvc("job1", Path("E:/x/高清.mp4"))
+
+        asyncio.run(scenario())
+        self.assertEqual(stopped, [], "use_rvc=0 时绝不能关 ComfyUI（关了就要重新加载模型）")
+        self.assertEqual(updates[-1]["status"], "completed")
+        self.assertTrue(updates[-1]["finalReady"])
+
     def test_media_entries_only_expose_original_and_final(self) -> None:
         from backend.app import OUTPUT_MEDIA_FIELDS, MEDIA_FIELD_BY_KEY
         self.assertEqual([key for key, *_ in OUTPUT_MEDIA_FIELDS], ["final", "original"])
