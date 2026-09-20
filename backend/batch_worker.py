@@ -1067,8 +1067,9 @@ async def _adopt_existing_source(batch_id: str, item_id: str, cached: Path) -> P
 async def _fetch_source_direct(item: dict[str, Any]) -> tuple[Path, str, dict[str, Any]]:
     """直连路由：分享页取 video_id → `aweme/v1/play` 换 CDN 直链 → 下载。
 
-    这条现在是**主路由**：下载器 REST 取详情用的 `/aweme/v1/web/aweme/detail/` 被抖音
-    Argus 门禁（2026-09-14 起），先走它每条都要白等 3 次重试（~17 秒）再起一个下载器进程。
+    口径（2026-09-20 用户最终拍板「改成原来的 **直连 =》REST**」）：**这条是首选**，
+    失败再回退下载器 REST；只有显式 `H3_DOUYIN_DIRECT=0` 才是"只走 REST"。
+    实测依据：直连成功 79 条 / 平均 3.1 秒 vs REST 成功 3 条 / 平均 19.1 秒。
     """
     from . import douyin_direct
 
@@ -1139,8 +1140,8 @@ def douyin_download_failure_note(
     2026-09-16 用户实测：又看到这句「Cookie 可能已失效，或当前请求触发了抖音风控」，
     但真正的原因是我们自己的分享页正则写死了 `v0` 前缀，解析不出 video_id。
 
-    2026-09-20 起默认只走下载器 REST（`direct=None`），所以抬头按**实际试过的路由**拼，
-    不再写死「直连与下载器两条路由都没成功」。
+    2026-09-20：顺序定为**直连优先、失败回退下载器 REST**（用户拍板「改成原来的
+    直连 =》REST」）—— 抬头按**实际试过的路由**拼；只有 `H3_DOUYIN_DIRECT=0` 是"只走 REST"。
     """
     parts: list[str] = []
     attempted: list[str] = []
@@ -1191,12 +1192,25 @@ async def _download(batch_id: str, item_id: str) -> Path:
     batch_store.add_item_log(batch_id, item_id, "正在下载抖音源视频……")
     direct_failure: Exception | None = None
     service_failure: Exception | None = None
-    # 下载路由（用户 2026-09-20：「直连 CDN（断流自动续传）不要这个 直接用 REST」）：
-    # **默认只走下载器 REST**。直连那条（分享页 → aweme/v1/play → CDN，`_fetch_source_direct`）
-    # 代码保留，但要显式 `H3_DOUYIN_DIRECT=1` 才启用 —— 启用后它作为首选、失败再回退 REST。
-    prefer_direct = (env_value("H3_DOUYIN_DIRECT") or "").strip().lower() in {"1", "true", "on", "yes"}
+    # 下载路由（口径时间线：2026-09-20 用户先说「直连 CDN 不要这个 直接用 REST」→ 实测到
+    # REST 被抖音 Argus 风控挡下之后又说「要加回来」→ 最后拍板「改成原来的 **直连 =》REST**」）：
+    #   · 默认（`H3_DOUYIN_DIRECT` 没配）→ **直连优先，失败回退下载器 REST**（原来的顺序）；
+    #   · `H3_DOUYIN_DIRECT=0/false/off/no` → **只走 REST**（明确不要直连时才这样配）。
+    # 实测依据（用户自己这批 116 条的日志）：直连成功 79 条、平均 3.1 秒；REST 成功 3 条、
+    # 平均 19.1 秒（详情接口被门禁，每次都要白等几轮重试）——所以直连做首选。
+    mode = (env_value("H3_DOUYIN_DIRECT") or "").strip().lower()
+    rest_only = mode in {"0", "false", "off", "no"}
     try:
-        if prefer_direct:
+        if rest_only:
+            # 明确只走下载器 REST（它同时会写 metadata 清单，方便以后本地复用）
+            try:
+                source, aweme_id, metadata = await _fetch_source_via_service(batch_id, item_id, item)
+                batch_store.add_item_log(batch_id, item_id, "下载器 REST 下载成功。")
+            except Exception as error:  # noqa: BLE001
+                service_failure = error
+                raise RuntimeError(douyin_download_failure_note(None, service_failure)) from error
+        else:
+            # 默认：直连优先（不依赖 Cookie），失败再回退下载器 REST
             try:
                 source, aweme_id, metadata = await _fetch_source_direct(item)
                 batch_store.add_item_log(batch_id, item_id, "直连下载成功（分享页 → aweme/v1/play → CDN）。")
@@ -1214,14 +1228,6 @@ async def _download(batch_id: str, item_id: str) -> Path:
                     raise RuntimeError(
                         douyin_download_failure_note(direct_failure, service_failure)
                     ) from service_error
-        else:
-            # 默认路径：只走下载器 REST（它同时会写 metadata 清单，方便以后本地复用）
-            try:
-                source, aweme_id, metadata = await _fetch_source_via_service(batch_id, item_id, item)
-                batch_store.add_item_log(batch_id, item_id, "下载器 REST 下载成功。")
-            except Exception as error:  # noqa: BLE001
-                service_failure = error
-                raise RuntimeError(douyin_download_failure_note(None, service_failure)) from error
 
         # 转码兜底：两条路由都已验过**原始**下载文件，这里再验一遍最终要送进 ComfyUI 的
         # 那一份（转码/换封装出问题时同样拦下来，别等 Mie 循环跑到第 3 段才报 No frames）。

@@ -4103,12 +4103,12 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(len(always.calls), douyin_direct.SHARE_ATTEMPTS)
         self.assertGreater(len(set(always.calls)), 1)
 
-    def test_batch_download_uses_rest_by_default_not_direct(self) -> None:
-        """用户 2026-09-20：「直连 CDN（断流自动续传）不要这个 直接用 REST」。
+    def test_batch_download_prefers_direct_by_default(self) -> None:
+        """用户 2026-09-20 最终拍板：「**改成原来的 直连 =》REST**」。
 
-        默认**只走下载器 REST**；直连那条（`_fetch_source_direct` / `backend.douyin_direct.fetch`）
-        **不许被调用** —— 要显式 `H3_DOUYIN_DIRECT=1` 才启用（启用后它做首选、失败再回退 REST）。
-        这条测试把当时的口径钉住，免得又被改回直连优先。
+        默认**直连优先**（不依赖 Cookie），失败再回退下载器 REST。实测依据（用户这批 116 条）：
+        直连成功 79 条、平均 3.1 秒；REST 成功 3 条、平均 19.1 秒（详情接口被 Argus 门禁，
+        每次都要白等几轮重试）。只有显式 `H3_DOUYIN_DIRECT=0` 才是"只走 REST"。
         """
         import asyncio
 
@@ -4134,18 +4134,87 @@ class WorkflowPreparationTests(unittest.TestCase):
                 store = BatchStore()
                 store.create(state)
 
-                # 文件故意放在下载目录**外面**：放里面会被 cached_download_path 命中，
-                # 走「本地已有就复用」那条路，测不到直连路由。
-                video = root / "direct" / f"好想跟你表白_{aweme}.mp4"
+                video = root / "direct" / f"直连拿到的_{aweme}.mp4"
                 video.parent.mkdir(parents=True, exist_ok=True)
                 video.write_bytes(b"fake-mp4")
                 order: list[str] = []
 
                 def fake_direct(_url: str, _dest: Path, **_kwargs: object):
                     order.append("direct")
-                    raise AssertionError("默认只走 REST，不该调用直连")
+                    return video, {"awemeId": aweme, "desc": "直连拿到的作品", "tags": []}
 
                 async def fake_submit(_url: str) -> dict:
+                    order.append("service")
+                    raise AssertionError("直连已经成功，不该再走 REST")
+
+                async def fake_playable(source: Path, _aweme: str) -> Path:
+                    return source
+
+                with patch.object(batch_worker, "batch_store", store), patch(
+                    "backend.douyin_direct.fetch", fake_direct
+                ), patch.object(
+                    batch_worker.douyin_service, "submit", fake_submit
+                ), patch.object(
+                    batch_worker, "mirror_upsert", lambda _jobs: None
+                ), patch.object(
+                    batch_worker, "ensure_download_playable", fake_playable
+                ), patch.object(
+                    batch_worker, "env_value", lambda name, default="": default
+                ):
+                    resolved = asyncio.run(batch_worker._download(state["id"], item["id"]))
+
+                self.assertEqual(order, ["direct"], "直连成功就不该再碰 REST")
+                self.assertEqual(resolved, video)
+                fresh = store.get(state["id"])["items"][0]
+                self.assertEqual(fresh["awemeId"], aweme)
+                self.assertEqual(fresh["sourcePath"], str(video.resolve()))
+                steps = {step["id"]: step["status"] for step in fresh["milestones"]}
+                self.assertEqual(steps["download"], "completed")
+                self.assertTrue(
+                    any("直连下载成功" in row["message"] for row in fresh.get("logs") or []),
+                    fresh.get("logs"),
+                )
+            finally:
+                batch_store_module.DB_PATH = original_db
+                batch_worker.MANIFEST_PATH = original_manifest
+                batch_worker.DOUYIN_OUTPUT = original_output
+
+    def test_batch_download_falls_back_to_rest_when_direct_fails(self) -> None:
+        """直连失败（分享页被换成壳页那类）→ **回退下载器 REST**（「直连 =》REST」的后半段）。"""
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        aweme = "7653059686421996986"
+        url = f"https://www.douyin.com/user/self?from_tab_name=main&modal_id={aweme}&showTab=like"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            original_manifest = batch_worker.MANIFEST_PATH
+            original_output = batch_worker.DOUYIN_OUTPUT
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                downloads = root / "EV"
+                downloads.mkdir(parents=True, exist_ok=True)
+                batch_worker.DOUYIN_OUTPUT = downloads
+                batch_worker.MANIFEST_PATH = downloads / "download_manifest.jsonl"
+                state = new_batch_state([], [url])
+                item = state["items"][0]
+                store = BatchStore()
+                store.create(state)
+
+                video = root / "rest" / f"兜底拿到的_{aweme}.mp4"
+                video.parent.mkdir(parents=True, exist_ok=True)
+                video.write_bytes(b"fake-mp4")
+                order: list[str] = []
+
+                def failing_direct(_url: str, _dest: Path, **_kwargs: object):
+                    order.append("direct")
+                    raise RuntimeError("分享页连续 4 轮都被抖音换成壳页，拿不到 video_id")
+
+                async def ok_submit(_url: str) -> dict:
                     order.append("service")
                     return {"job_id": "job-1", "status": "success", "total": 1, "success": 1}
 
@@ -4162,9 +4231,9 @@ class WorkflowPreparationTests(unittest.TestCase):
                     return source
 
                 with patch.object(batch_worker, "batch_store", store), patch(
-                    "backend.douyin_direct.fetch", fake_direct
+                    "backend.douyin_direct.fetch", failing_direct
                 ), patch.object(
-                    batch_worker.douyin_service, "submit", fake_submit
+                    batch_worker.douyin_service, "submit", ok_submit
                 ), patch.object(
                     batch_worker.douyin_service, "job", fake_job
                 ), patch.object(
@@ -4175,24 +4244,75 @@ class WorkflowPreparationTests(unittest.TestCase):
                     batch_worker, "mirror_upsert", lambda _jobs: None
                 ), patch.object(
                     batch_worker, "ensure_download_playable", fake_playable
+                ), patch.object(
+                    batch_worker, "env_value", lambda name, default="": default
                 ):
                     resolved = asyncio.run(batch_worker._download(state["id"], item["id"]))
 
-                self.assertEqual(order, ["service"])
+                self.assertEqual(order, ["direct", "service"], "直连先试，失败才回退 REST")
                 self.assertEqual(resolved, video)
                 fresh = store.get(state["id"])["items"][0]
                 self.assertEqual(fresh["awemeId"], aweme)
-                self.assertEqual(fresh["sourcePath"], str(video.resolve()))
-                steps = {step["id"]: step["status"] for step in fresh["milestones"]}
-                self.assertEqual(steps["download"], "completed")
-                self.assertTrue(
-                    any("下载器 REST 下载成功" in row["message"] for row in fresh.get("logs") or []),
-                    fresh.get("logs"),
-                )
+                logs = " ".join(row["message"] for row in fresh.get("logs") or [])
+                self.assertIn("改用下载器 REST 再试", logs)
+                self.assertIn("下载器 REST 下载成功", logs)
             finally:
                 batch_store_module.DB_PATH = original_db
                 batch_worker.MANIFEST_PATH = original_manifest
                 batch_worker.DOUYIN_OUTPUT = original_output
+
+    def test_batch_download_can_be_pinned_to_rest_only(self) -> None:
+        """`H3_DOUYIN_DIRECT=0` → **只走 REST**、不兜底（明确不要直连时才这样配）。"""
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        aweme = "7653059686421996986"
+        url = f"https://www.douyin.com/user/self?from_tab_name=main&modal_id={aweme}&showTab=like"
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            original_output = batch_worker.DOUYIN_OUTPUT
+            original_manifest = batch_worker.MANIFEST_PATH
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                batch_worker.DOUYIN_OUTPUT = root / "EV"
+                (root / "EV").mkdir(parents=True, exist_ok=True)
+                # 必须钉住清单路径：真实清单里若已有这个作品号，`cached_download_path` 会
+                # 直接复用本地文件、根本不进下载路由（这条测试就测不到 REST-only 了）。
+                batch_worker.MANIFEST_PATH = root / "EV" / "download_manifest.jsonl"
+                state = new_batch_state([], [url])
+                item = state["items"][0]
+                store = BatchStore()
+                store.create(state)
+
+                def fake_direct(*_args, **_kwargs):
+                    raise AssertionError("配了 H3_DOUYIN_DIRECT=0 就不该走直连")
+
+                async def fake_submit(_url: str) -> dict:
+                    raise RuntimeError(f"{batch_worker.DOWNLOADER_COOKIE_HINT}：Cookie 可能已失效")
+
+                def env(name: str, default: str = "") -> str:
+                    return "0" if name == "H3_DOUYIN_DIRECT" else default
+
+                with patch.object(batch_worker, "batch_store", store), patch(
+                    "backend.douyin_direct.fetch", fake_direct
+                ), patch.object(
+                    batch_worker.douyin_service, "submit", fake_submit
+                ), patch.object(
+                    batch_worker, "env_value", env
+                ):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        asyncio.run(batch_worker._download(state["id"], item["id"]))
+
+                self.assertIn("下载器路由", str(ctx.exception))
+                self.assertNotIn("直连路由", str(ctx.exception))
+            finally:
+                batch_store_module.DB_PATH = original_db
+                batch_worker.DOUYIN_OUTPUT = original_output
+                batch_worker.MANIFEST_PATH = original_manifest
 
     def test_batch_download_failure_names_both_routes(self) -> None:
         """两条路由都失败时的报错必须**能定位**，不许只甩下载器那句「Cookie 可能已失效」。"""
@@ -4244,14 +4364,16 @@ class WorkflowPreparationTests(unittest.TestCase):
                         asyncio.run(batch_worker._download(state["id"], item["id"]))
 
                 message = str(caught.exception)
-                # 默认只试了下载器 REST（用户 2026-09-20：「直接用 REST」）→ 不该再提直连
-                self.assertNotIn("直连路由", message)
+                # 默认是「REST 先试 → 失败兜直连」（2026-09-20 用户：「要加回来」）→ 两条都试过，
+                # 所以两条路由的原因都要报出来，不能只剩下载器那句误导人的话。
+                self.assertIn("直连路由", message)
+                self.assertIn("壳页", message)
                 self.assertIn("下载器路由", message)
                 self.assertIn("Argus", message)
                 # 不能只剩下载器那句误导人的话
                 self.assertNotEqual(message.strip(), "作品详情或媒体下载失败：Cookie 可能已失效，或当前请求触发了抖音风控")
 
-                # 只有显式打开 H3_DOUYIN_DIRECT=1 才会两条都试、两条原因都报出来
+                # `H3_DOUYIN_DIRECT=1` 时反过来：直连先试、失败回退 REST —— 同样是两条都报
                 with patch.object(
                     batch_worker, "env_value",
                     lambda name, default="": "1" if name == "H3_DOUYIN_DIRECT" else default,
