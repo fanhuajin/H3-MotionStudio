@@ -2173,45 +2173,61 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("保住图二的脸", batch_ai.compose_image_prompt("dance"))
 
     def test_platform_compliance_block_is_in_every_image_prompt(self) -> None:
-        """2026-09-20 小红书处罚事故：出图提示词里必须有**着装**硬约束。
+        """2026-09-20 小红书处罚事故：出图提示词里必须有**过度裸露**硬约束。
 
         根因：`9x16跳舞构图.txt` 把服装决定权整个交给源视频抽帧、`4x3唱歌构图.txt`
         甚至写着「如果服装领口较低…不要进一步扩大领口」（等于承认低领合法），
-        全链路一个字都没写着装合规，于是「吊带/露胸/网袜」被原样继承，
+        全链路一个字都没写着装合规，于是「露事业线/透视」被原样继承，
         账号被判「存在多篇涉及敏感部位裸露凸显、包含性诱惑内容的笔记」。
 
-        ⚠️ 口径是用户 2026-09-20 定的「**只要衣服不暴露就可以了；动作都不用处理，
-        流程也不要动**」：这一段只写衣服，**不许夹带姿态/动作/构图/裁切**。
+        ⚠️ 口径以**平台规则页原文**为准（用户 2026-09-20 贴出「当前笔记违规点 → 过度裸露」）：
+        ① 胸/臀/背等部位或全身大面积裸露；② 透视/裸色等易造成未着装错觉；③ 紧身衣物隐私部位
+        轮廓线过于突出（凸点、骆驼趾）。**吊带/露肩/露脐/短裤/正常紧身都不算违规** ——
+        第一版把它们全禁了，用户当场指出「我感觉 12 17也不是」（012 是抹胸连衣裙、017 是吊带
+        露脐上衣，两张都不露事业线），所以这里专门钉住「不许再退回去一律禁」。
         """
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertIn("【着装合规 · 发布级硬要求", prompt)
+            self.assertIn("【过度裸露 · 发布级硬要求", prompt)
+            self.assertIn("不得露出事业线", prompt)
             self.assertIn("优先于「沿用图一服装」", prompt)
-            self.assertIn("禁止吊带、抹胸、露肩", prompt)
-        # 只写衣服：姿态、动作、裁切都不许出现在这一段里
-        for word in ("摆胯", "腰部波浪", "姿态", "下边缘", "胸线", "锁骨到胸线"):
+            # 平台明确不算违规的，必须在提示词里写清"照常保留"，否则模型还是会保守化
+            self.assertIn("吊带、抹胸、一字肩、露肩", prompt)
+            self.assertIn("都不算违规", prompt)
+        # 只管裸露：姿态、动作、裁切都不许出现在这一段里
+        for word in ("摆胯", "腰部波浪", "姿态", "下边缘", "胸线"):
             self.assertNotIn(word, batch_ai.PLATFORM_SAFE_BLOCK)
-        # 合规块必须在身份块**之前**：脸仍是最后一条（身份优先级最高），
-        # 但合规不允许被「沿用图一服装」或用户的修改意见推翻。
+        # 合规块必须在身份块**之前**：脸仍是最后一条（身份优先级最高）
         prompt = batch_ai.compose_image_prompt("dance", "video", "换成吊带", "both")
         self.assertLess(
-            prompt.index("【着装合规 · 发布级硬要求"),
+            prompt.index("【过度裸露 · 发布级硬要求"),
             prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
         )
         self.assertTrue(prompt.rstrip().endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
+
+    def test_compliance_judge_uses_the_platform_rule_verbatim(self) -> None:
+        """出图后的自检也必须按平台三小条判，并显式豁免吊带/露肩/露脐（别再误杀 012/017）。"""
+        text = batch_ai.COMPLIANCE_JUDGE_INSTRUCTION
+        self.assertIn("大面积裸露", text)
+        self.assertIn("透视、裸色", text)
+        self.assertIn("隐私部位轮廓线过于突出", text)
+        self.assertIn("明确不算违规", text)
+        self.assertIn("吊带、抹胸、一字肩、露肩", text)
+        self.assertIn("短裤、长筒袜、网袜", text)
+        self.assertIn("只判裸露", text)
 
     def test_dance_preflight_only_touches_the_outfit_not_the_moves(self) -> None:
         """跳舞预审只对**衣服**提要求：动作/运镜照参考视频写，着装暴露也不算 redesign。"""
         preflight = batch_ai.preflight_prompt(
             kind="dance", duration=20.0, description="", tags=[]
         )
-        self.assertIn("衣服必须端庄保守", preflight)
+        self.assertIn("唯一的例外是**过度裸露**", preflight)
+        self.assertIn("不得露出事业线/乳沟", preflight)
         self.assertIn("动作都不需要处理", preflight)
         self.assertIn("不要因为衣服而返回 redesign", preflight)
-        # 动作/姿态的红线已经按用户要求撤掉，不许再出现在提示词里
+        # 动作/姿态红线已按用户要求撤掉；文案/标签也没动（「只是图片做出变更」）
         self.assertNotIn("不许写摆胯、扭胯、腰部波浪", preflight)
         self.assertNotIn("动作不得有性暗示", batch_ai.ACTION_RULES)
-        # 文案/标签也没动（用户：「只是图片做出变更」）
         self.assertFalse(hasattr(batch_ai, "COPY_COMPLIANCE_RULE"))
         self.assertNotIn("文案与标签的合规红线", preflight)
 
@@ -2228,14 +2244,17 @@ class WorkflowPreparationTests(unittest.TestCase):
         """两份造型提示词文件也要改：低领那条「不要进一步扩大」是明确允许低领。"""
         root = Path(__file__).parents[1] / "backend" / "prompts"
         dance = (root / "9x16跳舞构图.txt").read_text(encoding="utf-8-sig")
-        self.assertIn("着装合规 · 发布级硬要求", dance)
-        self.assertIn("不要保留它的露肤程度", dance)
-        self.assertIn("本段只管衣服", dance)
+        self.assertIn("过度裸露 · 发布级硬要求", dance)
+        self.assertIn("不得露出**事业线（乳沟）**", dance)
+        self.assertIn("都不算违规、必须照常保留", dance)
+        self.assertIn("本段只管上面这三条", dance)
         # 构图保持原标定（参考图要能给出下装，收太紧会让动作迁移脑补下装）
         self.assertIn("从人物头顶拍摄到腰部附近", dance)
         singing = (root / "4x3唱歌构图.txt").read_text(encoding="utf-8-sig")
-        self.assertIn("着装合规 · 发布级硬要求", singing)
+        self.assertIn("过度裸露 · 发布级硬要求", singing)
+        self.assertIn("都不算违规，照常保留", singing)
         self.assertNotIn("不要进一步扩大领口", singing)
+        self.assertNotIn("禁止吊带、抹胸、露肩", singing)
 
     def test_batch_tags_are_exactly_five(self) -> None:
         """发布标签固定 5 个。"""

@@ -229,22 +229,23 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("不要自行设计新手势", cover)
 
     def test_manual_prompts_carry_the_outfit_compliance_rule(self) -> None:
-        """手工入口（复制提示词 / 素材包）也必须带**着装**约束，且只管衣服。
+        """手工入口（复制提示词 / 素材包）也必须带**过度裸露**那三条，且按平台原文豁免吊带/露肩。
 
         `prompt()` 走的是**用户桌面上的 4比3图片.txt / 9比16图片.txt**（存在就优先），
-        所以着装约束只能写在代码里，不能只改仓库里的提示词文件。
-        口径 = 用户 2026-09-20：「只要衣服不暴露就可以了；动作都不用处理，流程也不要动」。
+        所以这条约束只能写在代码里，不能只改仓库里的提示词文件。
+        口径 = 小红书规则页原文（① 大面积裸露 ② 透视/裸色 ③ 紧身到凸点轮廓突出）。
         """
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             person = workbench.prompt(folder, "person", "dance")
             cover = workbench.prompt(folder, "douyin", "dance")
-        self.assertIn("着装必须端庄合规", person)
-        self.assertIn("禁止吊带、抹胸、露肩", person)
+        self.assertIn("过度裸露（发布级硬要求）", person)
+        self.assertIn("不得露出事业线/乳沟", person)
+        self.assertIn("吊带、抹胸、一字肩、露肩", person)
         self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内
-        self.assertIn("着装合规 · 发布级硬要求", cover)
-        self.assertIn("不要改得更暴露", cover)
+        self.assertIn("过度裸露 · 发布级硬要求", cover)
+        self.assertIn("不得露出**事业线/乳沟**", cover)
 
 
 if __name__ == "__main__":
