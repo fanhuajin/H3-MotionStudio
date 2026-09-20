@@ -43,7 +43,6 @@ export function ImageWorkbenchRoute() {
   const [filter, setFilter] = useState<"pending" | "all">("pending");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
-  const [watchId, setWatchId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   /** 每条自动化任务的本地开始时刻（后端不给百分比，就显示「已用 N 秒」避免看着像卡死）。 */
   const autoClock = useRef<Record<string, number>>({});
@@ -55,22 +54,6 @@ export function ImageWorkbenchRoute() {
   }, []);
 
   useEffect(() => { refresh().catch((error) => setNotice(String(error.message || error))); }, [refresh]);
-  useEffect(() => {
-    if (!watchId) return;
-    const timer = window.setInterval(async () => {
-      try {
-        const response = await fetch(`/api/image-workbench/watch/${watchId}`, { cache: "no-store" });
-        if (!response.ok) return;
-        const state = await response.json() as { status?: string; message?: string };
-        if (["completed", "invalid", "timeout", "error"].includes(state.status || "")) {
-          setNotice(state.message || "下载监听已结束。");
-          setWatchId("");
-          if (state.status === "completed") await refresh();
-        }
-      } catch { /* The next poll retries; a transient refresh error should not stop the watcher. */ }
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [watchId, refresh]);
   const item = items.find((row) => row.id === selectedId) || null;
   const chosenKind = kind || item?.kind || null;
   const complete = (row: WorkItem) => Boolean(row.assets.person && row.assets.bilibili && row.assets.douyin);
@@ -185,35 +168,6 @@ export function ImageWorkbenchRoute() {
     if (selected) setStage(firstMissingStage(selected));
   }, [selectedId]);
 
-  const copyPrompt = async () => {
-    if (!item) return;
-    if (stage === "person" && !chosenKind) { setNotice("系统无法从任务记录确定唱歌/跳舞类型，请手动选择。"); return; }
-    setBusy(true); setNotice("");
-    try {
-      const data = await readJson<{ prompt: string }>(fetch(`/api/image-workbench/${item.id}/prompt/${stage}?kind=${chosenKind}`));
-      await navigator.clipboard.writeText(data.prompt);
-      setNotice("提示词已复制。请在 ChatGPT 上传素材包中的图片后粘贴使用。");
-    } catch (error) { setNotice(error instanceof Error ? error.message : "复制失败"); }
-    finally { setBusy(false); }
-  };
-
-  const openWebChatGPT = async () => {
-    if (!item) return;
-    if (stage === "person" && !chosenKind) { setNotice("系统无法从任务记录确定唱歌/跳舞类型，请手动选择。"); return; }
-    if (stage !== "person" && !item.assets.person) { setNotice("请先生成并保存人物图，再做封面。"); return; }
-    const chat = window.open("https://chatgpt.com/", "_blank");
-    setBusy(true); setNotice("");
-    try {
-      const activeKind = chosenKind || item.kind || "singing";
-      const promptData = await readJson<{ prompt: string }>(fetch(`/api/image-workbench/${item.id}/prompt/${stage}?kind=${activeKind}`));
-      await navigator.clipboard.writeText(promptData.prompt);
-      const watch = await readJson<{ watchId: string }>(fetch(`/api/image-workbench/${item.id}/watch/${stage}?kind=${activeKind}`, { method: "POST" }), "启动下载监听失败");
-      setWatchId(watch.watchId);
-      setNotice(chat ? "已打开网页 ChatGPT，提示词已复制。粘贴素材与提示词后生图；点击下载即可自动保存。" : "提示词已复制，下载监听已启动。请手动打开 chatgpt.com，粘贴素材与提示词后生图。点击下载即可自动保存。");
-    } catch (error) { setNotice(error instanceof Error ? error.message : "准备网页 ChatGPT 失败"); }
-    finally { setBusy(false); }
-  };
-
   const copyImage = async (key: keyof WorkItem["assets"], label: string) => {
     if (!item?.assets[key]) { setNotice(`还没有${label}。`); return; }
     setBusy(true); setNotice("");
@@ -264,7 +218,7 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">第三方图片接口 + 网页 ChatGPT</span><h1>图片与封面</h1><p>「API 自动生成这一步」直接用第三方接口出当前这张（人物图相似度不足 70 会自动重做）；也可以打开网页 ChatGPT 手动做，下载后自动归档。</p></div>
+        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>「API 自动生成这一步」直接用第三方接口出当前这张（人物图相似度不足 70 会自动重做）；自己出的图粘贴、拖入或选择上传即可替换。</p></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
           {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}
@@ -291,13 +245,13 @@ export function ImageWorkbenchRoute() {
 
             <div className="image-workbench-content">
               <div className={`image-workbench-preview ${stage === "douyin" ? "portrait" : ""}`} onClick={() => stageAsset && copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} role={stageAsset ? "button" : undefined} tabIndex={stageAsset ? 0 : undefined} title={stageAsset ? "点击复制图片" : undefined}>
-                {stageAsset ? <><img src={assetUrl(item, stage)} alt={STAGES.find((row) => row.id === stage)?.label} /><em><ClipboardText />点击复制</em></> : <div><ImageSquare /><strong>还没有这张图</strong><small>从 ChatGPT 保存成图后拖到右侧</small></div>}
+                {stageAsset ? <><img src={assetUrl(item, stage)} alt={STAGES.find((row) => row.id === stage)?.label} /><em><ClipboardText />点击复制</em></> : <div><ImageSquare /><strong>还没有这张图</strong><small>自己出好后拖到右侧上传</small></div>}
                 <span>{stageAsset ? `${stageAsset.width} × ${stageAsset.height}` : "等待生成"}</span>
               </div>
               <div className="image-workbench-actions">
-                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点击下方参考图复制，直接粘贴到网页 ChatGPT</li><li>点击“打开网页 ChatGPT”会复制提示词并开始等待下载</li><li>在网页 ChatGPT 生图后点击下载，系统会自动校验并保存</li></ol></div>
+                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点上方按钮用第三方接口自动出这张图</li><li>也可以点下方参考图复制，到别处自己出图</li><li>出好的图直接粘贴、拖入或选择上传，会自动保存并登记</li></ol></div>
                 {stage === "person" && <div className="image-reference-pair"><figure onClick={() => copyImage("frame", "图一场景造型")} role="button" tabIndex={0} title="点击复制图一">{item.assets.frame ? <img src={assetUrl(item, "frame")} alt="图一抽帧" /> : <div>缺少抽帧</div>}<figcaption><ClipboardText />图一 · 点击复制</figcaption></figure><figure onClick={() => copyImage("identity", "图二固定五官")} role="button" tabIndex={0} title="点击复制图二">{item.assets.identity ? <img src={assetUrl(item, "identity")} alt="图二固定五官" /> : <div>缺少参考</div>}<figcaption><ClipboardText />图二 · 点击复制</figcaption></figure></div>}
-                {stage !== "person" && <div className="image-cover-reference"><strong>生成这张封面使用的人物图</strong><figure onClick={() => copyImage("person", "人物图")} role="button" tabIndex={0} title="点击复制人物图">{item.assets.person ? <img src={assetUrl(item, "person")} alt="人物图" /> : <div><ImageSquare />缺少人物图</div>}<figcaption><ClipboardText />人物图 · 点击复制到 ChatGPT</figcaption></figure></div>}
+                {stage !== "person" && <div className="image-cover-reference"><strong>生成这张封面使用的人物图</strong><figure onClick={() => copyImage("person", "人物图")} role="button" tabIndex={0} title="点击复制人物图">{item.assets.person ? <img src={assetUrl(item, "person")} alt="人物图" /> : <div><ImageSquare />缺少人物图</div>}<figcaption><ClipboardText />人物图 · 点击复制</figcaption></figure></div>}
                 <div className="image-action-grid">
                   <button
                     className="primary"
@@ -305,8 +259,6 @@ export function ImageWorkbenchRoute() {
                     disabled={busy || (stage !== "person" && !item.assets.person)}
                     title={stage !== "person" && !item.assets.person ? "请先生成人物图，再做封面" : undefined}
                   ><SpinnerGap className={busy ? "spin" : undefined} />{stageAsset ? "重新生成这一步" : "API 自动生成这一步"}</button>
-                  <button onClick={openWebChatGPT} disabled={busy}><ClipboardText />打开网页 ChatGPT</button>
-                  <button onClick={copyPrompt} disabled={busy}>仅复制提示词</button>
                 </div>
                 <label className="image-drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file) upload(file); }}>
                   <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) upload(file); }} />
