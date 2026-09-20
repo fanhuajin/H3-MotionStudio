@@ -1221,6 +1221,24 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_batch_strictly_runs_one_item_at_a_time(self) -> None:
+        """用户 2026-09-20：「流程改下 现在不需要先提前备料了」——**严格一条一条走**。
+
+        旧行为（2026-09-13 用户要求「新加的条目别一直排队」）是「出片丢后台、runner 立刻
+        回头给后面的条目备料」。现在取消并行备料：**有出片在跑时什么新活都不挑**，
+        等这条交付完再走下一条。这条测试钉住它，免得以后又被"优化"回并行。
+        """
+        import inspect
+
+        from backend import batch_worker
+
+        source = inspect.getsource(batch_worker.run_batch)
+        self.assertIn("item = None if video_task is not None else _next_work(state)", source)
+        # 「同时正在备料」这条并行提示必须消失（它只在并行时才可能出现）
+        self.assertNotIn("同时正在备料第", source)
+        # 出片仍然走后台任务（暂停/取消/换代要能在出片期间响应），只是不再并行备料
+        self.assertIn("asyncio.create_task(_process_confirmed", source)
+
     def test_batch_publish_folder_completeness_is_checked_on_restart(self) -> None:
         """发布成品（人物图 + 两张封面）必须能查、缺了能补（2026-09-16 用户要求）。
 

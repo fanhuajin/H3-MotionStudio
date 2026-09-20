@@ -3283,15 +3283,15 @@ def stage_media(state: dict[str, Any]) -> dict[str, str]:
 
 
 def _next_work(state: dict[str, Any], *, allow_confirmed: bool = True) -> dict[str, Any] | None:
-    """下一个要跑的任务：先整批备料（pending / revising），再逐条出片（confirmed）。
+    """下一个要跑的任务：先备料（pending / revising），再出片（confirmed）。
 
     **队列不会自己跑**：只有用户点了「开跑」（`POST /api/batches/{id}/start`）才会 spawn
     runner（2026-09-10 用户：「加入队列并不是马上开跑，需要由我点击总的开跑按钮才开始」）。
     `awaiting_review` 是在等用户上传图片并确认，不算可跑任务。
 
-    `allow_confirmed=False`：已经有一条在后台出片时，不再挑新的出片条目（出片仍严格
-    一条一条来），但**继续**返回可备料的条目 —— 2026-09-13 用户实测的痛点：
-    出片要十几分钟，期间新追加的条目一直卡在「排队中」拿不到候选图与文案。
+    ⚠️ **`run_batch` 现在不再传 `allow_confirmed`**：用户 2026-09-20 要求「不需要先提前备料了」，
+    所以 runner 是**严格一条一条走**（有出片在跑时它自己就不挑活了，见 `run_batch` 的 ③）。
+    这个参数与「先备料、再出片」的挑选顺序保留给调用方与单测，语义没变。
     """
     items = state.get("items") or []
     for statuses in ({"pending", "revising"}, {"confirmed"}):
@@ -3336,12 +3336,13 @@ def _fail_item_and_batch(
 
 
 async def run_batch(batch_id: str) -> None:
-    """批次 runner：备料（下载 + 出图素材 + 文案）在循环里跑，**出片放到后台任务**。
+    """批次 runner：**严格一条一条走** —— 下载 → 备料（出图素材 + 文案）→ 出片 → 交付，再下一条。
 
-    2026-09-13 用户实测的问题：出片一条要十几分钟，runner 原地 await 出片时，
-    新追加的条目一直停在「排队中」，拿不到候选图与发布文案（「都处理了，现在没有处理啊」）。
-    出片与备料互不争资源（备料不用 ComfyUI），所以出片改成后台任务、runner 继续备料；
-    出片本身仍然严格一条一条来（`_next_work(allow_confirmed=...)`）。
+    用户 2026-09-20：「流程改下 现在不需要先提前备料了」。所以取消 2026-09-13 那套
+    「出片丢后台、runner 继续给后面的条目备料」的并行做法：**有出片在跑时什么新活都不挑**，
+    就等这一条交付完，然后再看下一条（`item = None if video_task is not None`）。
+    出片本身仍然丢进后台任务 —— 那是为了暂停/取消/「重新开始」换代时仍能响应，
+    不是因为要并行备料。
 
     **每一轮都认「代」**：用户点「重新开始」会推进代数（`take_over_batch_run`），
     这一代过期的 runner 立刻退出，把批次让给新 runner —— 否则旧 runner 一旦卡在某个
@@ -3423,8 +3424,11 @@ async def run_batch(batch_id: str) -> None:
                     continue
                 batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
                 return
-            # ③ 挑下一件活：备料优先，出片一次只许一条（`allow_confirmed`）。
-            item = _next_work(state, allow_confirmed=video_task is None)
+            # ③ 挑下一件活：**严格一条一条走**（用户 2026-09-20：「现在不需要先提前备料了」）。
+            #    有出片在跑时什么新活都不挑 —— 不备料、也不开第二条出片，就等这条交付完。
+            #    （旧的并行备料做法是 2026-09-13 为了「新加的条目别一直排队」加的，现按用户
+            #     口径取消；`_next_work` 的 `allow_confirmed` 参数保留给其它调用方与单测。）
+            item = None if video_task is not None else _next_work(state)
             if item is None:
                 if video_task is not None:
                     # 备料都做完了，只剩后台出片：等它落定（每 3 秒回到循环顶，暂停仍能响应）
@@ -3455,21 +3459,18 @@ async def run_batch(batch_id: str) -> None:
                     notice="全部条目已完成。" + (" 部分歌词字幕需要稍后重试。" if warnings else ""),
                 )
                 return
+            # 到这里 item 一定不是「出片在跑」的那一条（上面已经把它排除掉了），
+            # 所以只有「正在备料」和「正在出片」两种提示，不存在并行状态。
             preparing = item.get("status") in {"pending", "revising"}
-            busy_with_video = video_task is not None and video_row is not None
-            if preparing and busy_with_video:
-                notice = (
-                    f"第 {video_row['index']} 条正在出片，同时正在备料第 {item['index']} / {state['total']} 条。"
-                )
-            elif preparing:
-                notice = f"正在备料第 {item['index']} / {state['total']} 条。"
-            else:
-                notice = f"正在出片第 {item['index']} / {state['total']} 条。"
+            notice = (
+                f"正在备料第 {item['index']} / {state['total']} 条。"
+                if preparing
+                else f"正在出片第 {item['index']} / {state['total']} 条。"
+            )
             batch_store.update(
                 batch_id,
-                # 出片在后台跑时，页面焦点留在出片的那一条，不因为备料跳走
-                currentItemId=(video_row["id"] if busy_with_video else item["id"]),
-                currentIndex=(int(video_row["index"]) if busy_with_video else item["index"]),
+                currentItemId=item["id"],
+                currentIndex=item["index"],
                 notice=notice,
             )
             try:
@@ -3479,9 +3480,10 @@ async def run_batch(batch_id: str) -> None:
                     await _stop_comfy_if_idle()
                     continue
                 if item.get("status") == "confirmed":
-                    # 出片丢进后台任务：runner 立刻回到循环顶，继续给后面的条目备料
-                    # （备料只用下载 + ffmpeg 抽帧 + 一次文本模型调用，不碰 ComfyUI，
-                    #  所以能和出片并行；用户 2026-09-13：「新加的这条现在没有处理啊」）。
+                    # 出片丢进后台任务**不是为了并行备料**（用户 2026-09-20 已取消并行）：
+                    # 后台任务才能让暂停/取消/「重新开始」换代在出片期间仍然响应得到。
+                    # runner 回到循环顶后会因为 `video_task is not None` 直接等它落定，
+                    # 这条交付完才开始下一条的下载与备料。
                     task = asyncio.create_task(_process_confirmed(batch_id, item["id"]))
                     _VIDEO_TASKS.add(task)
                     task.add_done_callback(_VIDEO_TASKS.discard)
