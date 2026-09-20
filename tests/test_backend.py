@@ -8191,295 +8191,478 @@ class CancelGateTests(unittest.TestCase):
                          "只收尾已结束的条目，正在跑 / 等确认的一律不碰")
 
 
-class PublishWatcherTests(unittest.TestCase):
-    """发布目录监听（2026-09-17 用户：「出现人物图.png 你直接放到候选人物图里并直接开始确认并出片
-    不需要我去点击了」+「如果已经有的你不要重复跑」）。
+class PortraitAdoptionTests(unittest.TestCase):
+    """「谁写图谁登记」：`/images` 出图或上传成功后**当场**把人物图登记成条目的候选图。
 
-    这条链路的坑全在**判据**上，所以测试主要打 `pending_actions` / `decide` 这两个纯函数：
-    目录里那张算不算「用户的新图」、什么状态能动、同一张会不会跑第二遍。
+    2026-09-20 用户选「乙」：删掉 `backend/publish_watcher.py`（每 5 秒扫发布目录的中间人），
+    由写图的那一方直接登记。规则沿用 watcher 当年的口径（同一张图只驱动一次；只碰
+    `awaiting_review` / `confirmed` / `failed`），这里逐条钉住。
     """
 
-    def _batch(self, status: str, *, candidate: str = "", marker_sha: str = "",
-               folder: Path | None = None, aweme: str = "7685308023212056420") -> dict:
-        ai: dict = {"title": "测试标题"}
-        if candidate:
-            ai["reference_image_path"] = candidate
-        if marker_sha:
-            ai["portrait_watch"] = {"sha": marker_sha, "at": "2026-09-17T09:00:00"}
-        item = {
-            "id": "item-1", "index": 1, "status": status, "kind": "dance",
-            "title": "测试标题", "awemeId": aweme, "ai": ai,
-            "outputs": {"folder": str(folder)} if folder else {},
-        }
-        return {"id": "batch-1", "status": "running", "items": [item]}
+    AWEME = "7685308023212056420"
 
-    def _image(self, path: Path, payload: bytes) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def _fixture(
+        self,
+        root: Path,
+        *,
+        status: str = "awaiting_review",
+        candidate: bytes | None = b"old-candidate",
+        marker_sha: str = "",
+        aweme: str = "",
+        source: bytes | None = None,
+    ) -> tuple:
+        """真批次（临时库）+ 一个发布目录 → (store, batch_id, item_id, folder, old_candidate)。"""
+        from backend import batch_store as batch_store_module
+        from backend.batch_store import BatchStore
+
+        folder = root / "发布成品" / "dance" / f"001_跳舞_测试标题_{aweme or self.AWEME}"
+        folder.mkdir(parents=True, exist_ok=True)
+        old_candidate: Path | None = None
+        ai: dict = {"title": "测试标题"}
+        if candidate is not None:
+            old_candidate = root / "data" / "batches" / "b1" / "it1" / "candidate.png"
+            old_candidate.parent.mkdir(parents=True, exist_ok=True)
+            old_candidate.write_bytes(candidate)
+            ai["reference_image_path"] = str(old_candidate)
+        if marker_sha:
+            ai["portrait_watch"] = {"sha": marker_sha, "at": "2026-09-20T00:00:00"}
+        state = new_batch_state([], ["https://v.douyin.com/x"])
+        item = state["items"][0]
+        updates: dict = {
+            "status": status,
+            "awemeId": aweme or self.AWEME,
+            "ai": ai,
+            "outputs": {"folder": str(folder)},
+        }
+        if source is not None:
+            source_path = root / "source.mp4"
+            source_path.write_bytes(source)
+            updates["sourcePath"] = str(source_path)
+        item.update(**updates)
+        state["status"] = "running"
+
+        original = batch_store_module.DB_PATH
+        batch_store_module.DB_PATH = root / "queue.db"
+        store = BatchStore()
+        store.create(state)
+        self.addCleanup(setattr, batch_store_module, "DB_PATH", original)
+        return store, state["id"], item["id"], folder, old_candidate
+
+    def _portrait(self, folder: Path, payload: bytes) -> Path:
+        path = folder / "人物图.png"
         path.write_bytes(payload)
         return path
 
-    def test_new_portrait_in_the_folder_is_uploaded_and_confirmed(self):
-        """审核点 + 目录里出现一张与候选图不同的图 → 挂候选图并自动确认出片。"""
-        from backend import publish_watcher as watcher
+    @staticmethod
+    def _sha(payload: bytes) -> str:
+        import hashlib
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback-frame")
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            self._image(folder / "人物图.png", b"user-portrait-A")
-            batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
+        return hashlib.sha256(payload).hexdigest()
 
-            actions = watcher.pending_actions([batch], root=root / "发布成品")
-            self.assertEqual(len(actions), 1)
-            action = actions[0]
-            self.assertEqual(action.mode, "upload_confirm")
-            self.assertEqual(action.item_id, "item-1")
-            self.assertEqual(action.batch_id, "batch-1")
-            self.assertEqual(action.image.name, "人物图.png")
+    def test_new_portrait_is_registered_and_releases_the_review_point(self) -> None:
+        """审核点 + 目录里出现新图 → 登记成候选图 + 自动放行（等同点「确认并出片」）。"""
+        from backend import batch_worker
 
-    def test_the_backend_written_fallback_never_triggers_anything(self):
-        """备料留下的兜底图（candidate_r0_frame.png）就是目录里那张时：什么都不做。
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            store, batch_id, item_id, publish, _ = self._fixture(root)
+            image = self._portrait(publish, b"user-portrait-A")
 
-        条目一落到审核点后端就会把候选图写进发布目录；那份要是被当成你的成图，
-        整批会在你还没出图的时候自己跑起来。
-        """
-        from backend import publish_watcher as watcher
+            with patch.object(batch_worker, "batch_store", store), patch.object(
+                batch_worker, "DATA_DIR", root / "data"
+            ):
+                outcome = batch_worker.adopt_published_portrait(publish)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            frame = self._image(root / "work" / "candidate_r0_frame.png", b"same-bytes")
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            self._image(folder / "人物图.png", b"same-bytes")
-            batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
-            self.assertEqual(watcher.pending_actions([batch], root=root / "发布成品"), [])
-
-    def test_portrait_already_attached_still_releases_the_review_point(self):
-        """目录里那张**已经是**本条候选图时，也把后续流程跑起来（只是不用重复上传）。"""
-        from backend import publish_watcher as watcher
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            upload = self._image(root / "work" / "candidate_r0_upload.png", b"user-portrait")
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            self._image(folder / "人物图.png", b"user-portrait")
-            batch = self._batch("awaiting_review", candidate=str(upload), folder=folder)
-
-            actions = watcher.pending_actions([batch], root=root / "发布成品")
-            self.assertEqual([a.mode for a in actions], ["upload_confirm"])
-            self.assertFalse(actions[0].meta["needs_upload"], "已经是同一张，不必重复上传")
-
-    def test_the_same_image_is_never_processed_twice(self):
-        """「如果已经有的你不要重复跑」：条目上记着这张图的 sha 之后，再也不动它。"""
-        from backend import publish_watcher as watcher
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            image = self._image(folder / "人物图.png", b"user-portrait-A")
-            sha = watcher.sha256_of(image)
-            batch = self._batch("awaiting_review", candidate=str(image), marker_sha=sha,
-                                folder=folder)
-            self.assertEqual(watcher.pending_actions([batch], root=root / "发布成品"), [])
-
-            # 换一张新图（sha 变了）→ 才会重新走一遍
-            self._image(folder / "人物图.png", b"user-portrait-B")
-            again = watcher.pending_actions([batch], root=root / "发布成品")
-            self.assertEqual([a.mode for a in again], ["upload_confirm"])
-
-    def test_busy_and_finished_items_are_never_touched(self):
-        """正在出片/重新备料/还没备料/已取消/已出片/已删除：一律不碰。"""
-        from backend import publish_watcher as watcher
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            for status in ("running", "revising", "pending", "skipped", "completed", "deleted"):
-                base = root / f"发布成品-{status}"
-                folder = base / "001_跳舞_测试标题_7685308023212056420"
-                self._image(folder / "人物图.png", f"user-{status}".encode())
-                batch = self._batch(status, candidate=str(frame), folder=folder)
-                self.assertEqual(
-                    watcher.pending_actions([batch], root=base), [], f"{status} 不该被监听碰"
-                )
-
-    def test_confirmed_items_only_get_the_new_image(self):
-        """已经放行、排在别的作品后面等出片时换了图 → 只换图，不重复确认。"""
-        from backend import publish_watcher as watcher
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            self._image(folder / "人物图.png", b"user-portrait-A")
-            batch = self._batch("confirmed", candidate=str(frame), folder=folder)
-            actions = watcher.pending_actions([batch], root=root / "发布成品")
-            self.assertEqual([a.mode for a in actions], ["upload"])
-
-    def test_failed_items_are_rerun_but_skipped_ones_are_not_revived(self):
-        """失败条目：挂上图顺手重跑一次；自己取消掉的条目：绝不复活。"""
-        from backend import publish_watcher as watcher
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            self._image(folder / "人物图.png", b"user-portrait-A")
-            failed = self._batch("failed", candidate=str(frame), folder=folder)
-            self.assertEqual(
-                [a.mode for a in watcher.pending_actions([failed], root=root / "发布成品")],
-                ["retry"],
+            self.assertIsNotNone(outcome)
+            self.assertEqual(outcome["action"], "confirm")
+            self.assertTrue(outcome["needsWake"])
+            row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
+            self.assertEqual(row["status"], "confirmed")
+            self.assertTrue(row["reviewApproved"])
+            adopted = Path(row["ai"]["reference_image_path"])
+            self.assertTrue(adopted.is_file(), "应当把发布目录那张复制成条目候选图")
+            self.assertEqual(adopted.read_bytes(), image.read_bytes())
+            self.assertEqual(row["ai"]["portrait_watch"]["sha"], self._sha(b"user-portrait-A"))
+            self.assertTrue(
+                any("候选人物图" in log["message"] for log in row.get("logs") or []),
+                row.get("logs"),
             )
-            skipped = self._batch("skipped", candidate=str(frame), folder=folder)
-            self.assertEqual(watcher.pending_actions([skipped], root=root / "发布成品"), [])
 
-    def test_folder_is_matched_by_aweme_id_and_unknown_folders_are_ignored(self):
-        """目录靠作品号对上条目；对不上的（历史目录 / 别的作品）一律忽略。"""
-        from backend import publish_watcher as watcher
+    def test_the_same_image_never_drives_the_item_twice(self) -> None:
+        """同一张图只驱动一次（重启后也不会重复跑）—— watcher 当年踩过的坑。"""
+        from backend import batch_worker
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            self._image(folder / "人物图.png", b"user-portrait-A")
-            batch = self._batch("awaiting_review", candidate=str(frame))
-            self.assertEqual(len(watcher.pending_actions([batch], root=root / "发布成品")), 1)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            payload = b"user-portrait-A"
+            store, batch_id, item_id, publish, _ = self._fixture(root)
+            self._portrait(publish, payload)
 
-            stranger = root / "发布成品" / "009_别人的作品_1111111111111111111"
-            self._image(stranger / "人物图.png", b"other-portrait")
-            actions = watcher.pending_actions([batch], root=root / "发布成品")
-            self.assertEqual([a.folder.name for a in actions],
-                             ["001_跳舞_测试标题_7685308023212056420"])
+            with patch.object(batch_worker, "batch_store", store), patch.object(
+                batch_worker, "DATA_DIR", root / "data"
+            ):
+                first = batch_worker.adopt_published_portrait(publish)
+                second = batch_worker.adopt_published_portrait(publish)
 
-    def test_watcher_can_be_switched_off(self):
-        """页面勾选框关掉之后，一轮扫描什么都不做。"""
-        import asyncio as asyncio_module
+            self.assertIsNotNone(first)
+            self.assertIsNone(second, "同一张图不许驱动第二次")
+            row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
+            self.assertEqual(row["ai"]["portrait_watch"]["sha"], self._sha(payload))
 
-        from backend import publish_watcher as watcher
+    def test_confirmed_item_only_gets_the_new_image(self) -> None:
+        """已经放行（confirmed）的条目：只换候选图、**不重复确认**。"""
+        from backend import batch_worker
 
-        with tempfile.TemporaryDirectory() as tmp:
-            settings_file = Path(tmp) / "publish_watch.json"
-            with patch.object(watcher, "SETTINGS_FILE", settings_file), \
-                 patch.object(watcher.settings, "env_value", lambda name, default="": ""):
-                self.assertTrue(watcher.enabled(), "默认开")
-                watcher.set_enabled(False)
-                self.assertFalse(watcher.enabled())
-                self.assertEqual(asyncio_module.run(watcher.scan_once(root=Path(tmp))), [])
-                watcher.set_enabled(True)
-                self.assertTrue(watcher.enabled())
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            store, batch_id, item_id, publish, _ = self._fixture(root, status="confirmed")
+            self._portrait(publish, b"user-portrait-B")
 
-    def test_scan_uploads_then_confirms_and_records_the_marker(self):
-        """执行顺序：先挂候选图，再确认；条目上留下 sha 标记（重启也不会重复跑）。"""
-        import asyncio as asyncio_module
+            with patch.object(batch_worker, "batch_store", store), patch.object(
+                batch_worker, "DATA_DIR", root / "data"
+            ):
+                outcome = batch_worker.adopt_published_portrait(publish)
 
-        from backend import publish_watcher as watcher
+            self.assertEqual(outcome["action"], "upload")
+            self.assertFalse(outcome["needsWake"])
+            row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
+            self.assertEqual(row["status"], "confirmed")
+            self.assertEqual(Path(row["ai"]["reference_image_path"]).read_bytes(), b"user-portrait-B")
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            image = self._image(folder / "人物图.png", b"user-portrait-A")
-            batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
-            item_row = json.loads(json.dumps(batch["items"][0]))
-            stub = _StubBatchStore({"item-1": item_row})
-            client = _StubClient()
-            settings_file = Path(tmp) / "publish_watch.json"
+    def test_failed_item_is_rerun_with_the_new_image(self) -> None:
+        """失败的条目：挂上新图并把这一条重新排上（源视频还在时直接续跑出片）。"""
+        from backend import batch_worker
 
-            with patch.object(watcher, "store", lambda: stub), \
-                 patch.object(watcher, "SETTINGS_FILE", settings_file), \
-                 patch.object(watcher.settings, "env_value", lambda name, default="": ""), \
-                 patch.object(watcher.settings, "BATCH_SELF_URL", "http://127.0.0.1:8111"):
-                done = asyncio_module.run(
-                    watcher.scan_once(client=client, batches=[batch], root=root / "发布成品")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            store, batch_id, item_id, publish, _ = self._fixture(
+                root, status="failed", source=b"fake-source"
+            )
+            self._portrait(publish, b"user-portrait-C")
+
+            with patch.object(batch_worker, "batch_store", store), patch.object(
+                batch_worker, "DATA_DIR", root / "data"
+            ):
+                outcome = batch_worker.adopt_published_portrait(publish)
+
+            self.assertEqual(outcome["action"], "retry")
+            self.assertTrue(outcome["needsWake"])
+            row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
+            self.assertNotEqual(row["status"], "failed")
+            self.assertEqual(Path(row["ai"]["reference_image_path"]).read_bytes(), b"user-portrait-C")
+
+    def test_busy_and_finished_items_are_never_touched(self) -> None:
+        """pending / running / skipped / completed 一律不碰（沿用 watcher 的口径）。"""
+        from backend import batch_worker
+
+        for status in ("pending", "revising", "running", "skipped", "completed"):
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+                root = Path(folder)
+                store, batch_id, item_id, publish, old = self._fixture(root, status=status)
+                self._portrait(publish, b"user-portrait-D")
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "DATA_DIR", root / "data"
+                ):
+                    outcome = batch_worker.adopt_published_portrait(publish)
+
+                self.assertIsNone(outcome, status)
+                row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
+                self.assertEqual(row["status"], status)
+                self.assertEqual(Path(row["ai"]["reference_image_path"]), old)
+
+    def test_fallback_frame_candidate_is_left_alone(self) -> None:
+        """目录里那张就是备料留下的**兜底取帧图**（sha 与候选图相同）→ 不算你的成图，不动。"""
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            frame = root / "data" / "batches" / "b1" / "it1" / "candidate_r0_frame.png"
+            store, batch_id, item_id, publish, _ = self._fixture(root, candidate=None)
+            frame.parent.mkdir(parents=True, exist_ok=True)
+            frame.write_bytes(b"fallback-frame")
+            with patch.object(batch_worker, "batch_store", store):
+                store.mutate_item(
+                    batch_id, item_id,
+                    lambda row: row["ai"].update(reference_image_path=str(frame)),
                 )
+            self._portrait(publish, b"fallback-frame")       # 与候选图 sha 相同
 
-            self.assertEqual(len(done), 1)
-            self.assertTrue(client.calls[0].endswith("/api/batches/batch-1/items/item-1/image"),
-                            client.calls)
-            self.assertTrue(client.calls[1].endswith("/api/batches/batch-1/items/item-1/confirm"),
-                            client.calls)
-            marker = item_row["ai"]["portrait_watch"]
-            self.assertEqual(marker["sha"], watcher.sha256_of(image))
-            self.assertEqual(marker["action"], "upload_confirm")
-            self.assertTrue(any("监听" in message for _, _, message in stub.logs))
+            with patch.object(batch_worker, "batch_store", store), patch.object(
+                batch_worker, "DATA_DIR", root / "data"
+            ):
+                outcome = batch_worker.adopt_published_portrait(publish)
 
-    def test_a_failed_upload_is_retried_and_then_flagged(self):
-        """上传失败：不算处理过（下一轮还来），连续 3 次就标黄停下等人工。"""
-        import asyncio as asyncio_module
+            self.assertIsNone(outcome)
+            row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
+            self.assertEqual(row["status"], "awaiting_review")
 
-        from backend import publish_watcher as watcher
+    def test_folder_without_a_matching_item_is_ignored(self) -> None:
+        """匹配不到条目（历史目录 / 别的作品号）→ 什么都不做。"""
+        from backend import batch_worker
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            self._image(folder / "人物图.png", b"user-portrait-A")
-            item_row = {"id": "item-1", "ai": {}, "status": "awaiting_review"}
-            stub = _StubBatchStore({"item-1": item_row})
-            watcher._ATTEMPTS.clear()
-            watcher._WARNED.clear()
-            image = folder / "人物图.png"
-            action = watcher.Action(batch_id="batch-1", item_id="item-1", folder=folder,
-                                    image=image, sha=watcher.sha256_of(image),
-                                    mode="upload_confirm")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            store, batch_id, _, publish, _ = self._fixture(root)
+            stranger = root / "发布成品" / "dance" / "009_跳舞_别人的作品_1111111111111111111"
+            stranger.mkdir(parents=True, exist_ok=True)
+            self._portrait(stranger, b"someone-else")
 
-            with patch.object(watcher, "store", lambda: stub):
-                for _ in range(watcher.MAX_ATTEMPTS_PER_IMAGE):
-                    ok = asyncio_module.run(
-                        watcher.run_action(action, client=_StubClient([500]))
-                    )
-                    self.assertFalse(ok)
-            self.assertNotIn("portrait_watch", item_row["ai"], "没成功就不许记「已处理」")
-            self.assertIn("监听连续", str(item_row.get("warning") or ""))
+            with patch.object(batch_worker, "batch_store", store), patch.object(
+                batch_worker, "DATA_DIR", root / "data"
+            ):
+                self.assertIsNone(batch_worker.adopt_published_portrait(stranger))
+                # 没有人物图的目录同样什么都不做
+                empty = root / "发布成品" / "dance" / f"002_跳舞_空的_{self.AWEME}"
+                empty.mkdir(parents=True, exist_ok=True)
+                self.assertIsNone(batch_worker.adopt_published_portrait(empty))
 
-    def test_bridge_mode_never_writes_the_batch_state(self):
-        """桥接模式（后端还没重启时用独立进程顶一会儿）：只调接口，**一个字的批次状态都不写**。
+    def test_the_watcher_is_gone_and_images_registers_instead(self) -> None:
+        """源码级：watcher 模块与三个接口都没了；登记改在 `/images` 写图那一处。"""
+        root = Path(__file__).resolve().parents[1]
+        self.assertFalse((root / "backend" / "publish_watcher.py").exists())
+        app_source = (root / "backend" / "app.py").read_text(encoding="utf-8")
+        self.assertNotIn("publish_watcher", app_source)
+        self.assertNotIn("/api/watch/publish-portrait", app_source)
+        workbench = (root / "backend" / "image_workbench.py").read_text(encoding="utf-8")
+        self.assertIn("_register_published_portrait(folder)", workbench)
+        self.assertIn("adopt_published_portrait", workbench)
 
-        批次状态是「读整份 JSON → 改 → 写回」，两个进程同时写会互相覆盖（后端每几秒都在
-        更新出片进度），所以独立进程必须走 `write_state=False`。
-        """
-        import asyncio as asyncio_module
+class RvcBatchTests(unittest.TestCase):
+    """一键批量转换音色（2026-09-20 step 5）：`最终成片.mp4` → `最终成片_音色版.mp4`。
 
-        from backend import publish_watcher as watcher
+    链条是用户定的：原声母版 → 音色版（本入口，**并存**）→ 字幕版（发布版）。
+    判据与字幕批量同源：扫发布目录、已存在的不重复、单条失败不阻断、暂停在两条之间生效。
+    """
 
-        class _ExplodingStore:
-            def add_item_log(self, *_args, **_kwargs):
-                raise AssertionError("桥接模式不许写批次日志")
+    def _publish(self, root: Path, *, kind: str, number: int, label: str,
+                 clean: bool = True, voice: bool = False) -> Path:
+        folder = root / "发布成品" / kind / f"{number:03d}_{label}"
+        folder.mkdir(parents=True, exist_ok=True)
+        if clean:
+            (folder / "最终成片.mp4").write_bytes(b"clean-video")
+        if voice:
+            (folder / "最终成片_音色版.mp4").write_bytes(b"already-converted")
+        return folder
 
-            def mutate_item(self, *_args, **_kwargs):
-                raise AssertionError("桥接模式不许改批次状态")
+    @contextmanager
+    def _temp_jobs(self, folder: Path):
+        from backend import store as store_module
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            frame = self._image(root / "work" / "candidate_r0_frame.png", b"fallback")
-            folder = root / "发布成品" / "001_跳舞_测试标题_7685308023212056420"
-            self._image(folder / "人物图.png", b"user-portrait-A")
-            batch = self._batch("awaiting_review", candidate=str(frame), folder=folder)
-            client = _StubClient()
-            # 监听开关是**落盘的用户设置**：不换成临时文件的话，这台机器上页面把监听关掉之后
-            # 这个用例就会失败（2026-09-20 实测）。与同类用例保持一致，钉到临时文件。
-            settings_file = Path(tmp) / "publish_watch.json"
+        original = store_module.DB_PATH
+        store_module.DB_PATH = Path(folder) / "jobs.db"
+        store_module.store._init_db()
+        try:
+            yield store_module.store
+        finally:
+            store_module.DB_PATH = original
+            store_module.store._init_db()
 
-            with patch.object(watcher, "store", lambda: _ExplodingStore()), \
-                 patch.object(watcher, "SETTINGS_FILE", settings_file), \
-                 patch.object(watcher.settings, "env_value", lambda name, default="": ""):
-                done = asyncio_module.run(
-                    watcher.scan_once(client=client, batches=[batch],
-                                      root=root / "发布成品", write_state=False)
-                )
+    def _batch_job(self, job_store, queue: list[dict]) -> str:
+        import uuid
 
-            self.assertEqual(len(done), 1)
-            self.assertTrue(client.calls[0].endswith("/image"), client.calls)
-            self.assertTrue(client.calls[1].endswith("/confirm"), client.calls)
+        from backend.rvc_batch import BATCH_MILESTONES
 
-    def test_the_watcher_is_wired_into_the_service_and_the_page(self):
-        """源码级：服务启动时拉起监听、页面有勾选框、三个接口在。"""
+        job_id = uuid.uuid4().hex
+        created = now_iso()
+        job_store.create({
+            "id": job_id, "kind": "rvc_batch", "status": "queued", "stage": "voice",
+            "createdAt": created, "updatedAt": created,
+            "sourceName": f"发布成品批量（{len(queue)} 条）", "rvcQueue": queue,
+            "rvcIndex": 0, "rvcDone": 0, "rvcFailed": 0, "rvcStarted": False,
+            "milestones": BATCH_MILESTONES, "logs": [],
+        })
+        return job_id
+
+    def test_scan_only_lists_singing_videos_missing_the_voice_version(self) -> None:
+        """只扫 `singing/`：有母版、没音色版的才排队；已有音色版 / 没有母版 / 跳舞目录都跳过。"""
+        from backend import rvc_batch
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            self._publish(root, kind="singing", number=1, label="唱歌_待转换")
+            self._publish(root, kind="singing", number=2, label="唱歌_已有音色版", voice=True)
+            self._publish(root, kind="singing", number=3, label="唱歌_没母版", clean=False)
+            self._publish(root, kind="dance", number=1, label="跳舞_不动")
+
+            with patch.object(rvc_batch, "BATCH_OUTPUT_ROOT", root / "发布成品"), patch.object(
+                rvc_batch, "_find_item_for_folder", lambda _folder: None
+            ):
+                queue = rvc_batch.scan_singing_videos_missing_voice()
+
+            self.assertEqual([row["label"] for row in queue], ["001_唱歌_待转换"])
+            self.assertTrue(queue[0]["source"].endswith("最终成片.mp4"))
+            self.assertTrue(queue[0]["out"].endswith("最终成片_音色版.mp4"))
+
+    def test_batch_writes_the_voice_version_beside_the_master(self) -> None:
+        """逐条转换，产物落回各自发布目录（**原声母版并存**），结束后任务标完成。"""
+        from backend import rvc_batch
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            folder = self._publish(root, kind="singing", number=1, label="唱歌_待转换")
+            with self._temp_jobs(root) as job_store, patch.object(
+                rvc_batch, "BATCH_OUTPUT_ROOT", root / "发布成品"
+            ), patch.object(rvc_batch, "DATA_DIR", root / "data"), patch.object(
+                rvc_batch, "_find_item_for_folder", lambda _folder: None
+            ), patch.object(rvc_batch, "_batch_busy", lambda: ""), patch.object(
+                rvc_batch, "comfy_health", _async_false
+            ), patch.object(rvc_batch.resources, "stop_comfy", _async_none), patch.object(
+                rvc_batch, "run_rvc", _fake_converter
+            ):
+                job_id = self._batch_job(job_store, [])
+                asyncio.run(rvc_batch.run_rvc_publish_batch(job_id))
+                state = job_store.get(job_id)
+
+            self.assertEqual(state["status"], "completed")
+            self.assertEqual(state["rvcDone"], 1)
+            self.assertEqual(state["rvcFailed"], 0)
+            self.assertTrue((folder / "最终成片_音色版.mp4").is_file())
+            self.assertEqual((folder / "最终成片_音色版.mp4").read_bytes(), b"converted-voice")
+            # 原声母版**并存**，一个字都没被改
+            self.assertEqual((folder / "最终成片.mp4").read_bytes(), b"clean-video")
+
+    def test_pause_takes_effect_between_two_items(self) -> None:
+        """暂停在**下一条开始之前**生效：第一条转完就停，第二条原样留着等「继续」。"""
+        from backend import rvc_batch
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            first = self._publish(root, kind="singing", number=1, label="唱歌_一")
+            second = self._publish(root, kind="singing", number=2, label="唱歌_二")
+            box: dict = {}
+
+            async def converter_then_pause(job_id, staged, audio_from=None):
+                out = staged.with_name(f"{staged.stem}_mogoo_v1.mp4")
+                out.write_bytes(b"converted-voice")
+                # 第一条跑完时用户点了暂停
+                from backend.store import store as job_store
+
+                job_store.update(job_id, pauseRequested=True)
+                return out
+
+            with self._temp_jobs(root) as job_store, patch.object(
+                rvc_batch, "BATCH_OUTPUT_ROOT", root / "发布成品"
+            ), patch.object(rvc_batch, "DATA_DIR", root / "data"), patch.object(
+                rvc_batch, "_find_item_for_folder", lambda _folder: None
+            ), patch.object(rvc_batch, "_batch_busy", lambda: ""), patch.object(
+                rvc_batch, "comfy_health", _async_false
+            ), patch.object(rvc_batch.resources, "stop_comfy", _async_none), patch.object(
+                rvc_batch, "run_rvc", converter_then_pause
+            ):
+                job_id = self._batch_job(job_store, [])
+                asyncio.run(rvc_batch.run_rvc_publish_batch(job_id))
+                state = job_store.get(job_id)
+                box["state"] = state
+
+            self.assertEqual(state["status"], "paused")
+            self.assertEqual(state["rvcDone"], 1)
+            self.assertTrue((first / "最终成片_音色版.mp4").is_file())
+            self.assertFalse((second / "最终成片_音色版.mp4").exists(), "暂停后不许再动第二条")
+
+    def test_one_failure_does_not_stop_the_batch(self) -> None:
+        """单条失败只记日志、继续下一条（与字幕批量同一条纪律）。"""
+        from backend import rvc_batch
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            first = self._publish(root, kind="singing", number=1, label="唱歌_会失败")
+            second = self._publish(root, kind="singing", number=2, label="唱歌_会成功")
+            calls = {"n": 0}
+
+            async def flaky(job_id, staged, audio_from=None):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise RuntimeError("RVC 崩了")
+                out = staged.with_name(f"{staged.stem}_mogoo_v1.mp4")
+                out.write_bytes(b"converted-voice")
+                return out
+
+            with self._temp_jobs(root) as job_store, patch.object(
+                rvc_batch, "BATCH_OUTPUT_ROOT", root / "发布成品"
+            ), patch.object(rvc_batch, "DATA_DIR", root / "data"), patch.object(
+                rvc_batch, "_find_item_for_folder", lambda _folder: None
+            ), patch.object(rvc_batch, "_batch_busy", lambda: ""), patch.object(
+                rvc_batch, "comfy_health", _async_false
+            ), patch.object(rvc_batch.resources, "stop_comfy", _async_none), patch.object(
+                rvc_batch, "run_rvc", flaky
+            ):
+                job_id = self._batch_job(job_store, [])
+                asyncio.run(rvc_batch.run_rvc_publish_batch(job_id))
+                state = job_store.get(job_id)
+
+            self.assertEqual(state["status"], "completed")
+            self.assertEqual(state["rvcDone"], 1)
+            self.assertEqual(state["rvcFailed"], 1)
+            self.assertFalse((first / "最终成片_音色版.mp4").exists())
+            self.assertTrue((second / "最终成片_音色版.mp4").is_file())
+
+    def test_waits_for_the_render_slot_instead_of_fighting_for_the_gpu(self) -> None:
+        """有出片在跑就**等**（RVC 与出片抢同一张卡），等到了才关 ComfyUI 开工。"""
+        from backend import rvc_batch
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            self._publish(root, kind="singing", number=1, label="唱歌_待转换")
+            busy = {"n": 0}
+            stopped: list = []
+
+            def busy_twice() -> str:
+                busy["n"] += 1
+                return "批量第 3 条正在出片" if busy["n"] <= 2 else ""
+
+            async def fast_sleep(_seconds):
+                return None
+
+            with self._temp_jobs(root) as job_store, patch.object(
+                rvc_batch, "BATCH_OUTPUT_ROOT", root / "发布成品"
+            ), patch.object(rvc_batch, "DATA_DIR", root / "data"), patch.object(
+                rvc_batch, "_find_item_for_folder", lambda _folder: None
+            ), patch.object(rvc_batch, "_batch_busy", busy_twice), patch.object(
+                rvc_batch.asyncio, "sleep", fast_sleep
+            ), patch.object(rvc_batch, "comfy_health", _async_true), patch.object(
+                rvc_batch.resources, "stop_comfy", lambda job_id=None: stopped.append(job_id) or _noop()
+            ), patch.object(rvc_batch, "run_rvc", _fake_converter):
+                job_id = self._batch_job(job_store, [])
+                asyncio.run(rvc_batch.run_rvc_publish_batch(job_id))
+
+            self.assertGreaterEqual(busy["n"], 3, "应当一直等到出片空档")
+            self.assertTrue(stopped, "等到空档后要关掉 ComfyUI 再转音色")
+
+    def test_the_button_and_the_endpoint_are_wired(self) -> None:
+        """源码级：后端有 `/api/jobs/rvc/publish-batch`，页面有「一键批量转换音色」。"""
         root = Path(__file__).resolve().parents[1]
         app_source = (root / "backend" / "app.py").read_text(encoding="utf-8")
-        self.assertIn("publish_watcher.watch_loop()", app_source)
-        self.assertIn("/api/watch/publish-portrait", app_source)
-        self.assertIn("publish_watcher.scan_now()", app_source)
-        page = (root / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
-        self.assertIn("/api/watch/publish-portrait", page)
-        self.assertIn("监听发布目录人物图", page)
+        self.assertIn("/api/jobs/rvc/publish-batch", app_source)
+        self.assertIn("run_rvc_publish_batch", app_source)
+        page = (root / "src" / "RvcRoute.tsx").read_text(encoding="utf-8")
+        self.assertIn("一键批量转换音色", page)
+        self.assertIn("/api/jobs/rvc/publish-batch", page)
+        self.assertIn("/pause", page)
+        self.assertIn("/resume", page)
+
+
+async def _async_false():
+    return False
+
+
+async def _async_true():
+    return True
+
+
+async def _async_none(*_args, **_kwargs):
+    return None
+
+
+async def _noop():
+    return None
+
+
+async def _fake_converter(_job_id, staged, audio_from=None):
+    """假装 RVC：在输入旁边写出转换结果（真实脚本就是这个落点）。"""
+    out = staged.with_name(f"{staged.stem}_mogoo_v1.mp4")
+    out.write_bytes(b"converted-voice")
+    return out
 
 
 class SourceVideoIntegrityTests(unittest.TestCase):

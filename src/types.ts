@@ -57,6 +57,11 @@ export interface JobState {
   /** 一键批量字幕（kind === "subtitle_batch"）：本次成功 / 失败的条数 */
   subtitleDone?: number | null;
   subtitleFailed?: number | null;
+  /** 一键批量转音色（kind === "rvc_batch"）：扫到的条数 / 当前第几条 / 成功 / 失败 */
+  rvcQueue?: { folder: string; label: string; source: string; out: string }[] | null;
+  rvcIndex?: number | null;
+  rvcDone?: number | null;
+  rvcFailed?: number | null;
   /** 长视频分段：预估总段数与当前段（每段81帧、重叠5帧衔接） */
   estimatedSegments?: number | null;
   currentSegment?: number | null;

@@ -12,6 +12,7 @@ import {
   Graph,
   Info,
   MicrophoneStage,
+  Pause,
   Play,
   SpinnerGap,
   UploadSimple,
@@ -86,6 +87,7 @@ function kindLabel(kind?: string) {
   if (kind === "migrate") return "动作迁移";
   if (kind === "upscale") return "二采放大";
   if (kind === "rvc") return "音色转换";
+  if (kind === "rvc_batch") return "批量转音色";
   if (kind === "subtitle") return "生成字幕";
   return "歌曲生成";
 }
@@ -144,8 +146,13 @@ export function RvcRoute() {
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [batchSubmitting, setBatchSubmitting] = useState(false);
 
   const jobActive = Boolean(job && ["queued", "running"].includes(job.status));
+  // 一键批量转音色（kind === "rvc_batch"）：跑着/暂停时占用这条链路，单条 UI 让位
+  const isBatch = job?.kind === "rvc_batch";
+  const batchBusy = Boolean(isBatch && job && ["queued", "running", "paused"].includes(job.status));
+  const batchQueued = Boolean(isBatch && job?.status === "queued");
   const tickNow = useNowTick(jobActive);
   const totalElapsedMs = elapsedMs(job?.startedAt || job?.createdAt, job?.finishedAt, tickNow);
   const milestones = job?.milestones?.length ? job.milestones : SKELETON_MILESTONES;
@@ -261,6 +268,59 @@ export function RvcRoute() {
     }
   };
 
+  /** 一键批量转音色：给发布成品里所有缺音色版的唱歌成片逐条转（后端串行、已存在的不重复）。 */
+  const startBatch = async () => {
+    if (batchBusy) return;
+    setBatchSubmitting(true);
+    setLocalError(null);
+    try {
+      const response = await fetch("/api/jobs/rvc/publish-batch", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "一键批量启动失败");
+      setJob(payload);
+      connectJob(payload.id);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "一键批量启动失败");
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+
+  /** 暂停一键批量：当前这条跑完即停（RVC 跑到一半硬掐没有意义）。 */
+  const pauseBatch = async () => {
+    if (!job) return;
+    setBatchSubmitting(true);
+    setLocalError(null);
+    try {
+      const response = await fetch(`/api/jobs/${job.id}/pause`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "暂停失败");
+      setJob(payload);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "暂停失败");
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+
+  /** 继续一条已暂停的一键批量转音色（重扫发布目录，只补还缺音色版的）。 */
+  const resumeBatch = async () => {
+    if (!job) return;
+    setBatchSubmitting(true);
+    setLocalError(null);
+    try {
+      const response = await fetch(`/api/jobs/${job.id}/resume`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || "继续失败");
+      setJob(payload);
+      connectJob(payload.id);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "继续失败");
+    } finally {
+      setBatchSubmitting(false);
+    }
+  };
+
   const completionTime = job?.output?.completedAt
     ? new Intl.DateTimeFormat("zh-CN", {
         year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
@@ -283,6 +343,49 @@ export function RvcRoute() {
 
       <main className="workspace">
         <section className="input-panel" aria-label="音色转换设置">
+          {/* 一键批量放最上面（与字幕页同一套交互，用户 2026-09-20 要的链条：
+              最终成片 → 音色版 → 字幕版） */}
+          <div className="field-block">
+            <div className="field-heading"><h2><span>⚡</span> 一键批量 <em>（发布成品里的唱歌成片）</em></h2></div>
+            <div className="subtitle-batch-row">
+              <button className="primary-action batch-action" onClick={startBatch} disabled={batchSubmitting || batchBusy}>
+                {batchSubmitting ? <SpinnerGap className="spin" /> : <MicrophoneStage weight="fill" />}
+                {batchSubmitting ? "正在扫描…" : "一键批量转换音色"}
+              </button>
+              <span className="action-hint">
+                扫 发布成品\singing，给还没有 <code>最终成片_音色版.mp4</code> 的成片逐条转音色；
+                原声母版并存，已经有了的不重复转换。开跑前会先等出片空档（不跟出片抢显卡）。
+              </span>
+            </div>
+            {isBatch && (
+              <p className="field-note">
+                {job?.currentNodeTitle || "等待开始"}
+                {job?.rvcQueue?.length
+                  ? ` · 共 ${job.rvcQueue.length} 条 · 成功 ${job.rvcDone ?? 0} · 失败 ${job.rvcFailed ?? 0}`
+                  : ""}
+              </p>
+            )}
+            {batchBusy && (
+              <div className="subtitle-batch-controls">
+                {job?.status === "running" && (
+                  <button className="ghost-action" onClick={pauseBatch} disabled={batchSubmitting}>
+                    <Pause weight="fill" /> 暂停（当前这条跑完即停）
+                  </button>
+                )}
+                {job?.status === "paused" && (
+                  <button className="secondary-action" onClick={resumeBatch} disabled={batchSubmitting}>
+                    <Play weight="fill" /> 继续转换
+                  </button>
+                )}
+              </div>
+            )}
+            {isBatch && !batchBusy && (job?.rvcFailed ?? 0) > 0 && (
+              <p className="field-note">
+                本次有 {job?.rvcFailed} 条没成功。再点一次上面的按钮即可 —— 它会重扫发布目录，
+                只补还缺 <code>最终成片_音色版.mp4</code> 的那几条。
+              </p>
+            )}
+          </div>
           <div className="field-block">
             <div className="field-heading"><h2><span>1.</span> 输入视频</h2></div>
             <div className="ratio-cards" role="radiogroup" aria-label="输入来源">

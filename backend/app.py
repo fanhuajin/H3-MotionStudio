@@ -28,6 +28,14 @@ _REGEN_IMAGE_TASKS: set[asyncio.Task] = set()
 
 from . import input_preview
 from . import image_workbench
+from . import rvc_batch
+from .rvc_batch import (
+    BATCH_MILESTONES as RVC_BATCH_MILESTONES,
+    request_publish_batch_pause as request_rvc_publish_batch_pause,
+    resume_publish_batch as resume_rvc_publish_batch,
+    run_rvc_publish_batch,
+    scan_singing_videos_missing_voice,
+)
 from .batch_store import batch_store
 from . import batch_ai
 from .batch_worker import (
@@ -84,7 +92,6 @@ from .douyin_service import (
     douyin_service,
     is_douyin_url,
 )
-from . import publish_watcher
 from .pipeline import (
     PipelineError,
     comfy_health,
@@ -386,10 +393,6 @@ async def lifespan(_: FastAPI):
             notice="本地服务重启，批次已安全暂停；点「继续」后从当前条目恢复。",
         )
     sweep_task = asyncio.create_task(_douyin_housekeeping())
-    # 发布目录监听（2026-09-17 用户要求）：发布目录里出现新的 人物图.png →
-    # 自动挂成候选人物图 + 自动「确认并出片」，不用他再点。开关在批量页面右上角
-    # （落盘 data/publish_watch.json），H3_WATCH_PUBLISH_PORTRAIT=0/1 可强制。
-    watch_task = asyncio.create_task(publish_watcher.watch_loop())
     # 本地服务重启后恢复「全部完成后自动关机」的看护：批次可能早就跑完了，
     # 重启前挂的关机记录也可能还在（Windows 的倒计时不随我们重启消失）。
     resume_shutdown_watch()
@@ -399,11 +402,6 @@ async def lifespan(_: FastAPI):
         sweep_task.cancel()
         try:
             await sweep_task
-        except asyncio.CancelledError:
-            pass
-        watch_task.cancel()
-        try:
-            await watch_task
         except asyncio.CancelledError:
             pass
         await douyin_service.stop()
@@ -775,52 +773,6 @@ async def latest_batch():
     if not state:
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
     return JSONResponse(state, headers={"Cache-Control": "no-store"})
-
-
-# ---------------- 发布目录监听（页面右上角勾选框） ----------------
-class PublishWatchRequest(BaseModel):
-    enabled: bool
-
-
-@app.get("/api/watch/publish-portrait")
-async def publish_watch_state():
-    """监听开关状态（页面勾选框用）。"""
-    return JSONResponse(
-        {
-            "enabled": publish_watcher.enabled(),
-            "interval": publish_watcher.interval(),
-            "root": str(publish_watcher.publish_root()),
-            "lastScan": publish_watcher.last_scan(),
-        },
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-@app.post("/api/watch/publish-portrait")
-async def set_publish_watch(request: PublishWatchRequest):
-    """页面勾选框：开/关发布目录监听（落盘 data/publish_watch.json，立即生效）。"""
-    publish_watcher.set_enabled(bool(request.enabled))
-    return JSONResponse(
-        {"enabled": publish_watcher.enabled()}, headers={"Cache-Control": "no-store"}
-    )
-
-
-@app.post("/api/watch/publish-portrait/scan")
-async def scan_publish_watch():
-    """立刻扫一次（不想等那 5 秒时用）。返回这一轮真正处理了哪几条。"""
-    handled = await publish_watcher.scan_now()
-    return JSONResponse(
-        {
-            "enabled": publish_watcher.enabled(),
-            "handled": [
-                {"itemId": action.item_id, "title": action.title,
-                 "image": action.image.name, "mode": action.mode}
-                for action in handled
-            ],
-            "lastScan": publish_watcher.last_scan(),
-        },
-        headers={"Cache-Control": "no-store"},
-    )
 
 
 @app.post("/api/batches")
@@ -2451,10 +2403,103 @@ async def create_subtitle_publish_batch():
     return state
 
 
+@app.post("/api/jobs/rvc/publish-batch")
+async def create_rvc_publish_batch():
+    """一键给所有**还没有音色版**的唱歌成片转音色（逐条串行，原声母版并存）。
+
+    2026-09-20 用户定的链条：`最终成片.mp4`（原声）→ **`最终成片_音色版.mp4`**（本入口）
+    → `最终成片_字幕版.mp4`（字幕入口，发布版）。扫 `发布成品/singing/` 里"有
+    `最终成片.mp4`、没有 `最终成片_音色版.mp4`"的目录，逐条复用单条 RVC 引擎
+    （`pipeline.run_rvc`），产物落回各自发布目录。**已存在音色版的不重复转换。**
+
+    RVC 与出片抢同一张显卡：任务会**先等出片空档**再关掉 ComfyUI 开工（下一条出片会自己
+    把 ComfyUI 拉起来），所以随时点都安全。
+    """
+    busy = next(
+        (
+            job
+            for job in store.active_all()
+            if str(job.get("kind")) == "rvc_batch" and str(job.get("status")) in {"queued", "running", "paused"}
+        ),
+        None,
+    )
+    if busy:
+        raise HTTPException(409, f"已有一条「批量转换音色」任务在跑或排队：{busy['id'][:8]}")
+    queue = scan_singing_videos_missing_voice()
+    job_id = uuid.uuid4().hex
+    created_at = now_iso()
+    state = {
+        "id": job_id,
+        "kind": "rvc_batch",
+        "status": "queued",
+        "stage": "voice",
+        "createdAt": created_at,
+        "updatedAt": created_at,
+        "sourceName": f"发布成品批量（{len(queue)} 条）",
+        "sourceSize": 0,
+        "sourceDuration": None,
+        "sourceFps": None,
+        "sourcePath": "",
+        "sourceJobId": "",
+        "sourceKey": "",
+        "songName": None,
+        "rvcQueue": queue,
+        "rvcIndex": 0,
+        "rvcDone": 0,
+        "rvcFailed": 0,
+        "rvcStarted": False,
+        "pauseRequested": False,
+        "rvcSource": str(BATCH_OUTPUT_ROOT / publish_subdir("singing")),
+        "currentNodeId": None,
+        "currentNodeTitle": (
+            f"共 {len(queue)} 条唱歌成片待转音色" if queue else "没有待转音色的成片"
+        ),
+        "progress": None,
+        "progressValue": None,
+        "progressMax": None,
+        "milestones": RVC_BATCH_MILESTONES,
+        "logs": [{
+            "time": created_at,
+            "message": (
+                f"一键批量转音色：扫描到 {len(queue)} 条还缺音色版的唱歌成片。"
+                if queue
+                else "发布成品里没有需要转音色的唱歌成片（都已存在音色版或没有成片）。"
+            ),
+        }],
+        "errorSummary": None,
+        "errorDetail": None,
+        "originalReady": False,
+        "originalOutput": None,
+        "finalReady": False,
+        "finalOutput": None,
+        "output": None,
+        "promptIds": {},
+    }
+    store.create(state)
+    spawn(run_rvc_publish_batch(job_id))
+    return state
+
+
+@app.post("/api/jobs/cancel-all-rvc-batch")
+async def cancel_all_rvc_batch():
+    """取消所有还在排队/运行的「批量转换音色」任务（页面上的「停止」按钮）。"""
+    cancelled: list[str] = []
+    for job in store.active_all():
+        if str(job.get("kind")) != "rvc_batch":
+            continue
+        if str(job.get("status")) not in {"queued", "running", "paused"}:
+            continue
+        await cancel_job(job["id"])
+        cancelled.append(job["id"])
+    return {"cancelled": cancelled}
+
+
 @app.post("/api/jobs/{job_id}/pause")
 async def pause_subtitle_batch(job_id: str):
-    """暂停一键批量（在**下一条开始之前**生效，当前这条跑完即停）。"""
-    updated = request_publish_batch_pause(job_id)
+    """暂停一键批量（在**下一条开始之前**生效，当前这条跑完即停）。字幕 / 转音色共用。"""
+    state = store.get(job_id) or {}
+    pauser = request_rvc_publish_batch_pause if state.get("kind") == "rvc_batch" else request_publish_batch_pause
+    updated = pauser(job_id)
     if updated is None:
         raise HTTPException(400, "只有「一键批量」任务支持暂停")
     return updated
@@ -2462,8 +2507,10 @@ async def pause_subtitle_batch(job_id: str):
 
 @app.post("/api/jobs/{job_id}/resume")
 async def resume_subtitle_batch(job_id: str):
-    """继续一条已暂停的一键批量，从暂停处接着生成字幕。"""
-    updated = resume_publish_batch(job_id)
+    """继续一条已暂停的一键批量（字幕 / 转音色共用），从暂停处接着跑。"""
+    state = store.get(job_id) or {}
+    resumer = resume_rvc_publish_batch if state.get("kind") == "rvc_batch" else resume_publish_batch
+    updated = resumer(job_id)
     if updated is None:
         raise HTTPException(400, "只有「已暂停」的一键批量任务可以继续")
     return updated
