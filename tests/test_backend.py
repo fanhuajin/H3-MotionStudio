@@ -3923,6 +3923,44 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
+    def test_appended_items_restart_at_001_after_a_full_cleanup(self) -> None:
+        """已发布的都被删掉之后再追加：类型编号**从 001 重新开始**（用户 2026-09-20）。
+
+        用户原话：「如果已完成列表都是空的说明所有记录我都已经发布完成了并且是我主动进行了
+        删除操作。**你要从 01 序号开始**」—— 实测就踩在这条上：老批次 85 条（建编号功能之前
+        建的，没有 kindIndex）全被删掉之后追加 31 条，`kind_starts` 还拿老条目的**全局序号**
+        当基数，于是新的跳舞条目排到了 086 / 087（发布目录名成了 `086_跳舞_…`），而在用户
+        眼里这一轮就是全新的 001。已删除的条目不再占号。
+        """
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/s1"], ["https://v.douyin.com/d1"])
+                # 老条目：编号功能之前建的（没有 kindIndex），而且已经排到 75 号往后
+                for position, row in enumerate(state["items"], start=75):
+                    row.pop("kindIndex", None)
+                    row["index"] = position
+                    row["status"] = "deleted"
+                store.create(state)
+                with patch.object(batch_worker, "batch_store", store):
+                    batch_worker.append_batch_items(
+                        state["id"], ["https://v.douyin.com/s2"], ["https://v.douyin.com/d2"]
+                    )
+                rows = store.get(state["id"])["items"]
+                fresh = [row for row in rows if row["status"] != "deleted"]
+                self.assertEqual(
+                    [(row["kind"], row["kindIndex"]) for row in fresh],
+                    [("singing", 1), ("dance", 1)],
+                )
+            finally:
+                batch_store_module.DB_PATH = original
+
     def test_publish_folder_is_stable_when_the_title_changes(self) -> None:
         """一个条目只能有一个发布目录：标题变了就改名复用，**不许新建第二个**。
 

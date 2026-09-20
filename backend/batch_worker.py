@@ -533,6 +533,12 @@ def append_batch_items(
         next_index = max((int(item.get("index") or 0) for item in items), default=0)
         kind_starts: dict[str, int] = {}
         for item in items:
+            # **已删除的条目不占号**（用户 2026-09-20：「如果已完成列表都是空的说明所有记录
+            # 我都已经发布完成了并且是我主动进行了删除操作。你要从 01 序号开始」）：把删掉的
+            # 老条目也算进基数，会让清空之后的新一轮从 086 这种号继续；用户删干净就是"这一轮
+            # 结束了"，下一轮该从 001 起。发布目录名里带作品号，同号不同作品不会撞目录。
+            if str(item.get("status") or "") == "deleted":
+                continue
             kind = str(item.get("kind") or "")
             # 老条目没有 kindIndex：拿它的全局 index 当起点，保证新条目的类型编号接着老的不撞号
             number = int(item.get("kindIndex") or item.get("index") or 0)
