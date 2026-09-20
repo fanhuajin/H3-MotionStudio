@@ -239,6 +239,9 @@ const LEGACY_INPUT_KEY = "h3-motionstudio:batch-input:v1";
 // 歌曲默认 4:3、跳舞默认 9:16：这是新建批次时的默认值，每条视频都能单独改。
 const DEFAULT_RATIO: Record<BatchItem["kind"], CanvasRatio> = { singing: "4:3", dance: "9:16" };
 const RATIOS: CanvasRatio[] = ["4:3", "9:16"];
+// 列表展示顺序＝执行顺序（用户 2026-09-20：「把跳舞的列表排上边」）：跳舞在前、唱歌在后。
+// 只影响这张表怎么排，条目的顺序、kindIndex 编号、发布目录名一概不动。
+const KIND_RANK: Record<string, number> = { dance: 0, singing: 1 };
 
 const RATIO_LABEL: Record<CanvasRatio, string> = { "4:3": "4:3 横版", "9:16": "9:16 竖版" };
 
@@ -462,7 +465,11 @@ export function BatchRoute() {
     return () => window.removeEventListener("keydown", onKey);
   }, [confirmAsk, answerConfirm]);
 
-  const visibleItems = useMemo(() => batch?.items.filter((item) => item.status !== "deleted") || [], [batch]);
+  const visibleItems = useMemo(() => {
+    const items = batch?.items.filter((item) => item.status !== "deleted") || [];
+    // 跳舞排上边（同类型内保持原顺序 = 各自的编号顺序）；Array#sort 是稳定排序。
+    return [...items].sort((a, b) => (KIND_RANK[a.kind] ?? 9) - (KIND_RANK[b.kind] ?? 9));
+  }, [batch]);
   // 当前标签下显示的条目；展开的详情行也只在当前标签里渲染。
   const filteredItems = useMemo(() => visibleItems.filter(TAB_MATCH[activeTab]), [visibleItems, activeTab]);
   const selected = useMemo(
@@ -1573,7 +1580,7 @@ export function BatchRoute() {
           <h1>批量视频制作</h1>
           <p>粘贴链接即可开始。系统逐条准备候选图和发布文案，只有你确认后才生成该条视频。</p>
           <p className="batch-priority-hint">
-            出片顺序：<strong>跳舞优先</strong>，再唱歌（各自的编号独立）；备料与出片重叠，ComfyUI 全程常驻。
+            出片顺序与列表排序：<strong>跳舞优先</strong>，再唱歌（各自的编号独立）；备料与出片重叠，ComfyUI 全程常驻。
           </p>
         </div>
         {batch && (
