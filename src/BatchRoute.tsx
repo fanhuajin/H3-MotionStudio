@@ -1572,6 +1572,9 @@ export function BatchRoute() {
           <p className="batch-kicker">SERIAL PRODUCTION</p>
           <h1>批量视频制作</h1>
           <p>粘贴链接即可开始。系统逐条准备候选图和发布文案，只有你确认后才生成该条视频。</p>
+          <p className="batch-priority-hint">
+            出片顺序：<strong>跳舞优先</strong>，再唱歌（各自的编号独立）；备料与出片重叠，ComfyUI 全程常驻。
+          </p>
         </div>
         {batch && (
           <div className={`batch-status-pill ${batch.status}`}>

@@ -3719,18 +3719,29 @@ def stage_media(state: dict[str, Any]) -> dict[str, str]:
     return media
 
 
+# 出片/备料的**类型优先级**（用户 2026-09-20：「如果有唱歌和跳舞的视频，跳舞优先」）：
+# 挑选下一条活时跳舞排在唱歌前面，同类型内部保持原顺序（= 各自的编号顺序）。
+# 只影响"先跑谁"，不影响编号（`kindIndex` 按类型各自编）与发布目录名。
+PRIORITY_KINDS = ("dance", "singing")
+
+
+def _priority_sorted(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按类型优先级稳定排序：跳舞 → 唱歌 → 其它（同类型内保持原顺序）。"""
+    order = {kind: index for index, kind in enumerate(PRIORITY_KINDS)}
+    return sorted(items, key=lambda item: order.get(str(item.get("kind") or ""), len(order)))
+
+
 def _next_work(state: dict[str, Any], *, allow_confirmed: bool = True) -> dict[str, Any] | None:
-    """下一个要跑的任务：先备料（pending / revising），再出片（confirmed）。
+    """下一个要跑的任务：先备料（pending / revising），再出片（confirmed）；**跳舞优先**。
 
     **队列不会自己跑**：只有用户点了「开跑」（`POST /api/batches/{id}/start`）才会 spawn
     runner（2026-09-10 用户：「加入队列并不是马上开跑，需要由我点击总的开跑按钮才开始」）。
     `awaiting_review` 是在等用户上传图片并确认，不算可跑任务。
 
-    ⚠️ **`run_batch` 现在不再传 `allow_confirmed`**：用户 2026-09-20 要求「不需要先提前备料了」，
-    所以 runner 是**严格一条一条走**（有出片在跑时它自己就不挑活了，见 `run_batch` 的 ③）。
-    这个参数与「先备料、再出片」的挑选顺序保留给调用方与单测，语义没变。
+    ⚠️ `run_batch` 的出片那一路用的是 `_next_confirmed`（"出片优先"），这个函数只用于
+    备料与其它调用方；两边的类型优先级必须一致（都走 `_priority_sorted`）。
     """
-    items = state.get("items") or []
+    items = _priority_sorted(state.get("items") or [])
     for statuses in ({"pending", "revising"}, {"confirmed"}):
         if not allow_confirmed and statuses == {"confirmed"}:
             continue
@@ -3741,12 +3752,13 @@ def _next_work(state: dict[str, Any], *, allow_confirmed: bool = True) -> dict[s
 
 
 def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
-    """队列里**最早的一条「已确认、等出片」**（按 items 顺序 = 编号顺序）。
+    """队列里**最早的一条「已确认、等出片」**（**跳舞优先**，同类型内按编号顺序）。
 
     与 `_next_work` 分开是有意的：那个函数是"先备料再出片"的顺序，而 runner 的 ③a 要的是
     **出片优先** —— 只要有一条已经备好，就立刻交给 GPU，别让它去等备料。
+    类型优先级两边一致（用户 2026-09-20：「如果有唱歌和跳舞的视频，跳舞优先」）。
     """
-    for item in state.get("items") or []:
+    for item in _priority_sorted(state.get("items") or []):
         if str(item.get("status")) == "confirmed":
             return item
     return None

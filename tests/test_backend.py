@@ -3706,6 +3706,70 @@ class WorkflowPreparationTests(unittest.TestCase):
                 old.mkdir()
                 self.assertEqual(batch_worker.publish_folder(singing), old)
 
+    def test_dance_items_are_picked_before_singing(self) -> None:
+        """用户 2026-09-20：「如果有唱歌和跳舞的视频，**跳舞优先**」。
+
+        挑选下一条活时必须先给跳舞（备料与出片两条路都走同一份类型优先级），
+        同类型内部仍然按编号顺序 —— 只改"先跑谁"，不改编号、不改发布目录名。
+        """
+        from backend import batch_worker
+
+        state = new_batch_state(
+            ["https://v.douyin.com/s1", "https://v.douyin.com/s2"],
+            ["https://v.douyin.com/d1", "https://v.douyin.com/d2"],
+        )
+        # 建批次时唱歌写在前面（页面粘贴区的顺序），但挑选要跳舞优先
+        self.assertEqual([row["kind"] for row in state["items"]],
+                         ["singing", "singing", "dance", "dance"])
+        picked = batch_worker._next_work(state)
+        self.assertEqual(picked["kind"], "dance")
+        self.assertEqual(picked["kindIndex"], 1)
+
+        # 备料那一路（allow_confirmed=False）同样跳舞优先
+        self.assertEqual(batch_worker._next_work(state, allow_confirmed=False)["kind"], "dance")
+
+        # 跳舞都跑完了 → 才轮到唱歌，而且仍按编号（唱歌 1 在前）
+        for row in state["items"]:
+            if row["kind"] == "dance":
+                row["status"] = "completed"
+        self.assertEqual(batch_worker._next_work(state)["kind"], "singing")
+        self.assertEqual(batch_worker._next_work(state)["kindIndex"], 1)
+
+    def test_confirmed_dance_renders_before_confirmed_singing(self) -> None:
+        """已确认的两类都在排队时，GPU 先跑跳舞那一条（编号不动）。"""
+        from backend import batch_worker
+
+        state = new_batch_state(
+            ["https://v.douyin.com/s1"], ["https://v.douyin.com/d1"]
+        )
+        for row in state["items"]:
+            row["status"] = "confirmed"
+        picked = batch_worker._next_confirmed(state)
+        self.assertEqual(picked["kind"], "dance")
+        self.assertEqual(picked["kindIndex"], 1)
+
+        state["items"][1]["status"] = "completed"      # 跳舞出完了
+        picked = batch_worker._next_confirmed(state)
+        self.assertEqual(picked["kind"], "singing")
+
+    def test_priority_keeps_each_kind_numbering_and_order(self) -> None:
+        """优先级不动编号：唱歌仍是 singing/001..、跳舞仍是 dance/001..，同类型内保持粘贴顺序。"""
+        from backend import batch_worker
+
+        state = new_batch_state(
+            ["https://v.douyin.com/s1", "https://v.douyin.com/s2", "https://v.douyin.com/s3"],
+            ["https://v.douyin.com/d1"],
+        )
+        singing = [row for row in state["items"] if row["kind"] == "singing"]
+        dance = [row for row in state["items"] if row["kind"] == "dance"]
+        self.assertEqual([row["kindIndex"] for row in singing], [1, 2, 3])
+        self.assertEqual([row["kindIndex"] for row in dance], [1])
+        self.assertEqual([row["url"] for row in singing],
+                         ["https://v.douyin.com/s1", "https://v.douyin.com/s2", "https://v.douyin.com/s3"])
+        # 优先级只影响挑选，不改 items 本身的顺序（页面显示的粘贴顺序不变）
+        self.assertEqual([row["kind"] for row in state["items"]],
+                         ["singing", "singing", "singing", "dance"])
+
     def test_singing_and_dance_numbers_are_independent(self) -> None:
         """唱歌与跳舞的编号各自从 001 起（用户 2026-09-20：「唱歌的序号和跳舞的序号都是独立的」）。
 

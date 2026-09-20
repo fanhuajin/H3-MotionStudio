@@ -1448,6 +1448,9 @@ body {
 .batch-secondary { min-height: 39px; padding: 0 15px; border: 1px solid #4a3f66; color: #ded8ec; background: #17112f; font-size: 12px; }
 .batch-alert { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0; padding: 11px 13px; border: 1px solid rgba(255, 108, 137, .34); border-radius: 8px; color: #ffc0cc; background: rgba(71, 18, 39, .38); font-size: 12px; line-height: 1.6; }
 .batch-alert svg { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px; }
+/* 出片顺序提示（跳舞优先） */
+.batch-priority-hint { margin-top: 6px; font-size: 12px; color: #8fa0ad; }
+.batch-priority-hint strong { color: #7ee0c0; }
 /* 发布链条（原声母版 → 音色版 → 字幕版＝发布版）：2026-09-20 用户定的链条状态 */
 .batch-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 13px 0 0; padding: 10px 13px; border: 1px solid rgba(126, 224, 192, .22); border-radius: 8px; background: rgba(20, 48, 44, .38); font-size: 12px; }
 .batch-chain .batch-chain-title { font-weight: 600; color: #d6f5ea; }
