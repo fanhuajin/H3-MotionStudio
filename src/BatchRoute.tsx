@@ -1689,12 +1689,11 @@ export function BatchRoute() {
                 {batch.status === "paused" && !batch.recoveryActive && (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 )}
-                {/* 「监听发布目录人物图」的勾选框已按用户要求去掉（2026-09-19：「去掉」）：
-                    全自动链路里人物图由后端自己出并直接登记成候选图，这条监听看不到任何新东西
-                    （发布目录那份与候选图 sha 相同、条目同时已被自动放行），属于空转。
-                    后端实现与 `/api/watch/publish-portrait` 接口**原样保留**（H3_FULL_AUTO=0
-                    的老流程、以及「手动往发布目录丢一张人物图就自动出片」都还要用它），
-                    要关掉设 `H3_WATCH_PUBLISH_PORTRAIT=0`。 */}
+                {/* 「监听发布目录人物图」的勾选框已按用户要求去掉（2026-09-19：「去掉」）；
+                    2026-09-20 用户又选了「谁写图谁登记」，于是**后端那份监听也删了**
+                    （`backend/publish_watcher.py` 与 `/api/watch/publish-portrait` 三个接口一起下线）：
+                    `/images` 出图或上传成功后当场把人物图登记成条目候选图并按需放行，
+                    不再每 5 秒扫一遍发布目录。代价：手动往发布目录丢一张人物图不再被认领。 */}
               </div>
             </div>
 

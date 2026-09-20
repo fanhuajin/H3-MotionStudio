@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 import tempfile
@@ -14,10 +15,15 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
+import httpx
+
 from . import batch_ai, batch_image
+from . import batch_worker as batch_worker
 from .batch_store import batch_store
 from .batch_worker import IDENTITY_PATH
 from .settings import BATCH_OUTPUT_ROOT, PROJECT_ROOT, PUBLISH_KIND_DIRS
+
+logger = logging.getLogger("uvicorn.error")
 
 
 PERSON_NAME = "人物图.png"
@@ -257,6 +263,45 @@ def material_zip(folder: Path, stage: str, kind: str) -> bytes:
     return output.getvalue()
 
 
+_WAKE_TASKS: set[asyncio.Task] = set()
+
+
+def _register_published_portrait(folder: Path) -> dict[str, Any] | None:
+    """人物图落进发布目录后**当场**登记成对应条目的候选图。
+
+    用户 2026-09-20 选了「谁写图谁登记」：`/images` 出图 / 上传成功后直接更新条目，
+    不再靠每 5 秒扫一遍发布目录的中间人（`backend/publish_watcher.py` 已删除）。
+    登记失败只记日志 —— 绝不能影响出图结果本身。
+    """
+    try:
+        return batch_worker.adopt_published_portrait(folder)
+    except Exception:  # noqa: BLE001
+        logger.exception("登记发布目录人物图失败（忽略）")
+        return None
+
+
+async def _post_batch_start(batch_id: str) -> None:
+    """自调用 `POST /api/batches/{id}/start` 叫醒那一批（与页面点「准备任务」同一条路）。"""
+    from .settings import BATCH_SELF_URL
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            await client.post(f"{BATCH_SELF_URL}/api/batches/{batch_id}/start")
+    except Exception:  # noqa: BLE001
+        logger.warning("登记候选图后叫醒批次失败（忽略）", exc_info=True)
+
+
+def _wake_batch_soon(batch_id: str) -> None:
+    """在当前事件循环里排一个「叫醒批次」的任务；没有循环（同步调用/测试）就只登记。"""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_post_batch_start(batch_id))
+    _WAKE_TASKS.add(task)
+    task.add_done_callback(_WAKE_TASKS.discard)
+
+
 def save_upload(folder: Path, stage: str, payload: bytes, kind: str = "singing") -> dict[str, Any]:
     if stage not in {"person", "bilibili", "douyin"}:
         raise ValueError("图片类型无效")
@@ -290,7 +335,15 @@ def save_upload(folder: Path, stage: str, payload: bytes, kind: str = "singing")
         os.replace(tmp, destination)
     finally:
         tmp.unlink(missing_ok=True)
-    return _meta(destination) or {}
+    meta = _meta(destination) or {}
+    if stage == "person":
+        # 人物图是天生的「候选图」来源：落进发布目录就当场登记到条目上（谁写图谁登记）。
+        outcome = _register_published_portrait(folder)
+        if outcome:
+            meta["adopted"] = outcome
+            if outcome.get("needsWake"):
+                _wake_batch_soon(str(outcome.get("batchId") or ""))
+    return meta
 
 
 async def watch_downloads(folder: Path, stage: str, kind: str = "singing", timeout: int = 600) -> str:

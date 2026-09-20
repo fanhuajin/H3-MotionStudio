@@ -2567,6 +2567,162 @@ def kind_label(kind: str) -> str:
     return {"singing": "唱歌", "dance": "跳舞"}.get(str(kind or "").strip(), "")
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _find_item_for_folder(folder: Path) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """发布目录 → (批次, 条目)：先按 `outputs.folder` 精确匹配，再按目录名末尾作品号唯一命中。
+
+    口径与原来的 `publish_watcher.match_item` 一致（2026-09-20 watcher 删除时搬进来）：
+    批次按新到旧遍历，历史目录 / 已删除条目一律不碰。
+    """
+    folder = Path(folder)
+    try:
+        target = folder.resolve()
+    except OSError:
+        target = folder
+    batches = batch_store.active_batches()
+    for batch in batches:
+        for item in batch.get("items") or []:
+            if str(item.get("status") or "") == "deleted":
+                continue
+            recorded = str((item.get("outputs") or {}).get("folder") or "").strip()
+            if not recorded:
+                continue
+            try:
+                if Path(recorded).resolve() == target:
+                    return batch, item
+            except OSError:
+                continue
+    aweme = folder.name.rsplit("_", 1)[-1].strip()
+    if aweme.isdigit():
+        for batch in batches:
+            hits = [
+                item
+                for item in batch.get("items") or []
+                if str(item.get("status") or "") != "deleted"
+                and str(item.get("awemeId") or "").strip() == aweme
+            ]
+            if len(hits) == 1:
+                return batch, hits[0]
+    return None
+
+
+# 只有这三种状态的条目会被「谁写图谁登记」动到（与 watcher 当年的口径一致）。
+ADOPTABLE_ITEM_STATUSES = {"awaiting_review", "confirmed", "failed"}
+
+
+def adopt_published_portrait(
+    folder: Path, *, image: Path | None = None
+) -> dict[str, Any] | None:
+    """把发布目录里的人物图**当场**登记成对应条目的候选图（替代已删掉的 `publish_watcher`）。
+
+    用户 2026-09-20 选「谁写图谁登记」：`/images` 出图 / 上传成功后直接调这里，不再靠
+    每 5 秒扫一遍发布目录的中间人（那个模块已删除）。规则沿用 watcher 那套：
+
+      · 只碰 `awaiting_review`（挂图 + 放行）/ `confirmed`（只换图）/ `failed`（挂图 + 重跑）；
+        `pending` / `revising` / `running` / `skipped` / `completed` / `deleted` 一律不动；
+      · **同一张图只驱动一次**（`ai.portrait_watch.sha` 记账），重启后也不会重复跑；
+      · 目录里那张与条目候选图 sha 相同、且不需要放行 → 什么都不做（避免无谓改写）。
+
+    返回 `{batchId, itemId, action, title, needsWake}`；没有对应条目 / 不需要动时返回 None。
+    `needsWake=True` 表示调用方应当叫醒那一批（自调用 `/api/batches/{id}/start`）。
+    """
+    folder = Path(folder)
+    if image is None:
+        image = publish_published_image(folder)
+    if image is None:
+        return None
+    image = Path(image)
+    if not image.is_file():
+        return None
+    found = _find_item_for_folder(folder)
+    if found is None:
+        return None
+    batch, item = found
+    batch_id = str(batch.get("id") or "")
+    item_id = str(item.get("id") or "")
+    if not batch_id or not item_id:
+        return None
+    status = str(item.get("status") or "")
+    if status not in ADOPTABLE_ITEM_STATUSES:
+        return None
+    ai = item.get("ai") or {}
+    if not ai:
+        return None                       # 还没备料：别动
+    try:
+        sha = _file_sha256(image)
+    except OSError:
+        return None
+    marker = ai.get("portrait_watch")
+    if isinstance(marker, dict) and str(marker.get("sha") or "") == sha:
+        return None                       # 这张图已经驱动过一次
+    candidate = Path(str(ai.get("reference_image_path") or ""))
+    candidate_ok = candidate.is_file()
+    try:
+        needs_upload = not candidate_ok or _file_sha256(candidate) != sha
+    except OSError:
+        needs_upload = True
+    if not needs_upload and candidate.stem.endswith("_frame"):
+        return None                       # 目录里那张就是备料留下的兜底取帧图
+    if not needs_upload and status == "confirmed":
+        return None                       # 没有新图、本条也已经放行：不用动
+
+    action = {"awaiting_review": "confirm", "confirmed": "upload", "failed": "retry"}[status]
+    adopted = candidate
+    if needs_upload:
+        revision = int(item.get("revision") or 0)
+        work = DATA_DIR / "batches" / batch_id / item_id
+        try:
+            work.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+        suffix = image.suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+            suffix = ".png"
+        target = work / f"candidate_r{revision}_upload{suffix}"
+        try:
+            shutil.copy2(image, target)
+        except OSError:
+            return None
+        adopted = target
+
+    def apply(row: dict[str, Any]) -> None:
+        fields = row.setdefault("ai", {})
+        if needs_upload:
+            fields["reference_image_path"] = str(adopted)
+        fields["portrait_watch"] = {
+            "sha": sha, "at": now_iso(), "action": action, "image": image.name,
+        }
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(
+        batch_id, item_id,
+        f"图片工作台刚出的「{image.name}」已挂成这一条的候选人物图。",
+    )
+    needs_wake = False
+    if action == "confirm":
+        confirm_batch_items(batch_id, [item_id])
+        batch_store.add_item_log(batch_id, item_id, "已自动确认并开始出片（等同你点「确认并出片」）。")
+        needs_wake = True
+    elif action == "retry":
+        restart_item_to_run(batch_id, item_id)
+        batch_store.add_item_log(batch_id, item_id, "已按新的人物图重跑这一条。")
+        needs_wake = True
+    return {
+        "batchId": batch_id,
+        "itemId": item_id,
+        "action": action,
+        "title": str(item.get("title") or folder.name),
+        "needsWake": needs_wake,
+    }
+
+
 def _ideal_publish_folder(item: dict[str, Any]) -> Path:
     """发布目录的**理想名字**：`singing|dance/{三位编号}_{唱歌或跳舞}_{歌名或标题}_{作品号}`。
 

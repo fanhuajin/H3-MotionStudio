@@ -947,7 +947,7 @@ def folder_for_item(publish_root: Path, item: dict) -> Path | None:
     """条目 → 它的发布目录。
 
     先认条目自己记的 `outputs.folder`（最准），再按**目录名末尾的作品号**
-    （`_<awemeId>`，与 `backend/publish_watcher.match_item` 同一口径）匹配。
+    （`_<awemeId>`，与 `backend/batch_worker._find_item_for_folder` 同一口径）匹配。
     """
     recorded = str((item.get("outputs") or {}).get("folder") or "").strip()
     if recorded and Path(recorded).is_dir():
@@ -1002,11 +1002,13 @@ def _copy_stamp(path: Path) -> tuple[float, int]:
 def _wait_copy_rewrite(path: Path, before: tuple[float, int], timeout: float) -> None:
     """等后端把发布文案按新人物图重写完 —— **必须先等到，再出封面**。
 
-    封面上的大字取自 `发布文案.txt` 的标题，而「挂候选人物图」这一步会让后端
-    `write_copy()` 按最终画面**重写标题**（`backend/publish_watcher` 每 5 秒扫一次发布目录，
-    看到新的 `人物图.png` 就走上传接口）。先出封面就会把**旧标题**画进图里 ——
-    2026-09-19 实测 001~017 的 34 张封面就是这么和最终发布文案对不上的。
-    等不到就照现有文案出封面，但记一条日志，别让它静默变成「封面写着旧标题」。
+    封面上的大字取自 `发布文案.txt` 的标题，而「挂候选人物图」这一步过去会让后端
+    `write_copy()` 按最终画面**重写标题**（老实现靠 `backend/publish_watcher` 每 5 秒扫
+    发布目录）。先出封面就会把**旧标题**画进图里 —— 2026-09-19 实测 001~017 的 34 张封面
+    就是这么和最终发布文案对不上的。
+
+    ⚠️ 2026-09-20 起挂图改成「谁写图谁登记」（watcher 已删除），**登记不再重写文案**，
+    所以这里通常等不到改动 —— 等不到就按现有文案出封面（默认 `--copy-wait 0` 可以不干等）。
     """
     if timeout <= 0:
         return
@@ -1016,7 +1018,7 @@ def _wait_copy_rewrite(path: Path, before: tuple[float, int], timeout: float) ->
             log("✓ 发布文案已按新人物图重写 → 封面用新标题")
             return
         time.sleep(5)
-    log(f"⚠ 等了 {timeout:.0f} 秒发布文案也没重写 → 按现有文案出封面（标题可能与最终文案不一致）")
+    log(f"↷ 发布文案没有被改过（挂图不再重写文案）→ 直接用现有文案出封面")
 
 
 def run_need_one(page, args) -> int:
