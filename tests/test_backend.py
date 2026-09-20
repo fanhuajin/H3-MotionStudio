@@ -90,13 +90,46 @@ def setUpModule() -> None:
     _PUBLISH_ROOT_PATCH.start()
     for patcher in _SHUTDOWN_SAFETY_PATCHES:
         patcher.start()
+    _install_stopall_guard()
 
 
 def tearDownModule() -> None:
+    _remove_stopall_guard()
     for patcher in reversed(_SHUTDOWN_SAFETY_PATCHES):
         patcher.stop()
     _PUBLISH_ROOT_PATCH.stop()
     _TEST_PUBLISH_ROOT.cleanup()
+
+
+# ⚠️ 2026-09-20 实测事故：`DirectDownloadResumeTests.setUp` 里的 `self.addCleanup(patch.stopall)`
+# 会把**整个模块**的安全补丁一起停掉。而测试类按类名字母序执行，`WorkflowPreparationTests`（W）
+# 与 `SubtitleStepTests`（S）都在它后面 —— 于是那两处真的写进了用户的发布根
+# `E:\AI_Exports\H3-MotionStudio\发布成品`，实测留下 12 个空的
+# `001/003_唱歌_等待处理_<条目id>` 目录 + 2 个只含 3 字节假成片的 `字幕_*_subtitle`
+# （14 个，全部已删）。修法两层：① 去掉那处 stopall；② 这里给 `patch.stopall` 装一道保险，
+# 停完立刻把发布根与关机桩重新装上 —— 以后谁再写一句 stopall 也不会漏到真实目录。
+_GUARD_ACTIVE = False
+_REAL_STOPALL = patch.stopall
+
+
+def _safe_stopall() -> None:
+    _REAL_STOPALL()
+    if _GUARD_ACTIVE:
+        _PUBLISH_ROOT_PATCH.start()
+        for patcher in _SHUTDOWN_SAFETY_PATCHES:
+            patcher.start()
+
+
+def _install_stopall_guard() -> None:
+    global _GUARD_ACTIVE
+    patch.stopall = _safe_stopall
+    _GUARD_ACTIVE = True
+
+
+def _remove_stopall_guard() -> None:
+    global _GUARD_ACTIVE
+    _GUARD_ACTIVE = False
+    patch.stopall = _REAL_STOPALL
 
 
 @contextmanager
@@ -3744,6 +3777,32 @@ class WorkflowPreparationTests(unittest.TestCase):
                 batch_store_module.DB_PATH = original_db
                 batch_worker.MANIFEST_PATH = original_manifest
                 batch_worker.DOUYIN_OUTPUT = original_output
+
+    def test_publish_root_guard_survives_a_stray_patch_stopall(self) -> None:
+        """一句 `patch.stopall()` 不许把发布根的安全补丁带走（2026-09-20 实测事故）。
+
+        `DirectDownloadResumeTests` 曾经 `addCleanup(patch.stopall)`，而按类名字母序排在它
+        后面的 `WorkflowPreparationTests` / `SubtitleStepTests` 就真的写进了用户真实的
+        `E:\\AI_Exports\\H3-MotionStudio\\发布成品`（多了 12 个空的
+        `001/003_唱歌_等待处理_<条目id>` + 2 个假字幕目录）。这里**真的调一次 stopall**，
+        断言发布根仍然指向临时目录、并且真的建目录时也落在临时根里。
+        """
+        from unittest import mock
+
+        from backend import batch_worker
+
+        mock.patch.stopall()  # 就是当初那一下
+
+        root = Path(str(batch_worker.BATCH_OUTPUT_ROOT))
+        self.assertIn(_TEST_PUBLISH_ROOT.name, str(root))
+        self.assertNotIn("AI_Exports", str(root))
+        # 真正走一遍建目录的路径，确认落点在临时根（而不是只断言变量）
+        folder = batch_worker.publish_folder(
+            {"index": 901, "kind": "singing", "title": "等待处理", "id": "guardtest901"}
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        self.assertIn(_TEST_PUBLISH_ROOT.name, str(folder))
+        self.assertTrue(folder.is_dir())
 
     def test_batch_review_lands_image_and_copy_in_publish_folder(self) -> None:
         """审核点就把「人物图 + 发布文案」写进发布目录（用户 2026-09-13：
@@ -8018,7 +8077,10 @@ class DirectDownloadResumeTests(unittest.TestCase):
 
     def setUp(self):
         self.sleep = patch("time.sleep").start()
-        self.addCleanup(patch.stopall)
+        # ⚠️ **不要写 `self.addCleanup(patch.stopall)`**：那会把整个模块的安全补丁
+        # （发布根重定向 + 关机桩）一起停掉，排在后面的测试类就会写进用户真实的发布目录
+        # —— 2026-09-20 实测就是这样多了 14 个垃圾目录。只停自己起的这一处。
+        self.addCleanup(self.sleep.stop)
 
     def _call(self, client, dest: Path, **kwargs):
         from backend.douyin_direct import download_cdn_file
