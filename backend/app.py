@@ -54,6 +54,7 @@ from .batch_worker import (
     request_review_adjustment,
     reset_review_row,
     restart_batch_items,
+    restart_item_log,
     restart_item_to_run,
     resume_shutdown_watch,
     run_batch,
@@ -1295,9 +1296,11 @@ async def retry_batch_item(batch_id: str, item_id: str):
     取消出片后落在 `skipped`，出片完成后落在 `completed`，两种都要能直接再出一版，
     否则用户只剩「删除这一条」可选。
 
-    - 已经确认过（有审核通过的候选图**且源视频还在磁盘上**）的条目直接回到 `confirmed`，
-      只重跑视频链路，不再重复下载与备料；
-    - 还没确认的、或者源视频已经被清理掉的，回到 `pending`，从下载/备料重新走一遍。
+    - **已经有内容**（有候选人物图，条目里没有了就先把发布目录那张收编进来，**且源视频还在
+      磁盘上**）的条目直接回到 `confirmed`，只重跑视频链路 —— 不重复下载与备料，也**不会
+      重新出图**（用户 2026-09-20：「人物图 B站图片 抖音图片都有的话点击重新开始不要重新生成」）；
+    - 还没备齐料的、或者源视频已经被清理掉的，回到 `pending`，从下载/备料重新走一遍
+      （那条路上已有的图同样只会被沿用/补缺）。
     两种都会清掉跳过/删除请求、错误与上一次的发布文件记录，并重置「生成最终视频」
     里程碑，让页面上的流程重新变成待办而不是已跳过。
     """
@@ -1308,11 +1311,7 @@ async def retry_batch_item(batch_id: str, item_id: str):
     # 重置逻辑与批量「重新开始」共用同一份（batch_worker.restart_item_to_run），
     # 免得单条与批量两边的行为慢慢跑偏。
     direct = restart_item_to_run(batch_id, item_id)
-    batch_store.add_item_log(
-        batch_id,
-        item_id,
-        "已重新开始这一条，正在按当前结果继续出片。" if direct else "已重新开始这一条，将从下载与备料重做。",
-    )
+    batch_store.add_item_log(batch_id, item_id, restart_item_log(direct))
     return _resume_batch(batch_id, "已重新开始跳过的条目。")
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/skip")
@@ -1412,9 +1411,11 @@ async def retry_batch_items_endpoint(batch_id: str, request: BatchItemIdsRequest
     """批量重新开始：失败 / 已跳过 / 已出片的条目一次全部重来。
 
     用户 2026-09-15：「批量选择选择后加个批量重新开始」。规则与单条「重试 / 重新开始」
-    完全一致（共用 `batch_worker.restart_item_to_run`）：已确认过且源视频还在的只重跑出片，
-    其余的从下载与备料重做；正在出片的要先「取消」，已删除的不能复活，还没出片的不需要
-    重开 —— 后几类逐个记原因返回，页面提示「哪几条没重开、为什么」。出片仍严格一条一条。
+    完全一致（共用 `batch_worker.restart_item_to_run`）：**已经有内容**（有候选人物图、源视频
+    还在）的只重跑出片，**不会重新出图**（用户 2026-09-20：人物图与两张封面都在时，点重新
+    开始不该重新生成）；其余的从下载与备料重做，那条路上已有的图同样只沿用/补缺。正在出片的
+    要先「取消」，已删除的不能复活，还没出片的不需要重开 —— 后几类逐个记原因返回，页面提示
+    「哪几条没重开、为什么」。出片仍严格一条一条。
     """
     _batch_or_404(batch_id)
     if not request.itemIds:

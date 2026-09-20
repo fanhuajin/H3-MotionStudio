@@ -625,27 +625,65 @@ def mark_items_deleted(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
     return {"marked": marked, "busy": busy, "rejected": rejected}
 
 
+def _adopt_published_image_for_restart(
+    batch_id: str, item_id: str, item: dict[str, Any]
+) -> Path | None:
+    """重新开始之前的兜底收编：候选图没了、但发布目录里还有出好的人物图 → 复制进条目目录。
+
+    用户 2026-09-20：「**对已经有的内容重新点击不需要重新出图**」。候选图落在
+    `data/batches/...` 里有被清理掉的可能，而发布目录那张一直在 —— 不先收编就会因为
+    「条目没有候选图」退回备料（有重新出图的风险）。
+    """
+    work = DATA_DIR / "batches" / batch_id / item_id
+    revision = int(item.get("revision") or 0)
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return _adopt_published_image(batch_id, item_id, item, work, revision)
+
+
 def restart_item_to_run(batch_id: str, item_id: str) -> bool:
     """把一条**已经结束**的条目重置成可以重跑的状态，返回它是否直接续跑。
 
     失败 / 已跳过 / 已出片共用的重置逻辑（单条「重试 / 重新开始」与批量「重新开始」
     必须走同一份代码，否则两边的行为会慢慢跑偏）：
 
-    - 已经确认过（审核放行 + 有候选人物图 + **源视频还在磁盘上**）→ 回到 `confirmed`，
-      只重跑出片链路，不重复下载与备料；
-    - 还没确认、或者源视频已经被清理掉 → 回到 `pending`，从下载与备料重新走一遍
+    - **已经有内容**（源视频在磁盘上 + 有候选人物图，条目里没有了就先把发布目录那张
+      收编进来）→ 回到 `confirmed`，**只重跑出片**，不重新下载/备料、更不会重新出图；
+    - 还没备齐料、或者源视频已经被清理掉 → 回到 `pending`，从下载与备料重新走一遍
       （2026-09-14 实测：源文件不在时直接续跑会在提交时报「文件不存在」）；
     - 清掉 skip/delete 请求、错误、上一次的子任务与发布文件记录，并把 `video`（以及任何
-      报错的）里程碑重置为待办，页面上的流程重新变回待办而不是停在 ✗。
+      报错的）里程碑重置为待办，页面上的流程重新变回待办而不是停在 ✗；
+    - 清掉 `revisionFeedback` / `revisionMode`：那是**上一次**「只调图片 / 只调文案」的意图，
+      不该跨过一次重新开始继续生效 —— `revisionMode="image"` 残留会让备料这条路
+      **强制重出人物图**（用户 2026-09-20 报的就是「重新点击又给我重新出图」）。
     """
     box: dict[str, bool] = {}
 
+    # 有候选图就直接续跑；没有但发布目录里有出好的那张 → 先收编，同样是"只重跑出片"。
+    # 这两件事要读磁盘/发布目录，放在改状态之前做。
+    pending_item = next(
+        (
+            item
+            for item in (batch_store.get(batch_id) or {}).get("items") or []
+            if item.get("id") == item_id
+        ),
+        None,
+    )
+    adopted: Path | None = None
+    candidate = Path(str((pending_item or {}).get("ai", {}).get("reference_image_path") or ""))
+    if pending_item is not None and not candidate.is_file():
+        adopted = _adopt_published_image_for_restart(batch_id, item_id, pending_item)
+
     def reset(row: dict[str, Any]) -> None:
         ai = row.get("ai") or {}
+        if adopted is not None:
+            ai = {**ai, "reference_image_path": str(adopted)}
+            row["ai"] = ai
         approved = (
-            bool(row.get("reviewApproved"))
-            and bool(str(ai.get("reference_image_path") or "").strip())
-            and Path(str(row.get("sourcePath") or "")).is_file()
+            Path(str(row.get("sourcePath") or "")).is_file()
+            and Path(str(ai.get("reference_image_path") or "")).is_file()
         )
         box["approved"] = approved
         # **保留发布目录的记录**：`publish_folder()` 按 `outputs.folder` 认目录，
@@ -669,6 +707,8 @@ def restart_item_to_run(batch_id: str, item_id: str) -> bool:
             videoJobId=None,
             outputs=keep,
             finishedAt=None,
+            revisionFeedback="",
+            revisionMode="",
         )
         for milestone in row.get("milestones") or []:
             if milestone.get("id") == "video" or milestone.get("status") == "error":
@@ -679,6 +719,21 @@ def restart_item_to_run(batch_id: str, item_id: str) -> bool:
     cancel_item_video_job(batch_id, item_id)
     batch_store.mutate_item(batch_id, item_id, reset)
     return bool(box.get("approved"))
+
+
+def restart_item_log(direct: bool) -> str:
+    """「重新开始」写进条目日志的那句话（单条与批量共用，免得两边跑偏）。
+
+    用户 2026-09-20：「如果人物图 B站图片 抖音图片都有的话点击重新开始不要重新生成」——
+    所以这句话必须写清「三张图沿用现有的」，这也是链路真实行为：直接续跑那条路
+    （`confirmed`）根本不碰图片，回备料那条路也只会收编/沿用已有的图、只补缺的那些。
+    """
+    if direct:
+        return "已重新开始这一条：人物图、B站封面、抖音封面全部沿用现有的，只重跑出片（不会重新出图）。"
+    return (
+        "已重新开始这一条，将从下载与备料重做；已经出好的人物图与封面会直接沿用，"
+        "三张都在时不会重新出图（只补缺的那几张）。"
+    )
 
 
 def restart_batch_items(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
@@ -713,11 +768,7 @@ def restart_batch_items(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
             rejected.append({"id": item_id, "reason": "还没出片，不用重新开始"})
             continue
         direct = restart_item_to_run(batch_id, item_id)
-        batch_store.add_item_log(
-            batch_id,
-            item_id,
-            "已重新开始这一条，正在按当前结果继续出片。" if direct else "已重新开始这一条，将从下载与备料重做。",
-        )
+        batch_store.add_item_log(batch_id, item_id, restart_item_log(direct))
         # 「重新开始」时先把发布成品**体检**一次：缺人物图 / 封面就把「缺什么」写进条目日志。
         # 只报告、不自动出图（2026-09-16 用户：「去除图片生成的自动化流程吧 只保留生成字幕的流程」）。
         try:

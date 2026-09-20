@@ -1486,6 +1486,12 @@ class WorkflowPreparationTests(unittest.TestCase):
                 # ① 已出片且备过料（有图 + 源视频在磁盘上 + 已放行）→ 只重跑出片
                 source = Path(folder) / "source.mp4"
                 source.write_bytes(b"fake")
+                candidate = Path(folder) / "candidate.png"
+                candidate.write_bytes(b"fake-image")   # 重启只认**真实存在**的候选图
+                # 发布目录记录要指向**发布根里真实存在的一个目录**（旧测试写的 "E:/x"
+                # 在发布根之外，体检会把它当成脏记录换掉）
+                recorded = Path(folder) / "发布成品" / f"001_唱歌_等待处理_{ids[0]}"
+                recorded.mkdir(parents=True)
                 store.mutate_item(
                     state["id"],
                     ids[0],
@@ -1494,10 +1500,10 @@ class WorkflowPreparationTests(unittest.TestCase):
                         stage="completed",
                         reviewApproved=True,
                         sourcePath=str(source),
-                        ai={"reference_image_path": str(Path(folder) / "candidate.png")},
+                        ai={"reference_image_path": str(candidate)},
                         childJob={"id": "old-child", "status": "completed"},
                         videoJobId="old-video",
-                        outputs={"folder": "E:/x"},
+                        outputs={"folder": str(recorded)},
                     ),
                 )
                 # ② 已跳过但没备过料 → 从下载与备料重做
@@ -1518,7 +1524,9 @@ class WorkflowPreparationTests(unittest.TestCase):
                 store.mutate_item(state["id"], ids[3], lambda row: row.update(status="running"))
                 store.mutate_item(state["id"], ids[4], lambda row: row.update(status="deleted"))
 
-                with patch.object(batch_worker, "batch_store", store):
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", Path(folder) / "发布成品"
+                ):
                     result = batch_worker.restart_batch_items(state["id"], ids)
 
                 self.assertEqual(result["restarted"], [ids[0], ids[1], ids[2]])
@@ -1535,8 +1543,11 @@ class WorkflowPreparationTests(unittest.TestCase):
                 self.assertIsNone(rows[ids[0]]["childJob"])
                 self.assertIsNone(rows[ids[0]]["videoJobId"])
                 # 旧的成片/文案记录作废，但**发布目录的记录要留住**（2026-09-16：
-                # 发布目录按 `outputs.folder` 认，清空后标题一变就会写到别的目录去）
-                self.assertEqual(rows[ids[0]]["outputs"], {"folder": "E:/x"})
+                # 发布目录按 `outputs.folder` 认，清空后标题一变就会写到别的目录去）；
+                # 体检还会把已有的候选人物图同步进那个目录，所以 image 也在
+                kept = rows[ids[0]]["outputs"]
+                self.assertEqual(kept["folder"], str(Path(folder) / "发布成品" / f"001_唱歌_等待处理_{ids[0]}"))
+                self.assertNotIn("videoFinal", kept)
                 # 没备料 / 源视频丢了 → pending（从下载与备料重做）
                 self.assertEqual(rows[ids[1]]["status"], "pending")
                 self.assertEqual(rows[ids[2]]["status"], "pending")
@@ -4274,6 +4285,140 @@ class WorkflowPreparationTests(unittest.TestCase):
                         asyncio.run(app_module.retry_batch_item(state["id"], approved["id"]))
             finally:
                 batch_store_module.DB_PATH = original_db
+
+    def test_restart_keeps_the_three_existing_images(self) -> None:
+        """人物图 / B站封面 / 抖音封面都在时，「重新开始」**不许重新生成**这三张。
+
+        用户 2026-09-20：「我的意思是如果人物图 B站图片 抖音图片都有的话点击重新开始不要
+        重新生成」。做法两条：① 有候选人物图 + 源视频还在 → 直接回到 `confirmed` 只重跑出片
+        （这条路根本不碰图片）；② 万一回备料，已经出好的图只会被沿用/收编，封面只补缺的。
+        """
+        import asyncio
+
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            original_data = batch_worker.DATA_DIR
+            generated: list = []
+            spawned: list = []
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                batch_worker.DATA_DIR = root / "data"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/dance"], [])
+                item = state["items"][0]
+                publish = root / "发布成品" / "015_跳舞_标题_7687160799476134799"
+                publish.mkdir(parents=True)
+                for name in ("人物图.png", "B站4x3.png", "抖音3x4.png", "发布文案.txt"):
+                    (publish / name).write_text("已有内容", encoding="utf-8")
+                source = root / "source.mp4"
+                source.write_bytes(b"fake-source")
+                image = root / "candidate.png"
+                image.write_bytes(b"fake-image")
+                item.update(
+                    status="skipped",
+                    stage="skipped",
+                    awemeId="7687160799476134799",
+                    skipRequested=True,
+                    sourcePath=str(source),
+                    # 故意不给 reviewApproved：有图就够了，重新开始不该因为"没放行过"退回备料
+                    reviewApproved=False,
+                    revisionMode="image",          # 上一次「只调图片」的残留，必须被清掉
+                    outputs={"folder": str(publish)},
+                    ai={"reference_image_path": str(image)},
+                )
+                for milestone in item["milestones"]:
+                    milestone.update(status="completed")
+                state["status"] = "completed"
+                store.create(state)
+
+                async def fake_generate_person(*args, **kwargs):
+                    generated.append((args, kwargs))
+                    raise AssertionError("重新开始不该重新出人物图")
+
+                def fake_spawn_covers(*args, **kwargs):
+                    spawned.append((args, kwargs))
+                    return True
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+                ), patch.object(
+                    batch_image, "generate_person_image", fake_generate_person
+                ), patch.object(batch_worker, "spawn_api_covers", fake_spawn_covers):
+                    result = batch_worker.restart_batch_items(state["id"], [item["id"]])
+
+                    row = store.get(state["id"])["items"][0]
+                    self.assertEqual(result["restarted"], [item["id"]])
+                    # 只重跑出片：状态直接回到 confirmed，源视频与候选图都还在
+                    self.assertEqual((row["status"], row["stage"]), ("confirmed", "confirmed"))
+                    # 上一次「只调图片」的意图不许跨过一次重新开始
+                    self.assertEqual(row["revisionMode"], "")
+                    self.assertEqual(row["revisionFeedback"], "")
+                    self.assertIn("不会重新出图", batch_worker.restart_item_log(True))
+                    self.assertIn("不会重新出图", batch_worker.restart_item_log(False))
+                    self.assertEqual(generated, [], "重新开始不该重新出图")
+                    self.assertEqual(spawned, [], "三张都在时不该再补封面")
+                    # 三张图一个字节都没被改写（体检会顺手把目录改成理想名，按作品号重新定位）
+                    folder_now = batch_worker._existing_publish_folder(row)
+                    self.assertIsNotNone(folder_now)
+                    for name in ("人物图.png", "B站4x3.png", "抖音3x4.png"):
+                        self.assertEqual((folder_now / name).read_text(encoding="utf-8"), "已有内容")
+            finally:
+                batch_store_module.DB_PATH = original_db
+                batch_worker.DATA_DIR = original_data
+
+    def test_restart_adopts_the_published_portrait_instead_of_regenerating(self) -> None:
+        """候选图文件没了、但发布目录里还有人物图：先收编，同样不重新出图。"""
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original_db = batch_store_module.DB_PATH
+            original_data = batch_worker.DATA_DIR
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                batch_worker.DATA_DIR = root / "data"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/dance"], [])
+                item = state["items"][0]
+                publish = root / "发布成品" / "015_跳舞_标题_7687160799476134799"
+                publish.mkdir(parents=True)
+                (publish / "人物图.png").write_bytes(b"published-portrait")
+                source = root / "source.mp4"
+                source.write_bytes(b"fake-source")
+                item.update(
+                    status="failed",
+                    stage="failed",
+                    awemeId="7687160799476134799",
+                    sourcePath=str(source),
+                    outputs={"folder": str(publish)},
+                    # 条目里记着的候选图已经被清理掉了
+                    ai={"reference_image_path": str(root / "gone.png")},
+                )
+                state["status"] = "failed"
+                store.create(state)
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+                ):
+                    direct = batch_worker.restart_item_to_run(state["id"], item["id"])
+
+                row = store.get(state["id"])["items"][0]
+                self.assertTrue(direct)
+                self.assertEqual(row["status"], "confirmed")
+                adopted = Path(row["ai"]["reference_image_path"])
+                self.assertTrue(adopted.is_file(), "发布目录里的人物图应被收编成候选图")
+                self.assertEqual(adopted.read_bytes(), b"published-portrait")
+                self.assertTrue(adopted.is_relative_to(root), "收编的图不许写到真实 data 目录")
+            finally:
+                batch_store_module.DB_PATH = original_db
+                batch_worker.DATA_DIR = original_data
 
     def test_confirmed_item_redownloads_a_missing_source_before_submitting(self) -> None:
         """重新开始时源视频已被清理：提交前先补一次下载，不能直接抛「文件不存在」。"""
