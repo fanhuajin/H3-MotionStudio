@@ -67,18 +67,29 @@ def main() -> int:
           f"当前 {len(manual)} 字")
     check("过度裸露" in manual, "手工入口也带着合规约束")
 
-    # 线上服务：最容易忘的一步（改了代码没重启 = 白改）
+    # 线上服务：最容易忘的一步（改了代码没重启 = 白改）。
+    # ⚠️ 这里**必须比指纹**，不能比"提示词里有没有某个词"：2026-09-20 就用「有没有『过度裸露』」
+    # 探过一次，14:21 起的旧进程照样回 ✅（那个词在更早的提交里就有），而它缺的正是当天最新
+    # 那条口径。指纹跟着三处源头正文走，改一次口径就变一次。
+    local = batch_ai.compliance_fingerprint()
     try:
         import httpx
 
+        config = httpx.get(f"{BASE}/api/config", timeout=15).json()
+        live = str(config.get("complianceFingerprint") or "")
+        same = live == local
+        check(same, f"线上后端已加载当前出图/合规口径（{BASE}）",
+              "" if same else f"线上 {live or '（没有这个字段 = 旧进程）'} ≠ 本地 {local}"
+                              " → **先重启后端再出图**")
         items = httpx.get(f"{BASE}/api/image-workbench/items", timeout=15).json()["items"]
         row = items[0]
         served = httpx.get(
             f"{BASE}/api/image-workbench/{row['id']}/prompt/person",
             params={"kind": row.get("kind") or "dance"}, timeout=15,
         ).json()["prompt"]
-        check("过度裸露" in served, f"线上服务已加载新代码（{BASE}）",
-              "没看到合规段 → 说明后端还是旧进程，**先重启后端再出图**")
+        carrying = "过度裸露" in served
+        check(carrying, "线上手工提示词也带着合规段",
+              "" if carrying else "手工入口的提示词里没有合规段，检查 image_workbench.prompt()")
     except Exception as error:  # noqa: BLE001
         check(False, f"线上服务可访问（{BASE}）", f"{type(error).__name__}: {str(error)[:80]}")
 

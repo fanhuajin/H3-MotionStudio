@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import mimetypes
 import os
@@ -402,6 +403,22 @@ COMPACT_IMAGE_PROMPT = """以图像-1（源视频抽帧）为唯一的**场景�
 【出片可用性】背景简洁有纵深，不要碎钻闪光、散景光点、密集装饰或路人；肩、手臂、躯干轮廓清晰稳定，
 不要极端扭转；手若入镜必须五指分明、数量正确、不交叉不粘连，不要比心、剪刀手这类手势；
 脸与嘴清晰锐利、不被头发或手遮挡；不要文字、Logo、水印、边框。输出单张成图。{song}{feedback}"""
+
+
+def compliance_fingerprint() -> str:
+    """出图/合规口径的指纹（16 位十六进制），给 `scripts/compliance_selftest.py` 用。
+
+    为什么需要它：uvicorn 没带 `--reload`，**改了提示词不重启后端就等于没改** ——
+    2026-09-20 实测过一次「提示词改了、线上还是旧的」，白折腾一轮。当时的探针是
+    「线上提示词里有没有『过度裸露』」，可这个词在更早的提交里就有了：本机 14:21 起的
+    旧进程照样能给这个探针返回 ✅，而它缺的正是最新那条口径（可以换款式）——
+    探针**跟着措辞走**，改一次口径就失效一次。
+
+    指纹直接跟着三处源头正文走（出图要求 / 出图后自检 / 精简模板），口径一改指纹必变，
+    不存在"改了探针忘了改提示词"这一层。
+    """
+    payload = "\n".join((PLATFORM_SAFE_BLOCK, COMPLIANCE_JUDGE_INSTRUCTION, COMPACT_IMAGE_PROMPT))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def compose_image_prompt(

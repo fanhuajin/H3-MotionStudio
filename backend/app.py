@@ -1734,6 +1734,9 @@ async def get_config() -> dict[str, Any]:
         "environmentReady": not missing,
         "missingRequirements": missing,
         "resourceMode": "strict-single-chain",
+        # 出图/合规口径的指纹：`scripts/compliance_selftest.py` 拿它跟本地正文比对，
+        # 一眼看出「后端是不是还在跑改之前的旧进程」（uvicorn 没带 --reload）。
+        "complianceFingerprint": batch_ai.compliance_fingerprint(),
     }
 
 

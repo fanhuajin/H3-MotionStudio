@@ -2268,6 +2268,30 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("算合规", text)
         self.assertIn("明显", text)
 
+    def test_config_exposes_the_compliance_fingerprint_the_selftest_compares(self) -> None:
+        """`/api/config` 必须暴露口径指纹 —— 自检脚本靠它判断「后端还是不是旧进程」。
+
+        2026-09-20 的坑：uvicorn 没带 `--reload`，改完提示词不重启等于没改。当时的探针是
+        「线上提示词里有没有『过度裸露』」，**本机 14:21 起的旧进程照样判通过**（那个词在更早
+        的提交里就有），而它缺的正是当天最新那条口径。指纹跟着三处源头正文走，改口径必变，
+        探针不会再"改一次口径就失效一次"。
+        """
+        from backend import app as app_module
+
+        async def no_comfy():
+            return None
+
+        local = batch_ai.compliance_fingerprint()
+        self.assertEqual(len(local), 16)
+        with patch.object(app_module, "comfy_health", no_comfy):
+            payload = asyncio.run(app_module.get_config())
+        self.assertEqual(payload["complianceFingerprint"], local)
+        # 口径正文一改，指纹必须跟着变（否则自检又会变成"永远通过"）
+        with patch.object(batch_ai, "PLATFORM_SAFE_BLOCK", batch_ai.PLATFORM_SAFE_BLOCK + "\n再收一点"):
+            self.assertNotEqual(batch_ai.compliance_fingerprint(), local)
+        with patch.object(batch_ai, "COMPLIANCE_JUDGE_INSTRUCTION", "换一份判据"):
+            self.assertNotEqual(batch_ai.compliance_fingerprint(), local)
+
     def test_dance_preflight_only_touches_the_outfit_not_the_moves(self) -> None:
         """跳舞预审只对**衣服**提要求：动作/运镜照参考视频写，着装暴露也不算 redesign。"""
         preflight = batch_ai.preflight_prompt(
