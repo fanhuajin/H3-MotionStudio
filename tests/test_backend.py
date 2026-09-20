@@ -654,13 +654,12 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(by_index[2]["status"], "awaiting_review")   # 后面的条目照常跑
         self.assertNotEqual(box["state"]["status"], "failed")
 
-    def test_batch_keeps_preparing_items_while_another_one_renders(self) -> None:
-        """出片跑在后台时，后面的条目照常备料。
+    def test_a_late_item_waits_until_the_rendering_one_finishes(self) -> None:
+        """出片跑着时，新追加的条目**停在排队**，不许提前下载/备料。
 
-        用户 2026-09-13 实测：「我现在重新加入了一条…下载抖音视频、生成人物图与发布文案、
-        等待你的确认…现在没有处理啊」——出片一条要十几分钟，runner 原来原地 await 出片，
-        新追加的条目就卡在「排队中」拿不到候选图与文案。备料只用下载 + ffmpeg + 文本模型，
-        不碰 ComfyUI，所以必须能和出片并行；出片本身仍严格一条一条来。
+        这条是 2026-09-13 那条「备料和出片并行」的**推翻**：用户 2026-09-20 明确
+        「流程改下 现在不需要先提前备料了」——上一条没交付完之前，后面的条目连下载都不开始
+        （行为层面的钉子；静态那一条在 `test_batch_strictly_runs_one_item_at_a_time`）。
         """
         import asyncio
 
@@ -739,20 +738,21 @@ class WorkflowPreparationTests(unittest.TestCase):
                 box["state"]["items"].append(late)
                 box["state"]["total"] = 2
                 appended["id"] = late["id"]
-                for _ in range(300):
-                    if late["status"] == "awaiting_review":
-                        break
+                # 给 runner 足够多的机会去"顺手备料"：它必须什么都不做
+                for _ in range(30):
                     await asyncio.sleep(0.01)
-                # 出片还在后台跑，新追加的那一条已经备完料了
-                self.assertEqual(late["status"], "awaiting_review")
-                self.assertIn(f"download-{late['id']}", order)
+                self.assertEqual(late["status"], "pending")
+                self.assertNotIn(f"download-{late['id']}", order)
                 self.assertNotIn("video-end", order)
+                # 出片交付完，runner 才轮到这一条：下载 → 备料 → 停在等你确认
                 release.set()
                 await asyncio.wait_for(runner, timeout=5)
 
         asyncio.run(scenario())
         self.assertEqual(order[0], "video-start")
-        self.assertEqual(order[-1], "video-end")
+        self.assertEqual(order[1], "video-end")
+        self.assertIn(f"download-{appended['id']}", order)
+        self.assertEqual(box["state"]["items"][1]["status"], "awaiting_review")
         self.assertEqual(box["state"]["items"][1]["id"], appended["id"])
         # 出片落定后批次停在「等你确认」，而不是把待审核的条目当成已完成
         self.assertEqual(box["state"]["status"], "awaiting_review")
