@@ -3735,6 +3735,31 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(batch_worker._next_work(state)["kind"], "singing")
         self.assertEqual(batch_worker._next_work(state)["kindIndex"], 1)
 
+    def test_running_notice_names_the_other_task_by_its_own_kind(self) -> None:
+        """出片与备料并行时，提示里那句「同时在…」必须说清另一条是出片还是备料。
+
+        两条并行是**设计如此**（2026-09-20 起出片与备料重叠），但用户看到表格里两条
+        「正在处理」还是问「怎么又两个正在处理」—— 提示以前把另一条写成了和自己同一种活
+        （备料时说成「同时在备料第 N 条」），越看越像两件重复的活。
+        """
+        from backend import batch_worker
+
+        state = new_batch_state(["https://v.douyin.com/s1"], ["https://v.douyin.com/d1"])
+        prep_row = dict(next(row for row in state["items"] if row["kind"] == "dance"))
+        video_row = dict(next(row for row in state["items"] if row["kind"] == "singing"))
+        prep_row["status"] = "pending"
+        video_row["status"] = "confirmed"
+
+        preparing = batch_worker._running_notice(prep_row, state, video_row)
+        self.assertEqual(preparing, "正在备料第 2 / 2 条（同时在出片第 1 条）。")
+        rendering = batch_worker._running_notice(video_row, state, prep_row)
+        self.assertEqual(rendering, "正在出片第 1 / 2 条（同时在备料第 2 条）。")
+        # 只有一条在跑时不画蛇添足
+        self.assertEqual(batch_worker._running_notice(prep_row, state, None), "正在备料第 2 / 2 条。")
+        self.assertEqual(
+            batch_worker._running_notice(prep_row, state, prep_row), "正在备料第 2 / 2 条。"
+        )
+
     def test_confirmed_dance_renders_before_confirmed_singing(self) -> None:
         """已确认的两类都在排队时，GPU 先跑跳舞那一条（编号不动）。"""
         from backend import batch_worker

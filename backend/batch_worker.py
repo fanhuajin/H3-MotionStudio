@@ -257,7 +257,12 @@ def _skip_duplicate_item(batch_id: str, item_id: str, message: str) -> None:
 def _running_notice(
     item: dict[str, Any], state: dict[str, Any], other: dict[str, Any] | None
 ) -> str:
-    """runner 的运行提示：正在出片 / 正在备料，两个并行时把另一条也说出来。"""
+    """runner 的运行提示：正在出片 / 正在备料，两个并行时把另一条也说出来。
+
+    ⚠️ 两条并行是**设计如此**（2026-09-20 起出片与备料重叠跑），提示里必须一眼看出
+    「一条出片、一条备料」——2026-09-20 用户看到表格里两条「正在处理」就问
+    「怎么又两个正在处理」，一部分原因就是这句提示把**另一条**说成了和自己同一种活。
+    """
     total = state.get("total") or len(state.get("items") or [])
     preparing = str(item.get("status")) in {"pending", "revising"}
     head = (
@@ -267,7 +272,8 @@ def _running_notice(
     )
     if other is None or str(other.get("id")) == str(item.get("id")):
         return head
-    other_word = "备料" if preparing else "出片"
+    # 另一条和自己分工相反：自己在备料时它就在出片，反之亦然。
+    other_word = "出片" if preparing else "备料"
     return f"{head[:-1]}（同时在{other_word}第 {other.get('index')} 条）。"
 
 

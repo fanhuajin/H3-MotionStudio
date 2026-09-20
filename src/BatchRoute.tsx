@@ -343,7 +343,14 @@ function splitUrls(value: string) {
   return value.split(/[\r\n]+/).map((url) => url.trim()).filter(Boolean);
 }
 
-function batchStatusLabel(status: string) {
+function batchStatusLabel(status: string, stage?: string) {
+  // 「正在处理」在表格里会同时出现在**出片**和**备料**两条上 —— 两者并行是设计如此
+  // （2026-09-20 起的编排：出片跑着的时候同时备下一条）。所以按 stage 把话说明白，
+  // 免得看成"怎么又两个正在处理"。
+  if (status === "running") {
+    if (stage === "video" || stage === "deliver") return "出片中";
+    if (stage === "prepare" || stage === "download") return "备料中";
+  }
   return ({
     queued: "等待开始",
     pending: "排队中",
@@ -1404,7 +1411,7 @@ export function BatchRoute() {
           <section className="batch-review">
             <div className="batch-review-copy">
               <div className="batch-review-title">
-                <span>{atReview ? "等待你的确认" : `本条信息 · ${batchStatusLabel(item.status)}${editable ? "" : "（只读）"}`}</span>
+                <span>{atReview ? "等待你的确认" : `本条信息 · ${batchStatusLabel(item.status, item.stage)}${editable ? "" : "（只读）"}`}</span>
                 <small>{atReview ? `按 ${selectedRatio} 出片 · 确认前不会启动 ComfyUI` : `按 ${selectedRatio} 出片`}</small>
               </div>
 
@@ -1485,7 +1492,7 @@ export function BatchRoute() {
                 {item.childJob?.cleanBatch && <i>去字幕 {item.childJob.cleanBatch}/{item.childJob.cleanBatches}</i>}
                 {item.childJob?.upscaleBatch && <i>二采 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</i>}
               </div>
-              <small>{batchStatusLabel(item.status)}</small>
+              <small>{batchStatusLabel(item.status, item.stage)}</small>
             </div>
           </div>
           <div className="batch-steps">
@@ -1753,7 +1760,7 @@ export function BatchRoute() {
                       title: `重新开始选中的 ${selectedIds.size} 条？`,
                       detail: "已经出过片的会重跑一遍生成链路，新成片会覆盖发布目录里的同名文件；"
                         + "已备过料且源视频还在的只重跑出片，其余的从下载与备料重做。正在出片的不会被重开。",
-                      items: selectedItems.map((item) => `第 ${item.index} 条 · ${batchStatusLabel(item.status)} · ${itemTitle(item)}`),
+                      items: selectedItems.map((item) => `第 ${item.index} 条 · ${batchStatusLabel(item.status, item.stage)} · ${itemTitle(item)}`),
                       confirmLabel: "重新开始这 " + selectedIds.size + " 条",
                       danger: true,
                     })
@@ -1863,7 +1870,7 @@ export function BatchRoute() {
                           </td>
                           <td className="batch-status-cell">
                             <span className={`batch-status ${item.status}`}>
-                              {batchStatusLabel(item.status)}
+                              {batchStatusLabel(item.status, item.stage)}
                               {/* 进度直接在列表这一行显示，不用点开（2026-09-15 用户：「除了时间
                                   进入也同步的列表中 像现在的 17% 这样的 我有时候不想点开来看」）；
                                   只认真实非零进度，0/null 不显示数字（进度不得造假）。 */}
