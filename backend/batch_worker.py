@@ -71,6 +71,9 @@ _SALVAGE_TASKS: set[asyncio.Task] = set()
 # 正在后台出片的条目任务。runner 不再原地 await 出片，而是把出片放进这里的任务，
 # 自己继续给后面的条目备料；这个集合是**强引用**（否则任务可能在跑的过程中被回收）。
 _VIDEO_TASKS: set[asyncio.Task] = set()
+# 正在后台**备料**的条目任务（2026-09-20 起备料也不再内联在 runner 里）。同样留强引用：
+# runner 只持有一个备料任务 + 一个出片任务，正好是用户要的「出片期间一条一条备料」。
+_PREP_TASKS: set[asyncio.Task] = set()
 # 每个批次的视频生成闸门：备料可以提前完成，但从“提交视频子任务”到“最终成片交付”
 # 必须整段串行。即使用户连续确认多条、旧 runner 被换代，后来的条目也只能在这里等。
 _BATCH_VIDEO_LOCKS: dict[str, asyncio.Lock] = {}
@@ -202,6 +205,70 @@ def _hand_over_stale_video_task(
         batch_store.add_item_log(
             batch_id, item_id, "本条之前的出片任务已交给新一轮接管（旧的那一轮已退出）。"
         )
+
+
+def _cancel_stale_prep_task(
+    batch_id: str, prep_task: asyncio.Task | None, prep_row: dict[str, Any] | None
+) -> None:
+    """被顶掉的那一代 runner 退出前，把还在跑的**备料**任务收干净。
+
+    与出片任务相反，备料任务**必须取消**：它跑在后台、结果只落在这一条自己身上，留着它
+    会让条目永远停在 `running`（新一代看它是 running 就不会再挑它，等于永久卡住）。
+    备料本身是幂等的（重来一遍即可，半截结果不会被登记），所以取消代价最小。
+    """
+    item_id = str((prep_row or {}).get("id") or "")
+    if prep_task is None or prep_task.done():
+        return
+    cancel_item_work(batch_id, item_id)
+    if not item_id:
+        return
+    state = batch_store.get(batch_id) or {}
+    current = next((row for row in state.get("items") or [] if row.get("id") == item_id), None)
+    if current and str(current.get("status")) == "running":
+        _set_item(batch_id, item_id, status="pending", stage="queued", finishedAt=None)
+        for milestone in current.get("milestones") or []:
+            if milestone.get("status") == "running":
+                batch_store.set_item_milestone(
+                    batch_id, item_id, milestone["id"], status="pending", progress=0, currentNode=None
+                )
+    batch_store.add_item_log(
+        batch_id, item_id, "本条之前的备料已交给新一轮接管（旧的那一轮已退出）。"
+    )
+
+
+def _skip_duplicate_item(batch_id: str, item_id: str, message: str) -> None:
+    """同一条作品已经在批次里：标成「已跳过」，不当失败，也不拦住后面的条目。"""
+    current = _item(batch_id, item_id)
+    _set_item(
+        batch_id,
+        item_id,
+        status="skipped",
+        stage="skipped",
+        finishedAt=now_iso(),
+        childJob=None,
+        warning=message,
+    )
+    for milestone in current.get("milestones") or []:
+        if milestone.get("status") in {"pending", "running"}:
+            batch_store.set_item_milestone(batch_id, item_id, milestone["id"], status="skipped")
+    batch_store.add_item_log(batch_id, item_id, message)
+
+
+def _running_notice(
+    item: dict[str, Any], state: dict[str, Any], other: dict[str, Any] | None
+) -> str:
+    """runner 的运行提示：正在出片 / 正在备料，两个并行时把另一条也说出来。"""
+    total = state.get("total") or len(state.get("items") or [])
+    preparing = str(item.get("status")) in {"pending", "revising"}
+    head = (
+        f"正在备料第 {item.get('index')} / {total} 条。"
+        if preparing
+        else f"正在出片第 {item.get('index')} / {total} 条。"
+    )
+    if other is None or str(other.get("id")) == str(item.get("id")):
+        return head
+    other_word = "备料" if preparing else "出片"
+    return f"{head[:-1]}（同时在{other_word}第 {other.get('index')} 条）。"
 
 
 def item_milestones(kind: str) -> list[dict[str, Any]]:
@@ -734,6 +801,7 @@ def restart_item_to_run(batch_id: str, item_id: str) -> bool:
             finishedAt=None,
             revisionFeedback="",
             revisionMode="",
+            videoAttempts=0,        # 手动重新开始：把「出片失败自动重试」的额度也还回来
         )
         for milestone in row.get("milestones") or []:
             if milestone.get("id") == "video" or milestone.get("status") == "error":
@@ -1339,6 +1407,22 @@ async def _prepare_review(
     finally:
         if _ITEM_TASKS.get(key) is task:
             _ITEM_TASKS.pop(key, None)
+
+
+async def _run_prep(batch_id: str, item_id: str) -> None:
+    """备料一条：下载 → 预审（分析 + 出图素材 + 候选图 + 文案）。
+
+    2026-09-20 起**备料跑在后台任务里**（以前是内联在 runner 循环里 `await`，一跑就把循环
+    卡住，出片期间没法继续备下一条）。用户口径：「第一条备好之后优先出片，出片的过程中
+    一条一条备料」——所以 runner 最多同时持有一个备料任务 + 一个出片任务（**并发 1**）。
+    """
+    await _download(batch_id, item_id)
+    refreshed = _item(batch_id, item_id)
+    if refreshed.get("skipRequested") or refreshed.get("deleteRequested"):
+        raise asyncio.CancelledError
+    feedback = str(refreshed.get("revisionFeedback") or "")
+    mode = str(refreshed.get("revisionMode") or "both")
+    await _prepare_review(batch_id, item_id, feedback=feedback, mode=mode)
 
 
 def _adopt_previous_work(batch_id: str, item_id: str) -> bool:
@@ -3433,6 +3517,18 @@ def _next_work(state: dict[str, Any], *, allow_confirmed: bool = True) -> dict[s
     return None
 
 
+def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
+    """队列里**最早的一条「已确认、等出片」**（按 items 顺序 = 编号顺序）。
+
+    与 `_next_work` 分开是有意的：那个函数是"先备料再出片"的顺序，而 runner 的 ③a 要的是
+    **出片优先** —— 只要有一条已经备好，就立刻交给 GPU，别让它去等备料。
+    """
+    for item in state.get("items") or []:
+        if str(item.get("status")) == "confirmed":
+            return item
+    return None
+
+
 def _fail_item_and_batch(
     batch_id: str, item_id: str, message: str, *, generation: int | None = None
 ) -> None:
@@ -3465,14 +3561,98 @@ def _fail_item_and_batch(
     )
 
 
-async def run_batch(batch_id: str) -> None:
-    """批次 runner：**严格一条一条走** —— 下载 → 备料（出图素材 + 文案）→ 出片 → 交付，再下一条。
+# 失败策略（用户 2026-09-20 定）：出片失败自动重试 1 次（共 2 次尝试）；
+# 备料失败直接跳过；**连续 2 条失败**才熔断停批（避免把剩下十几条全毁一遍）。
+MAX_ITEM_VIDEO_ATTEMPTS = 2
+FAILURE_STREAK_LIMIT = 2
 
-    用户 2026-09-20：「流程改下 现在不需要先提前备料了」。所以取消 2026-09-13 那套
-    「出片丢后台、runner 继续给后面的条目备料」的并行做法：**有出片在跑时什么新活都不挑**，
-    就等这一条交付完，然后再看下一条（`item = None if video_task is not None`）。
-    出片本身仍然丢进后台任务 —— 那是为了暂停/取消/「重新开始」换代时仍能响应，
-    不是因为要并行备料。
+
+def _reset_failure_streak(batch_id: str) -> None:
+    """一条真正交付成功后把「连续失败」清零（熔断只看**连续**失败）。"""
+    state = batch_store.get(batch_id) or {}
+    if int(state.get("failureStreak") or 0):
+        batch_store.update(batch_id, failureStreak=0, lastFailure="")
+
+
+def _soft_fail_item(
+    batch_id: str, item_id: str, stage: str, message: str, *, generation: int | None = None
+) -> bool:
+    """一条失败但**不拖住整批**：标失败 + 记连续失败数；返回是否已熔断（True = 调用方 return）。
+
+    与 `_fail_item_and_batch`（一条失败就停整批）的区别就是这一条：备料失败、出片重试后
+    仍失败都走这里，批次继续往下跑；只有连续 `FAILURE_STREAK_LIMIT` 条失败才停下等人工 ——
+    连续失败通常意味着环境坏了（ComfyUI 挂了 / 中转站欠费），继续跑只会把后面的全毁一遍。
+    """
+    if generation is not None and batch_run_superseded(batch_id, generation):
+        return False        # 旧代 runner 不许写任何状态
+    _set_item(batch_id, item_id, status="failed", stage="failed", error=message, childJob=None)
+    active_milestone = next(
+        (row for row in _item(batch_id, item_id)["milestones"] if row.get("status") == "running"),
+        None,
+    )
+    if active_milestone:
+        batch_store.set_item_milestone(
+            batch_id, item_id, active_milestone["id"], status="error", currentNode=message
+        )
+    batch_store.add_item_log(
+        batch_id, item_id, f"这一条失败（{stage}），已跳过、继续处理后面的条目：{message}"
+    )
+    state = batch_store.get(batch_id) or {}
+    streak = int(state.get("failureStreak") or 0) + 1
+    tripped = streak >= FAILURE_STREAK_LIMIT
+    batch_store.update(batch_id, failureStreak=streak, lastFailure=f"{stage}：{message}"[:200])
+    if tripped:
+        batch_store.add_item_log(
+            batch_id, item_id, f"连续 {streak} 条失败，已停下等人工处理（避免把后面的条目全毁一遍）。"
+        )
+        batch_store.update(
+            batch_id,
+            status="failed",
+            stage="failed",
+            runnerActive=False,
+            notice=f"连续 {streak} 条失败（最近一次在「{stage}」），已停下等你处理。",
+        )
+    return tripped
+
+
+def _retry_item_video_once(batch_id: str, item_id: str, message: str, *, attempts: int) -> None:
+    """出片失败 → 把这一条放回 `confirmed` 再试一次（里程碑也重置回待办）。"""
+    def apply(row: dict[str, Any]) -> None:
+        row.update(
+            videoAttempts=attempts + 1,
+            status="confirmed",
+            stage="confirmed",
+            error=None,
+            warning=None,
+            childJob=None,
+            videoJobId=None,
+            finishedAt=None,
+        )
+        for milestone in row.get("milestones") or []:
+            if milestone.get("id") == "video":
+                milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(
+        batch_id, item_id, f"出片失败，自动重试一次（第 {attempts + 2} 次尝试）：{message}"
+    )
+
+
+async def run_batch(batch_id: str) -> None:
+    """批次 runner：**出片优先、备料并行一条** —— 第一条备好就开跑，出片期间继续备下一条。
+
+    用户 2026-09-20 的最终口径：「**第一条备好之后优先出片，出片的过程中一条一条备料**」。
+    所以 runner 手里最多同时有两个后台任务：
+
+    - `video_task`（**全局只有一条**，出片是 GPU 独占的单链路）；
+    - `prep_task`（**并发 1**，一次只备一条：下载 → 抽帧 → 分析 → 人物图 → 两张封面）。
+
+    每一轮先看有没有「已确认」的条目 → 有就立刻出片（优先）；否则看有没有要备料的 →
+    丢进后台备料，然后回到循环顶继续转。这样 GPU 一交付，下一条**已经备好**，不用再等
+    2~5 分钟的备料（这一段以前是完全串在出片前面的，GPU 白等）。
+
+    失败策略（用户同一天定）：备料失败跳过继续、出片失败自动重试 1 次、**连续 2 条失败
+    熔断停批** —— 见 `_soft_fail_item`。
 
     **每一轮都认「代」**：用户点「重新开始」会推进代数（`take_over_batch_run`），
     这一代过期的 runner 立刻退出，把批次让给新 runner —— 否则旧 runner 一旦卡在某个
@@ -3485,6 +3665,8 @@ async def run_batch(batch_id: str) -> None:
         return
     video_task: asyncio.Task | None = None
     video_row: dict[str, Any] | None = None
+    prep_task: asyncio.Task | None = None
+    prep_row: dict[str, Any] | None = None
     try:
         state = batch_store.get(batch_id)
         if not state:
@@ -3504,32 +3686,42 @@ async def run_batch(batch_id: str) -> None:
                 return
             # ⓪ 我这一代被顶掉了（用户点了重新开始 / 继续）：**立刻退出，不碰任何状态**。
             #    出片任务若还在跑也不去动它：新一代会按条目的当前状态重新安排。
+            #    **备料任务则要取消并把条目放回 pending**：它跑在后台、结果只落在这一条自己
+            #    身上，留着它会让条目永远停在 `running`（新一代看它是 running 就不挑它了）。
             if batch_run_superseded(batch_id, generation):
                 _hand_over_stale_video_task(batch_id, video_task, video_row)
+                _cancel_stale_prep_task(batch_id, prep_task, prep_row)
                 return
             # ① 后台出片落定：在这里 await 一次，让失败/取消复用下面同一套收尾分支。
             if video_task is not None and video_task.done():
                 finished, row = video_task, video_row
                 video_task, video_row = None, None
+                landed_id = str((row or {}).get("id") or "")
                 try:
                     await finished
                 except asyncio.CancelledError:
                     # await 期间可能已经被换了一代：那就什么都不许写（新一轮有自己的安排）
                     if batch_run_superseded(batch_id, generation):
                         return
-                    current = _item(batch_id, str((row or {}).get("id") or ""))
+                    current = _item(batch_id, landed_id)
                     await _finish_abandoned(
                         batch_id, current["id"], deleted=bool(current.get("deleteRequested"))
                     )
                 except Exception as error:
-                    _fail_item_and_batch(
-                        batch_id, str((row or {}).get("id") or ""), str(error), generation=generation
-                    )
-                    return
+                    if batch_run_superseded(batch_id, generation):
+                        return
+                    # 出片失败：先自动重试一次；仍失败就**只标这一条失败**、继续下一条
+                    # （连续两条才熔断，见 `_soft_fail_item`）。
+                    attempts = int((row or {}).get("videoAttempts") or 0)
+                    if attempts + 1 < MAX_ITEM_VIDEO_ATTEMPTS:
+                        _retry_item_video_once(batch_id, landed_id, str(error), attempts=attempts)
+                    elif _soft_fail_item(
+                        batch_id, landed_id, "出片", str(error), generation=generation
+                    ):
+                        return
                 else:
                     # 出片正常返回却没把条目推进出 confirmed（异常路径之外不该发生）：
                     # 再挑一次就会无限重投出片任务，直接停下等人工处理。
-                    landed_id = str((row or {}).get("id") or "")
                     landed = next(
                         (
                             item
@@ -3539,129 +3731,129 @@ async def run_batch(batch_id: str) -> None:
                         None,
                     )
                     if landed is not None and landed.get("status") == "confirmed":
-                        _fail_item_and_batch(
+                        if _soft_fail_item(
                             batch_id,
                             landed_id,
-                            "出片任务结束后条目仍停在「已确认」，已停下避免重复出片",
+                            "出片",
+                            "出片任务结束后条目仍停在「已确认」，已跳过避免重复出片",
                             generation=generation,
+                        ):
+                            return
+                    else:
+                        _reset_failure_streak(batch_id)      # 真交付成功了：连续失败清零
+                continue
+            # ①b 后台备料落定：备料失败**不拖住整批**（标黄跳过继续），取消/DuplicateItem
+            #     仍然按老规矩收尾。
+            if prep_task is not None and prep_task.done():
+                finished, row = prep_task, prep_row
+                prep_task, prep_row = None, None
+                prep_id = str((row or {}).get("id") or "")
+                try:
+                    await finished
+                except asyncio.CancelledError:
+                    if batch_run_superseded(batch_id, generation):
+                        return
+                    current = _item(batch_id, prep_id)
+                    await _finish_abandoned(
+                        batch_id, current["id"], deleted=bool(current.get("deleteRequested"))
+                    )
+                except DuplicateItem as duplicate:
+                    _skip_duplicate_item(batch_id, prep_id, str(duplicate))
+                except Exception as error:
+                    current = _item(batch_id, prep_id)
+                    if current.get("skipRequested") or current.get("deleteRequested"):
+                        await _finish_abandoned(
+                            batch_id, prep_id, deleted=bool(current.get("deleteRequested"))
                         )
+                    elif _soft_fail_item(
+                        batch_id, prep_id, "备料", str(error), generation=generation
+                    ):
                         return
                 continue
-            # ② 暂停不打断正在出片的这一条（保持原语义：等它落定再停）。
+            # ② 暂停不打断正在出片/正在备料的那一条（等它落定再停；备料是幂等的一整段，
+            #    做到一半硬掐会留下半截结果，所以同样等它自然结束）。
             if state.get("pauseRequested") or state.get("status") == "paused":
-                if video_task is not None:
-                    await asyncio.wait({video_task}, timeout=3)
+                if video_task is not None or prep_task is not None:
+                    await asyncio.wait(
+                        {task for task in (video_task, prep_task) if task is not None}, timeout=3
+                    )
                     continue
                 batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
                 return
-            # ③ 挑下一件活：**严格一条一条走**（用户 2026-09-20：「现在不需要先提前备料了」）。
-            #    有出片在跑时什么新活都不挑 —— 不备料、也不开第二条出片，就等这条交付完。
-            #    （旧的并行备料做法是 2026-09-13 为了「新加的条目别一直排队」加的，现按用户
-            #     口径取消；`_next_work` 的 `allow_confirmed` 参数保留给其它调用方与单测。）
-            item = None if video_task is not None else _next_work(state)
-            if item is None:
-                if video_task is not None:
-                    # 备料都做完了，只剩后台出片：等它落定（每 3 秒回到循环顶，暂停仍能响应）
-                    await asyncio.wait({video_task}, timeout=3)
-                    continue
-                items = state.get("items") or []
-                waiting = [row for row in items if row.get("status") == "awaiting_review"]
-                if waiting:
-                    # 素材已备齐，停下来等用户逐条上传图片 + 确认出片
-                    batch_store.update(
-                        batch_id,
-                        status="awaiting_review",
-                        stage="review",
-                        runnerActive=False,
-                        currentItemId=state.get("currentItemId") or waiting[0]["id"],
-                        notice=f"{len(waiting)} 条素材已备齐，等你确认出片。",
-                    )
-                    return
-                warnings = any(row.get("warning") for row in items)
-                batch_store.update(
-                    batch_id,
-                    status="completed",
-                    stage="completed",
-                    runnerActive=False,
-                    currentItemId=None,
-                    currentIndex=state.get("total") or 0,
-                    finishedAt=now_iso(),
-                    notice="全部条目已完成。" + (" 部分歌词字幕需要稍后重试。" if warnings else ""),
-                )
-                return
-            # 到这里 item 一定不是「出片在跑」的那一条（上面已经把它排除掉了），
-            # 所以只有「正在备料」和「正在出片」两种提示，不存在并行状态。
-            preparing = item.get("status") in {"pending", "revising"}
-            notice = (
-                f"正在备料第 {item['index']} / {state['total']} 条。"
-                if preparing
-                else f"正在出片第 {item['index']} / {state['total']} 条。"
-            )
-            batch_store.update(
-                batch_id,
-                currentItemId=item["id"],
-                currentIndex=item["index"],
-                notice=notice,
-            )
-            try:
-                if item.get("skipRequested"):
-                    await _finish_abandoned(batch_id, item["id"], deleted=bool(item.get("deleteRequested")))
-                    # 停下来就把 ComfyUI 关掉（批次里还有别的活时它会自己跳过）
-                    await _stop_comfy_if_idle()
-                    continue
-                if item.get("status") == "confirmed":
-                    # 出片丢进后台任务**不是为了并行备料**（用户 2026-09-20 已取消并行）：
-                    # 后台任务才能让暂停/取消/「重新开始」换代在出片期间仍然响应得到。
-                    # runner 回到循环顶后会因为 `video_task is not None` 直接等它落定，
-                    # 这条交付完才开始下一条的下载与备料。
-                    task = asyncio.create_task(_process_confirmed(batch_id, item["id"]))
+            # ③a **出片优先**：没有出片在跑、队列里有「已确认」的条目 → 立刻开跑。
+            #     用户 2026-09-20：「第一条备好之后优先出片」。注意这里**不能**用 `_next_work`：
+            #     它是"先备料（pending/revising）、再出片"的顺序，会先挑到待备料的那一条，
+            #     于是已经备好的条目反而要等备料做完才轮到 GPU。
+            if video_task is None:
+                pick = _next_confirmed(state)
+                if pick is not None:
+                    task = asyncio.create_task(_process_confirmed(batch_id, pick["id"]))
                     _VIDEO_TASKS.add(task)
                     task.add_done_callback(_VIDEO_TASKS.discard)
-                    video_task, video_row = task, item
-                    continue
-                await _download(batch_id, item["id"])
-                refreshed = _item(batch_id, item["id"])
-                if refreshed.get("skipRequested") or refreshed.get("deleteRequested"):
-                    raise asyncio.CancelledError
-                feedback = str(refreshed.get("revisionFeedback") or "")
-                mode = str(refreshed.get("revisionMode") or "both")
-                await _prepare_review(batch_id, item["id"], feedback=feedback, mode=mode)
-                continue
-            except DuplicateItem as duplicate:
-                # 同一条作品已经在批次里：直接标成「已跳过」，不当失败，也不拦住后面的条目
-                message = str(duplicate)
-                current = _item(batch_id, item["id"])
-                _set_item(
-                    batch_id,
-                    item["id"],
-                    status="skipped",
-                    stage="skipped",
-                    finishedAt=now_iso(),
-                    childJob=None,
-                    warning=message,
-                )
-                for milestone in current.get("milestones") or []:
-                    if milestone.get("status") in {"pending", "running"}:
-                        batch_store.set_item_milestone(
-                            batch_id, item["id"], milestone["id"], status="skipped"
-                        )
-                batch_store.add_item_log(batch_id, item["id"], message)
-                continue
-            except asyncio.CancelledError:
-                current = _item(batch_id, item["id"])
-                await _finish_abandoned(
-                    batch_id, item["id"], deleted=bool(current.get("deleteRequested"))
-                )
-                continue
-            except Exception as error:
-                current = _item(batch_id, item["id"])
-                if current.get("skipRequested") or current.get("deleteRequested"):
-                    await _finish_abandoned(
-                        batch_id, item["id"], deleted=bool(current.get("deleteRequested"))
+                    video_task, video_row = task, pick
+                    batch_store.update(
+                        batch_id,
+                        currentItemId=pick["id"],
+                        currentIndex=pick["index"],
+                        notice=_running_notice(pick, state, prep_row),
                     )
                     continue
-                _fail_item_and_batch(batch_id, item["id"], str(error), generation=generation)
+            # ③b **备料并行一条**：出片在跑时照样备下一条（一次只备一条，API 不会被洪峰打）。
+            if prep_task is None:
+                candidate = _next_work(state, allow_confirmed=False)
+                if candidate is not None:
+                    if candidate.get("skipRequested"):
+                        await _finish_abandoned(
+                            batch_id, candidate["id"], deleted=bool(candidate.get("deleteRequested"))
+                        )
+                        # 停下来就把 ComfyUI 关掉（批次里还有别的活时它会自己跳过）
+                        await _stop_comfy_if_idle()
+                        continue
+                    task = asyncio.create_task(_run_prep(batch_id, candidate["id"]))
+                    _PREP_TASKS.add(task)
+                    task.add_done_callback(_PREP_TASKS.discard)
+                    prep_task, prep_row = task, candidate
+                    batch_store.update(
+                        batch_id,
+                        currentItemId=candidate["id"],
+                        currentIndex=candidate["index"],
+                        notice=_running_notice(candidate, state, video_row),
+                    )
+                    continue
+            # ④ 两个后台任务都还在跑、暂时没有新活可挑：等它们落定（每 3 秒回到循环顶，
+            #    暂停/取消/换代仍能响应）。
+            pending_tasks = {task for task in (video_task, prep_task) if task is not None}
+            if pending_tasks:
+                await asyncio.wait(pending_tasks, timeout=3)
+                continue
+            items = state.get("items") or []
+            waiting = [row for row in items if row.get("status") == "awaiting_review"]
+            if waiting:
+                # 素材已备齐，停下来等用户逐条上传图片 + 确认出片
+                batch_store.update(
+                    batch_id,
+                    status="awaiting_review",
+                    stage="review",
+                    runnerActive=False,
+                    currentItemId=state.get("currentItemId") or waiting[0]["id"],
+                    notice=f"{len(waiting)} 条素材已备齐，等你确认出片。",
+                )
                 return
+            warnings = any(row.get("warning") for row in items)
+            failed = [row for row in items if row.get("status") == "failed"]
+            batch_store.update(
+                batch_id,
+                status="completed",
+                stage="completed",
+                runnerActive=False,
+                currentItemId=None,
+                currentIndex=state.get("total") or 0,
+                finishedAt=now_iso(),
+                notice="全部条目已完成。"
+                + (f" 有 {len(failed)} 条失败，可在表格里点「重新开始」补跑。" if failed else "")
+                + (" 部分歌词字幕需要稍后重试。" if warnings else ""),
+            )
+            return
     finally:
         finish_batch_run(batch_id, generation)
 

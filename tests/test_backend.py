@@ -161,6 +161,48 @@ def process_env_only():
         yield
 
 
+class _BoxStore:
+    """跟着一个 `{"state": ...}` 盒子走的批量状态存储（runner 单测用）。
+
+    与 run_batch 交互所需的最小面：get / update / mutate / mutate_item /
+    set_item_milestone / add_item_log。
+    """
+
+    def __init__(self, box: dict) -> None:
+        self.box = box
+
+    def get(self, _batch_id):
+        return self.box["state"]
+
+    def update(self, _batch_id, **changes):
+        self.box["state"].update(changes)
+        return self.box["state"]
+
+    def mutate(self, _batch_id, mutator):
+        mutator(self.box["state"])
+        return self.box["state"]
+
+    def mutate_item(self, _batch_id, item_id, mutator):
+        for item in self.box["state"]["items"]:
+            if item["id"] == item_id:
+                mutator(item)
+        return self.box["state"]
+
+    def set_item_milestone(self, _batch_id, item_id, milestone_id, **changes):
+        for item in self.box["state"]["items"]:
+            if item["id"] == item_id:
+                for milestone in item["milestones"]:
+                    if milestone["id"] == milestone_id:
+                        milestone.update(changes)
+        return self.box["state"]
+
+    def add_item_log(self, _batch_id, item_id, message):
+        for item in self.box["state"]["items"]:
+            if item["id"] == item_id:
+                item.setdefault("logs", []).append({"time": "t", "message": message})
+        return self.box["state"]
+
+
 class PublishCopyLockTests(unittest.TestCase):
     """封面一旦出好，发布文案就锁住 —— 否则「重新开始」改标题会把封面全部作废。
 
@@ -1221,23 +1263,193 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original
 
-    def test_batch_strictly_runs_one_item_at_a_time(self) -> None:
-        """用户 2026-09-20：「流程改下 现在不需要先提前备料了」——**严格一条一条走**。
+    def test_batch_retries_a_failed_video_once_then_continues(self) -> None:
+        """出片失败 → **自动重试 1 次**；重试成功就照常交付、批次不停（失败策略 2026-09-20）。"""
+        import asyncio
 
-        旧行为（2026-09-13 用户要求「新加的条目别一直排队」）是「出片丢后台、runner 立刻
-        回头给后面的条目备料」。现在取消并行备料：**有出片在跑时什么新活都不挑**，
-        等这条交付完再走下一条。这条测试钉住它，免得以后又被"优化"回并行。
+        from backend import batch_worker
+        from backend.batch_worker import new_batch_state
+
+        state = new_batch_state(["https://v.douyin.com/a"], [])
+        state["items"][0]["status"] = "confirmed"
+        box = {"state": state}
+        calls = {"n": 0}
+
+        async def flaky_video(_batch_id, item_id):
+            calls["n"] += 1
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "running"
+            if calls["n"] == 1:
+                raise RuntimeError("ComfyUI 抽风")
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "completed"
+
+        async def no_prep(*_args, **_kwargs):
+            raise AssertionError("这一条已经备好，不该再备料")
+
+        async def scenario() -> None:
+            with patch.object(batch_worker, "batch_store", _BoxStore(box)), patch.object(
+                batch_worker, "_process_confirmed", flaky_video
+            ), patch.object(batch_worker, "_run_prep", no_prep):
+                await asyncio.wait_for(batch_worker.run_batch("b1"), timeout=5)
+
+        asyncio.run(scenario())
+        row = box["state"]["items"][0]
+        self.assertEqual(calls["n"], 2, "失败后应当自动重试一次")
+        self.assertEqual(row["status"], "completed")
+        self.assertEqual(row["videoAttempts"], 1)
+        self.assertEqual(box["state"]["status"], "completed")
+        self.assertTrue(
+            any("自动重试一次" in log["message"] for log in row.get("logs") or []),
+            row.get("logs"),
+        )
+
+    def test_two_failures_in_a_row_stop_the_batch(self) -> None:
+        """连续 2 条出片都失败（重试后仍失败）→ **熔断停批**，写明最近一次失败在哪一环。
+
+        这是失败策略的另一半：一条失败不该拖住整批（跳过去继续），但连续失败通常意味着
+        环境坏了（ComfyUI 挂了 / 中转站欠费），继续跑只会把后面的条目全毁一遍。
         """
+        import asyncio
+
+        from backend import batch_worker
+        from backend.batch_worker import new_batch_state
+
+        state = new_batch_state(["https://v.douyin.com/a", "https://v.douyin.com/b"], [])
+        for item in state["items"]:
+            item["status"] = "confirmed"
+        box = {"state": state}
+
+        async def always_fail(_batch_id, item_id):
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "running"
+            raise RuntimeError("ComfyUI 挂了")
+
+        async def no_prep(*_args, **_kwargs):
+            raise AssertionError("两条都已备好，不该再备料")
+
+        async def scenario() -> None:
+            with patch.object(batch_worker, "batch_store", _BoxStore(box)), patch.object(
+                batch_worker, "_process_confirmed", always_fail
+            ), patch.object(batch_worker, "_run_prep", no_prep):
+                await asyncio.wait_for(batch_worker.run_batch("b1"), timeout=5)
+
+        asyncio.run(scenario())
+        self.assertEqual(box["state"]["status"], "failed")
+        self.assertIn("连续 2 条失败", box["state"]["notice"])
+        self.assertIn("出片", box["state"]["lastFailure"])
+        self.assertEqual([row["status"] for row in box["state"]["items"]], ["failed", "failed"])
+        # 每条都试过两次（首次 + 一次重试）
+        self.assertEqual([row["videoAttempts"] for row in box["state"]["items"]], [1, 1])
+
+    def test_batch_preps_the_next_item_while_one_renders(self) -> None:
+        """用户 2026-09-20：「**第一条备好之后优先出片，出片的过程中一条一条备料**」。
+
+        两条都要钉住：
+          · 出片仍然**全局单链路**（`video_task` 只有一个）；
+          · 出片在跑时 runner **照样备下一条**（`prep_task` 只有一个，并发 1）——
+            这样 GPU 一交付，下一条已经备好，不用再干等 2~5 分钟的备料。
+        """
+        import asyncio
+
+        from backend import batch_worker
+        from backend.batch_worker import new_batch_state
+
+        state = new_batch_state(["https://v.douyin.com/first"], ["https://v.douyin.com/second"])
+        state["items"][0]["status"] = "confirmed"       # 第 1 条已放行、开始出片
+        state["items"][1]["status"] = "pending"        # 第 2 条等着备料
+        box = {"state": state}
+        order: list[str] = []
+        video_started = asyncio.Event()
+        release = asyncio.Event()
+
+        class RunStore:  # 与 run_batch 交互的最小状态存储
+            def get(self, _batch_id):
+                return box["state"]
+
+            def update(self, _batch_id, **changes):
+                box["state"].update(changes)
+                return box["state"]
+
+            def mutate_item(self, _batch_id, item_id, mutator):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        mutator(item)
+                return box["state"]
+
+            def mutate(self, _batch_id, mutator):
+                mutator(box["state"])
+                return box["state"]
+
+            def set_item_milestone(self, _batch_id, item_id, milestone_id, **changes):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        for milestone in item["milestones"]:
+                            if milestone["id"] == milestone_id:
+                                milestone.update(changes)
+                return box["state"]
+
+            def add_item_log(self, _batch_id, item_id, message):
+                for item in box["state"]["items"]:
+                    if item["id"] == item_id:
+                        item.setdefault("logs", []).append({"time": "t", "message": message})
+                return box["state"]
+
+        async def fake_video(_batch_id, item_id):
+            order.append("video-start")
+            video_started.set()
+            await release.wait()
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "completed"
+            order.append("video-end")
+
+        async def fake_prep(_batch_id, item_id):
+            order.append(f"prep-{item_id}")
+            for item in box["state"]["items"]:
+                if item["id"] == item_id:
+                    item["status"] = "awaiting_review"
+
+        async def scenario() -> None:
+            with patch.object(batch_worker, "batch_store", RunStore()), patch.object(
+                batch_worker, "_process_confirmed", fake_video
+            ), patch.object(batch_worker, "_run_prep", fake_prep):
+                runner = asyncio.create_task(batch_worker.run_batch("b1"))
+                await asyncio.wait_for(video_started.wait(), timeout=5)
+                for _ in range(300):
+                    if box["state"]["items"][1]["status"] == "awaiting_review":
+                        break
+                    await asyncio.sleep(0.01)
+                # 出片还在跑（没交付），第 2 条已经备完料
+                self.assertNotIn("video-end", order)
+                self.assertEqual(order[0], "video-start")
+                self.assertEqual(order[1], f"prep-{state['items'][1]['id']}")
+                release.set()
+                await asyncio.wait_for(runner, timeout=5)
+
+        asyncio.run(scenario())
+        # 出片仍是单链路：全局只有一次出片，而且它在备料之前就开始了
+        self.assertEqual(order.count("video-start"), 1)
+        self.assertEqual(order.count("video-end"), 1)
+
+    def test_batch_strictly_runs_one_video_at_a_time(self) -> None:
+        """出片**永远是单链路**：源码级钉子（备料可以并行，出片不行）。"""
         import inspect
 
         from backend import batch_worker
 
         source = inspect.getsource(batch_worker.run_batch)
-        self.assertIn("item = None if video_task is not None else _next_work(state)", source)
-        # 「同时正在备料」这条并行提示必须消失（它只在并行时才可能出现）
-        self.assertNotIn("同时正在备料第", source)
-        # 出片仍然走后台任务（暂停/取消/换代要能在出片期间响应），只是不再并行备料
         self.assertIn("asyncio.create_task(_process_confirmed", source)
+        self.assertIn("prep_task: asyncio.Task | None = None", source)
+        self.assertIn("_next_work(state, allow_confirmed=False)", source)
+        self.assertIn("_next_confirmed(state)", source)
+        # 「出片在跑就什么都不挑」那版已经被 2026-09-20 的口径取代
+        self.assertNotIn("item = None if video_task is not None else _next_work(state)", source)
+        # 备料任务也留强引用（否则可能在跑的过程中被 GC）
+        self.assertIn("_PREP_TASKS.add(task)", source)
 
     def test_batch_publish_folder_completeness_is_checked_on_restart(self) -> None:
         """发布成品（人物图 + 两张封面）必须能查、缺了能补（2026-09-16 用户要求）。
