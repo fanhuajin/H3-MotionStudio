@@ -2452,6 +2452,37 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertTrue(prompt.rstrip().endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
 
+    def test_image_prompts_forbid_blurry_hands(self) -> None:
+        """2026-09-20 用户：「生成的图片有的手会模糊 禁止模糊」。
+
+        实测根因两条（013 人物图 + 它自己的 `抽帧.jpg` 对比）：① 自动出图走的是精简模板
+        （`COMPACT_IMAGE_PROMPT`），**一个字都没提清晰度** —— 长提示词文件里的【禁止虚化】
+        只作用于「仅复制提示词 / 下载素材包」那条手工入口；② 抽帧里手正在挥、本身就是糊的，
+        精简模板又写着「以图像-1 为唯一基准」，模型就把那层运动模糊照抄进了成图。
+
+        所以口径必须写进**自动出图那一份**，并明确「不要照搬参考图的模糊」——
+        光写「禁止虚化」挡不住第②条（模型会认为模糊本来就来自参考图、理应保留）。
+        """
+        block = batch_ai.SHARPNESS_BLOCK
+        self.assertIn("禁止景深虚化/浅景深把手糊掉", block)
+        self.assertIn("不要照搬那份模糊", block)
+        self.assertIn("宁可手不入镜", block)
+        for kind in ("dance", "singing"):
+            prompt = batch_ai.compose_image_prompt(kind)
+            self.assertIn("【禁止模糊 · 硬要求", prompt)
+            self.assertIn("不要照搬那份模糊", prompt)
+            # 仍然必须是精简模板（长提示词会把硬要求淹掉，别借这次改动把它拼回去）
+            self.assertLess(len(prompt), 2000)
+            # 清晰度块在身份块之前（脸仍然排在最后）
+            self.assertLess(
+                prompt.index("【禁止模糊 · 硬要求"),
+                prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
+            )
+        # 口径指纹要跟着清晰度块一起变（否则自检会误判「线上已是最新」）
+        local = batch_ai.compliance_fingerprint()
+        with patch.object(batch_ai, "SHARPNESS_BLOCK", block + "\n再清楚一点"):
+            self.assertNotEqual(batch_ai.compliance_fingerprint(), local)
+
     def test_compliance_allows_changing_the_outfit_when_the_source_is_racy(self) -> None:
         """源头造型擦边时**允许换款式**——用户 2026-09-20 取消了早期那条硬约束。
 

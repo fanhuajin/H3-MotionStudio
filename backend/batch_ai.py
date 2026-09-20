@@ -30,6 +30,23 @@ COPY_SCHEMA = Path(__file__).with_name("batch_copy_schema.json")
 # `歌曲生成人物.txt` 里的字面占位符；出图前必须替换成真实歌名。
 SONG_PLACEHOLDER = "《歌曲名》"
 
+# 清晰度（禁止模糊）：用户 2026-09-20「生成的图片有的手会模糊 禁止模糊」。
+# 与「手部结构」那条一样**只做提示词约束、不加自动判据**（结构判据在三个视觉模型上都不成立，
+# 见下面 `judge_compliance` 之前那段标定记录）；但「模糊」比结构多两个具体成因，必须写死：
+#   ① 模型爱用浅景深/大光圈让人物落在焦外，手最先被糊掉（长提示词里有【禁止虚化】，可**自动出图
+#      那条精简模板里一个字都没有** —— 这就是"有的手会模糊"的主因）；
+#   ② 图一（抽帧）里手正在运动、本身就是糊的，模型会把这层模糊**原样抄进成图**
+#      （跳舞抽帧几乎必有一只手在动），所以要显式写明"不要照搬参考图的模糊"。
+SHARPNESS_BLOCK = (
+    "\n\n【禁止模糊 · 硬要求】整个人物必须全部落在清晰焦平面内：脸、头发、肩膀、手臂、"
+    "双手、每根手指与指甲都要锐利清晰，能看清指节与指甲边缘。"
+    "禁止景深虚化/浅景深把手糊掉，禁止运动模糊、禁止局部模糊、"
+    "禁止把手指画成涂抹状或雾状；背景也不要重度虚化。"
+    "**参考图里的手若是模糊的（运动模糊/失焦），不要照搬那份模糊**，"
+    "要按清晰锐利的正常手重画；实在画不清晰就把手势改简单（自然垂放或轻放身侧），"
+    "或干脆让手不入镜——宁可手不入镜，也不许出现模糊的手。"
+)
+
 # 出片可用性：这张图不是给人看的成品海报，而是喂给 ComfyUI 做动作迁移/图生视频的
 # 参考图，背景越简洁、轮廓越稳定，成片越不容易崩。
 VIDEO_READY_BLOCK = (
@@ -44,6 +61,7 @@ VIDEO_READY_BLOCK = (
     "手部出现任何结构错误都算不合格（用户 2026-09-19：「手可以入镜 不过不能出现问题」）。"
     "绝不允许手、头发或道具遮挡面部与嘴部。"
     "脸、眼睛、嘴部与下颌线必须清晰锐利，方便后续动作迁移时保持稳定。"
+    "双手与每根手指同样必须锐利清晰，禁止景深虚化、运动模糊或涂抹感把手糊掉。"
 )
 
 # 图片合规：只按小红书「过度裸露」规则原文的三小条判。2026-09-20 小红书把账号判成
@@ -397,7 +415,7 @@ def compose_prompt(kind: str, style_source: str = "video", song_name: str = "") 
 COMPACT_IMAGE_PROMPT = """以图像-1（源视频抽帧）为唯一的**场景、背景、灯光、构图、发型与妆容**基准。
 图像-2 是**唯一的人物身份来源**：脸型、五官比例、眼睛、眼距、眉毛、鼻子、嘴唇、面颊、下颌线、
 肤色必须与图像-2 完全一致，能一眼认出是同一个人；禁止混入图像-1 的脸，禁止融合两张脸。
-{compliance}
+{compliance}{sharpness}
 【构图规格 · 按用户的构图参考图实测】{composition}。必须严格按这组比例构图。
 
 【出片可用性】背景简洁有纵深，不要碎钻闪光、散景光点、密集装饰或路人；肩、手臂、躯干轮廓清晰稳定，
@@ -415,9 +433,12 @@ def compliance_fingerprint() -> str:
     探针**跟着措辞走**，改一次口径就失效一次。
 
     指纹直接跟着三处源头正文走（出图要求 / 出图后自检 / 精简模板），口径一改指纹必变，
-    不存在"改了探针忘了改提示词"这一层。
+    不存在"改了探针忘了改提示词"这一层。2026-09-20 追加「禁止模糊」后，清晰度块
+    （`SHARPNESS_BLOCK`）也一起进指纹。
     """
-    payload = "\n".join((PLATFORM_SAFE_BLOCK, COMPLIANCE_JUDGE_INSTRUCTION, COMPACT_IMAGE_PROMPT))
+    payload = "\n".join(
+        (PLATFORM_SAFE_BLOCK, SHARPNESS_BLOCK, COMPLIANCE_JUDGE_INSTRUCTION, COMPACT_IMAGE_PROMPT)
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -444,6 +465,7 @@ def compose_image_prompt(
     ) or ""
     prompt = COMPACT_IMAGE_PROMPT.format(
         compliance=PLATFORM_SAFE_BLOCK.strip(),
+        sharpness=SHARPNESS_BLOCK.strip(),
         composition=composition,
         song="",
         feedback="",

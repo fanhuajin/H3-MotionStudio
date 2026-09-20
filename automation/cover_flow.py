@@ -22,13 +22,21 @@ COVER_COMPLIANCE_RULE = (
     "人物的服装沿用人物图，不要露出事业线/乳沟，不要透视或裸色到像没穿衣服，"
     "不要紧身到凸点这类轮廓线突出。"
 )
+# 2026-09-20 用户：「生成的图片有的手会模糊 禁止模糊」——封面这条路上原来没有清晰度要求。
+COVER_SHARPNESS_RULE = (
+    "整幅人物都在清晰焦平面内：脸、头发、双手与每根手指都必须锐利清晰，"
+    "禁止景深虚化/浅景深糊掉手，禁止运动模糊、局部模糊与涂抹感；参考图里的手若是模糊的，"
+    "不要照搬那份模糊，要重画成清晰的手。"
+)
 COVER_TASKS = {
     "bilibili_4x3": "请根据这份发布文案和人物图，生成一张 4:3 横版封面图。"
                     "不要添加任何平台的 Logo、水印、角标或文字（标题和简介本身除外）。"
-                    + COVER_COMPLIANCE_RULE,
+                    + COVER_COMPLIANCE_RULE
+                    + COVER_SHARPNESS_RULE,
     "douyin_3x4": "请根据这份发布文案和人物图，生成一张 3:4 竖版封面图。"
                   "不要添加任何平台的 Logo、水印、角标或文字（标题和简介本身除外）。"
-                  + COVER_COMPLIANCE_RULE,
+                  + COVER_COMPLIANCE_RULE
+                  + COVER_SHARPNESS_RULE,
 }
 
 

@@ -11,6 +11,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from backend import batch_ai
+from backend import chatgpt_image
 from backend import image_workbench as workbench
 
 
@@ -250,6 +251,28 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("手部硬要求", cover)
         self.assertIn("五指分明", cover)
         self.assertIn("不要自行设计新手势", cover)
+
+    def test_prompts_forbid_blurry_hands(self) -> None:
+        """2026-09-20 用户：「生成的图片有的手会模糊 禁止模糊」。
+
+        手工入口读的是**用户桌面那份长提示词**（存在就优先），所以这条约束也必须写在
+        `prompt()` 的代码里；封面那条路（`_generate_cover`）同样要带，否则封面又会照抄
+        人物图/抽帧里的运动模糊。注意要和「不许照搬参考图的模糊」一起写：
+        只说「禁止虚化」挡不住"参考图本身就是糊的"这一路。
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
+            person = workbench.prompt(folder, "person", "dance")
+            cover = workbench.prompt(folder, "douyin", "dance")
+        self.assertIn("禁止景深虚化", person)
+        self.assertIn("不要照搬", person)
+        self.assertIn("禁止模糊", cover)
+        self.assertIn("不要照搬", cover)
+        # 封面这条 CDP 链路（桌面端出封面）也要带
+        self.assertIn("禁止模糊", chatgpt_image.COVER_SHARPNESS_RULE)
+        for _tag, instruction, _name in chatgpt_image.COVER_TASKS:
+            self.assertIn(chatgpt_image.COVER_SHARPNESS_RULE, instruction)
 
     def test_manual_prompts_carry_the_outfit_compliance_rule(self) -> None:
         """手工入口（复制提示词 / 素材包）也必须带**过度裸露**那三条，且按平台原文豁免吊带/露肩。
