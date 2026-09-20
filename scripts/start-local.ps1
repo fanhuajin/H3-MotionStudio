@@ -62,6 +62,17 @@ function Test-ServiceReady {
     }
 }
 
+# ComfyUI 的健康检查走 `/system_stats`（后端那套 `/api/config` 是它自己的）。
+function Test-ComfyReady {
+    param([string]$Url, [int]$TimeoutSeconds = 3)
+    try {
+        $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec $TimeoutSeconds ($Url + '/system_stats')
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 Write-Host ''
 Write-Host '============================================'
 Write-Host '   H3 影动高清工作台 - 正在启动'
@@ -111,21 +122,33 @@ if ($servicePort -ne 15111) {
 if ($env:H3_COMFY_URL) {
     Write-Host ('ComfyUI 使用已配置的地址：' + $env:H3_COMFY_URL) -ForegroundColor DarkGray
 } else {
+    # ① **已经在跑就沿用它**：ComfyUI 常驻时端口当然"绑不上"，那是它在监听，不是被系统保留。
+    #    2026-09-20 实测事故：后端重启时 ComfyUI 正在渲染，这里误判成「15188 不可用」退回 18188，
+    #    把 H3_COMFY_URL 指到一个没人监听的端口 → 后端看不见正在跑的 prompt，重启恢复逻辑
+    #    只能把那条渲染标成「中断」（白跑一条）。所以先问健康、再谈绑端口。
     $comfyPort = 0
     $comfyFailed = @()
     foreach ($port in @(15188, 18188)) {
-        $probe = Test-PortBind -Port $port
-        if ($probe.Ok) { $comfyPort = $port; break }
-        $comfyFailed += (Format-BindFailure -Probe $probe)
+        if (Test-ComfyReady -Url ('http://127.0.0.1:' + $port)) { $comfyPort = $port; break }
     }
-    if ($comfyPort -eq 0) {
-        Write-Host '警告：15188 与 18188 都无法绑定，ComfyUI 可能起不来。' -ForegroundColor Yellow
-        foreach ($line in $comfyFailed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
-    } else {
+    if ($comfyPort -ne 0) {
+        Write-Host ('检测到 ComfyUI 已在运行（127.0.0.1:' + $comfyPort + '），沿用这个端口。') -ForegroundColor DarkGray
         $env:H3_COMFY_URL = 'http://127.0.0.1:' + $comfyPort
-        if ($comfyPort -ne 15188) {
-            Write-Host ('15188 不可用，ComfyUI 改用 ' + $comfyPort + '。') -ForegroundColor Yellow
+    } else {
+        foreach ($port in @(15188, 18188)) {
+            $probe = Test-PortBind -Port $port
+            if ($probe.Ok) { $comfyPort = $port; break }
+            $comfyFailed += (Format-BindFailure -Probe $probe)
+        }
+        if ($comfyPort -eq 0) {
+            Write-Host '警告：15188 与 18188 都无法绑定，ComfyUI 可能起不来。' -ForegroundColor Yellow
             foreach ($line in $comfyFailed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
+        } else {
+            $env:H3_COMFY_URL = 'http://127.0.0.1:' + $comfyPort
+            if ($comfyPort -ne 15188) {
+                Write-Host ('15188 不可用，ComfyUI 改用 ' + $comfyPort + '。') -ForegroundColor Yellow
+                foreach ($line in $comfyFailed) { Write-Host ('  - ' + $line) -ForegroundColor DarkGray }
+            }
         }
     }
 }
