@@ -394,20 +394,30 @@ async def generate_person_image(
     on_progress: ProgressCallback | None = None,
     min_similarity: int = PERSON_MIN_SIMILARITY,
     max_attempts: int = PERSON_MAX_ATTEMPTS,
+    compliance: dict[str, Any] | None = None,
 ) -> tuple[Path, int]:
     """出人物图并**自带身份自检**：不够门槛就重做，最后留下分数最高的那张。
 
     用户 2026-09-19：「人物相似度 必须70%以上」。批量备料（全自动链路）与 `/images`
     页面的「生成/重新生成这一步」以前各写一份循环，现在共用这一份，行为不会跑偏。
 
-    返回 `(output_path, 相似度)`；**判据本身失败时**（视觉端点不可用等）不重试、不卡链路，
-    直接收下当次结果并返回 -1 —— 自检只是质量门槛，不是出片前提。
+    2026-09-20 追加**着装合规自检**（小红书把账号判成「敏感部位裸露凸显、性诱惑内容」之后）：
+    每一张生成图都过一次 `batch_ai.judge_compliance`，命中暴露服装/紧身勾勒/性暗示姿态就
+    继续重做；**优先保留合规且分数最高的那张**——如果所有尝试都不合规，仍然收下分数最高的
+    那张（自检是质量门槛，不是出片前提，绝不能把整条链路卡死在这儿）。判据本身失败按合规放行。
+
+    可选 `compliance` 是调用方传进来的 dict，函数会写入 `compliant` / `issues`，供页面显示。
+    返回 `(output_path, 相似度)`；判据本身失败时返回 -1。
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     work_dir = output_path.parent
     best_bytes: bytes | None = None
     best_score = -1
+    best_compliant: bool | None = None
+    best_issues: list[str] = []
+    last_compliant: bool | None = None
+    last_issues: list[str] = []
     for attempt in range(1, max(1, max_attempts) + 1):
         candidate = work_dir / f"{output_path.stem}_attempt{attempt}{output_path.suffix}"
         await generate_candidate_image(
@@ -425,15 +435,55 @@ async def generate_person_image(
             score = max(0, min(100, int(result.get("similarity") or 0)))
         except Exception:  # noqa: BLE001 - 自检失败不该把出图判失败
             candidate.replace(output_path)
+            if compliance is not None:
+                compliance.update({"compliant": None, "issues": []})
             return output_path, -1
-        if best_bytes is None or score > best_score:
+        try:
+            compliant, issues = await judge_compliance_safe(candidate)
+        except Exception:  # noqa: BLE001 - 自检绝不能把出图判失败（判据的错不是图的错）
+            compliant, issues = True, []
+        last_compliant, last_issues = compliant, issues
+        # 选图口径：合规优先，其次相似度。`best_compliant is None` 表示还没选过任何一张。
+        better = (
+            best_bytes is None
+            or (compliant and not best_compliant)
+            or (compliant == best_compliant and score > best_score)
+        )
+        if better:
             best_bytes = candidate.read_bytes()
             best_score = score
+            best_compliant = compliant
+            best_issues = issues
         candidate.unlink(missing_ok=True)
-        if score >= min_similarity:
+        if score >= min_similarity and compliant:
             break
     output_path.write_bytes(best_bytes or b"")
+    if compliance is not None:
+        # 出图循环跑满仍然不合规时，页面要能看到原因（保留最后一张的判据结果更贴近现状）
+        compliance.update(
+            {
+                "compliant": best_compliant,
+                "issues": best_issues,
+                "last_compliant": last_compliant,
+                "last_issues": last_issues,
+            }
+        )
     return output_path, max(0, best_score)
+
+
+async def judge_compliance_safe(candidate: Path) -> tuple[bool, list[str]]:
+    """着装合规自检：**判据失败按合规放行**（自检只是质量门槛，不能卡住出图链路）。
+
+    单独抽成模块级函数是为了单测能直接替换掉它（不打真网络）。
+    """
+    from . import batch_ai
+
+    try:
+        result = await batch_ai.judge_compliance(candidate)
+    except Exception:  # noqa: BLE001
+        return True, []
+    issues = [str(item) for item in (result.get("issues") or [])]
+    return bool(result.get("compliant", True)), issues
 
 
 async def generate_single_edit(

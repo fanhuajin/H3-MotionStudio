@@ -1585,6 +1585,9 @@ async def _prepare_review_work(
             else:
                 # 人物图**自带身份自检**：相似度 <70 自动重做（最多 3 次），最后留分数最高的
                 # 那张（用户 2026-09-19：「人物相似度 必须70%以上」）。与 /images 页面同一条实现。
+                # 2026-09-20 起这条实现里还有**着装合规自检**（不合格继续重做，见
+                # `batch_image.judge_compliance_safe`），结论记进条目日志。
+                compliance_report: dict[str, object] = {}
                 _, similarity = await batch_image.generate_person_image(
                     scene_image=scene,
                     identity_image=IDENTITY_PATH,
@@ -1592,6 +1595,7 @@ async def _prepare_review_work(
                     ratio=ratio,
                     output_path=target_image,
                     on_progress=report,
+                    compliance=compliance_report,
                 )
                 spent = int(time.monotonic() - image_started)
                 if similarity >= 0:
@@ -1604,6 +1608,16 @@ async def _prepare_review_work(
                     batch_store.add_item_log(
                         batch_id, item_id,
                         f"候选人物图已生成（用时 {spent} 秒）；身份自检这次没跑成，不影响出片。",
+                    )
+                if compliance_report.get("compliant") is False:
+                    issues = "、".join(
+                        str(item) for item in (compliance_report.get("issues") or [])[:3]
+                    ) or "疑似擦边"
+                    batch_store.add_item_log(
+                        batch_id, item_id,
+                        f"⚠️ 着装合规自检未通过（{issues}）：重做 {batch_image.PERSON_MAX_ATTEMPTS} 次"
+                        "仍不合规，已先采用这张。建议换一个源视频，或在 /images 页面对这条"
+                        "点「重新生成这一步」。",
                     )
             image_path = target_image
         except asyncio.CancelledError:

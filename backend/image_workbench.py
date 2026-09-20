@@ -33,6 +33,9 @@ PERSON_MAX_ATTEMPTS = 3
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 WATCHES: dict[str, dict[str, Any]] = {}
 AUTOMATIONS: dict[str, dict[str, Any]] = {}
+# 人物图合规自检的一句话结论（按作品目录 id 暂存，`run_automatic` 收尾时拼进状态消息）。
+# 不放进 AUTOMATIONS 是因为那条消息每 2 秒被页面读一次，混进状态里会互相覆盖。
+_PERSON_NOTES: dict[str, str] = {}
 _AUTO_LOCK = asyncio.Lock()
 
 
@@ -177,6 +180,12 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
 - 皮肤保留真实纹理，避免塑料感、过度磨皮和明显 AI 味；头发、牙齿、下巴边缘自然。
 - 手可以入镜，但必须清晰、结构正确、五指自然，禁止模糊、粘连、多指、少指。
 - 背景必须可用于视频延展：结构稳定、不过度虚化、不堆叠碎钻光点或密集装饰。
+- **着装必须端庄合规（发布级硬要求）**：禁止吊带、抹胸、露肩、一字领、深 V、低胸、露背、
+  露脐、镂空、透视、蕾丝/薄纱暴露款、紧身到勾勒胸部或腰臀曲线、超短裙、超短裤、网袜；
+  领口不得低于锁骨下方约 5 厘米，肩部与胸口必须被衣物完整覆盖，裙摆与裤长及膝或过膝。
+  这一条**优先于「沿用图一的服饰风格」**：图一若暴露，就换成同一气质但端庄的款式。
+- **姿态不得有性暗示**：禁止摆胯扭胯、腰部波浪、手抚胸口/腰侧/大腿、咬唇、回眸挑逗、
+  跪姿、趴姿；画面下边缘落在胸线以上，不要低角度仰拍或强调胸部与腰部曲线。
 - 不要文字、Logo、水印、边框。输出单张成图。""".strip()
     # 画幅话术只写比例、不写平台名（用户 2026-09-20：封面多平台复用，提示词里出现
     # 「B站」/「抖音」会让模型把对应平台的 logo 画进封面）。
@@ -194,7 +203,12 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
 - 人物的姿势与手势**沿用参考图**，不要自行设计新手势（不要比心、不要剪刀手、不要指尖相触）。
 - 手可以入镜，但手指必须结构完全正确：五指分明、数量正确、手指不交叉、不打结、不粘连，
   指节弯曲方向与指甲朝向自然；画不准就把手改成简单自然的姿势（自然垂放或轻放身侧）。
-- 手部出现任何结构错误都算不合格，必须重画到正确为止。""".strip()
+- 手部出现任何结构错误都算不合格，必须重画到正确为止。
+
+【平台合规 · 着装与姿态（发布级硬要求）】
+- 服装与姿态**沿用参考图（人物图已经过合规自检）**，不要改得更暴露、不要加低胸或露肩、
+  不要强调胸部与腰臀曲线、不要低角度取景；封面不得出现吊带/抹胸/深 V/露沟/网袜/超短裙。
+- 姿态干净健康，禁止摆胯扭胯、手抚胸口或大腿、咬唇、回眸挑逗。""".strip()
 
 
 def material_zip(folder: Path, stage: str, kind: str) -> bytes:
@@ -376,6 +390,20 @@ async def _hands_verdict(candidate: Path) -> tuple[bool, int]:
     return bool(result.get("hands_ok")), len(problems)
 
 
+def _compliance_note(report: dict[str, Any]) -> str:
+    """把合规自检结果变成一句给用户看的话（拼进 AUTOMATIONS 的收尾消息）。"""
+    compliant = report.get("compliant")
+    if compliant is None:
+        return ""
+    if compliant:
+        return "着装合规自检已通过"
+    issues = "、".join(str(item) for item in (report.get("issues") or [])[:3]) or "疑似擦边"
+    return (
+        f"⚠️ 着装合规自检未通过（{issues}）：本次所有尝试都不合规，"
+        "建议点「重新生成这一步」，或换一个源视频"
+    )
+
+
 async def _generate_person(folder: Path, kind: str) -> int:
     """API 出人物图 + 身份自检：**相似度 <70 就重做**（上限 3 次），**留分数最高的那张**。
 
@@ -395,15 +423,21 @@ async def _generate_person(folder: Path, kind: str) -> int:
     try:
         scene, _ = await batch_image.defocus_reference_face(frame, work)
         candidate = work / "person.png"
-        # 生成 + 身份自检（<70 重做、留最高分）与**批量全自动链路共用同一份实现**：
-        # `batch_image.generate_person_image`，两边的行为不会跑偏。
+        # 生成 + 身份自检（<70 重做、留最高分）+ **着装合规自检**（不合规继续重做）与
+        # **批量全自动链路共用同一份实现**：`batch_image.generate_person_image`，
+        # 两边的行为不会跑偏。合规结论写进状态消息，页面能看到原因。
+        report: dict[str, Any] = {}
         _, similarity = await batch_image.generate_person_image(
             scene_image=scene,
             identity_image=IDENTITY_PATH,
             prompt=person_prompt(folder, kind),
             ratio=ratio,
             output_path=candidate,
+            compliance=report,
         )
+        note = _compliance_note(report)
+        if note:
+            _PERSON_NOTES[_folder_id(folder)] = note
         save_upload(folder, "person", candidate.read_bytes(), kind)
         return similarity
     finally:
@@ -480,6 +514,9 @@ async def run_automatic(folder_id: str, *, force: bool = False,
             done = "人物图与封面已自动补齐" if not stage else "已完成生成"
             if stage in (None, "person") and person_score >= 0:
                 done += f"（人物图相似度 {person_score}/100）"
+            note = _PERSON_NOTES.pop(folder_id, "")
+            if note:
+                done += f"；{note}"
             _set_auto(folder_id, status="completed", stage="done", message=done, kind=kind)
         except Exception as exc:  # noqa: BLE001 - status is surfaced to the page
             _set_auto(folder_id, status="failed", message=str(exc), kind=kind)
