@@ -107,7 +107,7 @@ class ImageWorkbenchTests(unittest.TestCase):
             self.assertFalse(hasattr(workbench.batch_ai, "judge_hands"))
 
     def test_person_image_prefers_a_compliant_take_over_a_higher_score(self) -> None:
-        """着装合规自检：第一张 80 分但擦边、第二张 75 分合规 → 必须留合规那张。"""
+        """着装自检：第一张 80 分但衣服暴露、第二张 75 分合规 → 必须留合规那张。"""
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             Image.new("RGB", (1080, 1920)).save(folder / "抽帧.jpg")
@@ -228,11 +228,12 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("五指分明", cover)
         self.assertIn("不要自行设计新手势", cover)
 
-    def test_manual_prompts_carry_the_platform_compliance_rule(self) -> None:
-        """手工入口（复制提示词 / 素材包）也必须带合规约束。
+    def test_manual_prompts_carry_the_outfit_compliance_rule(self) -> None:
+        """手工入口（复制提示词 / 素材包）也必须带**着装**约束，且只管衣服。
 
         `prompt()` 走的是**用户桌面上的 4比3图片.txt / 9比16图片.txt**（存在就优先），
-        所以合规约束只能写在代码里，不能只改仓库里的提示词文件。
+        所以着装约束只能写在代码里，不能只改仓库里的提示词文件。
+        口径 = 用户 2026-09-20：「只要衣服不暴露就可以了；动作都不用处理，流程也不要动」。
         """
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
@@ -241,8 +242,8 @@ class ImageWorkbenchTests(unittest.TestCase):
             cover = workbench.prompt(folder, "douyin", "dance")
         self.assertIn("着装必须端庄合规", person)
         self.assertIn("禁止吊带、抹胸、露肩", person)
-        self.assertIn("姿态不得有性暗示", person)
-        self.assertIn("平台合规 · 着装与姿态", cover)
+        self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内
+        self.assertIn("着装合规 · 发布级硬要求", cover)
         self.assertIn("不要改得更暴露", cover)
 
 
