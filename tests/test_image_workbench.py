@@ -241,11 +241,11 @@ class ImageWorkbenchTests(unittest.TestCase):
             person = workbench.prompt(folder, "person", "dance")
             cover = workbench.prompt(folder, "douyin", "dance")
         self.assertIn("过度裸露（发布级硬要求）", person)
-        self.assertIn("不得露出事业线/乳沟", person)
+        self.assertIn("不得**明显**露出事业线/乳沟", person)
         self.assertIn("吊带、抹胸、一字肩、露肩", person)
         self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内
         self.assertIn("过度裸露 · 发布级硬要求", cover)
-        self.assertIn("不得露出**事业线/乳沟**", cover)
+        self.assertIn("不得**明显**露出**事业线/乳沟**", cover)
 
 
 if __name__ == "__main__":

@@ -2189,7 +2189,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【过度裸露 · 发布级硬要求", prompt)
-            self.assertIn("不得露出事业线", prompt)
+            self.assertIn("不得明显露出事业线", prompt)
+            self.assertIn("只露上胸的一点点", prompt)
             self.assertIn("优先于「沿用图一服装」", prompt)
             # 平台明确不算违规的，必须在提示词里写清"照常保留"，否则模型还是会保守化
             self.assertIn("吊带、抹胸、一字肩、露肩", prompt)
@@ -2215,6 +2216,10 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("吊带、抹胸、一字肩、露肩", text)
         self.assertIn("短裤、长筒袜、网袜", text)
         self.assertIn("只判裸露", text)
+        # 「大面积」这条的阈值写清楚：只露一点点不算（用户 2026-09-20：「感觉露一点不算大面积吧」）
+        self.assertIn("只露出一点点", text)
+        self.assertIn("算合规", text)
+        self.assertIn("明显", text)
 
     def test_dance_preflight_only_touches_the_outfit_not_the_moves(self) -> None:
         """跳舞预审只对**衣服**提要求：动作/运镜照参考视频写，着装暴露也不算 redesign。"""
@@ -2245,7 +2250,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         root = Path(__file__).parents[1] / "backend" / "prompts"
         dance = (root / "9x16跳舞构图.txt").read_text(encoding="utf-8-sig")
         self.assertIn("过度裸露 · 发布级硬要求", dance)
-        self.assertIn("不得露出**事业线（乳沟）**", dance)
+        self.assertIn("不得**明显**露出**事业线（乳沟）**", dance)
+        self.assertIn("只露上胸一点点", dance)
         self.assertIn("都不算违规、必须照常保留", dance)
         self.assertIn("本段只管上面这三条", dance)
         # 构图保持原标定（参考图要能给出下装，收太紧会让动作迁移脑补下装）
