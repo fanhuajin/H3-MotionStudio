@@ -3494,6 +3494,94 @@ class WorkflowPreparationTests(unittest.TestCase):
                 old.mkdir()
                 self.assertEqual(batch_worker.publish_folder(singing), old)
 
+    def test_singing_and_dance_numbers_are_independent(self) -> None:
+        """唱歌与跳舞的编号各自从 001 起（用户 2026-09-20：「唱歌的序号和跳舞的序号都是独立的」）。
+
+        全局 `index` 仍然连续（它管处理顺序、进度、拖动换位），**类型内编号**放在
+        `kindIndex` 里，发布目录名与页面显示用它。
+        """
+        state = new_batch_state(
+            ["https://v.douyin.com/s1", "https://v.douyin.com/s2", "https://v.douyin.com/s3"],
+            ["https://v.douyin.com/d1", "https://v.douyin.com/d2"],
+        )
+        rows = state["items"]
+        self.assertEqual([row["index"] for row in rows], [1, 2, 3, 4, 5])
+        self.assertEqual([row["kindIndex"] for row in rows], [1, 2, 3, 1, 2])
+
+    def test_publish_folders_live_in_kind_subfolders(self) -> None:
+        """发布目录落在 `singing/` `dance/` 两层里，编号用类型内序号，目录名保留中文标签。"""
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                singing = {"id": "s1", "index": 5, "kindIndex": 5, "kind": "singing",
+                           "awemeId": "7000000000000000001", "ai": {"title": "歌"}, "outputs": {}}
+                dance = {"id": "d1", "index": 9, "kindIndex": 1, "kind": "dance",
+                         "awemeId": "7000000000000000002", "ai": {"title": "舞"}, "outputs": {}}
+                sing_path = batch_worker._ideal_publish_folder(singing)
+                dance_path = batch_worker._ideal_publish_folder(dance)
+            self.assertEqual(sing_path.parent.name, "singing")
+            self.assertEqual(dance_path.parent.name, "dance")
+            self.assertTrue(sing_path.name.startswith("005_唱歌_"), sing_path.name)
+            self.assertTrue(dance_path.name.startswith("001_跳舞_"), dance_path.name)
+
+    def test_old_flat_publish_folder_is_reused_and_never_renamed(self) -> None:
+        """老目录（还在扁平发布根里的）继续被复用，而且**不会被改名搬进类型子目录**。
+
+        用户 2026-09-20：「老项目不要用管」—— 老条目的理想名现在算在 `dance/` 下，但那个
+        子目录并不存在；`publish_folder()` 的改名分支必须失败退回复用，而不是偷偷建目录搬走。
+        """
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            aweme = "7684126327402778850"
+            legacy = root / f"016_跳舞_老标题_{aweme}"
+            legacy.mkdir(parents=True)
+            (legacy / "最终成片.mp4").write_bytes(b"video")
+            item = {"id": "d1", "index": 16, "kindIndex": 16, "kind": "dance", "awemeId": aweme,
+                    "ai": {"title": "新标题"}, "outputs": {}}
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                self.assertEqual(batch_worker._existing_publish_folder(item), legacy)
+                self.assertEqual(batch_worker._existing_publish_folder(
+                    {"kind": "dance", "awemeId": aweme}), legacy)   # 子目录优先、扁平根兜底
+                chosen = batch_worker.publish_folder(item)
+                self.assertEqual(chosen, legacy)
+                self.assertTrue(legacy.is_dir(), "老目录必须原样留着")
+                self.assertFalse((root / "dance").exists(), "不该为了改名偷偷建子目录")
+
+    def test_appended_items_continue_each_kind_numbering(self) -> None:
+        """追加条目时，类型内编号接着自己那一类往下排（不从全局序号继承）。"""
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = Path(folder) / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/s1"], ["https://v.douyin.com/d1"])
+                store.create(state)
+                with patch.object(batch_worker, "batch_store", store):
+                    batch_worker.append_batch_items(
+                        state["id"],
+                        ["https://v.douyin.com/s2"],
+                        ["https://v.douyin.com/d2"],
+                    )
+                    batch_worker.append_batch_items(
+                        state["id"], ["https://v.douyin.com/s3"], []
+                    )
+                rows = store.get(state["id"])["items"]
+                self.assertEqual(
+                    [(row["kind"], row["kindIndex"]) for row in rows],
+                    [("singing", 1), ("dance", 1), ("singing", 2), ("dance", 2), ("singing", 3)],
+                )
+                self.assertEqual([row["index"] for row in rows], [1, 2, 3, 4, 5])
+            finally:
+                batch_store_module.DB_PATH = original
+
     def test_publish_folder_is_stable_when_the_title_changes(self) -> None:
         """一个条目只能有一个发布目录：标题变了就改名复用，**不许新建第二个**。
 
@@ -3521,22 +3609,23 @@ class WorkflowPreparationTests(unittest.TestCase):
 
                 item["ai"]["title"] = "第二版标题"
                 second = batch_worker.publish_folder(item)
-                self.assertEqual(second.parent, root)
+                # 2026-09-20 起发布根下多了一层类型子目录：跳舞条目落在 `dance/` 里
+                self.assertEqual(second.parent, root / "dance")
                 self.assertIn("第二版标题", second.name)
                 self.assertFalse(first.exists(), "旧目录应当被改名，而不是留下两个")
                 self.assertTrue((second / "人物图.png").is_file())
                 # 反复调用必须稳定在同一个目录
                 self.assertEqual(batch_worker.publish_folder(item), second)
-                self.assertEqual(len(list(root.iterdir())), 1)
+                self.assertEqual(len(list((root / "dance").iterdir())), 1)
                 # 记录的目录已经不在了（被清掉）→ 复用同作品号已有的目录，**不新建第三个**
                 item["outputs"] = {"folder": str(root / "gone")}
                 item["ai"]["title"] = "第三版标题"
                 self.assertEqual(batch_worker.publish_folder(item), second)
-                self.assertEqual(len(list(root.iterdir())), 1)
+                self.assertEqual(len(list((root / "dance").iterdir())), 1)
                 # 记录的目录在发布根之外（脏数据）→ 也只认发布根里那一个
                 item["outputs"] = {"folder": str(root.parent / "outside")}
                 self.assertEqual(batch_worker.publish_folder(item), second)
-                self.assertEqual(len(list(root.iterdir())), 1)
+                self.assertEqual(len(list((root / "dance").iterdir())), 1)
 
     def test_batch_re_added_work_reuses_the_publish_folder(self) -> None:
         """重新加入队列的**同一条作品**不许再建一套发布目录（用户 2026-09-13）。
@@ -6315,7 +6404,10 @@ class SubtitleStepTests(unittest.TestCase):
                 out = batch_worker.deliver_subtitle_output(
                     "abcdef1234567890", subtitle, source_name="我的演唱视频.mp4")
 
-            self.assertEqual(out, root / "字幕_我的演唱视频_abcdef12" / "最终成片_字幕版.mp4")
+            # 2026-09-20 起字幕目录落在 `singing/` 子目录里（字幕只服务唱歌）
+            self.assertEqual(
+                out, root / "singing" / "字幕_我的演唱视频_abcdef12" / "最终成片_字幕版.mp4"
+            )
             self.assertTrue(out.is_file())
 
     def test_subtitle_job_records_where_it_published(self):

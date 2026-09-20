@@ -138,12 +138,33 @@ def existing_cover(folder: Path, spec: str) -> Path | None:
     return None
 
 
+def publish_folders(root: Path = PUBLISH_ROOT) -> list[Path]:
+    """发布根下的**作品目录**：`singing/` `dance/` 两层（2026-09-20 起）+ 旧的扁平结构兜底。
+
+    用户 2026-09-20：「在发布目录里加一个跳舞文件夹 一个唱歌文件夹各自放对应的内容」。
+    排序固定成"先唱歌、再跳舞、各自按名字"，与批量页/图片工作台一致。
+    """
+    if not root.is_dir():
+        return []
+    rows: list[tuple[int, str, Path]] = []
+    for order, sub in enumerate(("singing", "dance")):
+        base = root / sub
+        if base.is_dir():
+            rows.extend((order, p.name, p) for p in base.iterdir() if p.is_dir())
+    rows.extend(
+        (len(("singing", "dance")), p.name, p)
+        for p in root.iterdir()
+        if p.is_dir() and p.name not in {"singing", "dance"}
+    )
+    return [path for _, _, path in sorted(rows, key=lambda row: (row[0], row[1]))]
+
+
 def collect_folders(root: Path = PUBLISH_ROOT, filters: list[str] | None = None) -> list[Folder]:
     """列出待处理目录；`filters` 里的片段命中目录名即选中（如 003、夜色）。"""
     if not root.is_dir():
         raise SystemExit(f"发布根目录不存在：{root}")
     out: list[Folder] = []
-    for folder in sorted(p for p in root.iterdir() if p.is_dir()):
+    for folder in publish_folders(root):
         if filters and not any(f in folder.name for f in filters):
             continue
         portrait = folder / "人物图.png"

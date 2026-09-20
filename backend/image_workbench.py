@@ -17,7 +17,7 @@ from PIL import Image, ImageOps
 from . import batch_ai, batch_image
 from .batch_store import batch_store
 from .batch_worker import IDENTITY_PATH
-from .settings import BATCH_OUTPUT_ROOT, PROJECT_ROOT
+from .settings import BATCH_OUTPUT_ROOT, PROJECT_ROOT, PUBLISH_KIND_DIRS
 
 
 PERSON_NAME = "人物图.png"
@@ -51,10 +51,20 @@ def resolve_folder(folder_id: str) -> Path:
     except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError("作品编号无效") from exc
     root = BATCH_OUTPUT_ROOT.resolve()
-    folder = (root / name).resolve()
-    if folder.parent != root or not folder.is_dir():
-        raise FileNotFoundError("作品目录不存在")
-    return folder
+    # 作品编号只编码**目录名**（URL 因此稳定），所以要在两层里找：2026-09-20 起作品目录在
+    # `singing/` `dance/` 子目录里，旧的扁平结构也要认。允许的父目录就是根与两个子目录，
+    # 任何解析到别处的编号（`../` 之类）一律拒绝。
+    allowed = {root}
+    candidates = [root / name]
+    for sub in PUBLISH_KIND_DIRS.values():
+        base = root / sub
+        allowed.add(base.resolve())
+        candidates.append(base / name)
+    for candidate in candidates:
+        folder = candidate.resolve()
+        if folder.parent in allowed and folder.is_dir():
+            return folder
+    raise FileNotFoundError("作品目录不存在")
 
 
 def _meta(path: Path | None) -> dict[str, Any] | None:
@@ -116,11 +126,28 @@ def infer_kind(folder: Path) -> str | None:
     return kind if kind in {"singing", "dance"} else None
 
 
-def list_items() -> list[dict[str, Any]]:
+def _publish_folders() -> list[Path]:
+    """发布根下所有**作品目录**：`singing/`、`dance/` 两层，外加旧的扁平结构兜底。
+
+    2026-09-20 用户：「在发布目录里加一个跳舞文件夹 一个唱歌文件夹各自放对应的内容」——
+    `/images` 页的作品列表因此要扫两层。排序固定成"先唱歌、再跳舞、各自按编号"，
+    和批量页的直觉一致（老结构里没有子目录，直接按名字排）。
+    """
     if not BATCH_OUTPUT_ROOT.is_dir():
         return []
+    folders: list[tuple[int, str, Path]] = []
+    for order, sub in enumerate(PUBLISH_KIND_DIRS.values()):
+        base = BATCH_OUTPUT_ROOT / sub
+        if base.is_dir():
+            folders.extend((order, path.name, path) for path in base.iterdir() if path.is_dir())
+    legacy = [(len(PUBLISH_KIND_DIRS), path.name, path)
+              for path in BATCH_OUTPUT_ROOT.iterdir() if path.is_dir()]
+    return [path for _, _, path in sorted(folders + legacy, key=lambda row: (row[0], row[1]))]
+
+
+def list_items() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for folder in sorted((p for p in BATCH_OUTPUT_ROOT.iterdir() if p.is_dir()), key=lambda p: p.name):
+    for folder in _publish_folders():
         copy = _copy_text(folder)
         frame = _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg")
         person = _first(folder, PERSON_NAME)

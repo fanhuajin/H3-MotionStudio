@@ -13,6 +13,21 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 BATCH_OUTPUT_ROOT = Path(
     os.getenv("H3_BATCH_OUTPUT", r"E:\AI_Exports\H3-MotionStudio\发布成品")
 )
+# 发布根下的**类型子目录**（2026-09-20 用户：「在发布目录里加一个跳舞文件夹 一个唱歌文件夹
+# 各自放对应的内容」→「子目录名就叫可以叫英文」）：唱歌 → `singing/`、跳舞 → `dance/`。
+# 根目录本身仍然保留 `4比3图片.txt` / `9比16图片.txt` / `晚柠.png`（手工出图脚本在读，见
+# `scripts/make_publish_assets_via_cdp.py`），所以只**加一层**、不搬任何东西。
+# ⚠️ 子目录名只用英文：中文名会让剪映/ffmpeg 那几条链路的路径处理更容易出编码问题。
+PUBLISH_KIND_DIRS = {"singing": "singing", "dance": "dance"}
+
+
+def publish_subdir(kind: str) -> str:
+    """某类型作品在发布根下的子目录名；类型未知返回空串（= 直接用发布根，历史条目兜底）。
+
+    只在**新建目录**与**扫描目录**时用；老目录（在扁平发布根里）一律靠调用方的
+    "子目录优先、扁平根兜底"逻辑复用，绝不改名/搬移（用户 2026-09-20：「老项目不要用管」）。
+    """
+    return PUBLISH_KIND_DIRS.get(str(kind or "").strip(), "")
 # **默认端口都挪到 15000 以上**（用户 2026-09-19：「直接帮我改掉 不要用这些端口了 改成系统不要的」）。
 # 原因：本机 TCP 动态端口范围被改成 1024~15000，Hyper-V/WSL 的 NAT 会在这段里按 100 个一组
 # 预留端口，8111/8188 正好被圈进去（uvicorn/comfyui 报 winerror 10013 —— 是"拒绝访问"，

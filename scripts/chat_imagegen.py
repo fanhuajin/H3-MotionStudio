@@ -74,6 +74,7 @@ from scripts.cover_common import (  # noqa: E402
     build_prompt,
     existing_cover,
     parse_copy,
+    publish_folders,
 )
 
 PORT = int(os.getenv("H3_CHATGPT_CDP_PORT", "9444"))
@@ -953,8 +954,8 @@ def folder_for_item(publish_root: Path, item: dict) -> Path | None:
         return Path(recorded)
     aweme = str(item.get("awemeId") or "").strip()
     if aweme.isdigit():
-        for folder in publish_root.iterdir():
-            if folder.is_dir() and folder.name.rsplit("_", 1)[-1] == aweme:
+        for folder in publish_folders(publish_root):
+            if folder.name.rsplit("_", 1)[-1] == aweme:
                 return folder
     return None
 
@@ -973,7 +974,7 @@ def find_next_needed(publish_root: Path, items: list[dict] | None) -> tuple[Path
     只有读不到批量（`items is None`，即 --need-assume-idle）时才退回「按目录名顺序找」。
     """
     if items is None:
-        for folder in sorted(p for p in publish_root.iterdir() if p.is_dir()):
+        for folder in publish_folders(publish_root):
             steps = missing_steps(folder)
             if steps:
                 return folder, steps
@@ -1224,7 +1225,7 @@ def run_work(page, folder: Path, steps: list[str], args) -> str:
 
 
 def do_list() -> None:
-    for folder in sorted(p for p in PUBLISH_ROOT.iterdir() if p.is_dir()):
+    for folder in publish_folders(PUBLISH_ROOT):
         flags = []
         for label, name in (("人物图", PERSON), ("B站", SPECS["bili"][1]), ("抖音", SPECS["douyin"][1])):
             hit = (folder / name).is_file() and (folder / name).stat().st_size >= MIN_VALID_BYTES
@@ -1285,7 +1286,7 @@ def main() -> int:
     if args.need_one:
         folders = []
     elif args.all:
-        folders = sorted(p for p in PUBLISH_ROOT.iterdir() if p.is_dir())
+        folders = publish_folders(PUBLISH_ROOT)
     elif args.dir_name:
         p = Path(args.dir_name)
         folders = [p if p.is_absolute() else PUBLISH_ROOT / p]

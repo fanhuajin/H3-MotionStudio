@@ -119,6 +119,7 @@ from .settings import (
     UPSCALE_MODEL_X4,
     canvas_params,
     normalize_batch_ratio,
+    publish_subdir,
     required_paths,
     singing_canvas_params,
 )
@@ -2423,10 +2424,10 @@ async def create_subtitle_publish_batch():
         "subtitleFailed": 0,
         "subtitleStarted": False,
         "pauseRequested": False,
-        "subtitleSource": str(BATCH_OUTPUT_ROOT),
+        "subtitleSource": str(BATCH_OUTPUT_ROOT / publish_subdir("singing")),
         "subtitleDir": "",
         "subtitleOutPath": "",
-        "subtitleOutDir": str(BATCH_OUTPUT_ROOT),
+        "subtitleOutDir": str(BATCH_OUTPUT_ROOT / publish_subdir("singing")),
         "currentNodeId": None,
         "currentNodeTitle": (
             f"共 {len(queue)} 条唱歌视频待加字幕" if queue else "没有待加字幕的视频"

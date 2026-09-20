@@ -59,7 +59,7 @@ from backend.pipeline import (  # noqa: E402
     media_metadata,
     raise_if_cancelled,
 )
-from backend.settings import BATCH_OUTPUT_ROOT  # noqa: E402
+from backend.settings import BATCH_OUTPUT_ROOT, publish_subdir  # noqa: E402
 from backend.store import now_iso, store, subtitle_milestones  # noqa: E402
 
 _SONG_IN_TITLE = re.compile(r"《([^》]{1,40})》")
@@ -696,12 +696,15 @@ def scan_singing_publish_videos(*, root: Path | None = None) -> list[dict[str, A
 
     返回 `[{folder, source, out, song, aweme_id}]`。歌名优先从批量数据库按作品号取
     （`ai.song_name` 更准），取不到再退回从目录名猜。
+
+    2026-09-20：发布根下多了类型子目录，字幕只服务唱歌 → **默认扫 `singing/`**；
+    显式传 `root=` 的调用（测试/诊断）保持原样，直接扫那一个目录。
     """
-    root = Path(root or BATCH_OUTPUT_ROOT)
-    if not root.is_dir():
+    base = Path(root) if root is not None else (BATCH_OUTPUT_ROOT / publish_subdir("singing"))
+    if not base.is_dir():
         return []
     jobs: list[dict[str, Any]] = []
-    for folder in sorted(root.iterdir(), key=lambda p: p.name):
+    for folder in sorted(base.iterdir(), key=lambda p: p.name):
         if not folder.is_dir():
             continue
         if "唱歌" not in folder.name:

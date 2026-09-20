@@ -52,6 +52,29 @@ class ImageWorkbenchTests(unittest.TestCase):
             self.assertIsNotNone(rows[0]["assets"]["bilibili"])
             self.assertIsNone(rows[0]["assets"]["douyin"])
 
+    def test_singing_and_dance_folders_are_lists_from_their_subfolders(self) -> None:
+        """`/images` 的作品列表要认发布根下 `singing/` `dance/` 两层（2026-09-20 新结构）。"""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for sub, name in (("singing", "001_唱歌_测试_111"), ("dance", "001_跳舞_测试_222")):
+                folder = root / sub / name
+                folder.mkdir(parents=True)
+                (folder / "发布文案.txt").write_text("标题：测试\n简介：测试", encoding="utf-8")
+                Image.new("RGB", (1200, 900)).save(folder / "人物图.png")
+            with patch.object(workbench, "BATCH_OUTPUT_ROOT", root):
+                rows = workbench.list_items()
+                names = [row["folderName"] for row in rows]
+                # 排序：先唱歌、再跳舞；两层都要出现在列表里
+                self.assertEqual(names, ["001_唱歌_测试_111", "001_跳舞_测试_222"])
+                # 子目录里的作品目录仍能被 resolve_folder 打开（编号只编码目录名）
+                folder_id = rows[0]["id"]
+                self.assertEqual(workbench.resolve_folder(folder_id).name, "001_唱歌_测试_111")
+                # 真正往外跑的编号（`../`）必须被拒
+                outside = root.parent / "外面"
+                outside.mkdir()
+                with self.assertRaises(FileNotFoundError):
+                    workbench.resolve_folder(("../外面").encode("utf-8").hex())
+
     def test_cover_is_normalized_to_exact_publish_size(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)

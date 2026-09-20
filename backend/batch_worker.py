@@ -37,6 +37,7 @@ from .settings import (
     env_value,
     full_auto_enabled,
     normalize_batch_ratio,
+    publish_subdir,
 )
 from .store import now_iso, store
 from .video_integrity import truncation_reason
@@ -303,11 +304,24 @@ PUBLISH_COVER_ALIASES = {
 PUBLISH_FRAME_NAME = "抽帧.jpg"
 
 
-def new_item(kind: str, url: str, ratio: str, index: int, created: str) -> dict[str, Any]:
-    """新建一个批次条目。新建批次与「随时追加」共用，保证字段一致。"""
+def new_item(
+    kind: str,
+    url: str,
+    ratio: str,
+    index: int,
+    created: str,
+    kind_index: int = 0,
+) -> dict[str, Any]:
+    """新建一个批次条目。新建批次与「随时追加」共用，保证字段一致。
+
+    `kindIndex`（2026-09-20 用户：「唱歌的序号和跳舞的序号都是独立的」）：**按类型各自编号**，
+    创建时分配、之后永不变（拖动换位也不会改），删除也不回收 —— 发布目录名用它，
+    所以两种类型各自从 001 起。
+    """
     return {
         "id": uuid.uuid4().hex[:12],
         "index": index,
+        "kindIndex": int(kind_index or index),
         "kind": kind,
         "url": url,
         "ratio": ratio,
@@ -332,12 +346,17 @@ def _build_items(
     defaults: dict[str, str],
     start_index: int,
     created: str,
+    kind_starts: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
+    """按顺序建条目：全局 `index` 接着往下排，`kindIndex` **按类型各自接着排**。"""
     items: list[dict[str, Any]] = []
     index = start_index
+    counters = {str(key): int(value) for key, value in (kind_starts or {}).items()}
     for kind, url in rows:
         index += 1
-        items.append(new_item(kind, url, defaults[kind], index, created))
+        number = counters.get(kind, 0) + 1
+        counters[kind] = number
+        items.append(new_item(kind, url, defaults[kind], index, created, number))
     return items
 
 
@@ -439,7 +458,13 @@ def append_batch_items(
         if live + len(fresh) > MAX_BATCH_ITEMS:
             raise ValueError(f"一个批次最多 {MAX_BATCH_ITEMS} 条视频")
         next_index = max((int(item.get("index") or 0) for item in items), default=0)
-        added = _build_items(fresh, defaults, next_index, created)
+        kind_starts: dict[str, int] = {}
+        for item in items:
+            kind = str(item.get("kind") or "")
+            # 老条目没有 kindIndex：拿它的全局 index 当起点，保证新条目的类型编号接着老的不撞号
+            number = int(item.get("kindIndex") or item.get("index") or 0)
+            kind_starts[kind] = max(kind_starts.get(kind, 0), number)
+        added = _build_items(fresh, defaults, next_index, created, kind_starts)
         items.extend(added)
         row["items"] = items
         row["total"] = len(items)
@@ -2450,23 +2475,31 @@ def kind_label(kind: str) -> str:
 
 
 def _ideal_publish_folder(item: dict[str, Any]) -> Path:
-    """发布目录的**理想名字**：`{三位编号}_{唱歌或跳舞}_{歌名或标题}_{作品号}`。
+    """发布目录的**理想名字**：`singing|dance/{三位编号}_{唱歌或跳舞}_{歌名或标题}_{作品号}`。
 
     类型标签（唱歌 / 跳舞）是用户 2026-09-18 的要求（「在对应的标签后面加上唱歌还是跳舞」，
     例：`001_唱歌_夜空中最亮的星_7686514674456574953`）。历史条目类型未知时不拼标签，
     保持旧格式 `{编号}_{标题}_{作品号}`；`_existing_publish_folder` 按作品号后缀认目录，
-    新旧两种格式都能对上，老目录会在下次交付时顺手改名成新格式。
+    新旧两种格式都能对上。
+
+    **2026-09-20 两处新规矩**：
+      ① 发布根下多一层类型子目录（`singing/` `dance/`，用户：「在发布目录里加一个跳舞文件夹
+         一个唱歌文件夹各自放对应的内容」）；
+      ② 编号**按类型各自从 001 起**（用户：「唱歌的序号和跳舞的序号都是独立的」）——优先用
+         `kindIndex`（新建条目时按类型分配、永不变），没有这个字段的老条目继续用全局
+         `index`：老批次的理想名因此一个字都不变，老目录不会被"顺手改名"。
     """
     ai = item.get("ai") or {}
     aweme_id = str(item.get("awemeId") or item.get("id"))
     base_name = _safe_name(str(ai.get("song_name") or ai.get("title") or item.get("title") or "作品"))
     label = kind_label(str(item.get("kind") or ""))
+    number = int(item.get("kindIndex") or item.get("index") or 0)
     stem = (
-        f"{int(item['index']):03d}_{label}_{base_name}_{aweme_id}"
+        f"{number:03d}_{label}_{base_name}_{aweme_id}"
         if label
-        else f"{int(item['index']):03d}_{base_name}_{aweme_id}"
+        else f"{number:03d}_{base_name}_{aweme_id}"
     )
-    return BATCH_OUTPUT_ROOT / stem
+    return BATCH_OUTPUT_ROOT / publish_subdir(str(item.get("kind") or "")) / stem
 
 
 def locked_publish_copy(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -2523,6 +2556,21 @@ def _adopt_published_image(
     return adopted
 
 
+def _publish_scan_roots(kind: str) -> list[Path]:
+    """找目录时要扫的发布根：**类型子目录优先，然后是旧的扁平发布根**。
+
+    2026-09-20 起发布根下多了 `singing/` `dance/` 两层；老目录还在扁平根里。用户
+    2026-09-20 说「老项目不要用管」，所以这里只**复用**、绝不改名/搬移 —— 等他把老内容
+    清空，扁平根那条自然就没人走了。
+    """
+    roots: list[Path] = []
+    sub = publish_subdir(kind)
+    if sub:
+        roots.append(BATCH_OUTPUT_ROOT / sub)
+    roots.append(BATCH_OUTPUT_ROOT)
+    return roots
+
+
 def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
     """发布根里**已经属于同一条作品**的目录（之前批次留下的）。
 
@@ -2533,11 +2581,15 @@ def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
     aweme = str(item.get("awemeId") or "").strip()
     if not aweme or not BATCH_OUTPUT_ROOT.is_dir():
         return None
-    candidates = [
-        path
-        for path in BATCH_OUTPUT_ROOT.iterdir()
-        if path.is_dir() and path.name.endswith(f"_{aweme}")
-    ]
+    candidates: list[Path] = []
+    for root in _publish_scan_roots(str(item.get("kind") or "")):
+        if not root.is_dir():
+            continue
+        candidates.extend(
+            path
+            for path in root.iterdir()
+            if path.is_dir() and path.name.endswith(f"_{aweme}")
+        )
     if not candidates:
         return None
     finished = [path for path in candidates if (path / "最终成片.mp4").is_file()]
@@ -2632,16 +2684,17 @@ def subtitle_publish_folder(job_id: str, *, song: str = "", source_name: str = "
     """
     stem = Path(str(source_name or "")).stem
     base_name = _safe_name(str(song or "").strip() or stem or "上传视频", fallback="上传视频")
-    return BATCH_OUTPUT_ROOT / f"字幕_{base_name}_{str(job_id)[:8]}"
+    # 字幕只服务唱歌（跳舞没有歌词字幕这一步），所以落在 `singing/` 子目录里
+    return BATCH_OUTPUT_ROOT / publish_subdir("singing") / f"字幕_{base_name}_{str(job_id)[:8]}"
 
 
 def publish_folder_for_uploaded_video(source_video: Path | None) -> Path | None:
     """Locate an uploaded copy's original publish folder by exact file content.
 
     Browsers intentionally expose only the upload filename, not its original local path.  Most
-    selected files here are an existing ``发布成品/.../最终成片.mp4``.  Match size first and
-    SHA-256 only the small candidate set so the subtitle returns to that exact folder instead of
-    creating an unrelated ``字幕_...`` directory.
+    selected files here are an existing ``发布成品/{singing,dance}/.../最终成片.mp4``.  Match size
+    first and SHA-256 only the small candidate set so the subtitle returns to that exact folder
+    instead of creating an unrelated ``字幕_...`` directory. 老结构的扁平目录也一起认。
     """
     source = Path(source_video) if source_video else Path()
     if not source.is_file() or not BATCH_OUTPUT_ROOT.is_dir():
@@ -2656,7 +2709,15 @@ def publish_folder_for_uploaded_video(source_video: Path | None) -> Path | None:
         return value.hexdigest()
 
     source_hash: str | None = None
-    for candidate in BATCH_OUTPUT_ROOT.glob("*/最终成片.mp4"):
+    patterns = [f"*/最终成片.mp4"]                                  # 旧的扁平结构
+    if publish_subdir("singing"):
+        patterns.insert(0, f"{publish_subdir('singing')}/*/最终成片.mp4")
+    if publish_subdir("dance"):
+        patterns.insert(1, f"{publish_subdir('dance')}/*/最终成片.mp4")
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend(BATCH_OUTPUT_ROOT.glob(pattern))
+    for candidate in candidates:
         try:
             if candidate.stat().st_size != size:
                 continue
