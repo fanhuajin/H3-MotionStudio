@@ -2229,30 +2229,29 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertTrue(prompt.rstrip().endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
 
-    def test_compliance_changes_must_be_minimal_not_a_new_outfit(self) -> None:
-        """着装不合规时**只做最小改动**，不许换款式（用户 2026-09-20 当场否掉了换款式那版）。
+    def test_compliance_allows_changing_the_outfit_when_the_source_is_racy(self) -> None:
+        """源头造型擦边时**允许换款式**——用户 2026-09-20 取消了早期那条硬约束。
 
-        实测教训：第一版写成「换成同一气质但端庄的款式 / 领口改成圆领高领 / 下装换成及膝裙长裤」，
-        模型把 015 的下装画成了**牛仔裤**、整条作品的造型也没了，用户原话否掉：
-        「**太丑了 同款裤子可以长一点 不要换款式 丝袜允许保留**」。
-        所以这一段要同时钉住「**要改什么**」和「**绝不许改什么**」，两半都不能被删。
+        时间线（别再改回去）：① 第一版让模型「换成同一气质但端庄的款式」，模型把 015 下装
+        画成牛仔裤，用户否掉「太丑了 同款裤子可以长一点 不要换款式 丝袜允许保留」→ 于是加了
+        「只做最小改动 / 绝对不要换款式」；② 当天稍晚用户又说这条**可以不要**，明确选择
+        「连『绝对不要换款式』一起去掉」→ 现在恢复成「为了合规可以换款式、换造型」。
+        **但两条平台要求必须留着**：半透蕾丝要垫同色不透明内衬、低胸要把胸口盖住。
         """
         block = batch_ai.PLATFORM_SAFE_BLOCK
-        # 要改的（最小改动清单）
-        self.assertIn("把事业线收住就够了", block)
-        self.assertIn("同款、同色、同材质照旧", block)
-        self.assertIn("长度加长", block)
-        self.assertIn("丝袜可以保留", block)
+        # 允许换款式（不再有那条硬约束，引用用户原话的噪音也一起删掉）
+        self.assertIn("为了合规可以换款式、换造型", block)
+        self.assertNotIn("绝对不要换款式", block)
+        self.assertNotIn("同款、同色、同材质照旧", block)
+        self.assertNotIn("太丑了", block)
+        # 合规本身仍需处理的两点（平台①②）
         self.assertIn("同色、完全不透明", block)
-        # 绝不许做的（换款式 = 变丑，用户否过）
-        self.assertIn("绝对不要换款式", block)
-        self.assertIn("不要换成牛仔裤、长裤、连衣裙", block)
-        self.assertIn("换掉整个款式会变丑", block)
+        self.assertIn("把胸口盖住", block)
         # 自动出图走的是精简模板：长提示词会把这一段淹掉（6628 字 vs 1225 字的实测对照）
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertLess(len(prompt), 2000, "自动出图必须是精简模板")
-            self.assertIn("把事业线收住就够了", prompt)
+            self.assertIn("为了合规可以换款式、换造型", prompt)
 
     def test_compliance_judge_uses_the_platform_rule_verbatim(self) -> None:
         """出图后的自检也必须按平台三小条判，并显式豁免吊带/露肩/露脐（别再误杀 012/017）。"""
