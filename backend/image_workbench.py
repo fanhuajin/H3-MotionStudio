@@ -178,10 +178,13 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
 - 手可以入镜，但必须清晰、结构正确、五指自然，禁止模糊、粘连、多指、少指。
 - 背景必须可用于视频延展：结构稳定、不过度虚化、不堆叠碎钻光点或密集装饰。
 - 不要文字、Logo、水印、边框。输出单张成图。""".strip()
-    platform = "B站 4:3" if stage == "bilibili" else "抖音 3:4"
+    # 画幅话术只写比例、不写平台名（用户 2026-09-20：封面多平台复用，提示词里出现
+    # 「B站」/「抖音」会让模型把对应平台的 logo 画进封面）。
+    ratio = "4:3 横版" if stage == "bilibili" else "3:4 竖版"
     title = _copy_field(copy, "标题") or _title(copy, folder.name)
     introduction = _copy_field(copy, "简介")
-    return f"""参考人物和背景，将标题、简介融入图片生成 {platform} 尺寸封面。
+    return f"""参考人物和背景，将标题、简介融入图片生成 {ratio} 尺寸封面。
+不要添加任何平台的 Logo、水印、角标或文字（标题和简介本身除外）。
 标题：
 {title}
 简介：

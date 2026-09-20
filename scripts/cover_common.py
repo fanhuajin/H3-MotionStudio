@@ -23,8 +23,12 @@ PUBLISH_ROOT = Path(r"E:\AI_Exports\H3-MotionStudio\发布成品")
 MIN_VALID_BYTES = 50 * 1024
 
 # 用户原话（2026-09-16 最终确认）：**只要这几行，不要任何补充要求**
+# 2026-09-20 更新：去掉平台品牌名（「B站」/「抖音」会让模型在图上画对应平台的 logo，
+# 用户多平台发布、一张封面要在 B站/抖音/小红书等各处复用，所以提示词里只留画幅比例，
+# 并显式禁止任何 logo / 水印 / 平台角标）。`{ratio}` 只带画幅话术（4:3 横版 / 3:4 竖版）。
 PROMPT_TEMPLATE = (
-    "参考图片的背景和人物，将标题和简介自然融入图片生成 {platform} 尺寸封面。\n"
+    "参考图片的背景和人物，将标题和简介自然融入图片生成 {ratio} 尺寸封面。\n"
+    "不要添加任何平台的 Logo、水印、角标或文字（标题和简介本身除外）。\n"
     "\n"
     "标题：{title}\n"
     "简介：{intro}"
@@ -50,11 +54,13 @@ class Folder:
         return self.path.name[:3]
 
 
-# 规格：键 -> (平台话术, 标准文件名, 目标像素, 容差, 文件名匹配正则)
+# 规格：键 -> (画幅话术, 标准文件名, 目标像素, 容差, 文件名匹配正则)
+# 画幅话术**只写比例、不写平台名**（用户 2026-09-20：封面要多平台复用，不能带 B站/抖音
+# 字样，否则模型会在图上画对应平台的 logo）。文件名仍保留平台前缀用于区分规格。
 SPECS: dict[str, tuple[str, str, tuple[int, int], int, str]] = {
-    "bili": ("B站 4:3", "B站4x3.png", (1448, 1086), 12, r"^B站4x3.*\.png$"),
+    "bili": ("4:3 横版", "B站4x3.png", (1448, 1086), 12, r"^B站4x3.*\.png$"),
     # 抖音那张要宽松匹配：用户手工改过名（实测出现过「抖音站3x4.png」）
-    "douyin": ("抖音 3:4", "抖音3x4.png", (1086, 1448), 12, r"^抖音.*3x4.*\.png$"),
+    "douyin": ("3:4 竖版", "抖音3x4.png", (1086, 1448), 12, r"^抖音.*3x4.*\.png$"),
 }
 
 
@@ -100,9 +106,13 @@ def parse_copy(copy_path: Path) -> tuple[str, str]:
 
 
 def build_prompt(title: str, intro: str, spec: str) -> str:
-    """提示词 = 用户原话 + 标题 + 简介，不加任何补充要求。"""
-    platform = SPECS[spec][0]
-    text = PROMPT_TEMPLATE.format(platform=platform, title=title, intro=intro)
+    """提示词 = 用户原话 + 标题 + 简介，不加任何补充要求。
+
+    2026-09-20：`spec` 只提供画幅比例话术，不把平台品牌名（B站/抖音）写进提示词，
+    否则模型会在封面上画对应平台的 logo（用户多平台发布，封面不能带 logo）。
+    """
+    ratio = SPECS[spec][0]
+    text = PROMPT_TEMPLATE.format(ratio=ratio, title=title, intro=intro)
     if not intro:
         text = text.replace("\n简介：", "").rstrip()
     return text
