@@ -2139,6 +2139,74 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 跳舞同样受身份约束保护
         self.assertIn("保住图二的脸", batch_ai.compose_image_prompt("dance"))
 
+    def test_platform_compliance_block_is_in_every_image_prompt(self) -> None:
+        """2026-09-20 小红书处罚事故：出图提示词里必须有**着装/姿态合规**硬约束。
+
+        根因：`9x16跳舞构图.txt` 把服装决定权整个交给源视频抽帧、`4x3唱歌构图.txt`
+        甚至写着「如果服装领口较低…不要进一步扩大领口」（等于承认低领合法），
+        全链路一个字都没提平台尺度，于是「吊带/露胸/网袜/摆胯」被原样继承，
+        账号被判「存在多篇涉及敏感部位裸露凸显、包含性诱惑内容的笔记」。
+        """
+        for kind in ("singing", "dance"):
+            prompt = batch_ai.compose_image_prompt(kind)
+            self.assertIn("【平台合规 · 着装与姿态", prompt)
+            self.assertIn("优先于「沿用图一服装」", prompt)
+            self.assertIn("禁止吊带、抹胸、露肩", prompt)
+            self.assertIn("禁止摆胯扭胯", prompt)
+        # 合规块必须在身份块**之前**：脸仍是最后一条（身份优先级最高），
+        # 但合规不允许被「沿用图一服装」或用户的修改意见推翻。
+        prompt = batch_ai.compose_image_prompt("dance", "video", "换成吊带", "both")
+        self.assertLess(
+            prompt.index("【平台合规 · 着装与姿态"),
+            prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
+        )
+        self.assertTrue(prompt.rstrip().endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
+
+    def test_dance_preflight_forbids_skimpy_outfits_and_suggestive_moves(self) -> None:
+        """源视频擦边就直接 redesign；迁移提示词里禁止写暴露服装、性暗示动作与措辞。"""
+        preflight = batch_ai.preflight_prompt(
+            kind="dance", duration=20.0, description="", tags=[]
+        )
+        self.assertIn("着装与姿态是否适合公开平台", preflight)
+        self.assertIn('style_source 返回 "redesign"', preflight)
+        self.assertIn("这三段提示词里禁止出现任何擦边描述", preflight)
+        self.assertIn("不许写摆胯、扭胯、腰部波浪", preflight)
+        self.assertIn("不许出现「性感」「妩媚」「撩人」「纯欲」「暧昧」「火辣」", preflight)
+        # 唱歌链路的动作时间轴同样不许性暗示（实测 013 的 song_mood 是「慵懒性感…暧昧微暖」）
+        from backend.batch_ai import ACTION_RULES
+
+        self.assertIn("动作不得有性暗示", ACTION_RULES)
+
+    def test_copy_and_tags_drop_suggestive_words(self) -> None:
+        """标签/标题里的「性感风」「纯欲风」是平台最容易抓的"自认"证据（实测 015/020）。"""
+        for text in (
+            batch_ai.preflight_prompt(kind="dance", duration=18.0, description="", tags=[]),
+            batch_ai.copy_prompt(kind="dance", song_name="", song_mood="", description="手势舞"),
+        ):
+            self.assertIn("文案与标签的合规红线", text)
+            self.assertIn("纯欲风", text)
+            self.assertIn("心跳/心动/撩/暧昧/性感/妩媚/要命/纯欲/火辣", text)
+
+    def test_composition_spec_keeps_the_camera_above_the_chest(self) -> None:
+        """9:16 原来切到「大腿上部」（胯、腿、短裤网袜全在画面里）→ 2026-09-20 收到腰部以上。"""
+        dance = batch_ai.compose_image_prompt("dance")
+        self.assertIn("腰部以上", dance)
+        self.assertNotIn("大腿上部", dance)
+        singing = batch_ai.compose_image_prompt("singing")
+        self.assertIn("胸线以上", singing)
+        self.assertIn("领口必须端庄", singing)
+
+    def test_source_prompt_files_carry_the_compliance_rule(self) -> None:
+        """两份造型提示词文件也要改：低领那条「不要进一步扩大」是明确允许低领。"""
+        root = Path(__file__).parents[1] / "backend" / "prompts"
+        dance = (root / "9x16跳舞构图.txt").read_text(encoding="utf-8-sig")
+        self.assertIn("着装与姿态合规", dance)
+        self.assertIn("不要保留它的露肤程度", dance)
+        self.assertNotIn("从人物头顶拍摄到腰部附近", dance)
+        singing = (root / "4x3唱歌构图.txt").read_text(encoding="utf-8-sig")
+        self.assertIn("着装合规 · 发布级硬要求", singing)
+        self.assertNotIn("不要进一步扩大领口", singing)
+
     def test_batch_tags_are_exactly_five(self) -> None:
         """发布标签固定 5 个。"""
         schema = json.loads((Path(__file__).parents[1] / "backend" / "batch_ai_schema.json").read_text(encoding="utf-8"))
