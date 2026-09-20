@@ -236,6 +236,31 @@ class PublishCopyLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             self.assertIsNone(self._locked(Path(raw), with_cover=False))
 
+    def test_deleting_the_covers_does_not_unlock_the_copy(self) -> None:
+        """删封面去重出**不许**顺手解锁文案（2026-09-20 用户要求重出手部模糊的图）。
+
+        以前 `locked_publish_copy()` 只看发布目录里还有没有封面文件 —— 把封面删掉重出，
+        锁就没了，重出封面时会带上新写的标题。现在封面落盘会在条目里留下 `ai.copyLocked`，
+        删文件不再影响它。
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            folder = root / "019_跳舞_旧标题_123"
+            folder.mkdir()
+            item = {
+                "title": "旧标题",
+                "awemeId": "123",
+                "ai": {
+                    "title": "旧标题", "introduction": "旧简介", "tags": ["a"],
+                    "copyLocked": True,
+                },
+                "outputs": {"folder": str(folder)},
+            }
+            with patch.object(_batch_worker_module, "BATCH_OUTPUT_ROOT", root):
+                locked = _batch_worker_module.locked_publish_copy(item)
+            self.assertIsNotNone(locked, "封面删掉了，但文案的锁必须还在")
+            self.assertEqual(locked["title"], "旧标题")
+
 
 class FullAutoImageTests(unittest.TestCase):
     """全自动链路：备料直接出图、封面走中转站、自动放行 —— 但**已经有的绝不重出**。
@@ -4910,6 +4935,46 @@ class WorkflowPreparationTests(unittest.TestCase):
                         asyncio.run(app_module.retry_batch_item(state["id"], approved["id"]))
             finally:
                 batch_store_module.DB_PATH = original_db
+
+    def test_restart_without_images_goes_back_to_prep(self) -> None:
+        """图被删掉之后「重新开始」必须回备料**重新出图**（2026-09-20 用户要求）。
+
+        用户：「把现在已经完成的手部模糊的图片删除…让我点击批量重新开始的时候他会重新开始
+        按照你的新的规则生成图片」。这条钉住的正是那个前提：候选图和发布目录里的人物图都不在
+        → 条目回到 `pending`（备料会按当前提示词重新出人物图 + 两张封面），而不是拿着一个
+        不存在的图「直接续跑出片」。
+        """
+        from backend import batch_store as batch_store_module
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            original = batch_store_module.DB_PATH
+            try:
+                batch_store_module.DB_PATH = root / "queue.db"
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/dance"], [])
+                item = state["items"][0]
+                source = root / "source.mp4"
+                source.write_bytes(b"fake-source")
+                item.update(
+                    status="completed",
+                    stage="completed",
+                    sourcePath=str(source),
+                    # 故意指向一个已经不存在的候选图（= 用户把模糊的图删了）
+                    ai={"reference_image_path": str(root / "candidate-deleted.png")},
+                )
+                state["status"] = "completed"
+                store.create(state)
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+                ):
+                    batch_worker.restart_item_to_run(state["id"], item["id"])
+                row = next(it for it in store.get(state["id"])["items"] if it["id"] == item["id"])
+            finally:
+                batch_store_module.DB_PATH = original
+        self.assertEqual((row["status"], row["stage"]), ("pending", "queued"))
 
     def test_restart_keeps_the_three_existing_images(self) -> None:
         """人物图 / B站封面 / 抖音封面都在时，「重新开始」**不许重新生成**这三张。

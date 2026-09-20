@@ -2915,19 +2915,51 @@ def locked_publish_copy(item: dict[str, Any]) -> dict[str, Any] | None:
     所以规则是：**封面一旦落进发布目录，这份文案就锁住**；要改文案，就得连封面一起
     重做（用户显式要求时）。返回锁住的那份文案（`{title, introduction, tags}`），
     没有封面就返回 None（照旧可以自由生成/重写）。
+
+    ⚠️ 2026-09-20 追加**持久标记** `ai.copyLocked`（由 `mark_publish_copy_locked()` 在封面
+    落盘时写下）：以前只靠"发布目录里还有没有封面文件"判断，于是「把封面删掉去重出」会
+    **顺手把锁也解了** —— 重出封面时文案已经被重写，用户看到的标题就变了。现在删封面不再
+    解锁，要换文案必须显式清掉这个标记。
     """
     folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
     if folder is None or not folder.is_dir():
         return None
     names = PUBLISH_COVER_NAMES + ("B站4x3.png", "抖音3x4.png")
-    if not any((folder / name).is_file() for name in names):
-        return None
     ai = dict(item.get("ai") or {})
+    if not any((folder / name).is_file() for name in names) and not ai.get("copyLocked"):
+        return None
     locked = {
         key: ai.get(key) or item.get(key)
         for key in ("title", "introduction", "tags")
     }
     return locked if any(locked.values()) else None
+
+
+def mark_publish_copy_locked(folder: Path) -> bool:
+    """封面落进发布目录的那一刻，把这条作品的文案**持久锁死**（`ai.copyLocked=True`）。
+
+    由 `image_workbench.save_upload()` 在保存封面时调用（API 直出、页面手动上传都走它）。
+    幂等：已经锁住就返回 False。找不到对应条目（历史目录）也返回 False，绝不抛错。
+    """
+    found = _find_item_for_folder(Path(folder))
+    if found is None:
+        return False
+    batch, item = found
+    batch_id = str(batch.get("id") or "")
+    item_id = str(item.get("id") or "")
+    if not batch_id or not item_id:
+        return False
+    if (item.get("ai") or {}).get("copyLocked"):
+        return False
+
+    def apply(row: dict[str, Any]) -> None:
+        row.setdefault("ai", {})["copyLocked"] = True
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(
+        batch_id, item_id, "封面已出，发布文案从此锁死（以后重出封面也不会改标题）。"
+    )
+    return True
 
 
 def _adopt_published_image(

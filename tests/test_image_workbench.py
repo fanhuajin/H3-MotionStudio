@@ -240,6 +240,25 @@ class ImageWorkbenchTests(unittest.TestCase):
             self.assertEqual(shade_of(folder / "人物图.png"), 200)
             self.assertFalse((folder / "人物图.jpg").is_file())
 
+    def test_saving_a_cover_marks_the_copy_locked(self) -> None:
+        """封面落盘时要把这条作品的文案**持久锁死**（删封面重出不再解锁，2026-09-20）。
+
+        `locked_publish_copy()` 以前只看"发布目录里还有没有封面文件"，而这次要做的事
+        恰好是「把封面删掉重出」—— 没有这个标记，重出封面时会带上新写的标题。
+        """
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            calls: list[Path] = []
+            with patch.object(
+                batch_worker, "mark_publish_copy_locked",
+                lambda target: (calls.append(Path(target)), True)[1],
+            ):
+                workbench.save_upload(folder, "bilibili", png(1448, 1086))
+                workbench.save_upload(folder, "person", png(1152, 2048), "dance")
+        self.assertEqual(calls, [folder], "只有封面需要锁文案；人物图不该触发")
+
     def test_prompts_forbid_broken_hands(self) -> None:
         """手部只靠提示词约束：不许自创手势、不许画崩（用户 2026-09-19）。"""
         self.assertIn("手**可以入镜**", batch_ai.VIDEO_READY_BLOCK)

@@ -348,6 +348,13 @@ def save_upload(folder: Path, stage: str, payload: bytes, kind: str = "singing")
             meta["adopted"] = outcome
             if outcome.get("needsWake"):
                 _wake_batch_soon(str(outcome.get("batchId") or ""))
+    else:
+        # 封面落盘 = 这份文案已经被画进图里 → **持久锁死**（2026-09-20）。
+        # 以前只靠"封面文件还在不在"判断，删封面去重出会把锁一起解掉、标题被重写。
+        try:
+            batch_worker.mark_publish_copy_locked(folder)
+        except Exception:  # noqa: BLE001 - 锁标记失败不该影响图片保存
+            logger.exception("标记发布文案锁失败（忽略）")
     return meta
 
 
