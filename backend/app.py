@@ -29,6 +29,7 @@ _REGEN_IMAGE_TASKS: set[asyncio.Task] = set()
 from . import input_preview
 from . import image_workbench
 from . import rvc_batch
+from . import batch_worker
 from .rvc_batch import (
     BATCH_MILESTONES as RVC_BATCH_MILESTONES,
     request_publish_batch_pause as request_rvc_publish_batch_pause,
@@ -767,12 +768,30 @@ def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
     return batch_store.update(batch_id, notice=f"{notice} 点「准备任务」后开始处理。")
 
 
+def _with_publish_chain(state: dict[str, Any] | None) -> dict[str, Any] | None:
+    """给每个条目补上「发布链条状态」：原声母版 / 音色版 / 字幕版 与**该发哪个文件**。
+
+    用户 2026-09-20 定的链条（`最终成片.mp4` → `_音色版.mp4` → `_字幕版.mp4`＝发布版），
+    页面据此显示 ✓✓✓ 与「可发布：…」；只读发布目录里的文件时间，不改任何东西。
+    """
+    if not state:
+        return state
+    for item in state.get("items") or []:
+        if str(item.get("status")) in {"deleted", "pending", "revising"}:
+            continue                     # 还没出片：不查磁盘
+        try:
+            item["publishChain"] = batch_worker.publish_chain(item)
+        except Exception:                # noqa: BLE001 - 体检失败不影响读批次
+            continue
+    return state
+
+
 @app.get("/api/batches/latest")
 async def latest_batch():
     state = _heal_stalled_batch(batch_store.latest())
     if not state:
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
-    return JSONResponse(state, headers={"Cache-Control": "no-store"})
+    return JSONResponse(_with_publish_chain(state), headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/batches")
@@ -815,7 +834,7 @@ async def create_batch(request: BatchCreateRequest):
 
 @app.get("/api/batches/{batch_id}")
 async def get_batch(batch_id: str):
-    return _heal_stalled_batch(_batch_or_404(batch_id))
+    return _with_publish_chain(_heal_stalled_batch(_batch_or_404(batch_id)))
 
 
 @app.post("/api/batches/{batch_id}/start")

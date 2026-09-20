@@ -2567,6 +2567,64 @@ def kind_label(kind: str) -> str:
     return {"singing": "唱歌", "dance": "跳舞"}.get(str(kind or "").strip(), "")
 
 
+def publish_chain(item: dict[str, Any]) -> dict[str, Any]:
+    """这条作品发布目录里的**版本链条**与「该发哪个文件」（2026-09-20 用户定的链条）。
+
+        最终成片.mp4（原声母版）
+          → 最终成片_音色版.mp4（一键批量转换音色）
+            → 最终成片_字幕版.mp4（一键批量加字幕 = **发布版**）
+
+    跳舞没有音色这一步，发布版就是 `最终成片.mp4`。字幕版比它的输入旧 → 标记 `subtitleStale`
+    （先烧字幕、后转音色会留下「音色版 + 原声字幕版」，看起来完整其实是旧音频）。
+
+    返回 `{folder, clean, voice, subtitle, subtitleStale, needsVoice, publishFile, publishHint}`；
+    目录还不存在就返回全 False + 空 publishFile（页面照常显示，只是都是灰的）。
+    """
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    kind = str(item.get("kind") or "")
+    needs_voice = kind == "singing"
+    state: dict[str, Any] = {
+        "folder": str(folder) if folder is not None else "",
+        "clean": False,
+        "voice": False,
+        "subtitle": False,
+        "subtitleStale": False,
+        "needsVoice": needs_voice,
+        "publishFile": "",
+        "publishHint": "还没有成片",
+    }
+    if folder is None or not folder.is_dir():
+        return state
+    clean = folder / "最终成片.mp4"
+    voice = folder / "最终成片_音色版.mp4"
+    subtitle = folder / "最终成片_字幕版.mp4"
+    state["clean"] = clean.is_file()
+    state["voice"] = voice.is_file()
+    state["subtitle"] = subtitle.is_file()
+    source = voice if state["voice"] else clean
+    if state["subtitle"] and source.is_file():
+        try:
+            state["subtitleStale"] = subtitle.stat().st_mtime < source.stat().st_mtime - 1
+        except OSError:
+            state["subtitleStale"] = False
+    if state["subtitle"] and not state["subtitleStale"]:
+        state["publishFile"] = "最终成片_字幕版.mp4"
+        state["publishHint"] = "可发布：字幕版"
+    elif needs_voice and state["voice"]:
+        state["publishFile"] = "最终成片_音色版.mp4"
+        state["publishHint"] = (
+            "可发布：音色版（字幕版已过期，建议重烧字幕）"
+            if state["subtitleStale"] else
+            "可发布：音色版（还没加字幕）"
+        )
+    elif state["clean"]:
+        state["publishFile"] = "最终成片.mp4"
+        state["publishHint"] = (
+            "可发布：原声母版（还没转音色）" if needs_voice else "可发布：最终成片"
+        )
+    return state
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:

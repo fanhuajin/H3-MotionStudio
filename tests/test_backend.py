@@ -8665,6 +8665,148 @@ async def _fake_converter(_job_id, staged, audio_from=None):
     return out
 
 
+class SubtitleVoiceChainTests(unittest.TestCase):
+    """字幕链路的音色版规则（2026-09-20 step 6）。
+
+    用户定的链条：`最终成片.mp4`（原声）→ `最终成片_音色版.mp4` → **`最终成片_字幕版.mp4`（发布版）**。
+    字幕要**优先烧音色版**；如果字幕版比输入旧（先烧字幕、后转音色）→ 判过期并重烧，
+    否则会拿旧音频的字幕版去发布。
+    """
+
+    def _folder(self, root: Path, *, clean: bool = True, voice: bool = False,
+                subtitle: bool = False, voice_newer: bool = False,
+                subtitle_newer: bool = False) -> Path:
+        import os
+        import time
+
+        folder = root / "singing" / "001_唱歌_测试歌_7685308023212056420"
+        folder.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        if clean:
+            (folder / "最终成片.mp4").write_bytes(b"clean")
+            os.utime(folder / "最终成片.mp4", (now - 300, now - 300))
+        if voice:
+            (folder / "最终成片_音色版.mp4").write_bytes(b"voice")
+            stamp = now - 10 if voice_newer else now - 200
+            os.utime(folder / "最终成片_音色版.mp4", (stamp, stamp))
+        if subtitle:
+            (folder / "最终成片_字幕版.mp4").write_bytes(b"subtitle")
+            stamp = now - 5 if subtitle_newer else now - 250
+            os.utime(folder / "最终成片_字幕版.mp4", (stamp, stamp))
+        return folder
+
+    def test_scan_prefers_the_voice_version_as_input(self) -> None:
+        """有音色版就拿它当输入（不是原声母版）。"""
+        from backend import subtitle_step
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            self._folder(root, clean=True, voice=True, voice_newer=True)
+            with patch.object(subtitle_step, "batch_store", _NoItems()):
+                queue = subtitle_step.scan_singing_publish_videos(root=root / "singing")
+
+            self.assertEqual(len(queue), 1)
+            self.assertTrue(queue[0]["source"].endswith("最终成片_音色版.mp4"))
+            self.assertFalse(queue[0]["stale"])
+
+    def test_scan_falls_back_to_the_master_when_there_is_no_voice_version(self) -> None:
+        """还没转音色 → 用原声母版烧（链条可以分两步走）。"""
+        from backend import subtitle_step
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            self._folder(root, clean=True, voice=False)
+            with patch.object(subtitle_step, "batch_store", _NoItems()):
+                queue = subtitle_step.scan_singing_publish_videos(root=root / "singing")
+
+            self.assertEqual(len(queue), 1)
+            self.assertTrue(queue[0]["source"].endswith("最终成片.mp4"))
+
+    def test_fresh_subtitle_version_is_not_redone(self) -> None:
+        """字幕版比输入新 → 已经是最新的，不再重烧。"""
+        from backend import subtitle_step
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            self._folder(root, clean=True, voice=True, voice_newer=False,
+                         subtitle=True, subtitle_newer=True)
+            with patch.object(subtitle_step, "batch_store", _NoItems()):
+                queue = subtitle_step.scan_singing_publish_videos(root=root / "singing")
+            self.assertEqual(queue, [])
+
+    def test_stale_subtitle_version_is_reburned(self) -> None:
+        """先烧字幕、后转音色 → 字幕版是旧音频的，判过期、重烧。"""
+        from backend import subtitle_step
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            self._folder(root, clean=True, voice=True, voice_newer=True,
+                         subtitle=True, subtitle_newer=False)
+            with patch.object(subtitle_step, "batch_store", _NoItems()):
+                queue = subtitle_step.scan_singing_publish_videos(root=root / "singing")
+
+            self.assertEqual(len(queue), 1, "字幕版已过期就必须回到队列里")
+            self.assertTrue(queue[0]["stale"])
+            self.assertTrue(queue[0]["source"].endswith("最终成片_音色版.mp4"))
+
+    def test_publish_chain_reports_the_version_to_publish(self) -> None:
+        """批量页的「发布链条」状态：原声/音色/字幕三格 + 该发哪个文件。"""
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            folder = self._folder(root, clean=True, voice=True, voice_newer=True,
+                                  subtitle=True, subtitle_newer=True)
+            item = {"id": "i1", "kind": "singing", "awemeId": "7685308023212056420",
+                    "ai": {"title": "测试"}, "outputs": {"folder": str(folder)}}
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                chain = batch_worker.publish_chain(item)
+
+            self.assertTrue(chain["clean"] and chain["voice"] and chain["subtitle"])
+            self.assertFalse(chain["subtitleStale"])
+            self.assertTrue(chain["needsVoice"])
+            self.assertEqual(chain["publishFile"], "最终成片_字幕版.mp4")
+            self.assertIn("字幕版", chain["publishHint"])
+
+            # 字幕版过期 → 发布版退回音色版，并提示重烧
+            self._folder(root, clean=True, voice=True, voice_newer=True,
+                         subtitle=True, subtitle_newer=False)
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                stale = batch_worker.publish_chain(item)
+            self.assertTrue(stale["subtitleStale"])
+            self.assertEqual(stale["publishFile"], "最终成片_音色版.mp4")
+            self.assertIn("过期", stale["publishHint"])
+
+            # 跳舞：没有音色这一步，发布版就是 `最终成片.mp4`（哪怕目录里还躺着音色版）
+            dance_item = dict(item, kind="dance")
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                dance = batch_worker.publish_chain(dance_item)
+            self.assertFalse(dance["needsVoice"])
+            self.assertEqual(dance["publishFile"], "最终成片.mp4")
+            self.assertIn("最终成片", dance["publishHint"])
+
+    def test_latest_batch_carries_the_chain_state(self) -> None:
+        """`GET /api/batches/latest` 要给条目补上 `publishChain`（页面直接显示）。"""
+        import asyncio
+
+        from backend import app as app_module
+
+        state = {"id": "b1", "status": "completed", "items": [
+            {"id": "i1", "index": 1, "status": "completed", "kind": "singing"},
+            {"id": "i2", "index": 2, "status": "pending", "kind": "singing"},
+        ]}
+        enriched = app_module._with_publish_chain(state)
+        self.assertIn("publishChain", enriched["items"][0])
+        self.assertNotIn("publishChain", enriched["items"][1], "还没出片的条目不用查磁盘")
+
+
+class _NoItems:
+    """`batch_store.items_for_aweme` 的最小白板（字幕扫描只用它查歌名）。"""
+
+    def items_for_aweme(self, _aweme_id):
+        return []
+
+
 class SourceVideoIntegrityTests(unittest.TestCase):
     """源视频完整性闸门：半截下载不许进 ComfyUI（2026-09-19 条目 012 事故）。
 

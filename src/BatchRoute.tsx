@@ -172,6 +172,17 @@ interface BatchItem {
   videoJobId?: string | null;
   logs?: Array<{ time: string; message: string }>;
   outputs?: Record<string, string>;
+  /** 发布链条状态（原声母版 / 音色版 / 字幕版 与「该发哪个文件」），后端只读发布目录算出来 */
+  publishChain?: {
+    folder: string;
+    clean: boolean;
+    voice: boolean;
+    subtitle: boolean;
+    subtitleStale: boolean;
+    needsVoice: boolean;
+    publishFile: string;
+    publishHint: string;
+  } | null;
   error?: string | null;
   warning?: string | null;
 }
@@ -1532,6 +1543,22 @@ export function BatchRoute() {
 
         {/* 成品区整个去掉（2026-09-13 用户要求）：交付照做（文件照样写进发布目录），
             页面上不再放这块面板。成片仍可在「生成阶段产物」里点开看。 */}
+
+        {/* 发布链条（2026-09-20 用户定的链条）：原声母版 → 音色版 → 字幕版（发布版）。
+            后端 `publish_chain()` 只读发布目录里的文件时间，标题版比输入旧会标「已过期」。 */}
+        {item.publishChain?.folder && (
+          <div className="batch-chain">
+            <span className="batch-chain-title">发布链条</span>
+            <span className={item.publishChain.clean ? "on" : ""}>原声母版 {item.publishChain.clean ? "✓" : "—"}</span>
+            {item.publishChain.needsVoice && (
+              <span className={item.publishChain.voice ? "on" : ""}>音色版 {item.publishChain.voice ? "✓" : "—"}</span>
+            )}
+            <span className={item.publishChain.subtitleStale ? "stale" : item.publishChain.subtitle ? "on" : ""}>
+              字幕版 {item.publishChain.subtitle ? (item.publishChain.subtitleStale ? "⚠ 已过期" : "✓") : "—"}
+            </span>
+            <strong>{item.publishChain.publishHint}</strong>
+          </div>
+        )}
 
         {(item.error || item.warning) && <div className="batch-alert"><WarningCircle weight="fill" />{item.error || item.warning}</div>}
       </div>

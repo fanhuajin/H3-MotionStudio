@@ -685,16 +685,39 @@ def _publish_folder_aweme_id(name: str) -> str:
     return ""
 
 
+def _subtitle_is_stale(subtitle: Path, source: Path) -> bool:
+    """字幕版是不是**基于旧版本**烧的（音色版更新 → 这份字幕版过期，要重烧）。
+
+    用户 2026-09-20 定的链条：`最终成片.mp4`（原声）→ `最终成片_音色版.mp4` → `最终成片_字幕版.mp4`。
+    如果先烧了字幕、之后才转音色，目录里就会同时有「音色版 + 原声字幕版」——看起来完整，
+    实际拿去发布的是旧音频。所以判据不能只看「有没有字幕版」，还要看它比输入**新不新**。
+    容差 1 秒：复制文件会带出毫秒级误差。
+    """
+    try:
+        return subtitle.stat().st_mtime < source.stat().st_mtime - 1
+    except OSError:
+        return False
+
+
+def subtitle_source_for(folder: Path) -> Path | None:
+    """这条作品该拿哪个文件烧字幕：**优先音色版**（新链条），没有才退回原声母版。"""
+    voice = folder / "最终成片_音色版.mp4"
+    if voice.is_file():
+        return voice
+    clean = folder / "最终成片.mp4"
+    return clean if clean.is_file() else None
+
+
 def scan_singing_publish_videos(*, root: Path | None = None) -> list[dict[str, Any]]:
-    """扫发布根：返回**缺字幕版**的唱歌视频，每个目录一条。
+    """扫发布根：返回**缺字幕版（或字幕版已过期）**的唱歌视频，每个目录一条。
 
     判定口径（2026-09-19 用户：「一键生成 E:\\AI_Exports\\H3-MotionStudio\\发布成品
-    下所有带唱歌的视频生成字幕，已存在字幕就不生成」）：
+    下所有带唱歌的视频生成字幕，已存在字幕就不生成」；2026-09-20 补上音色版与过期规则）：
       · 目录名带「唱歌」标签（`_唱歌_`）—— 只给唱歌视频加字幕，跳舞不动；
-      · 目录里有无字幕成片 `最终成片.mp4`；
-      · 目录里**没有** `最终成片_字幕版.mp4` —— 已经出过字幕就不重复生成。
+      · **输入优先 `最终成片_音色版.mp4`**，没有才用 `最终成片.mp4`（原声母版）；
+      · 目录里没有 `最终成片_字幕版.mp4`，**或者**字幕版比输入旧（音色版后来才转的）→ 要烧。
 
-    返回 `[{folder, source, out, song, aweme_id}]`。歌名优先从批量数据库按作品号取
+    返回 `[{folder, source, out, song, aweme_id, stale}]`。歌名优先从批量数据库按作品号取
     （`ai.song_name` 更准），取不到再退回从目录名猜。
 
     2026-09-20：发布根下多了类型子目录，字幕只服务唱歌 → **默认扫 `singing/`**；
@@ -709,12 +732,15 @@ def scan_singing_publish_videos(*, root: Path | None = None) -> list[dict[str, A
             continue
         if "唱歌" not in folder.name:
             continue                          # 只给唱歌标签的视频加字幕
-        clean = folder / "最终成片.mp4"
+        source = subtitle_source_for(folder)
+        if source is None:
+            continue                          # 既没有音色版也没有原声母版：跳过
         sub = folder / "最终成片_字幕版.mp4"
-        if not clean.is_file():
-            continue                          # 没有无字幕成片，跳过
+        stale = False
         if sub.is_file():
-            continue                          # 已经有字幕版，不重复生成
+            if not _subtitle_is_stale(sub, source):
+                continue                      # 已经有字幕版、而且不比输入旧
+            stale = True                      # 输入后来换过：重烧
         song = ""
         aweme_id = _publish_folder_aweme_id(folder.name)
         if aweme_id:
@@ -728,10 +754,11 @@ def scan_singing_publish_videos(*, root: Path | None = None) -> list[dict[str, A
             song = _publish_song_from_folder(folder.name)
         jobs.append({
             "folder": folder.name,
-            "source": str(clean.resolve()),
+            "source": str(source.resolve()),
             "out": str(sub.resolve()),
             "song": song,
             "aweme_id": aweme_id,
+            "stale": stale,
         })
     return jobs
 
@@ -799,6 +826,7 @@ async def run_publish_subtitle_batch(job_id: str) -> None:
                 store.update(job_id, subtitleDone=done, subtitleFailed=failed)
                 continue
             store.add_log(job_id, f"[{index}/{total}] 开始：{label}"
+                          + ("（字幕版已过期，重烧）" if entry.get("stale") else "")
                           + (f"《{song}》" if song else "（没有歌名，用识别歌词反查）"))
             stats: dict[str, Any] = {}
             try:

@@ -1448,6 +1448,13 @@ body {
 .batch-secondary { min-height: 39px; padding: 0 15px; border: 1px solid #4a3f66; color: #ded8ec; background: #17112f; font-size: 12px; }
 .batch-alert { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0; padding: 11px 13px; border: 1px solid rgba(255, 108, 137, .34); border-radius: 8px; color: #ffc0cc; background: rgba(71, 18, 39, .38); font-size: 12px; line-height: 1.6; }
 .batch-alert svg { flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px; }
+/* 发布链条（原声母版 → 音色版 → 字幕版＝发布版）：2026-09-20 用户定的链条状态 */
+.batch-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 13px 0 0; padding: 10px 13px; border: 1px solid rgba(126, 224, 192, .22); border-radius: 8px; background: rgba(20, 48, 44, .38); font-size: 12px; }
+.batch-chain .batch-chain-title { font-weight: 600; color: #d6f5ea; }
+.batch-chain span { color: #7c8a97; }
+.batch-chain span.on { color: #7ee0c0; }
+.batch-chain span.stale { color: #ffd166; }
+.batch-chain strong { margin-left: auto; color: #eaf5f1; font-weight: 600; }
 .batch-alert.info { border-color: rgba(255, 199, 108, .34); color: #ffdca6; background: rgba(71, 52, 18, .38); }
 /* 关机倒计时：真会关机，做成醒目的一条并带「取消关机」 */
 .batch-alert.shutdown { align-items: center; justify-content: space-between; gap: 14px; border-color: rgba(255, 138, 92, .48); color: #ffd0b4; background: rgba(78, 32, 16, .5); }
