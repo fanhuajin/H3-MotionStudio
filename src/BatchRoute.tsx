@@ -56,30 +56,36 @@ function stepPercent(step: BatchStep) {
 }
 
 /**
- * 单条**实际用时**：只算真正干活的阶段（下载 / 备料 / 出片），不含排队与等你确认的空闲。
+ * 单条**出片用时**：只算「生成最终视频」这一段。
  *
- * 用户 2026-09-15：「我想知道的是单条用时，现在的时间不对都 22 小时还多了」——旧计时从条目
- * `createdAt`（加入队列那一刻）算起，批次放了 22 小时就一直累加，完全不是这条片子花了多久。
- * 现在：正在跑哪个阶段就从那个阶段的 `startedAt` 算到此刻（`review` 是「等你确认」，不算干活）；
- * 已经出完片就给出片（`video`）阶段的实际耗时；排队 / 等确认 / 还没开始则返回 null（不显示时间）。
+ * 用户 2026-09-20：「时间应该在出片上 备料我不关心时间」—— 截图里**备料中**的那条顶着
+ * `00:00`（它刚好是 `batch.currentItemId`），而真正在出片（33%）的那条反而没有时间。
+ *
+ * 演变：旧计时从条目 `createdAt`（加入队列那一刻）算起，批次放了 22 小时就一直累加
+ * （2026-09-15 用户：「现在的时间不对都 22 小时还多了」）→ 改成只算真正干活的阶段
+ * （下载 / 备料 / 出片）→ 现在**只看 `video` 里程碑**：正在出片就从它的 `startedAt` 跳到此刻，
+ * 已经出完（或失败）就是这一段的总耗时；下载 / 备料 / 等确认**一律返回 null（不显示时间）**。
  */
-function itemActiveMs(item: BatchItem, nowMs: number): number | null {
-  const milestones = item.milestones || [];
-  const running = milestones.filter(
-    (step) => step.status === "running" && step.id !== "review" && step.startedAt,
-  );
-  const active = running.length ? running[running.length - 1] : undefined;
-  if (active?.startedAt) {
-    const started = Date.parse(active.startedAt);
-    if (Number.isFinite(started)) return Math.max(0, nowMs - started);
-  }
-  const video = milestones.find((step) => step.id === "video");
-  if (video?.startedAt && video.finishedAt) {
-    const started = Date.parse(video.startedAt);
-    const finished = Date.parse(video.finishedAt);
-    if (Number.isFinite(started) && Number.isFinite(finished)) return Math.max(0, finished - started);
-  }
+function itemRenderMs(item: BatchItem, nowMs: number): number | null {
+  const video = (item.milestones || []).find((step) => step.id === "video");
+  if (!video?.startedAt) return null;
+  const started = Date.parse(video.startedAt);
+  if (!Number.isFinite(started)) return null;
+  const finished = video.finishedAt ? Date.parse(video.finishedAt) : NaN;
+  if (Number.isFinite(finished)) return Math.max(0, finished - started);
+  if (video.status === "running") return Math.max(0, nowMs - started);
   return null;
+}
+
+/**
+ * 这一条此刻是不是真的在出片（GPU 在跑最终视频）。
+ *
+ * 并行编排下 `batch.currentItemId` 可能指着**备料**的那条（出片跑着时同时备下一条，
+ * `batch_worker` 的 ③b 会把 currentItemId 改到备料条目上），所以出片计时不能只看它。
+ */
+function itemIsRendering(item: BatchItem): boolean {
+  if (item.status !== "running") return false;
+  return item.stage === "video" || item.stage === "deliver";
 }
 
 /**
@@ -928,19 +934,19 @@ export function BatchRoute() {
 
   // 已运行时间：批次还在跑就实时跳秒；已结束显示总耗时。
   const batchLive = Boolean(batch && !batch.finishedAt && !["completed", "cancelled", "failed"].includes(batch.status));
-  // 时间只统计「本条」（2026-09-15 用户：「你只需统计 本条的时间 我不关心所有任务的时间」）：
-  // 表格里只给**正在处理的那一条**（= batch.currentItemId，且状态在 备料中/出片中/重新备料）显示
-  // 「已用 X」，其它任务不显示；展开详情头部另有「本条实际用时」。跳秒逻辑保留（批次可能刚收尾）。
+  // 时间只统计「本条」的出片（2026-09-15 用户：「你只需统计 本条的时间 我不关心所有任务的时间」；
+  // 2026-09-20 用户：「时间应该在出片上 备料我不关心时间」）：表格里给**正在出片的那一条**显示时间，
+  // 备料中 / 排队中 / 等确认一律不显示；展开详情头部另有「本条出片用时」。
   const queueLive = visibleItems.some(
     (item) => !item.finishedAt && ["running", "revising", "confirmed"].includes(item.status),
   );
   const batchNowTick = useNowTick(batchLive || queueLive);
 
-  // 本条实际用时：只算真正干活的阶段（下载 / 备料 / 出片），不含排队与等你确认。
-  const itemElapsedMs = selected ? itemActiveMs(selected, batchNowTick) : null;
-  /** 表格行里「本条进行中」那条的实际用时（同上：只算真正干活的时间）。 */
-  const itemElapsedText = (item: BatchItem): string => {
-    const ms = itemActiveMs(item, batchNowTick);
+  // 本条出片用时：只算「生成最终视频」这一段（备料时间不算，见 itemRenderMs）。
+  const itemElapsedMs = selected ? itemRenderMs(selected, batchNowTick) : null;
+  /** 表格行里的出片用时（正在出片就跳秒；刚出完那一下还能看到这一条的总时长）。 */
+  const itemRenderText = (item: BatchItem): string => {
+    const ms = itemRenderMs(item, batchNowTick);
     return ms === null ? "" : formatElapsedMs(ms);
   };
 
@@ -1133,9 +1139,9 @@ export function BatchRoute() {
             <h2>{itemTitle(selected)}</h2>
             <div className="batch-detail-meta">
               <a href={item.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
-              {/* 本条实际用时：只算下载 / 备料 / 出片，不含排队与等你确认（只显示时间，不加标签字） */}
+              {/* 本条出片用时：只算「生成最终视频」这一段，备料 / 排队 / 等确认不算（只显示数字，不加标签字） */}
               {itemElapsedMs !== null && (
-                <span className="batch-timer" title="本条实际用时（只算下载 / 备料 / 出片，不含排队与等你确认）">
+                <span className="batch-timer" title="本条出片用时（只算生成最终视频这一段，不含下载 / 备料 / 排队 / 等确认）">
                   <Timer weight="fill" /> {formatElapsedMs(itemElapsedMs)}
                 </span>
               )}
@@ -1498,7 +1504,9 @@ export function BatchRoute() {
           <div className="batch-steps">
             {item.milestones.map((step) => {
               const percent = stepPercent(step);
-              const elapsed = elapsedLabel(step.startedAt);
+              // 只给「生成最终视频」这一格显示已跑多久（2026-09-20 用户：「时间应该在出片上
+              // 备料我不关心时间」）；下载 / 备料即使没有百分比也不显示时间。
+              const elapsed = step.id === "video" ? elapsedLabel(step.startedAt) : "";
               return (
                 <div className={`batch-step ${step.status}`} key={step.id}>
                   <span className="batch-step-icon">{stepIcon(step.status)}</span>
@@ -1506,7 +1514,7 @@ export function BatchRoute() {
                   {step.status === "running" && (percent !== null
                     ? <em>{percent}%</em>
                     : (
-                      <em className="indeterminate" title="该步骤没有节点级进度，按实际耗时显示">
+                      <em className="indeterminate" title="该步骤没有节点级进度，按出片耗时显示">
                         进行中{elapsed ? ` · ${elapsed}` : ""}
                       </em>
                     ))}
@@ -1891,12 +1899,13 @@ export function BatchRoute() {
                                   <Timer weight="fill" />恢复中 · {item.childJob.currentNodeTitle}
                                 </small>
                               )}
-                            {/* 只给「本条进行中」的那一条显示时间（实际干活时间，不含排队/等确认）；不要「已用」这类标签字 */}
+                            {/* 时间只给出片：谁在出片就给谁跳秒（并行时 currentItemId 可能指着备料的那条，
+                                所以不能只看它）；备料 / 下载 / 排队 / 等确认一律不显示时间。
+                                不要「已用」这类标签字。 */}
                             {batch?.status === "running"
-                              && item.id === batch?.currentItemId
-                              && ["pending", "running", "revising"].includes(item.status)
-                              && itemElapsedText(item) && (
-                                <small className="batch-elapsed"><Timer weight="fill" />{itemElapsedText(item)}</small>
+                              && itemRenderText(item)
+                              && (itemIsRendering(item) || item.id === batch?.currentItemId) && (
+                                <small className="batch-elapsed"><Timer weight="fill" />{itemRenderText(item)}</small>
                               )}
                           </td>
                           <td className="batch-ratio-cell">{itemRatio(item)}</td>
