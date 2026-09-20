@@ -1304,17 +1304,14 @@ def _extract_frame_bytes(source: Path, timestamp: float, *, flags: int) -> bytes
     return result.stdout if result.returncode == 0 and result.stdout else None
 
 
-def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path:
-    """Choose a clear scene frame and reject a hand-motion-blurred timestamp.
+def _scene_frame_candidates(source: Path, ratio: float) -> list[tuple[float, bytes]]:
+    """在目标时刻附近抽 5 帧，逐张按**整幅**清晰度打分（`_frame_detail_score`）。
 
-    A single fixed timestamp frequently lands on a gesture. Sampling nearby
-    moments and retaining the sharpest frame prevents such frames becoming an
-    image-generation reference.
+    顺序 = 抽帧顺序（目标时刻、前 0.12、后 0.12、前 0.06、后 0.06，去重后夹在 4%~96%），
+    `batch_ai.choose_sharp_hands_frame()` 返回的序号就是这个顺序（拼图从左到右一致）。
     """
     duration = _video_duration_seconds(source)
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.unlink(missing_ok=True)
     ratios = (ratio, ratio - 0.12, ratio + 0.12, ratio - 0.06, ratio + 0.06)
     candidates: list[tuple[float, bytes]] = []
     for candidate_ratio in dict.fromkeys(max(0.04, min(0.96, value)) for value in ratios):
@@ -1323,7 +1320,53 @@ def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path
             candidates.append((_frame_detail_score(frame), frame))
     if not candidates:
         raise RuntimeError("从源视频抽帧失败，无法生成候选人物图")
+    return candidates
+
+
+def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path:
+    """Choose a clear scene frame and reject a hand-motion-blurred timestamp.
+
+    A single fixed timestamp frequently lands on a gesture. Sampling nearby
+    moments and retaining the sharpest frame prevents such frames becoming an
+    image-generation reference.
+
+    只按整幅清晰度挑（同步、不调模型）；备料实际走的是
+    `extract_scene_frame_with_hands()` —— 它在这份候选之上再让视觉模型挑「手最清楚」的一张。
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.unlink(missing_ok=True)
+    candidates = _scene_frame_candidates(source, ratio)
     target.write_bytes(max(candidates, key=lambda candidate: candidate[0])[1])
+    return target
+
+
+async def extract_scene_frame_with_hands(
+    source: Path, target: Path, ratio: float = 0.38
+) -> Path:
+    """抽帧挑图：先按整幅清晰度抽 5 张候选，再让视觉模型挑「双手最清楚」的那张。
+
+    用户 2026-09-20 在「要不要再加一道」上选了要。为什么需要：`_frame_detail_score` 只看
+    整幅清晰度，跳舞时整幅清楚、两只手却糊成一片的帧照样会赢，模型再把那份运动模糊照抄进
+    人物图（013 实测：抽帧里两只手都在挥，生成图那两只手同样糊）。这一道是**挑图**，
+    不是出图后的判据。模型挑不出来 / 判据失败 → 退回分数最高的那张，绝不卡住备料。
+    """
+    candidates = await asyncio.to_thread(_scene_frame_candidates, source, ratio)
+    chosen: bytes | None = None
+    if len(candidates) > 1:
+        try:
+            from . import batch_ai
+
+            index = await batch_ai.choose_sharp_hands_frame([frame for _, frame in candidates])
+        except Exception:  # noqa: BLE001 - 挑图失败只该退回打分，不该让整条备料失败
+            logger.warning("候选抽帧挑选失败，退回整幅最清晰的那张", exc_info=True)
+            index = None
+        if isinstance(index, int) and 1 <= index <= len(candidates):
+            chosen = candidates[index - 1][1]
+    if chosen is None:
+        chosen = max(candidates, key=lambda candidate: candidate[0])[1]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.unlink(missing_ok=True)
+    target.write_bytes(chosen)
     return target
 
 
@@ -1573,7 +1616,8 @@ async def _prepare_review_work(
 
     scene_frame = work / "scene-frame.jpg"
     if not scene_frame.is_file():
-        scene_frame = await asyncio.to_thread(extract_scene_frame, source, scene_frame)
+        # 挑图这一道会多调一次视觉模型（只比"手清不清楚"），失败自动退回整幅最清晰的那张。
+        scene_frame = await extract_scene_frame_with_hands(source, scene_frame)
 
     meta = item.get("sourceMetadata") or {}
     meta_desc = str(meta.get("desc") or "")
@@ -2045,7 +2089,9 @@ def publish_published_image(folder: Path | None) -> Path | None:
 _COVER_LOCK = asyncio.Lock()
 
 
-def spawn_api_covers(batch_id: str, item_id: str, *, only_missing: bool = True) -> bool:
+def spawn_api_covers(
+    batch_id: str, item_id: str, *, only_missing: bool = True, force: bool = False
+) -> bool:
     """【全自动】用**中转站**出这条的两张封面（后台任务，与出片并行）。
 
     时机很重要（踩过坑）：必须在「人物图 + 发布文案」都落进发布目录**之后**才出封面 ——
@@ -2054,6 +2100,7 @@ def spawn_api_covers(batch_id: str, item_id: str, *, only_missing: bool = True) 
     以及提交出片前的那道体检（`ensure_publish_images`）。
 
     `only_missing=True`：两张封面都在就直接返回，不白跑（重新开始时避免重复出图）。
+    `force=True`：**已存在的封面也要重出**（人物图被换掉时必须这样，见 `adopt_published_portrait`）。
     返回是否真的排上了任务。**不是** ChatGPT 桌面端那条路（那条仍归 `H3_AUTO_CHATGPT_COVER`）。
     """
     item = _item(batch_id, item_id)
@@ -2064,22 +2111,27 @@ def spawn_api_covers(batch_id: str, item_id: str, *, only_missing: bool = True) 
         return False
     if not (folder / "发布文案.txt").is_file():
         return False
-    if only_missing and all(
+    if not force and only_missing and all(
         any(_present_file(folder, name) for name in names)
         for names in PUBLISH_COVER_ALIASES.values()
     ):
         return False
-    task = asyncio.create_task(_generate_covers_via_api(batch_id, item_id, folder))
+    try:
+        task = asyncio.create_task(_generate_covers_via_api(batch_id, item_id, folder, force=force))
+    except RuntimeError:
+        return False                      # 没有事件循环（同步调用/测试）→ 只当没排上
     _COVER_TASKS.add(task)
     task.add_done_callback(_COVER_TASKS.discard)
     return True
 
 
-async def _generate_covers_via_api(batch_id: str, item_id: str, folder: Path) -> None:
+async def _generate_covers_via_api(
+    batch_id: str, item_id: str, folder: Path, *, force: bool = False
+) -> None:
     """走中转站出两张封面：`B站4x3.png`（4:3）与 `抖音3x4.png`（3:4）。
 
     与 `/images` 页面「API 自动生成这一步」是同一个实现（`image_workbench._generate_cover`），
-    失败只写日志标黄，**绝不影响出片**。
+    失败只写日志标黄，**绝不影响出片**。`force=True` 时连已存在的那张也重出（换人物图后用）。
     """
     from . import image_workbench
 
@@ -2087,7 +2139,7 @@ async def _generate_covers_via_api(batch_id: str, item_id: str, folder: Path) ->
     kind = str(item.get("kind") or "singing")
     async with _COVER_LOCK:
         for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
-            if any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
+            if not force and any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
                 continue
             batch_store.add_item_log(batch_id, item_id, f"已向中转站发出{label}请求……")
             started = time.monotonic()
@@ -2689,8 +2741,22 @@ def _find_item_for_folder(folder: Path) -> tuple[dict[str, Any], dict[str, Any]]
     return None
 
 
-# 只有这三种状态的条目会被「谁写图谁登记」动到（与 watcher 当年的口径一致）。
-ADOPTABLE_ITEM_STATUSES = {"awaiting_review", "confirmed", "failed"}
+# 会被「谁写图谁登记」动到的条目状态。
+# 2026-09-20 追加 **skipped / completed**：用户原话「我替换之后你需要自动帮我换成我替换的图片」——
+# 已经跑完或被跳过的条目换上新人图，也必须**真的用上新图**：候选图换成新的、这一条重新排出片
+# （`restart_item_to_run()`：源视频还在就直接续跑出片，**不会再出图**）、两张封面按新人物图重出。
+# 仍然不碰：`running` / `revising`（正在跑的活换图会打架）、`pending`（还没备料，备料时会自己
+# 收编发布目录那张）、`deleted`（用户主动删掉的，绝不复活）。
+ADOPTABLE_ITEM_STATUSES = {"awaiting_review", "confirmed", "failed", "skipped", "completed"}
+
+# 状态 → 动作：confirm=挂图+放行 / upload=只换图 / retry、rerun=挂图+重跑这一条
+ADOPT_ACTIONS = {
+    "awaiting_review": "confirm",
+    "confirmed": "upload",
+    "failed": "retry",
+    "skipped": "rerun",
+    "completed": "rerun",
+}
 
 
 def adopt_published_portrait(
@@ -2701,8 +2767,11 @@ def adopt_published_portrait(
     用户 2026-09-20 选「谁写图谁登记」：`/images` 出图 / 上传成功后直接调这里，不再靠
     每 5 秒扫一遍发布目录的中间人（那个模块已删除）。规则沿用 watcher 那套：
 
-      · 只碰 `awaiting_review`（挂图 + 放行）/ `confirmed`（只换图）/ `failed`（挂图 + 重跑）；
-        `pending` / `revising` / `running` / `skipped` / `completed` / `deleted` 一律不动；
+      · `awaiting_review`（挂图 + 放行）/ `confirmed`（只换图）/ `failed`（挂图 + 重跑）
+        / `skipped`、`completed`（挂图 + 重跑，用户 2026-09-20：「我替换之后你需要自动帮我
+        换成我替换的图片」）；`pending` / `revising` / `running` / `deleted` 一律不动；
+      · **真的换了图（sha 变了）** 时，两张封面按新人物图**重出**（封面是按旧人物图出的，
+        不重出就还是旧脸/旧手）；
       · **同一张图只驱动一次**（`ai.portrait_watch.sha` 记账），重启后也不会重复跑；
       · 目录里那张与条目候选图 sha 相同、且不需要放行 → 什么都不做（避免无谓改写）。
 
@@ -2749,7 +2818,7 @@ def adopt_published_portrait(
     if not needs_upload and status == "confirmed":
         return None                       # 没有新图、本条也已经放行：不用动
 
-    action = {"awaiting_review": "confirm", "confirmed": "upload", "failed": "retry"}[status]
+    action = ADOPT_ACTIONS[status]
     adopted = candidate
     if needs_upload:
         revision = int(item.get("revision") or 0)
@@ -2786,10 +2855,17 @@ def adopt_published_portrait(
         confirm_batch_items(batch_id, [item_id])
         batch_store.add_item_log(batch_id, item_id, "已自动确认并开始出片（等同你点「确认并出片」）。")
         needs_wake = True
-    elif action == "retry":
+    elif action in {"retry", "rerun"}:
         restart_item_to_run(batch_id, item_id)
-        batch_store.add_item_log(batch_id, item_id, "已按新的人物图重跑这一条。")
+        batch_store.add_item_log(batch_id, item_id, "已按新的人物图重跑这一条（成片会用你换的这张）。")
         needs_wake = True
+    if needs_upload:
+        # 封面是**按旧人物图出的**（人脸/手都来自它），换了图就得按新图重出，否则封面还是旧图。
+        # `force=True` 才会覆盖已存在的那两张；出图失败只写日志，绝不影响出片。
+        if spawn_api_covers(batch_id, item_id, force=True):
+            batch_store.add_item_log(
+                batch_id, item_id, "人物图换了，已把两张封面按新人物图重新生成。"
+            )
     return {
         "batchId": batch_id,
         "itemId": item_id,

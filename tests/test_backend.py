@@ -8675,11 +8675,15 @@ class PortraitAdoptionTests(unittest.TestCase):
             self.assertNotEqual(row["status"], "failed")
             self.assertEqual(Path(row["ai"]["reference_image_path"]).read_bytes(), b"user-portrait-C")
 
-    def test_busy_and_finished_items_are_never_touched(self) -> None:
-        """pending / running / skipped / completed 一律不碰（沿用 watcher 的口径）。"""
+    def test_busy_and_unprepared_items_are_never_touched(self) -> None:
+        """pending / revising / running 一律不碰（正在跑的活换图会打架）。
+
+        ⚠️ 2026-09-20 起 `skipped` / `completed` **不再**属于这一类：用户要求「我替换之后
+        你需要自动帮我换成我替换的图片」，跑完/跳过的条目换了人图也要真的用上（见下一条）。
+        """
         from backend import batch_worker
 
-        for status in ("pending", "revising", "running", "skipped", "completed"):
+        for status in ("pending", "revising", "running"):
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
                 root = Path(folder)
                 store, batch_id, item_id, publish, old = self._fixture(root, status=status)
@@ -8694,6 +8698,59 @@ class PortraitAdoptionTests(unittest.TestCase):
                 row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
                 self.assertEqual(row["status"], status)
                 self.assertEqual(Path(row["ai"]["reference_image_path"]), old)
+
+    def test_finished_item_swaps_the_portrait_and_reruns(self) -> None:
+        """已跳过 / 已出片的条目换人物图 → 换成新图 + 这一条重新排出片。
+
+        用户 2026-09-20：「我替换之后你需要自动帮我换成我替换的图片」——以前这两类状态
+        什么都不做，"替换"就只改了发布目录里那个文件，成片还是旧图。
+        """
+        from backend import batch_worker
+
+        for status in ("skipped", "completed"):
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+                root = Path(folder)
+                store, batch_id, item_id, publish, _ = self._fixture(
+                    root, status=status, source=b"fake-source"
+                )
+                self._portrait(publish, b"user-portrait-E")
+
+                with patch.object(batch_worker, "batch_store", store), patch.object(
+                    batch_worker, "DATA_DIR", root / "data"
+                ), patch.object(batch_worker, "spawn_api_covers", lambda *a, **k: False):
+                    outcome = batch_worker.adopt_published_portrait(publish)
+
+                self.assertIsNotNone(outcome, status)
+                self.assertEqual(outcome["action"], "rerun")
+                self.assertTrue(outcome["needsWake"])
+                row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
+                # 源视频还在 → 直接续跑出片（confirmed），而不是退回备料
+                self.assertEqual(row["status"], "confirmed")
+                self.assertEqual(
+                    Path(row["ai"]["reference_image_path"]).read_bytes(), b"user-portrait-E"
+                )
+                self.assertEqual(row["ai"]["portrait_watch"]["sha"], self._sha(b"user-portrait-E"))
+
+    def test_swapping_the_portrait_regenerates_the_two_covers(self) -> None:
+        """真的换了图 → 两张封面按新人物图**重出**（封面是按旧人图出的，不重出还是旧脸）。"""
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            store, batch_id, item_id, publish, _ = self._fixture(root, status="completed")
+            self._portrait(publish, b"user-portrait-F")
+            calls: list[tuple] = []
+
+            with patch.object(batch_worker, "batch_store", store), patch.object(
+                batch_worker, "DATA_DIR", root / "data"
+            ), patch.object(
+                batch_worker, "spawn_api_covers",
+                lambda *a, **k: (calls.append((a, k)), True)[1],
+            ), patch.object(batch_worker, "restart_item_to_run", lambda *a: True):
+                batch_worker.adopt_published_portrait(publish)
+
+            self.assertEqual(len(calls), 1, calls)
+            self.assertTrue(calls[0][1].get("force"), "必须 force=True，否则已存在的封面不会重出")
 
     def test_fallback_frame_candidate_is_left_alone(self) -> None:
         """目录里那张就是备料留下的**兜底取帧图**（sha 与候选图相同）→ 不算你的成图，不动。"""
@@ -8751,6 +8808,94 @@ class PortraitAdoptionTests(unittest.TestCase):
         workbench = (root / "backend" / "image_workbench.py").read_text(encoding="utf-8")
         self.assertIn("_register_published_portrait(folder)", workbench)
         self.assertIn("adopt_published_portrait", workbench)
+
+
+class SceneFramePickerTests(unittest.TestCase):
+    """抽帧挑图（2026-09-20 用户：「要不要我再加一道 要」）。
+
+    背景：`_frame_detail_score` 只看**整幅**清晰度，跳舞时整幅清楚、两只手糊成一片的帧
+    照样会赢，模型再把那份运动模糊照抄进人物图（013 实测）。所以备料这条路在打分之上
+    再让视觉模型挑「手最清楚」的一张；模型失败 / 挑不出来 / 序号越界都退回分数最高的那张。
+    """
+
+    @staticmethod
+    def _frame(color: str, size: tuple[int, int] = (60, 90)) -> bytes:
+        import io
+
+        from PIL import Image
+
+        output = io.BytesIO()
+        Image.new("RGB", size, color).save(output, format="PNG")
+        return output.getvalue()
+
+    def test_the_models_choice_beats_the_global_sharpness_score(self) -> None:
+        """模型挑中的那一张必须真的被写成 `scene-frame.jpg`（哪怕它不是打分最高的）。"""
+        chosen = self._frame("#ff0000", (40, 40))
+        payloads = [self._frame("#101010"), self._frame("#808080"), chosen]
+
+        async def pick(_frames):
+            return 3
+
+        written = _run_with(self, pick, [0.1, 0.9, 0.5], payloads)
+        self.assertEqual(written, chosen)
+
+    def test_a_failed_picker_falls_back_to_the_sharpest_frame(self) -> None:
+        """判据失败 → 退回整幅最清晰的那张（第 2 张，0.9），绝不抛错、绝不卡住备料。"""
+        payloads = [self._frame("#101010"), self._frame("#808080"), self._frame("#f0f0f0")]
+
+        async def pick(_frames):
+            raise RuntimeError("端点挂了")
+
+        written = _run_with(self, pick, [0.1, 0.9, 0.5], payloads)
+        self.assertEqual(written, payloads[1])
+
+    def test_none_and_out_of_range_index_fall_back(self) -> None:
+        for answer in (None, 0, 9):
+            payloads = [self._frame("#101010"), self._frame("#808080"), self._frame("#f0f0f0")]
+
+            async def pick(_frames, value=answer):
+                return value
+
+            written = _run_with(self, pick, [0.1, 0.9, 0.5], payloads)
+            self.assertEqual(written, payloads[1], answer)
+
+    def test_the_sheet_numbers_the_candidates_from_left_to_right(self) -> None:
+        """对比图必须按候选顺序横排、宽度随张数增长（模型靠"从左到右"数序号）。"""
+        import io
+
+        from PIL import Image
+
+        from backend import batch_ai
+
+        one = batch_ai.frame_candidates_sheet([self._frame("#101010")])
+        three = batch_ai.frame_candidates_sheet(
+            [self._frame("#101010"), self._frame("#808080"), self._frame("#f0f0f0")]
+        )
+        with Image.open(io.BytesIO(one)) as small, Image.open(io.BytesIO(three)) as wide:
+            self.assertEqual(small.height, wide.height)
+            self.assertGreater(wide.width, small.width * 2)
+
+
+def _run_with(case: SceneFramePickerTests, pick, scores, payloads) -> bytes:
+    """跑一次 `extract_scene_frame_with_hands()`：抽帧与打分都是桩，模型挑选用 `pick` 替换。"""
+    from backend import batch_ai, batch_worker
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw)
+        video = root / "source.mp4"
+        video.write_bytes(b"fake")
+        target = root / "scene-frame.jpg"
+        queue = list(payloads)
+        with patch.object(batch_worker, "_video_duration_seconds", lambda _p: 10.0), patch.object(
+            batch_worker, "_extract_frame_bytes",
+            lambda *a, **k: queue.pop(0) if queue else None,   # 抽完就当成抽不到帧
+        ), patch.object(batch_worker, "_frame_detail_score", lambda data: scores.pop(0)), patch.object(
+            batch_ai, "choose_sharp_hands_frame", pick
+        ):
+            return asyncio.run(
+                batch_worker.extract_scene_frame_with_hands(video, target)
+            ).read_bytes()
+
 
 class RvcBatchTests(unittest.TestCase):
     """一键批量转换音色（2026-09-20 step 5）：`最终成片.mp4` → `最终成片_音色版.mp4`。

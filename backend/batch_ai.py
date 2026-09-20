@@ -179,6 +179,11 @@ def _data_url(path: Path) -> str:
     return f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
 
 
+def _bytes_data_url(data: bytes, mime: str = "image/png") -> str:
+    """内存里那张对比图（候选帧拼图）直接编码，不落盘。"""
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
 # 结构化输出模式：官方 OpenAI 与多数中转站认 `json_schema`（严格模式），而 DeepSeek 只认
 # `json_object` —— 2026-09-13 实测 `deepseek-flash` 对 json_schema 直接 400
 # 「This response_format type is unavailable now」（同一把 key 看图是 200，模型确实多模态）。
@@ -705,6 +710,108 @@ async def write_copy(
     return await _chat_structured(
         content=content, schema=schema, name="batch_copy", label="文案生成失败"
     )
+
+
+# 候选抽帧挑选（2026-09-20，用户：「要不要我再加一道 要」）：
+# 为什么需要它：`batch_worker._frame_detail_score()` 只看**整幅**清晰度，跳舞时整幅清楚、
+# 但两只手糊成一片（运动模糊）的帧照样会在打分里胜出，模型再把那份模糊照抄进人物图
+# （013 实测：抽帧里两只手都在挥，生成图那两只手同样糊）。
+# ⚠️ 这里只做「**定位 + 比清晰度**」，**不做**「手结构对不对」那种判据 —— 那种判据在
+# DeepSeek 视觉 / gemini-3.1-pro / gpt-5.6 上都标定失败（跟着措辞走、不跟着像素走，见 AGENTS.md）。
+# 判据失败 / 挑不出来 → 返回 None，调用方退回「整幅最清楚的那张」，绝不卡住备料。
+SHARP_FRAME_INSTRUCTION = (
+    "这张图是把**同一段视频、同一时刻附近**抽出的 {count} 张候选帧横向拼在一起的对比图："
+    "从左到右依次是第 1 张、第 2 张……，**每张的左上角标了它的序号**。\n"
+    "这些帧会被当成图生视频的参考图，所以**双手必须清晰**。请只比较双手与手指：\n"
+    "选出**双手最清楚、没有运动模糊**的那一张（没有拖影、没有糊成一团、能看清指节与指甲）。\n"
+    "若多张的手都清楚，就在其中挑人物整体最清楚的那张；\n"
+    "若这些帧里看不到手、或几张的手差不多清楚分不出高下，就填 index=0。\n"
+    "只回序号，不要解释。"
+)
+
+SHARP_FRAME_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"index": {"type": "integer"}},
+    "required": ["index"],
+}
+
+# 画序号用的字体（只需要阿拉伯数字，不涉及中文 —— 中文会变豆腐块，见 AGENTS.md 的 Z-Image 记录）
+_NUMBER_FONTS = (
+    "C:/Windows/Fonts/arialbd.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+    "C:/Windows/Fonts/segoeuib.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+)
+
+
+def _number_font(size: int):
+    from PIL import ImageFont
+
+    for path in _NUMBER_FONTS:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def frame_candidates_sheet(frames: list[bytes], *, height: int = 900) -> bytes:
+    """把候选抽帧横向拼成一张带序号的对比图（PNG bytes），给视觉模型挑图用。
+
+    只画数字 + 背景，不叠任何中文说明（避免被当成"图上的文字"）；tile 之间有黑缝，
+    保证模型数的张数与 `frames` 一一对应。
+    """
+    import io as _io
+
+    from PIL import Image, ImageDraw
+
+    tiles = []
+    for data in frames:
+        with Image.open(_io.BytesIO(data)) as opened:
+            image = opened.convert("RGB")
+        scale = height / max(1, image.height)
+        tiles.append(image.resize((max(1, round(image.width * scale)), height), Image.Resampling.LANCZOS))
+    gap = max(8, height // 80)
+    width = sum(tile.width for tile in tiles) + gap * (len(tiles) - 1)
+    sheet = Image.new("RGB", (max(1, width), height), "#000000")
+    draw = ImageDraw.Draw(sheet)
+    font = _number_font(max(24, height // 16))
+    left = 0
+    for number, tile in enumerate(tiles, start=1):
+        sheet.paste(tile, (left, 0))
+        draw.rectangle((left, 0, left + height // 8, height // 9), fill="#000000")
+        draw.text((left + height // 90, height // 90), str(number), fill="#ffffff", font=font)
+        left += tile.width + gap
+    output = _io.BytesIO()
+    sheet.save(output, format="PNG")
+    return output.getvalue()
+
+
+async def choose_sharp_hands_frame(frames: list[bytes]) -> int | None:
+    """从候选抽帧里挑「双手最清楚」的那一张，返回 1-based 序号；挑不出来返回 None。
+
+    调用方（`batch_worker.extract_scene_frame_with_hands`）拿到 None 时退回整幅最清晰的那张。
+    任何失败（端点不可用 / 返回越界 / 解析失败）都只返回 None —— 这只是挑图的一道加分项。
+    """
+    if len(frames) < 2:
+        return 1 if frames else None
+    sheet = frame_candidates_sheet(frames)
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": SHARP_FRAME_INSTRUCTION.format(count=len(frames))},
+        {"type": "image_url", "image_url": {"url": _bytes_data_url(sheet), "detail": "high"}},
+    ]
+    try:
+        result = await _chat_structured(
+            content=content, schema=SHARP_FRAME_SCHEMA, name="sharp_frame", label="候选帧挑选失败"
+        )
+    except (RuntimeError, httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError, TypeError, OSError):
+        return None
+    try:
+        index = int(result.get("index") or 0)
+    except (TypeError, ValueError):
+        return None
+    return index if 1 <= index <= len(frames) else None
 
 
 async def locate_face(image: Path) -> dict[str, float] | None:
