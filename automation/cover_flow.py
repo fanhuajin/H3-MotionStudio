@@ -28,14 +28,22 @@ COVER_SHARPNESS_RULE = (
     "禁止景深虚化/浅景深糊掉手，禁止运动模糊、局部模糊与涂抹感；参考图里的手若是模糊的，"
     "不要照搬那份模糊，要重画成清晰的手。"
 )
+# 2026-09-21：背景里其他人一律不要（人物图那一步已由 `batch_ai.BACKGROUND_CLEAN_BLOCK` 清干净）；
+# 封面只加这一句主体约束，**不写背景风格规则**（用户 2026-09-19：「封面图不需要出现 背景规则」）。
+COVER_SUBJECT_RULE = (
+    "画面里只能有参考人物图里这一个人：不要添加第二个人、路人、观众、伴舞或其他人物，"
+    "也不要把人物复制成多个。"
+)
 COVER_TASKS = {
     "bilibili_4x3": "请根据这份发布文案和人物图，生成一张 4:3 横版封面图。"
                     "不要添加任何平台的 Logo、水印、角标或文字（标题和简介本身除外）。"
                     + COVER_COMPLIANCE_RULE
+                    + COVER_SUBJECT_RULE
                     + COVER_SHARPNESS_RULE,
     "douyin_3x4": "请根据这份发布文案和人物图，生成一张 3:4 竖版封面图。"
                   "不要添加任何平台的 Logo、水印、角标或文字（标题和简介本身除外）。"
                   + COVER_COMPLIANCE_RULE
+                  + COVER_SUBJECT_RULE
                   + COVER_SHARPNESS_RULE,
 }
 

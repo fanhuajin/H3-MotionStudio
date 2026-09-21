@@ -14,6 +14,9 @@ from backend import batch_ai
 from backend import chatgpt_image
 from backend import image_workbench as workbench
 
+from automation import cover_flow
+from scripts import cover_common
+
 
 def png(width: int, height: int) -> bytes:
     output = io.BytesIO()
@@ -299,6 +302,38 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("禁止模糊", chatgpt_image.COVER_SHARPNESS_RULE)
         for _tag, instruction, _name in chatgpt_image.COVER_TASKS:
             self.assertIn(chatgpt_image.COVER_SHARPNESS_RULE, instruction)
+
+    def test_prompts_clean_the_background(self) -> None:
+        """2026-09-21：抽帧背景里的其他人一律去掉、杂乱背景清干净；封面**只加**「不要第二个人」。
+
+        ⚠️ 封面**不写**背景清理整段 —— 用户 2026-09-19：「封面图不需要出现 背景规则」。
+        背景跟着人物图走即可（人物图那一步已经清成单人 + 干净背景，封面是拿它当唯一参考图）。
+        手工入口读的是**用户桌面那份长提示词**，所以人物图这条口径也只能写在代码里。
+        """
+        block = batch_ai.BACKGROUND_CLEAN_BLOCK.strip()
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
+            person = workbench.prompt(folder, "person", "dance")
+            cover = workbench.prompt(folder, "bilibili", "dance")
+            zipped = workbench.material_zip(folder, "person", "dance")
+        self.assertIn(block, person, "人物图提示词必须带背景清理整段")
+        self.assertIn("只能有图像-2 这一个人", person)
+        self.assertIn("不许用重度虚化", person)
+        self.assertIn("画面里只能有参考图里这一个人", cover)
+        self.assertNotIn(block, cover, "封面不写背景风格规则（用户 2026-09-19）")
+
+        import zipfile
+
+        with zipfile.ZipFile(io.BytesIO(zipped)) as archive:
+            self.assertIn(block, archive.read("提示词.txt").decode("utf-8"))
+
+        # 三条封面链路（桌面 CDP / 老 automation / 脚本出图）都只加那一句主体约束
+        for _tag, instruction, _name in chatgpt_image.COVER_TASKS:
+            self.assertIn("只能有参考人物图里这一个人", instruction)
+        for instruction in cover_flow.COVER_TASKS.values():
+            self.assertIn("只能有参考人物图里这一个人", instruction)
+        self.assertIn("只能有参考图里这一个人", cover_common.PROMPT_TEMPLATE)
 
     def test_manual_prompts_carry_the_outfit_compliance_rule(self) -> None:
         """手工入口（复制提示词 / 素材包）也必须带**过度裸露**那三条，且按平台原文豁免吊带/露肩。

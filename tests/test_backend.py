@@ -2508,6 +2508,52 @@ class WorkflowPreparationTests(unittest.TestCase):
         with patch.object(batch_ai, "SHARPNESS_BLOCK", block + "\n再清楚一点"):
             self.assertNotEqual(batch_ai.compliance_fingerprint(), local)
 
+    def test_image_prompts_clean_the_background(self) -> None:
+        """2026-09-21 用户：「如果抽帧图片背景里有人需要将其他人去掉，现在生成的背景里的人会变得
+        很奇怪；如果背景很杂乱需要处理一下」。
+
+        根因：精简模板第一句就是「以图像-1 为唯一的**场景、背景**基准」，抽帧背景里的同框其他人
+        （路人/观众/伴舞/镜面倒影）会被照抄进成图，而且画得很怪；原来只在【出片可用性】里带了
+        一句「不要……路人」，被淹没了。所以升级成一个独立的硬要求块，并**收进口径指纹**。
+        口径（用户逐条确认）：① 其他人**全部去掉**、只留图像-2 本人一个；② **保留原场景**
+        （类型/空间结构/光线不变）只清杂物 + 补全背景 —— 换成别的场景成片就跟源视频对不上了；
+        ③ **不许用重度虚化糊掉**杂乱背景（那是"藏"不是"清"，而且背景一糊 ComfyUI 就没有可依据的
+        空间结构）。
+        """
+        block = batch_ai.BACKGROUND_CLEAN_BLOCK
+        self.assertIn("只能有图像-2 这一个人", block)
+        self.assertIn("一律不要画进成图", block)
+        self.assertIn("把背景自然补全", block)
+        self.assertIn("保留原场景的类型、空间结构与光线", block)
+        self.assertIn("不许用重度虚化", block)
+        for kind in ("dance", "singing"):
+            prompt = batch_ai.compose_image_prompt(kind)
+            self.assertIn("【背景清理 · 硬要求", prompt)
+            self.assertIn(block.strip(), prompt)
+            # 仍然必须是精简模板（长提示词会把硬要求淹掉，别借这次改动把它拼回去）
+            self.assertLess(len(prompt), 2000)
+            # 背景块在身份块之前（脸仍然排在最后）
+            self.assertLess(
+                prompt.index("【背景清理 · 硬要求"),
+                prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
+            )
+        # 口径指纹要跟着背景块一起变（否则自检会误判「线上已是最新」）
+        local = batch_ai.compliance_fingerprint()
+        with patch.object(batch_ai, "BACKGROUND_CLEAN_BLOCK", block + "\n再干净一点"):
+            self.assertNotEqual(batch_ai.compliance_fingerprint(), local)
+
+    def test_frame_picker_also_avoids_bystanders(self) -> None:
+        """挑抽帧那一步要一并挑「背景里没有其他人」的帧（同一次视觉调用，不多花钱）。
+
+        与「不加自动判据」的口径不冲突：它只做**定位 + 比清晰度/干净度**，挑不出来照样退回
+        「整幅最清楚的那张」（`choose_sharp_hands_frame` 返回 None）。
+        """
+        text = batch_ai.SHARP_FRAME_INSTRUCTION
+        self.assertIn("双手最清楚", text)
+        self.assertIn("背景里没有其他人", text)
+        self.assertIn("伴舞", text)
+        self.assertIn("index=0", text)          # 分不出高下时的老回退口径不能丢
+
     def test_compliance_allows_changing_the_outfit_when_the_source_is_racy(self) -> None:
         """源头造型擦边时**允许换款式**——用户 2026-09-20 取消了早期那条硬约束。
 
@@ -2629,6 +2675,22 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertLess(body.index("【身份优先级】"), body.index("【画面比例·硬要求】"))
         # 关掉身份块时也不会把比例弄丢
         self.assertIn("【画面比例·硬要求】", person_body("", "【画面比例·硬要求】9:16"))
+
+    def test_desktop_cdp_person_prompt_carries_the_background_cleanup_rule(self) -> None:
+        """桌面 CDP 那条按需出图路的人物图正文里也要有「背景清理」（同一份口径一起同步）。
+
+        桌面 .txt 只说「背景参考图一」，模型于是把抽帧里同框的路人一起照抄进来 —— 这一句
+        必须由 `person_body()` 补进正文，且排在身份块之前（身份与比例要最后读到）。
+        """
+        from scripts.chat_imagegen import BACKGROUND_NOTE, person_body
+
+        body = person_body("【身份优先级】保住本人", "【画面比例·硬要求】9:16")
+        self.assertIn("【背景清理 · 硬要求】", body)
+        self.assertIn("只能有本人这一个人", body)
+        self.assertIn("保留原场景的类型、空间结构与光线", body)
+        self.assertIn("不许用重度虚化", BACKGROUND_NOTE)
+        self.assertLess(body.index("【背景清理"), body.index("【身份优先级】"))
+        self.assertLess(body.index("【身份优先级】"), body.index("【画面比例·硬要求】"))
 
     def test_batch_tags_are_exactly_five(self) -> None:
         """发布标签固定 5 个。"""
