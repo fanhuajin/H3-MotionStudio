@@ -1934,6 +1934,7 @@ async def _prepare_review_work(
                 song_name=str(result.get("song_name") or ""),
                 song_mood=str(result.get("song_mood") or ""),
                 description=meta_desc,
+                source_tags=meta_tags,
                 feedback=feedback if mode in {"copy", "both"} else "",
             )
             for key in ("title", "introduction", "tags"):

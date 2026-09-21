@@ -2779,6 +2779,84 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(copy_schema["properties"]["tags"]["maxItems"], 5)
         self.assertEqual(copy_schema["properties"]["tags"]["minItems"], 5)
 
+    def test_copy_prefers_the_original_video_copy_and_tags(self) -> None:
+        """2026-09-21 用户：「还有生成的标题简介标签都尽量参考原视频的」。
+
+        口径（逐条确认）：① **能沿用就沿用**、以原作品描述为主 —— 旧口径正好相反：预审写着
+        「参考原文风格但**不要照抄**」，出图后那次重写更写着「**不要照抄原作品描述**」、
+        而且连原标签都没传进去；② **原标签优先占满 5 个**；③ 旧红线继续生效
+        （不许互动喊话、不许客观描述句）。
+        """
+        source = {"description": "随手一跳 今天的风很好", "tags": ["舞蹈", "日常", "卡点舞"]}
+        prompts = {
+            "预审": batch_ai.preflight_prompt(kind="dance", duration=15.0, **source),
+            "按图重写": batch_ai.copy_prompt(
+                kind="dance", song_name="", song_mood="",
+                description=source["description"], source_tags=source["tags"],
+            ),
+        }
+        for label, prompt in prompts.items():
+            self.assertIn("第一来源", prompt, label)
+            self.assertIn("能沿用就直接沿用", prompt, label)
+            self.assertIn("优先取原作品描述里最像标题的那一句", prompt, label)
+            self.assertIn("优先用原标签", prompt, label)
+            self.assertIn("不足 5 个才自己补", prompt, label)
+            # 旧口径必须消失，否则模型照样另起炉灶
+            self.assertNotIn("不要照抄原作品描述", prompt, label)
+            self.assertNotIn("参考原文风格但不要照抄", prompt, label)
+            # 旧红线继续生效
+            self.assertIn("不许互动喊话", prompt, label)
+        # 原标签必须**真的进正文**（以前这条路只看得到描述）
+        self.assertIn(
+            '原标签：["舞蹈", "日常", "卡点舞"]',
+            batch_ai.copy_prompt(
+                kind="dance", song_name="", song_mood="",
+                description=source["description"], source_tags=source["tags"],
+            ),
+        )
+
+    def test_write_copy_hands_the_source_tags_to_the_prompt(self) -> None:
+        """出图后那次重写也要看得到原标签：`write_copy()` 必须把 `source_tags` 传进去。"""
+        captured: dict = {}
+
+        async def fake_chat_structured(*, content, schema, name, label):
+            captured["text"] = content[0]["text"]
+            return {}
+
+        with tempfile.TemporaryDirectory() as raw, patch.object(
+            batch_ai, "_chat_structured", fake_chat_structured
+        ):
+            image = Path(raw) / "candidate.png"
+            Image.new("RGB", (8, 8), "#123456").save(image)
+            asyncio.run(batch_ai.write_copy(
+                kind="dance",
+                candidate_image=image,
+                description="原描述",
+                source_tags=["舞蹈", "日常"],
+            ))
+        self.assertIn('原标签：["舞蹈", "日常"]', captured["text"])
+        self.assertIn("能沿用就直接沿用", captured["text"])
+
+    def test_source_tags_fill_the_five_slots_before_the_song_name(self) -> None:
+        """标签不足 5 个时**原标签优先**（用户 2026-09-21 选了「原标签优先占满 5 个」）。"""
+        result = {
+            "title": "标题", "introduction": "简介",
+            "tags": ["评论区点歌"], "song_name": "爱如潮水",
+        }
+        batch_ai.ensure_copy_fields(
+            result, kind="singing", description="", source_tags=["原标签A", "原标签B"]
+        )
+        self.assertEqual(result["tags"][:2], ["原标签A", "原标签B"])
+        self.assertNotIn("评论区点歌", result["tags"])
+        # ⚠️ 已经够 5 个时**一个字都不许动**：读取路径每次都过 `ensure_copy_fields`，
+        # 动了就会把存量条目的标签默默改掉。
+        keep = {
+            "title": "t", "introduction": "i",
+            "tags": ["模型1", "模型2", "模型3", "模型4", "模型5"],
+        }
+        batch_ai.ensure_copy_fields(keep, kind="singing", description="", source_tags=["原标签A"])
+        self.assertEqual(keep["tags"], ["模型1", "模型2", "模型3", "模型4", "模型5"])
+
     def test_batch_ai_reads_user_env_when_process_env_is_missing(self) -> None:
         """后端由别的进程拉起时 `os.getenv` 只有启动快照：用户 setx 存的配置必须回读注册表。
 

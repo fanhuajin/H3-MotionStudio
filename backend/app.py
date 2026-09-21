@@ -1526,6 +1526,9 @@ async def upload_batch_item_image(
                 song_name=str(ai.get("song_name") or ""),
                 song_mood=str(ai.get("song_mood") or ""),
                 description=str((item.get("sourceMetadata") or {}).get("desc") or ""),
+                # 原标签也要给：用户 2026-09-21「标题简介标签都尽量参考原视频的」，
+                # 少了它这一版只看得到原描述、标签只能靠模型原创。
+                source_tags=[str(tag) for tag in (item.get("sourceMetadata") or {}).get("tags") or []],
             )
             for key in ("title", "introduction", "tags"):
                 if copy.get(key):
