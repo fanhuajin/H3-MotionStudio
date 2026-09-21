@@ -7885,6 +7885,67 @@ class BatchRunnerTakeoverTests(unittest.TestCase):
             "字幕任务不该被当成「占用流水线」的理由",
         )
 
+    def test_pipeline_wait_does_not_block_on_a_voice_batch_that_is_still_waiting(self):
+        """「一键批量转音色」在**等出片空档**时不许反过来挡住出片（否则两边互相等死）。
+
+        2026-09-22 用户点「一键批量转换音色」却什么反应都没有：那条 rvc_batch 的状态是
+        `queued`（正在等出片空档、ComfyUI 都没碰），出片侧却把它当成「显卡被占」不去提交，
+        于是 rvc_batch 永远等不到空档 —— 与 `_batch_busy` 看到自己那一半是**同一对**死锁。
+        """
+        from backend import batch_worker
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            async def get(self, _url):
+                return BatchRunnerTakeoverTests._Resp(
+                    {"app": {"id": "d2b949da", "kind": "rvc_batch", "status": "queued", "stage": "waiting"}}
+                )
+
+        state = self._batch_state()
+        stub = self._stub_store(state)
+        with patch.object(batch_worker.httpx, "AsyncClient", lambda **_kw: FakeClient()), patch.object(
+            batch_worker, "batch_store", stub
+        ):
+            asyncio.run(asyncio.wait_for(batch_worker._wait_for_free_pipeline("b1", "i1"), timeout=1))
+        self.assertFalse(
+            [message for _item, message in stub.logs if "等待资源" in message],
+            "正在等空档的批量转音色不该被当成「占用流水线」的理由",
+        )
+
+    def test_pipeline_wait_still_waits_for_a_voice_batch_that_is_converting(self):
+        """真在转音色（`running`，此时 ComfyUI 已被它关掉）时，出片仍然要等它，不许硬抢显卡。"""
+        from backend import batch_worker
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            async def get(self, _url):
+                return BatchRunnerTakeoverTests._Resp(
+                    {"app": {"id": "5a54a8d6", "kind": "rvc_batch", "status": "running", "stage": "voice"}}
+                )
+
+        state = self._batch_state()
+        stub = self._stub_store(state)
+        with patch.object(batch_worker.httpx, "AsyncClient", lambda **_kw: FakeClient()), patch.object(
+            batch_worker, "batch_store", stub
+        ), patch.object(batch_worker, "PIPELINE_FREE_WAIT_SECONDS", 0.0), patch.object(
+            batch_worker, "PIPELINE_WAIT_POLL_SECONDS", 0.0
+        ):
+            asyncio.run(asyncio.wait_for(batch_worker._wait_for_free_pipeline("b1", "i1"), timeout=5))
+        self.assertTrue(
+            [message for _item, message in stub.logs if "等待资源" in message],
+            "正在转音色的批量任务仍然算「占着流水线」",
+        )
+
     def test_pipeline_wait_gives_up_instead_of_waiting_forever(self):
         """兜底：真有一条任务把流水线占着不放，等满上限也要如实记一条并继续提交。"""
         from backend import batch_worker
@@ -9320,6 +9381,79 @@ class RvcBatchTests(unittest.TestCase):
 
             self.assertGreaterEqual(busy["n"], 3, "应当一直等到出片空档")
             self.assertTrue(stopped, "等到空档后要关掉 ComfyUI 再转音色")
+
+    def test_the_voice_batch_never_waits_for_itself(self) -> None:
+        """回归（2026-09-22 用户：「批量音色转换开始了吗 怎么好像没有效果我点击了」）。
+
+        任务刚建好时，它自己就是任务表里最新的 `queued` 条目 —— 旧的 `_batch_busy()` 用
+        `store.active()` 会**看到自己**、报「还有一条 rvc_batch 任务在跑」，于是永远等下去，
+        一条都不会转（页面看着就是「点了没反应」）。判据换成 `pipeline.gpu_holder()` 后必须
+        立刻放行。这条把两个判据的差别一起钉住，别再改回 `store.active()`。
+        """
+        from backend import rvc_batch
+        from backend.pipeline import gpu_holder
+
+        class _NoBatches:
+            """批次库隔离：这条测的是任务表判据，别去读用户真实的批次。"""
+
+            def active(self):
+                return None
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            root = Path(raw)
+            with self._temp_jobs(root) as job_store, patch.object(rvc_batch, "batch_store", _NoBatches()):
+                job_id = self._batch_job(job_store, [])
+                # 旧判据踩的坑：`store.active()` 看到的就是这条任务自己
+                self.assertEqual((job_store.active() or {}).get("id"), job_id)
+                self.assertIsNone(gpu_holder(), "还在等空档的 rvc_batch 不算占显卡")
+                self.assertEqual(rvc_batch._batch_busy(), "", "不许等到自己头上")
+
+    def test_gpu_holder_ignores_cpu_only_jobs_and_the_newest_waiting_batch(self) -> None:
+        """`gpu_holder()` 是「谁真的占着显卡」的唯一判据：**跳过纯 CPU 的字幕**与**还没抢到卡**
+        的 rvc_batch，而不是无脑取 `store.active()` 的最新那条。"""
+        from backend.pipeline import gpu_holder
+
+        def job(job_id: str, kind: str, status: str, created: str) -> dict:
+            return {
+                "id": job_id, "kind": kind, "status": status, "stage": kind,
+                "createdAt": created, "updatedAt": created, "milestones": [], "logs": [],
+            }
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            with self._temp_jobs(Path(raw)) as job_store:
+                job_store.create(job("singing-1", "singing", "queued", "2026-01-01T00:00:01+00:00"))
+                job_store.create(job("subs-1", "subtitle_batch", "running", "2026-01-01T00:00:02+00:00"))
+                job_store.create(job("voice-waiting", "rvc_batch", "queued", "2026-01-01T00:00:03+00:00"))
+                self.assertEqual(gpu_holder()["id"], "singing-1", "字幕与等空档的批量都不算占卡")
+
+                job_store.create(job("voice-running", "rvc_batch", "running", "2026-01-01T00:00:04+00:00"))
+                self.assertEqual(gpu_holder()["id"], "voice-running", "真在转音色仍然算占卡")
+
+                job_store.create(job("subs-2", "subtitle", "running", "2026-01-01T00:00:05+00:00"))
+                self.assertEqual(gpu_holder()["id"], "voice-running", "最新的字幕不许顶掉真的占卡任务")
+
+    def test_a_running_batch_item_still_makes_the_voice_batch_wait(self) -> None:
+        """出片真的在跑（条目 running）时仍然要等 —— 修死锁不许把这条纪律一起改掉。"""
+        from backend import rvc_batch
+
+        class _BusyBatch:
+            def active(self):
+                return {"id": "b1", "items": [{"index": 3, "status": "running"}]}
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as raw:
+            with self._temp_jobs(Path(raw)), patch.object(rvc_batch, "batch_store", _BusyBatch()):
+                self.assertEqual(rvc_batch._batch_busy(), "批量第 3 条正在出片")
+
+    def test_the_page_restores_a_voice_batch_after_a_refresh(self) -> None:
+        """源码级：页面必须**同时**问 `kind=rvc` 与 `kind=rvc_batch`。
+
+        后端 `latest` 是精确匹配，只查 `rvc` 拿不到批量任务 —— 用户点了「一键批量转换音色」
+        之后一刷新页面，批量卡片整个消失、按钮又变回可点，看着就是「点击没效果」（2026-09-22）。
+        """
+        root = Path(__file__).resolve().parents[1]
+        page = (root / "src" / "RvcRoute.tsx").read_text(encoding="utf-8")
+        self.assertIn('"/api/jobs/latest?kind=rvc"', page)
+        self.assertIn("/api/jobs/latest?kind=rvc_batch", page)
 
     def test_the_button_and_the_endpoint_are_wired(self) -> None:
         """源码级：后端有 `/api/jobs/rvc/publish-batch`，页面有「一键批量转换音色」。"""

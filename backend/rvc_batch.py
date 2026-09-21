@@ -107,11 +107,17 @@ def _batch_busy() -> str:
 
     RVC 与出片抢同一张卡，所以**有出片在跑就等**（不打断它）；ComfyUI 还开着也一样要等
     —— 等的那条出片交付完，`_stop_comfy_if_idle` 会把它关掉。
+
+    ⚠️ 判据必须是 `pipeline.gpu_holder()`，**不能是 `store.active()`**：本任务在「等出片
+    空档」期间自己就是最新的 `queued` 任务，用 `store.active()` 会看到自己、报「还有一条
+    rvc_batch 任务在跑」并永远等下去 —— 2026-09-22 用户点的这一下就是这么静默死掉的
+    （「批量音色转换开始了吗 怎么好像没有效果我点击了」）。`gpu_holder()` 会把还没抢到卡的
+    rvc_batch（`queued`/`waiting`，包括它自己）与纯 CPU 的字幕任务都跳过。
     """
     try:
         from . import pipeline as pipeline_module
 
-        active = pipeline_module.store.active()
+        active = pipeline_module.gpu_holder()
     except Exception:  # noqa: BLE001
         active = None
     if active and str(active.get("status")) in {"queued", "running"}:

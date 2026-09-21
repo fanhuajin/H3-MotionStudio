@@ -99,6 +99,7 @@ from .pipeline import (
     comfy_health,
     estimate_migrate_segments,
     estimate_singing_segments,
+    gpu_holder,
     media_metadata,
     pipeline_lock,
     resources,
@@ -1803,7 +1804,10 @@ async def create_job(
     use_rvc: str = Form("1"),
     use_upscale: str = Form("1"),
 ):
-    active = store.active()
+    # 判据用 `gpu_holder()`，不能用 `store.active()`：一条**正在等出片空档**的「批量转音色」
+    # 任务本身不占显卡，用 `store.active()` 会把它当成「已有任务正在运行」，于是批量出片的
+    # 下一个子任务永远提交不上来、那条 rvc_batch 也永远等不到空档（互相等死，2026-09-22）。
+    active = gpu_holder()
     if active:
         raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
 
@@ -1912,7 +1916,8 @@ async def create_migrate_job(
     image_prompt: str = Form(""),
     use_upscale: str = Form("1"),
 ):
-    active = store.active()
+    # 与 `POST /api/jobs` 同一条口径：只有**真的占着显卡**的任务才算「已有任务正在运行」。
+    active = gpu_holder()
     if active:
         raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
 
@@ -2055,7 +2060,8 @@ async def create_upscale_job(
     source_key: str = Form("final"),
 ):
     """独立二采放大：上传视频或引用最近任务成片，固定 4× 放大后收 1080p 档。"""
-    active = store.active()
+    # 与 `POST /api/jobs` 同一条口径（等待中的 rvc_batch 不占显卡、不该挡住出片）。
+    active = gpu_holder()
     if active:
         raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
     if video is None and not source_job_id:

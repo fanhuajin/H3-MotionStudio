@@ -2321,7 +2321,10 @@ async def _wait_for_free_pipeline(batch_id: str, item_id: str) -> None:
       取消那把锁），但它照样是 `queued`/`running` 的 `store.active()`，于是整批出片会被
       一条卡住的字幕任务**无限期堵死**：条目日志停在「已有单链路任务运行，当前条目正在
       等待资源。」，runner 一直等它，界面看上去就是「点了重新开始没有任何反应」。
-      所以这类任务直接跳过。
+      所以这类任务直接跳过（字幕批量 `subtitle_batch` 同理，也是纯 CPU）。
+    * 「一键批量转音色」**还没抢到卡**时（`queued`/`stage=waiting`）同样跳过 —— 那是它正在
+      等出片空档，把它当成「显卡被占」就成互相等死（2026-09-22 用户点了批量音色却什么都
+      没发生的那一次）。真在 `running` 转音色的那条仍然要等（此时 ComfyUI 已被它关掉）。
     * 兜底：万一真的有任务卡死把锁占着不放，这里也不许无限等 —— 等满
       `PIPELINE_FREE_WAIT_SECONDS` 就如实记一条日志交给提交逻辑（那边有 409 重试，
       实在不行会报出真实原因，绝不会静默挂住）。
@@ -2344,8 +2347,15 @@ async def _wait_for_free_pipeline(batch_id: str, item_id: str) -> None:
         active = payload.get("app")
         if not active or active.get("status") not in {"queued", "running"}:
             return
-        if str(active.get("kind") or "") == "subtitle":
+        kind = str(active.get("kind") or "")
+        if kind in {"subtitle", "subtitle_batch"}:
             # 字幕任务不用 ComfyUI、也不持流水线锁：不该成为出片的等待理由
+            return
+        if kind == "rvc_batch" and str(active.get("status")) != "running":
+            # 「一键批量转音色」在**等出片空档**时状态是 queued/stage=waiting，它自己正在等
+            # 我们出片 —— 要是把它当成「显卡被占」，两边就互相等死（2026-09-22 与
+            # `rvc_batch._batch_busy` 的自我死锁一起修的一对）。真正在跑 RVC（`running`，
+            # 此时 ComfyUI 已被它关掉）仍然要等。
             return
         if not announced:
             batch_store.add_item_log(batch_id, item_id, "已有单链路任务运行，当前条目正在等待资源。")

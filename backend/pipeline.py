@@ -92,6 +92,42 @@ def _log_maybe(job_id: str | None, message: str) -> None:
         store.add_log(job_id, message)
 
 
+# **不占显卡**的任务类型：剪映 + ffmpeg 的字幕链路是纯 CPU（用户明确要求取消那把锁），
+# 不该成为出片的等待理由。判断「谁占着显卡」时一律跳过。
+NOT_GPU_KINDS = frozenset({"subtitle", "subtitle_batch"})
+
+
+def gpu_holder() -> dict[str, Any] | None:
+    """现在**真的占着显卡**的那条任务；空闲返回 None。全工程共用的唯一判据。
+
+    ⚠️ 这里**不能用** `store.active()`：它只看**最新**的 `queued`/`running` 任务，于是一条
+    不占显卡的任务会把所有人堵死。2026-09-22 实测踩到的就是这个（用户：「批量音色转换
+    开始了吗 怎么好像没有效果我点击了」）——「一键批量转音色」在**等出片空档**期间状态是
+    `queued`，而它自己就是最新那条任务，于是：
+
+    * `rvc_batch._batch_busy()` 看到「还有一条 rvc_batch 在跑」（其实是它自己）→ 永远等下去；
+    * 出片侧（`batch_worker._wait_for_free_pipeline` 与 `POST /api/jobs` 的 409 闸）看到这条
+      **正在等空档**的 rvc_batch，以为显卡被占 → 不出片 → 它永远等不到空档。
+      两边互相等 ⇒ 整条链路静默僵死，页面上什么都不会发生。
+
+    口径：`NOT_GPU_KINDS` 直接跳过；`rvc_batch` 只有在**已经抢到卡**（`running`，此时它已经
+    把 ComfyUI 关掉了）时才算占卡 —— `queued`/`waiting` 恰恰说明它在等出片，绝不能被当成
+    「显卡被占」。其余类型（singing / migrate / upscale / rvc / 老的无 kind 任务）都算。
+    """
+    try:
+        jobs = store.active_all()
+    except Exception:  # noqa: BLE001 - 读不到任务表就按空闲放行（与既有兜底同口径）
+        return None
+    for job in jobs:
+        kind = str(job.get("kind") or "singing")   # 老任务没有 kind，按 singing 算
+        if kind in NOT_GPU_KINDS:
+            continue
+        if kind == "rvc_batch" and str(job.get("status") or "") != "running":
+            continue
+        return job
+    return None
+
+
 class ResourceManager:
     def __init__(self) -> None:
         self.comfy_process: subprocess.Popen | None = None

@@ -196,15 +196,27 @@ export function RvcRoute() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=rvc", { cache: "no-store" }), "读取上次任务失败"),
-    ]).then(([latest]) => {
-      if (cancelled) return;
-      if (latest?.id) {
+    // **两条路都要问**：单条转换是 `kind=rvc`，一键批量是 `kind=rvc_batch`（后端 `latest`
+    // 是精确匹配，查 `rvc` 拿不到 `rvc_batch`）。少了后者，用户点了「一键批量转换音色」之后
+    // 一刷新页面批量卡片就整个消失、看上去像「点击没效果」（2026-09-22 用户原话）。
+    const single = readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=rvc", { cache: "no-store" }), "读取上次任务失败");
+    const batch = readJsonOrNull<JobState>(fetch("/api/jobs/latest?kind=rvc_batch", { cache: "no-store" }), "读取上次批量失败");
+    Promise.all([single, batch])
+      .then(([singleJob, batchJob]) => {
+        if (cancelled) return;
+        // 「等出片空档」时批量任务是 queued，也属于**活着**的任务，必须能恢复出来
+        const live = ["waiting", "queued", "running", "paused", "cancelling"];
+        const activeBatch = batchJob && live.includes(batchJob.status) ? batchJob : null;
+        const activeSingle = singleJob && live.includes(singleJob.status) ? singleJob : null;
+        const terminal = [batchJob, singleJob]
+          .filter((item): item is JobState => Boolean(item && !live.includes(item.status)))
+          .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] || null;
+        const latest = activeBatch || activeSingle || terminal;
+        if (!latest?.id) return;
         setJob(latest);
-        if (["queued", "running"].includes(latest.status)) connectJob(latest.id);
-      }
-    }).catch(() => setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。"));
+        if (["waiting", "queued", "running", "cancelling"].includes(latest.status)) connectJob(latest.id);
+      })
+      .catch(() => setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。"));
     return () => {
       cancelled = true;
       socketRef.current?.close();
