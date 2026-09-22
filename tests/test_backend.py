@@ -308,13 +308,36 @@ class FullAutoImageTests(unittest.TestCase):
         def fake_create_task(coro):
             created.append(getattr(coro, "__qualname__", "task"))
             coro.close()
-            return type("T", (), {"add_done_callback": lambda self, cb: None})()
+            return type("T", (), {"add_done_callback": lambda self, cb: cb(self)})()
 
         with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), patch.object(
             batch_worker, "_item", lambda *_: item
         ), patch.object(batch_worker.asyncio, "create_task", fake_create_task):
             self.assertTrue(batch_worker.spawn_api_covers("b", "item-1"))
         self.assertEqual(len(created), 1)
+
+    def test_same_item_cannot_queue_two_cover_tasks(self) -> None:
+        """备料与出片前体检同时触发时，同一条只能留一个封面任务。"""
+        from backend import batch_worker
+
+        root, folder, item = self._item(image="x")
+        batch_worker._COVER_ITEM_KEYS.clear()
+        self.addCleanup(batch_worker._COVER_ITEM_KEYS.clear)
+        self.addCleanup(batch_worker._COVER_TASKS.clear)
+
+        class PendingTask:
+            def add_done_callback(self, callback):
+                self.callback = callback
+
+        def fake_create_task(coro):
+            coro.close()
+            return PendingTask()
+
+        with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), patch.object(
+            batch_worker, "_item", lambda *_: item
+        ), patch.object(batch_worker.asyncio, "create_task", fake_create_task):
+            self.assertTrue(batch_worker.spawn_api_covers("b", "item-1"))
+            self.assertFalse(batch_worker.spawn_api_covers("b", "item-1"))
 
     def test_cover_task_skips_a_cover_that_is_already_there(self) -> None:
         """任务真的跑起来时也要逐张跳过已有的那张（不能因为另一张缺就两张都重出）。"""
@@ -2247,18 +2270,18 @@ class WorkflowPreparationTests(unittest.TestCase):
             # 比例必须精确：不能用 1536x1024 这种 3:2 冒充 4:3
             self.assertEqual(width * expected[1], height * expected[0], f"{ratio} 比例不精确")
 
-    def test_batch_image_request_plans_fall_back_to_singular_field(self) -> None:
-        """官方多图编辑用 image[]，中转站文档只写 image：要能自动回退。"""
+    def test_batch_image_uses_one_explicit_request_shape(self) -> None:
+        """计费出图不能自动试三种格式：一次操作只允许一种请求形态。"""
         with process_env_only():
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop("H3_BATCH_IMAGE_FIELD", None)
                 os.environ.pop("H3_BATCH_IMAGE_MODE", None)
                 self.assertEqual(
                     batch_image.request_plans(),
-                    [("multi", "image[]"), ("multi", "image"), ("composite", "image")],
+                    [("multi", "image")],
                 )
             with patch.dict(os.environ, {"H3_BATCH_IMAGE_FIELD": "image"}, clear=False):
-                self.assertEqual(batch_image.request_plans(), [("multi", "image"), ("composite", "image")])
+                self.assertEqual(batch_image.request_plans(), [("multi", "image")])
             with patch.dict(
                 os.environ,
                 {"H3_BATCH_IMAGE_MODE": "composite", "H3_BATCH_IMAGE_FIELD": ""},
@@ -2280,8 +2303,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                 self.assertGreater(image.width, 512 * 2)
                 self.assertLess(image.width, 512 * 2 + 768)
 
-    def test_batch_image_falls_back_on_transport_error(self) -> None:
-        """连接失败这类传输层异常也必须走回退链，并汇总每一步的失败原因。"""
+    def test_batch_image_does_not_retry_an_uncertain_transport_error(self) -> None:
+        """连接失败时服务端可能已计费：不能自动改格式或换线路再出一张。"""
         import asyncio
 
         import httpx as _httpx
@@ -2314,8 +2337,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                     )
             message = str(caught.exception)
             self.assertIn("连接失败", message)
-            self.assertIn("composite", message)  # 提示可切单图拼合
-            self.assertEqual(calls, ["image[]", "image", "image[]"])
+            self.assertIn("没有自动改格式或换线路重试", message)
+            self.assertEqual(calls, ["image"])
 
     def test_batch_image_provider_selection(self) -> None:
         """全自动开着 → 用中转站出图；关掉才回到「用户自己出图」的老默认。
@@ -2927,7 +2950,9 @@ class WorkflowPreparationTests(unittest.TestCase):
                 200, {"choices": [{"message": {"content": '```json\n{"title": "只准你看我的眼睛"}\n```'}}]}
             )
 
-        with patch.object(batch_ai, "_JSON_SCHEMA_SUPPORTED", None), patch.object(
+        with patch.object(batch_ai, "LUNA_MODEL", "schema-capable-test-model"), patch.object(
+            batch_ai, "_JSON_SCHEMA_SUPPORTED", None
+        ), patch.object(
             batch_ai, "_headers", lambda: {"Authorization": "Bearer test"}
         ), patch.object(_httpx.AsyncClient, "post", fake_post):
             result = asyncio.run(
@@ -2949,6 +2974,41 @@ class WorkflowPreparationTests(unittest.TestCase):
         with patch.object(batch_ai, "_JSON_SCHEMA_SUPPORTED", False):
             self.assertEqual(batch_ai._json_mode(), "object")
         batch_ai._JSON_SCHEMA_SUPPORTED = None
+
+    def test_ds_server_error_is_not_automatically_retried(self) -> None:
+        """服务端可能已完成推理：5xx/断线后不能再发第二个计费请求。"""
+        import asyncio
+        import httpx as _httpx
+
+        from backend import batch_ai
+
+        schema = {
+            "type": "object", "properties": {"title": {"type": "string"}},
+            "required": ["title"], "additionalProperties": False,
+        }
+        calls = 0
+
+        class FakeResponse:
+            status_code = 500
+            text = '{"error":{"message":"upstream response lost"}}'
+
+            def json(self):
+                return {"error": {"message": "upstream response lost"}}
+
+        async def fake_post(self, url, headers=None, json=None):  # noqa: A002
+            nonlocal calls
+            calls += 1
+            return FakeResponse()
+
+        with patch.object(batch_ai, "LUNA_MODEL", "deepseek-flash"), patch.object(
+            batch_ai, "_headers", lambda: {"Authorization": "Bearer test"}
+        ), patch.object(_httpx.AsyncClient, "post", fake_post):
+            with self.assertRaisesRegex(RuntimeError, "未自动重试"):
+                asyncio.run(batch_ai._chat_structured(
+                    content=[{"type": "text", "text": "写标题"}], schema=schema,
+                    name="t", label="测试",
+                ))
+        self.assertEqual(calls, 1)
 
     def test_unhandled_errors_answer_json_with_a_readable_detail(self) -> None:
         """未处理异常必须回 **JSON**（HTTP 500），不能回纯文本 `Internal Server Error`。
@@ -9428,7 +9488,9 @@ def _run_with(case: SceneFramePickerTests, pick, scores, payloads) -> bytes:
         video.write_bytes(b"fake")
         target = root / "scene-frame.jpg"
         queue = list(payloads)
-        with patch.object(batch_worker, "_video_duration_seconds", lambda _p: 10.0), patch.object(
+        with patch.dict(os.environ, {"H3_BATCH_AI_FRAME_PICK": "1"}, clear=False), patch.object(
+            batch_worker, "_video_duration_seconds", lambda _p: 10.0
+        ), patch.object(
             batch_worker, "_extract_frame_bytes",
             lambda *a, **k: queue.pop(0) if queue else None,   # 抽完就当成抽不到帧
         ), patch.object(batch_worker, "_frame_detail_score", lambda data: scores.pop(0)), patch.object(
@@ -10370,8 +10432,6 @@ class CoverSingleReferenceFallbackTests(unittest.IsolatedAsyncioTestCase):
         from backend import batch_image
 
         self.batch_image = batch_image
-        self.addCleanup(setattr, batch_image, "_STICKY_PLAN", None)
-        batch_image._STICKY_PLAN = None
         self.root = Path(tempfile.mkdtemp(prefix="h3-cover-fallback-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
@@ -10379,6 +10439,7 @@ class CoverSingleReferenceFallbackTests(unittest.IsolatedAsyncioTestCase):
         from backend import batch_image
 
         plans: list[tuple[str, str]] = []
+        self.plans = plans
         real_build = batch_image._build_request
 
         def build(plan, field, **kwargs):
@@ -10414,7 +10475,6 @@ class CoverSingleReferenceFallbackTests(unittest.IsolatedAsyncioTestCase):
                         scene_image=scene, identity_image=identity,
                         prompt="封面提示词", ratio="3:4", output_path=out,
                     )
-        self.plans = plans
         return out
 
     def _png(self, name: str, *, size: tuple[int, int] = (60, 45)) -> Path:
@@ -10431,14 +10491,14 @@ class CoverSingleReferenceFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.plans, "至少应该真的试过一套方案")
         self.assertIn("multi", [plan for plan, _ in self.plans])
 
-    async def test_two_references_still_fall_back_to_the_composite_plan(self) -> None:
-        """人物图那一步（两张参考图）照样按顺序回退：multi 失败 → composite。"""
+    async def test_two_references_do_not_fall_back_after_a_billed_request(self) -> None:
+        """multi 请求失败后不再自动发 composite，避免一次操作被扣两笔。"""
         scene = self._png("scene.png")
         identity = self._png("identity.png", size=(40, 30))
-        out = await self._run(scene, identity, multi_ok=False)
-        self.assertTrue(out.is_file())
+        with self.assertRaisesRegex(RuntimeError, "没有自动改格式或换线路重试"):
+            await self._run(scene, identity, multi_ok=False)
         self.assertEqual([plan for plan, _ in self.plans][0], "multi")
-        self.assertIn(("composite", "image"), self.plans)
+        self.assertEqual(len(self.plans), 1)
 
 
 if __name__ == "__main__":

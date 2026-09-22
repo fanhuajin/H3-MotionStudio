@@ -101,8 +101,8 @@ class ImageWorkbenchTests(unittest.TestCase):
                 with self.assertRaises((ValueError, FileNotFoundError)):
                     workbench.resolve_folder("2e2e2f2e2e")
 
-    def test_person_image_keeps_the_highest_similarity_and_never_judges_hands(self) -> None:
-        """人物图只按相似度重做；**手部没有自动判据**（三模型标定都不可靠，见 AGENTS.md）。"""
+    def test_person_image_low_score_does_not_auto_regenerate(self) -> None:
+        """低分只提示，默认不能暗中再出一张并产生第二笔图片费用。"""
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             Image.new("RGB", (1080, 1920)).save(folder / "抽帧.jpg")
@@ -113,28 +113,23 @@ class ImageWorkbenchTests(unittest.TestCase):
                 Path(output_path).write_bytes(png_shade(1152, 2048, 10 * len(attempts)))
                 return Path(output_path)
 
-            async def fake_identity(identity, candidate):
-                # 第一张 50 分（不够 70）→ 重做；第二张 80 分（够）→ 留下第二张
-                return {"same_person": True, "similarity": 50 if len(attempts) == 1 else 80,
-                        "differences": [], "verdict": "ok"}
-
-            async def fake_compliance(candidate):
-                return True, []
+            async def fake_judge(identity, candidate):
+                return {"same_person": False, "similarity": 50, "differences": [],
+                        "compliant": True, "issues": [], "verdict": "low"}
 
             with patch.object(workbench.batch_image, "defocus_reference_face", fake_defocus), \
                  patch.object(workbench.batch_image, "generate_candidate_image", fake_generate), \
-                 patch.object(workbench.batch_ai, "judge_identity", fake_identity), \
-                 patch.object(workbench.batch_image, "judge_compliance_safe", fake_compliance), \
+                 patch.object(workbench.batch_ai, "judge_person_image", fake_judge), \
                  patch.object(workbench, "person_prompt", lambda folder, kind: "提示词"):
                 score = asyncio.run(workbench._generate_person(folder, "dance"))
 
-            self.assertEqual(len(attempts), 2)
-            self.assertEqual(score, 80)
-            self.assertEqual(shade_of(folder / workbench.PERSON_NAME), 20)
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(score, 50)
+            self.assertEqual(shade_of(folder / workbench.PERSON_NAME), 10)
             self.assertFalse(hasattr(workbench.batch_ai, "judge_hands"))
 
-    def test_person_image_prefers_a_compliant_take_over_a_higher_score(self) -> None:
-        """着装自检：第一张 80 分但衣服暴露、第二张 75 分合规 → 必须留合规那张。"""
+    def test_person_image_noncompliance_does_not_auto_regenerate(self) -> None:
+        """不合规只提示并保留本次结果，是否再花钱由用户明确决定。"""
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             Image.new("RGB", (1080, 1920)).save(folder / "抽帧.jpg")
@@ -145,25 +140,19 @@ class ImageWorkbenchTests(unittest.TestCase):
                 Path(output_path).write_bytes(png_shade(1152, 2048, 10 * len(attempts)))
                 return Path(output_path)
 
-            async def fake_identity(identity, candidate):
-                return {"same_person": True, "similarity": 80 if len(attempts) == 1 else 75,
-                        "differences": [], "verdict": "ok"}
-
-            async def fake_compliance(candidate):
-                if len(attempts) == 1:
-                    return False, ["吊带背心", "露出事业线"]
-                return True, []
+            async def fake_judge(identity, candidate):
+                return {"same_person": True, "similarity": 80, "differences": [],
+                        "compliant": False, "issues": ["露出事业线"], "verdict": "不合规"}
 
             with patch.object(workbench.batch_image, "defocus_reference_face", fake_defocus), \
                  patch.object(workbench.batch_image, "generate_candidate_image", fake_generate), \
-                 patch.object(workbench.batch_ai, "judge_identity", fake_identity), \
-                 patch.object(workbench.batch_image, "judge_compliance_safe", fake_compliance), \
+                 patch.object(workbench.batch_ai, "judge_person_image", fake_judge), \
                  patch.object(workbench, "person_prompt", lambda folder, kind: "提示词"):
                 score = asyncio.run(workbench._generate_person(folder, "dance"))
 
-            self.assertEqual(len(attempts), 2)
-            self.assertEqual(score, 75)
-            self.assertEqual(shade_of(folder / workbench.PERSON_NAME), 20)  # 第二张（合规那张）
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(score, 80)
+            self.assertEqual(shade_of(folder / workbench.PERSON_NAME), 10)
 
     def test_person_image_never_blocks_when_the_compliance_judge_fails(self) -> None:
         """判据本身失败必须按合规放行：自检是质量门槛，不是出片前提。"""
@@ -177,21 +166,17 @@ class ImageWorkbenchTests(unittest.TestCase):
                 Path(output_path).write_bytes(png_shade(1152, 2048, 90))
                 return Path(output_path)
 
-            async def fake_identity(identity, candidate):
-                return {"same_person": True, "similarity": 88, "differences": [], "verdict": "ok"}
-
-            async def boom(candidate):
+            async def boom(identity, candidate):
                 raise RuntimeError("视觉端点不可用")
 
             with patch.object(workbench.batch_image, "defocus_reference_face", fake_defocus), \
                  patch.object(workbench.batch_image, "generate_candidate_image", fake_generate), \
-                 patch.object(workbench.batch_ai, "judge_identity", fake_identity), \
-                 patch.object(workbench.batch_ai, "judge_compliance", boom), \
+                 patch.object(workbench.batch_ai, "judge_person_image", boom), \
                  patch.object(workbench, "person_prompt", lambda folder, kind: "提示词"):
                 score = asyncio.run(workbench._generate_person(folder, "dance"))
 
             self.assertEqual(len(attempts), 1)  # 不因为自检挂了就重做
-            self.assertEqual(score, 88)
+            self.assertEqual(score, -1)
             self.assertTrue((folder / workbench.PERSON_NAME).is_file())
 
     def test_compliance_note_surfaces_the_reason_in_the_status_message(self) -> None:

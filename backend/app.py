@@ -128,6 +128,7 @@ from .settings import (
     UPSCALE_BATCH_FRAMES,
     UPSCALE_MODEL_X4,
     canvas_params,
+    env_value,
     normalize_batch_ratio,
     publish_subdir,
     required_paths,
@@ -1479,7 +1480,8 @@ async def upload_batch_item_image(
     """用户把在 GPT 聊天里做好的图片上传回来，作为该条目的候选人物图。
 
     默认出图方式是 `manual`：批量只备料（提示词 + 图一 + 图二），成图由用户提供。
-    上传后立刻按这张图重写发布文案，保证图文一致，然后仍停在审核点。
+    上传后默认沿用预审文案并停在审核点，避免为同一条再付一次 DS 看图费用；
+    只有显式设置 H3_BATCH_REWRITE_COPY=1 才按上传图重写。
     """
     state = _batch_or_404(batch_id)
     item = _batch_item_or_404(batch_id, item_id)
@@ -1519,7 +1521,10 @@ async def upload_batch_item_image(
             if locked_copy.get(key):
                 ai[key] = locked_copy[key]
         rewrite_note = "发布目录里已经出过封面，沿用原来的发布文案（不重写）。"
-    elif batch_ai.configured():
+    elif (
+        batch_ai.configured()
+        and env_value("H3_BATCH_REWRITE_COPY", "0").strip().lower() in {"1", "true", "yes", "on"}
+    ):
         try:
             copy = await batch_ai.write_copy(
                 kind=str(item.get("kind") or "singing"),
@@ -1538,7 +1543,7 @@ async def upload_batch_item_image(
         except Exception as error:  # 文案重写失败不影响放行，只记一条日志
             rewrite_note = f"文案重写失败，沿用原文案：{error}"
     else:
-        rewrite_note = "未配置文本模型，沿用原文案。"
+        rewrite_note = "沿用预审阶段的原文案（未再次调用 DS 看图重写，避免重复计费）。"
 
     ai["tags"] = [
         str(tag).strip().lstrip("#") for tag in ai.get("tags") or [] if str(tag).strip()

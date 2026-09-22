@@ -30,12 +30,11 @@ PERSON_NAME = "人物图.png"
 COVER_NAMES = {"bilibili": "B站4x3.png", "douyin": "抖音3x4.png"}
 LEGACY_COVER_NAMES = {"bilibili": "封面_B站4x3.png", "douyin": "封面_抖音3x4.png"}
 TARGETS = {"bilibili": (1448, 1086), "douyin": (1086, 1448)}
-# 人物图身份自检：相似度必须 ≥70（用户 2026-09-19：「人物相似度 必须70%以上」），
-# 不够就重做，最多 PERSON_MAX_ATTEMPTS 次，保留分数最高的那张。
+# 人物图完成后仍检查 70 分门槛，但默认只生成一次；低分由用户明确决定是否重做。
 # ⚠️ 手部**没有**自动判据：三个视觉模型标定下来都不可靠（见 `_generate_person` 的说明），
 # 手部只靠提示词约束 + 用户看图后自己点「重新生成这一步」。
-PERSON_MIN_SIMILARITY = 70
-PERSON_MAX_ATTEMPTS = 3
+PERSON_MIN_SIMILARITY = batch_image.PERSON_MIN_SIMILARITY
+PERSON_MAX_ATTEMPTS = batch_image.PERSON_MAX_ATTEMPTS
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 WATCHES: dict[str, dict[str, Any]] = {}
 AUTOMATIONS: dict[str, dict[str, Any]] = {}
@@ -500,7 +499,7 @@ def _compliance_note(report: dict[str, Any]) -> str:
 
 
 async def _generate_person(folder: Path, kind: str) -> int:
-    """API 出人物图 + 身份自检：**相似度 <70 就重做**（上限 3 次），**留分数最高的那张**。
+    """API 出一张人物图并做身份/着装综合自检，不因低分暗中再次扣费。
 
     用户 2026-09-19：「人物相似度 必须70%以上」。
     返回最终保留那张的相似度；判据本身失败（模型不可用等）时不重试、不卡链路，
@@ -518,8 +517,8 @@ async def _generate_person(folder: Path, kind: str) -> int:
     try:
         scene, _ = await batch_image.defocus_reference_face(frame, work)
         candidate = work / "person.png"
-        # 生成 + 身份自检（<70 重做、留最高分）+ **着装合规自检**（不合规继续重做）与
-        # **批量全自动链路共用同一份实现**：`batch_image.generate_person_image`，
+        # 单次生成 + 身份/着装综合自检，与批量全自动链路共用同一份实现；低分或不合规时
+        # 页面如实提示，由用户明确点击重做，不在后台继续产生图片费用。
         # 两边的行为不会跑偏。合规结论写进状态消息，页面能看到原因。
         report: dict[str, Any] = {}
         _, similarity = await batch_image.generate_person_image(
@@ -596,7 +595,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                 if step == "person":
                     if force or not (folder / PERSON_NAME).is_file():
                         _set_auto(folder_id, status="running", stage="person",
-                                  message=f"正在生成人物图（相似度需≥{PERSON_MIN_SIMILARITY}）", kind=kind)
+                                  message=f"正在生成人物图（只请求一次，完成后检查相似度）", kind=kind)
                         person_score = await _generate_person(folder, kind)
                     continue
                 if not (folder / PERSON_NAME).is_file():

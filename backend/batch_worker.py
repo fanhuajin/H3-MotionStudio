@@ -79,6 +79,7 @@ _PREP_TASKS: set[asyncio.Task] = set()
 _BATCH_VIDEO_LOCKS: dict[str, asyncio.Lock] = {}
 # 后台自动生成封面的任务（强引用）。封面生成走 ChatGPT 桌面端，由 _IMAGE_LOCK 保证单链。
 _COVER_TASKS: set[asyncio.Task] = set()
+_COVER_ITEM_KEYS: set[tuple[str, str]] = set()
 
 
 def cancel_item_work(batch_id: str, item_id: str) -> bool:
@@ -1352,7 +1353,10 @@ async def extract_scene_frame_with_hands(
     """
     candidates = await asyncio.to_thread(_scene_frame_candidates, source, ratio)
     chosen: bytes | None = None
-    if len(candidates) > 1:
+    # 挑手部帧只是加分项，却会让每条作品固定多一次 DS 视觉费用。默认采用本地清晰度评分；
+    # 确实需要旧行为时可显式设置 H3_BATCH_AI_FRAME_PICK=1。
+    ai_pick = env_value("H3_BATCH_AI_FRAME_PICK", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if ai_pick and len(candidates) > 1:
         try:
             from . import batch_ai
 
@@ -1629,8 +1633,17 @@ async def _prepare_review_work(
     locked_copy = locked_publish_copy(item)
     previous_ai = dict(item.get("ai") or {})
     result = reuse_previous_analysis(mode, previous_ai)
+    analysis_key = _analysis_cache_key(
+        kind=str(item["kind"]), duration=duration, contact_sheet=contact_sheet,
+        description=meta_desc, tags=meta_tags, feedback=feedback, mode=mode,
+    )
     if result is not None:
         batch_store.add_item_log(batch_id, item_id, "只调整图片：沿用上一版的文案与动作/运镜。")
+    elif previous_ai.get("analysisCacheKey") == analysis_key:
+        result = dict(previous_ai)
+        batch_store.add_item_log(
+            batch_id, item_id, "本条相同输入的 DS 预审已经完成，直接复用已付费结果。"
+        )
     else:
         batch_store.set_item_milestone(
             batch_id, item_id, "prepare", status="running", progress=20, currentNode="正在分析画面与撰写文案"
@@ -1646,6 +1659,10 @@ async def _prepare_review_work(
                 mode=mode,
                 previous=previous_ai,
             )
+            result["analysisCacheKey"] = analysis_key
+            # DS 已经返回就立刻做检查点。后续图片接口失败、进程重启或用户重跑时，不能再为
+            # 同一份联系表和提示词付一次分析费用。
+            _set_item(batch_id, item_id, ai={**previous_ai, **result})
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -1811,8 +1828,7 @@ async def _prepare_review_work(
                 # 而日志里只有一句笼统的连接失败，看不出是代理没生效。
                 batch_store.add_item_log(
                     batch_id, item_id,
-                    f"已向中转站发出人物图请求（相似度门槛 {batch_image.PERSON_MIN_SIMILARITY}，"
-                    f"不够会自动重做，最多 {batch_image.PERSON_MAX_ATTEMPTS} 次；"
+                    f"已向中转站发出人物图请求（本次只生成 1 张；完成后检查相似度，低分不会自动重做；"
                     f"{batch_image.route_note()}）……",
                 )
             if provider == "local":
@@ -1826,10 +1842,8 @@ async def _prepare_review_work(
                     on_progress=report,
                 )
             else:
-                # 人物图**自带身份自检**：相似度 <70 自动重做（最多 3 次），最后留分数最高的
-                # 那张（用户 2026-09-19：「人物相似度 必须70%以上」）。与 /images 页面同一条实现。
-                # 2026-09-20 起这条实现里还有**着装合规自检**（不合格继续重做，见
-                # `batch_image.judge_compliance_safe`），结论记进条目日志。
+                # 人物图只请求一次，再用一次 DS 综合检查身份与着装。低分/不合规只提示，
+                # 不在用户没有明确操作时继续烧图片额度。与 /images 页面同一条实现。
                 compliance_report: dict[str, object] = {}
                 _, similarity = await batch_image.generate_person_image(
                     scene_image=scene,
@@ -1858,8 +1872,8 @@ async def _prepare_review_work(
                     ) or "疑似擦边"
                     batch_store.add_item_log(
                         batch_id, item_id,
-                        f"⚠️ 着装合规自检未通过（{issues}）：重做 {batch_image.PERSON_MAX_ATTEMPTS} 次"
-                        "仍不合规，已先采用这张。建议换一个源视频，或在 /images 页面对这条"
+                        f"⚠️ 着装合规自检未通过（{issues}）：已先采用本次生成图，没有自动重做。"
+                        "建议换一个源视频，或在 /images 页面对这条"
                         "点「重新生成这一步」。",
                     )
             image_path = target_image
@@ -1932,7 +1946,11 @@ async def _prepare_review_work(
                 batch_id, item_id,
                 "发布目录里已经出过封面，这次跳过「按最终画面重写文案」（封面上的字取自这份文案）。",
             )
-    elif mode != "image" and result.get("reference_image_path"):
+    elif (
+        mode != "image"
+        and result.get("reference_image_path")
+        and env_value("H3_BATCH_REWRITE_COPY", "0").strip().lower() in {"1", "true", "yes", "on"}
+    ):
         batch_store.set_item_milestone(
             batch_id, item_id, "prepare", status="running", progress=99, currentNode="正在看着最终图写发布文案"
         )
@@ -1959,6 +1977,12 @@ async def _prepare_review_work(
             note = f"图文一致性的文案重写失败，沿用上一版文案：{error}"
             warning = f"{warning} {note}".strip()
             batch_store.add_item_log(batch_id, item_id, note)
+    elif mode != "image" and result.get("reference_image_path"):
+        batch_store.add_item_log(
+            batch_id,
+            item_id,
+            "沿用预审阶段已经生成的发布文案（未再次调用 DS 看图重写，避免重复计费）。",
+        )
 
     # 简介 / 标签缺了就自动生成：模型不可用（`fallback_result` 的简介恒为空、标签可能一个都没有）、
     # 模型返回空串、以及 manual 出图时用户还没上传图（根本没走 write_copy）都要覆盖。
@@ -2113,6 +2137,9 @@ def spawn_api_covers(
     `force=True`：**已存在的封面也要重出**（人物图被换掉时必须这样，见 `adopt_published_portrait`）。
     返回是否真的排上了任务。**不是** ChatGPT 桌面端那条路（那条仍归 `H3_AUTO_CHATGPT_COVER`）。
     """
+    key = (batch_id, item_id)
+    if key in _COVER_ITEM_KEYS:
+        return False
     item = _item(batch_id, item_id)
     folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
     if folder is None or not folder.is_dir():
@@ -2130,8 +2157,12 @@ def spawn_api_covers(
         task = asyncio.create_task(_generate_covers_via_api(batch_id, item_id, folder, force=force))
     except RuntimeError:
         return False                      # 没有事件循环（同步调用/测试）→ 只当没排上
+    _COVER_ITEM_KEYS.add(key)
     _COVER_TASKS.add(task)
-    task.add_done_callback(_COVER_TASKS.discard)
+    def finished(done: asyncio.Task) -> None:
+        _COVER_TASKS.discard(done)
+        _COVER_ITEM_KEYS.discard(key)
+    task.add_done_callback(finished)
     return True
 
 
@@ -2446,6 +2477,25 @@ def reuse_previous_analysis(mode: str, previous: dict[str, Any]) -> dict[str, An
     if mode == "image" and previous and previous.get("reference_image_path"):
         return dict(previous)
     return None
+
+
+def _analysis_cache_key(
+    *, kind: str, duration: float, contact_sheet: Path, description: str,
+    tags: list[str], feedback: str, mode: str,
+) -> str:
+    """标识一次预审输入；重启/重跑输入没变时直接复用已付费的 DS 结果。"""
+    digest = hashlib.sha256()
+    digest.update(contact_sheet.read_bytes())
+    digest.update(json.dumps({
+        "kind": kind,
+        "duration": round(float(duration), 3),
+        "description": description,
+        "tags": tags,
+        "feedback": feedback,
+        "mode": mode,
+        "promptFingerprint": batch_ai.compliance_fingerprint(),
+    }, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()
 
 
 def default_action_plan(duration: float) -> tuple[str, str]:

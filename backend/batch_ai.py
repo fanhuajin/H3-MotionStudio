@@ -9,7 +9,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -161,7 +160,9 @@ OPENAI_URL = (
     or "https://api.openai.com/v1"
 ).rstrip("/")
 REQUEST_TIMEOUT = 300.0
-MAX_ATTEMPTS = 3
+# 计费模型调用只提交一次。过去网络错误、5xx、JSON 解析失败都会自动重试三次；如果服务端
+# 已完成推理、只是响应损坏，就会重复扣费。唯一保留的第二次提交是服务端明确以 400 拒绝
+# json_schema 后改用 json_object（请求在推理前被拒绝，没有有效模型结果）。
 
 # 桌面提示词已收入仓库（环境变量可覆盖）：造型/场景合成提示词是用户长期调教的结果，
 # 直接原样喂给本地 Krea2 双图编辑，不做二次改写。
@@ -227,6 +228,10 @@ _JSON_SCHEMA_SUPPORTED: bool | None = None
 def _json_mode() -> str:
     if JSON_MODE_OVERRIDE in {"schema", "object"}:
         return JSON_MODE_OVERRIDE
+    # DeepSeek 端点已知不支持 json_schema。直接用 json_object，避免每次后端重启后的第一条
+    # 任务先白发一个 400 请求；其它兼容端点仍保留自动探测。
+    if "deepseek" in LUNA_MODEL.lower():
+        return "object"
     return "object" if _JSON_SCHEMA_SUPPORTED is False else "schema"
 
 
@@ -289,7 +294,7 @@ async def _chat_structured(
     """一次结构化调用（文本/看图都可以）：自动选 json_schema 或 json_object，回来校验必填字段。"""
     global _JSON_SCHEMA_SUPPORTED
     last_error = ""
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    for _ in range(2):
         payload = _structured_payload(
             content=content, schema=schema, name=name, mode=_json_mode()
         )
@@ -299,26 +304,30 @@ async def _chat_structured(
                     f"{OPENAI_URL}/chat/completions", headers=_headers(), json=payload
                 )
             if response.status_code == 200:
-                text = (response.json()["choices"][0]["message"].get("content") or "").strip()
-                result = json.loads(_strip_code_fence(text))
-                if not isinstance(result, dict):
-                    raise ValueError("模型没有返回 JSON 对象")
-                missing = [key for key in schema.get("required") or [] if key not in result]
-                if missing:
-                    raise ValueError(f"模型返回缺少字段：{missing}")
-                return result
+                try:
+                    text = (response.json()["choices"][0]["message"].get("content") or "").strip()
+                    result = json.loads(_strip_code_fence(text))
+                    if not isinstance(result, dict):
+                        raise ValueError("模型没有返回 JSON 对象")
+                    missing = [key for key in schema.get("required") or [] if key not in result]
+                    if missing:
+                        raise ValueError(f"模型返回缺少字段：{missing}")
+                    return result
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
+                    raise RuntimeError(
+                        f"{label}：模型响应无法使用（为避免重复扣费未自动重试）：{error}"
+                    ) from error
             if _json_mode_unavailable(response) and _json_mode() == "schema":
                 # 这个端点不吃严格模式：记住它，下一轮直接用 json_object
                 _JSON_SCHEMA_SUPPORTED = False
                 last_error = f"{label}：该端点不支持 json_schema，改用 json_object 重试"
                 continue
             last_error = _api_error(response)
-            if response.status_code < 500 and response.status_code != 429:
-                raise RuntimeError(last_error)
-        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
-            last_error = str(error)
-        if attempt < MAX_ATTEMPTS:
-            await asyncio.sleep(2 * attempt)
+            raise RuntimeError(f"{label}：{last_error[:400]}（未自动重试）")
+        except httpx.HTTPError as error:
+            raise RuntimeError(
+                f"{label}：{type(error).__name__}: {str(error)[:300]}（为避免重复扣费未自动重试）"
+            ) from error
     raise RuntimeError(f"{label}：{last_error[:400]}")
 
 
@@ -415,6 +424,42 @@ async def judge_compliance(candidate: Path) -> dict[str, Any]:
     return await _chat_structured(
         content=content, schema=COMPLIANCE_JUDGE_SCHEMA, name="platform_compliance",
         label="着装合规自检失败",
+    )
+
+
+PERSON_IMAGE_JUDGE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "same_person": {"type": "boolean"},
+        "similarity": {"type": "integer"},
+        "differences": {"type": "array", "items": {"type": "string"}},
+        "compliant": {"type": "boolean"},
+        "issues": {"type": "array", "items": {"type": "string"}},
+        "verdict": {"type": "string"},
+    },
+    "required": ["same_person", "similarity", "differences", "compliant", "issues", "verdict"],
+}
+
+
+async def judge_person_image(identity: Path, candidate: Path) -> dict[str, Any]:
+    """一次视觉调用同时完成身份与着装检查，避免同一张成图向 DS 发送两遍。"""
+    instruction = (
+        IDENTITY_JUDGE_INSTRUCTION
+        + "\n\n【同时检查发布着装】\n"
+        + COMPLIANCE_JUDGE_INSTRUCTION
+        + "\n第一张图只用于确认身份；第二张图是需要同时检查身份相似度与着装的生成图。"
+    )
+    content = [
+        {"type": "text", "text": instruction},
+        {"type": "image_url", "image_url": {"url": _data_url(identity), "detail": "high"}},
+        {"type": "image_url", "image_url": {"url": _data_url(candidate), "detail": "high"}},
+    ]
+    return await _chat_structured(
+        content=content,
+        schema=PERSON_IMAGE_JUDGE_SCHEMA,
+        name="person_image_check",
+        label="人物图综合自检失败",
     )
 
 

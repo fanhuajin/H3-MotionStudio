@@ -36,13 +36,10 @@ REQUEST_TIMEOUT = 900.0
 IMAGE_SIZES = {"4:3": "1536x1152", "9:16": "1152x2048", "3:4": "1152x1536"}
 ProgressCallback = Callable[[float, str], Awaitable[None]]
 
-# 人物图身份自检：相似度必须 ≥70，不够就重做，最多 3 次，留分数最高的那张
-# （用户 2026-09-19：「人物相似度 必须70%以上」）。批量备料与 /images 页面共用。
+# 人物图仍按 70 分展示自检结果，但默认只生成一次。图片接口按次计费，低分后自动重做
+# 会让「点击一次」产生 2~3 笔费用；需要重做时由用户在图片工作台明确点击。
 PERSON_MIN_SIMILARITY = 70
-PERSON_MAX_ATTEMPTS = 3
-
-# 本进程里最近一次**成功**的请求方案（见 `remember_plan` / `request_plans`）。
-_STICKY_PLAN: tuple[str, str] | None = None
+PERSON_MAX_ATTEMPTS = 1
 
 
 def base_url() -> str:
@@ -71,41 +68,26 @@ def describe() -> dict[str, str]:
         "baseUrl": base_url(),
         "model": model(),
         "configured": "1" if configured() else "0",
-        "mode": env_value("H3_BATCH_IMAGE_MODE", "auto"),
+        "mode": env_value("H3_BATCH_IMAGE_MODE", "multi"),
         # 中转站直连不通时必须走代理，否则出图会静默退回"源视频取帧"（2026-09-22 事故）。
         "proxy": netproxy.describe(),
     }
 
 
 def request_plans() -> list[tuple[str, str]]:
-    """(方案, 图片字段名) 候选，按可靠性排序，失败自动试下一个。
+    """返回本次唯一的请求格式；计费图片请求不拿来做兼容性探测。
 
-    官方 OpenAI 多图编辑用 `image[]`，但中转站文档只写了单个 `image`，
-    所以先试数组、再试单数；`H3_BATCH_IMAGE_FIELD` 可把字段名钉死。
+    当前中转站文档采用单数字段 ``image``，因此默认固定为 multi/image。其它部署可用
+    ``H3_BATCH_IMAGE_FIELD=image[]`` 或 ``H3_BATCH_IMAGE_MODE=composite`` 显式切换。
+    兼容旧配置：mode=auto 也只选默认格式，不再依次真实生成三遍。
     """
     explicit = env_value("H3_BATCH_IMAGE_FIELD")
-    mode = (env_value("H3_BATCH_IMAGE_MODE") or "auto").strip().lower()
-    plans: list[tuple[str, str]] = []
+    mode = (env_value("H3_BATCH_IMAGE_MODE") or "multi").strip().lower()
     if mode in {"auto", "multi"}:
-        plans.append(("multi", explicit or "image[]"))
-        if not explicit:
-            plans.append(("multi", "image"))
-    if mode in {"auto", "composite"}:
-        plans.append(("composite", explicit or "image"))
-    # 本进程里**已经成功过**的那一套排到最前：`auto` 会按顺序把每一套都真跑一遍出图，
-    # 每套 90~330 秒且都算一次额度（2026-09-22 实测 329s = multi 170s + composite 92s）。
-    # 既然 99% 的情况都是同一套通，就没必要每次都从头试一遍；
-    # 它万一不通，下面 for 循环照样会退回去把其它几套都试完。
-    if mode == "auto" and _STICKY_PLAN is not None and _STICKY_PLAN in plans:
-        plans.remove(_STICKY_PLAN)
-        plans.insert(0, _STICKY_PLAN)
-    return plans
-
-
-def remember_plan(plan: str, field: str) -> None:
-    """记住这一次成功的「方案 + 字段名」，下一次出图优先用它（见 `request_plans`）。"""
-    global _STICKY_PLAN
-    _STICKY_PLAN = (plan, field)
+        return [("multi", explicit or "image")]
+    if mode == "composite":
+        return [("composite", explicit or "image")]
+    return []
 
 
 def _api_error(response: httpx.Response) -> str:
@@ -206,6 +188,33 @@ def _blur_region(image: Image.Image, box: dict[str, float]) -> Image.Image:
     return image
 
 
+def _locate_face_local(image_path: Path) -> dict[str, float] | None:
+    """用本机 OpenCV Haar 定位最大人脸；没有依赖或没识别到就返回 None，不调用计费 API。"""
+    try:
+        import cv2  # type: ignore[import-not-found]
+
+        frame = cv2.imread(str(image_path))
+        if frame is None:
+            return None
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        faces = cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=4, minSize=(40, 40))
+        if len(faces) == 0:
+            return None
+        x, y, width, height = max(faces, key=lambda row: int(row[2]) * int(row[3]))
+        image_height, image_width = gray.shape[:2]
+        # 稍微扩框，确保眉眼、双颊和下巴都被模糊掉。
+        pad_x, pad_y = int(width * 0.12), int(height * 0.12)
+        return {
+            "x0": float(max(0, x - pad_x) / image_width),
+            "y0": float(max(0, y - pad_y) / image_height),
+            "x1": float(min(image_width, x + width + pad_x) / image_width),
+            "y1": float(min(image_height, y + height + pad_y) / image_height),
+        }
+    except (ImportError, AttributeError, OSError, RuntimeError):
+        return None
+
+
 async def defocus_reference_face(scene_image: Path, work_dir: Path) -> tuple[Path, bool]:
     """把参考帧（图一）里的人脸糊掉，返回 (文件路径, 是否成功糊掉)。
 
@@ -215,8 +224,6 @@ async def defocus_reference_face(scene_image: Path, work_dir: Path) -> tuple[Pat
 
     定位失败时不阻断流程：返回原图并标记未处理，由上层写进日志。
     """
-    from . import batch_ai
-
     scene_image = Path(scene_image)
     target = Path(work_dir) / f"{scene_image.stem}-noface.png"
     if target.is_file():
@@ -224,7 +231,9 @@ async def defocus_reference_face(scene_image: Path, work_dir: Path) -> tuple[Pat
 
     with Image.open(scene_image) as opened:
         image = opened.convert("RGB")
-    box = await batch_ai.locate_face(scene_image)
+    # 过去这里每条作品都调用一次 DS 视觉模型，只为取一个矩形框。改成本机检测；失败时沿用
+    # 原图并在上层提示，不为一个可选优化额外产生 API 费用。
+    box = await asyncio.to_thread(_locate_face_local, scene_image)
     if not box:
         return scene_image, False
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -315,33 +324,6 @@ async def _prepare_route() -> str:
 def route_note() -> str:
     """本次出图**实际**用的出网方式（给日志/报错用）。"""
     return _route_note or netproxy.describe()
-
-
-async def _retry_with_other_route(
-    data: dict[str, str], files: list[tuple[str, tuple[str, tuple[str, bytes, str]]]], output_path: Path
-) -> bool:
-    """一次真实请求失败后，**换另一条路**再试一次（直连↔代理）。
-
-    为什么值得多试一次：VPN 断掉的那一刻，恰好正在跑的那条请求会失败，
-    但下一条完全可以是通的 —— 重试一次就能救回来，不用等到下一次备料。
-    ⚠️ 用户显式配置的路线（`H3_IMAGE_PROXY`）**不在这里改**（`probe_route` 会照配置返回），
-    免得把"强制直连"变成"偷偷走代理"。
-    """
-    global _route_proxy, _route_note
-    netproxy.note_failure()
-    probe = f"{base_url()}/models"
-    proxy, note = await netproxy.probe_route_async(probe)
-    if (proxy or None) == _route_proxy:
-        return False  # 判出来还是同一条路，没必要再打一次
-    _route_proxy, _route_note = (proxy or None), note
-    try:
-        response = await _post(data, files)
-        if response.is_error:
-            return False
-        _store(response, output_path)
-        return True
-    except (httpx.HTTPError, RuntimeError):
-        return False
 
 
 async def _post(
@@ -454,24 +436,17 @@ async def generate_candidate_image(
                     failures.append(f"[{plan}/{field}] {_api_error(response)}")
                     continue
                 _store(response, output_path)
-                remember_plan(plan, field)
             except httpx.HTTPError as error:
-                # 传输层异常（连接失败、超时、TLS 等）不是 HTTP 错误响应，必须一起回退，
-                # 否则换个地址/字段名的机会都没有就直接抛穿了。
+                # 请求可能已被中转站接收并计费，只是响应返回途中超时/断线。
+                # 不自动换线路再发一遍，避免同一张图产生第二笔费用。
                 failures.append(f"[{plan}/{field}] 连接失败：{type(error).__name__}: {str(error)[:160]}")
-                # 这次走的路线可能已经坏了（比如 VPN 刚断）：作废判定结果，
-                # **换另一条路再试一次**（现在是直连就改走代理，反之亦然）。
-                rerouted = bool(data) and await _retry_with_other_route(data, files, output_path)
-                if rerouted:
-                    if on_progress:
-                        await on_progress(1.0, "候选人物图已生成")
-                    return output_path
-                continue
+                netproxy.note_failure()
+                break
             except RuntimeError as error:
                 # 这套方案的**输入组装**不适用（最典型：composite 需要两张图、而封面只有一张）。
                 # 用 `continue` 而不是 re-raise —— 否则会一直炸到用户面前。
                 failures.append(f"[{plan}/{field}] 不适用：{error}")
-                continue
+                break
             if on_progress:
                 await on_progress(1.0, "候选人物图已生成")
             return output_path
@@ -486,8 +461,8 @@ async def generate_candidate_image(
 
     detail = "；".join(failures) or "未知错误"
     hint = ""
-    if len(failures) >= 2:
-        hint = "。若中转站只支持单图编辑，请设置 H3_BATCH_IMAGE_MODE=composite"
+    if failures:
+        hint = "。为避免重复扣费，本次没有自动改格式或换线路重试；请确认中转站后台后再手动重做"
     raise RuntimeError(f"中转站出图失败：{detail}{hint}")
 
 
@@ -503,15 +478,14 @@ async def generate_person_image(
     max_attempts: int = PERSON_MAX_ATTEMPTS,
     compliance: dict[str, Any] | None = None,
 ) -> tuple[Path, int]:
-    """出人物图并**自带身份自检**：不够门槛就重做，最后留下分数最高的那张。
+    """出人物图并做身份/着装自检；默认只生成一次，避免自动重复扣费。
 
-    用户 2026-09-19：「人物相似度 必须70%以上」。批量备料（全自动链路）与 `/images`
-    页面的「生成/重新生成这一步」以前各写一份循环，现在共用这一份，行为不会跑偏。
+    批量备料与 `/images` 页面的生成按钮共用这一份实现。低于门槛时保留本次结果并展示
+    分数，由用户决定是否明确重做；调用方仍可显式传 max_attempts>1 做离线标定。
 
-    2026-09-20 追加**着装自检**（小红书把账号判成「敏感部位裸露凸显、性诱惑内容」之后）：
-    每一张生成图都过一次 `batch_ai.judge_compliance`，命中暴露服装 / 紧身透轮廓就
-    继续重做；**优先保留合规且分数最高的那张**——如果所有尝试都不合规，仍然收下分数最高的
-    那张（自检是质量门槛，不是出片前提，绝不能把整条链路卡死在这儿）。判据本身失败按合规放行。
+    身份与着装现在由 `batch_ai.judge_person_image` 在同一次 DS 调用里完成。默认只生成一张；
+    命中暴露服装或身份低分时如实提示并保留本次结果，不在后台自动再产生图片费用。
+    调用方显式传 max_attempts>1 时仍会在多张里优先保留合规且分数最高的一张。
     ⚠️ 口径 = 用户 2026-09-20「**只要衣服不暴露就可以了；动作都不用处理，流程也不要动**」：
     这里**只判衣服**，不看动作、不看构图，也不改任何流程开关。
 
@@ -540,17 +514,15 @@ async def generate_person_image(
         try:
             from . import batch_ai
 
-            result = await batch_ai.judge_identity(Path(identity_image), candidate)
+            result = await batch_ai.judge_person_image(Path(identity_image), candidate)
             score = max(0, min(100, int(result.get("similarity") or 0)))
         except Exception:  # noqa: BLE001 - 自检失败不该把出图判失败
             candidate.replace(output_path)
             if compliance is not None:
                 compliance.update({"compliant": None, "issues": []})
             return output_path, -1
-        try:
-            compliant, issues = await judge_compliance_safe(candidate)
-        except Exception:  # noqa: BLE001 - 自检绝不能把出图判失败（判据的错不是图的错）
-            compliant, issues = True, []
+        compliant = bool(result.get("compliant", True))
+        issues = [str(item) for item in (result.get("issues") or [])]
         last_compliant, last_issues = compliant, issues
         # 选图口径：合规优先，其次相似度。`best_compliant is None` 表示还没选过任何一张。
         better = (
@@ -619,28 +591,17 @@ async def generate_single_edit(
         "quality": env_value("H3_BATCH_IMAGE_QUALITY", "high"),
         "input_fidelity": env_value("H3_BATCH_IMAGE_FIDELITY", "high"),
     }
-    failures: list[str] = []
     image_bytes = source_image.read_bytes()
-    attempts = [
-        (env_value("H3_BATCH_IMAGE_FIELD") or "image", False),
-        ("image[]", False),
-        # TeamoRouter's gpt-image-2.5 edit route accepts the same multi-image
-        # shape used by person generation, but may reject a single reference.
-        # Repeating the identical reference preserves identity while satisfying
-        # that compatibility requirement.
-        ("image[]", True),
-    ]
-    for field, duplicate in attempts:
-        files = [(field, (source_image.name, image_bytes, mime))]
-        if duplicate:
-            files.append((field, (f"reference-{source_image.name}", image_bytes, mime)))
-        try:
-            response = await _post(data, files)
-            if response.is_error:
-                label = f"{field}/double" if duplicate else field
-                failures.append(f"[{label}] {_api_error(response)}")
-                continue
-            return _store(response, output_path)
-        except httpx.HTTPError as exc:
-            failures.append(f"[{field}] {type(exc).__name__}: {str(exc)[:160]}")
-    raise RuntimeError("封面生成失败：" + "；".join(failures))
+    field = env_value("H3_BATCH_IMAGE_FIELD") or "image"
+    files = [(field, (source_image.name, image_bytes, mime))]
+    try:
+        response = await _post(data, files)
+    except httpx.HTTPError as exc:
+        netproxy.note_failure()
+        raise RuntimeError(
+            f"封面生成请求未确认成功：{type(exc).__name__}: {str(exc)[:160]}。"
+            "为避免重复扣费，本次没有自动重试"
+        ) from exc
+    if response.is_error:
+        raise RuntimeError(f"封面生成失败：{_api_error(response)}（未自动改格式重试）")
+    return _store(response, output_path)
