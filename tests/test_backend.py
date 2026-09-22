@@ -7603,19 +7603,19 @@ class SubtitleStepTests(unittest.TestCase):
 
         # ③ 双路搜索：歌名那路给错的、歌词那路给对的 → 必须选对的那个
         async def fake_by_name(_song, limit=6):
-            return [{"id": 111, "name": "毫不相干的歌", "artist": "某人"}]
+            return [{"id": "111", "name": "毫不相干的歌", "artist": "某人"}]
 
         async def fake_by_lyric(_line, limit=6):
-            return [{"id": 222, "name": "有何不可", "artist": "许嵩"}]
+            return [{"id": "222", "name": "有何不可", "artist": "许嵩"}]
 
         async def fake_lyric(song_id):
-            if int(song_id) == 111:
+            if str(song_id) == "111":
                 return {"lines": [{"time": 1.0, "orig": "完全不相干的一句"}]}
             return {"lines": [{"time": 1.0, "orig": t} for t in right]}
 
-        with unittest.mock.patch.object(subtitle_step, "netease_search", fake_by_name), \
-                unittest.mock.patch.object(subtitle_step, "netease_search_by_lyric", fake_by_lyric), \
-                unittest.mock.patch.object(subtitle_step, "netease_lyric", fake_lyric):
+        with unittest.mock.patch.object(subtitle_step, "_search_songs", fake_by_name), \
+                unittest.mock.patch.object(subtitle_step, "_search_songs_by_lyric", fake_by_lyric), \
+                unittest.mock.patch.object(subtitle_step, "_song_lyric", fake_lyric):
             official, how, min_ratio = asyncio.run(
                 subtitle_step.official_lyrics_for(rows, "一个错歌名"))
 
@@ -7700,20 +7700,49 @@ class SubtitleStepTests(unittest.TestCase):
         rows = [(0.0, 2.0, "夏天快要过去"), (2.0, 4.0, "完全听不出来的第三句"),
                 (4.0, 6.0, "天凉就别穿短裙")]
         exact = ["夏天快要过去", "请你少买冰淇淋", "天凉就别穿短裙"]
-        filled = subtitle_step.align_official_lines([t for _a, _b, t in rows], exact)
-        self.assertEqual([j for j, _r, _i in filled], [0, 1, 2])
-        self.assertTrue(filled[1][2], "中间那行是两侧锚定推出来的")
         fixed, _notes = subtitle_step.correct_with_official(
             rows, exact, min_ratio=subtitle_step._MATCH_MIN_RATIO)
-        self.assertEqual(fixed[1][2], "请你少买冰淇淋")
+        self.assertEqual(fixed[1][2], "完全听不出来的第三句",
+                         "一个字都对不上就不猜（宁可留着，也不许凭位置硬套官方原文）")
 
-        # 官方行数对不上（缺口 1 行、中间却有 2 行官方）→ 不许推定，原样保留
-        longer = ["夏天快要过去", "请你少买冰淇淋", "天空好想下雨", "天凉就别穿短裙"]
-        rows2 = [(0.0, 2.0, "夏天快要过去"), (2.0, 4.0, "完全听不出来的第三句"),
-                 (4.0, 6.0, "天凉就别穿短裙")]
-        fixed2, _n2 = subtitle_step.correct_with_official(
-            rows2, longer, min_ratio=subtitle_step._MATCH_MIN_RATIO)
-        self.assertEqual(fixed2[1][2], "完全听不出来的第三句", "行数对不上就不许猜")
+        # 对上了几个字（哪怕整句听错）→ 就换成官方原文：006《说书》「书中说仙人有胭脂正轻薄」
+        # 只对上「书上说仙人」四个字，也必须改成「书上说仙人能点石成金箔」
+        guessed, _n = subtitle_step.correct_with_official(
+            [(0.0, 2.0, "夏天快要过去"), (2.0, 4.0, "请你少买冰淇冰淇淋"),
+             (4.0, 6.0, "天凉就别穿短裙")], exact, min_ratio=subtitle_step._MATCH_MIN_RATIO)
+        self.assertEqual(guessed[1][2], "请你少买冰淇淋")
+
+    def test_a_shared_official_line_is_split_between_two_rows(self):
+        """一行识别文本跨了官方两句、以及官方一句被剪映拆成两段 —— 两边都不许重复、也不许丢。
+
+        实测的三次翻车都在这里（2026-09-22）：
+          · 003「想从头在和你但我左右在迟疑」= 官方「想从头再和你」+「但我左右在迟疑」，
+            只取后半句 → **少字**；
+          · 003 官方副歌重复出现，同一句被拼两遍 → **重复**；
+          · 004「一些烂理由只为了拥有」跨官方两句 → 前半句被吃掉。
+        """
+        from backend import subtitle_step
+
+        # ① 识别一行跨官方两句（还错了一个字）→ 两句都要在，且字改成官方的
+        rows = [(0.0, 2.0, "想从头在和你但我左右在迟疑")]
+        official = ["夏天快要过去", "想从头再和你", "但我左右在迟疑", "天凉就别穿短裙"]
+        fixed, _notes = subtitle_step.correct_with_official(
+            rows, official, min_ratio=subtitle_step._MATCH_MIN_RATIO)
+        self.assertEqual(fixed[0][2], "想从头再和你 但我左右在迟疑")
+
+        # ② 官方一句被剪映拆成两段 → 各留各的断句，不许把整句塞给其中一行
+        rows2 = [(0.0, 2.0, "为你唱这首歌"), (2.0, 4.0, "没有什么风格")]
+        official2 = ["为你唱这首歌 没有什么风格"]
+        fixed2, _notes2 = subtitle_step.correct_with_official(
+            rows2, official2, min_ratio=subtitle_step._MATCH_MIN_RATIO)
+        self.assertEqual([t for _a, _b, t in fixed2], ["为你唱这首歌", "没有什么风格"])
+
+        # ③ 官方副歌重复出现 → 同一句不许被拼进同一条字幕两遍
+        rows3 = [(0.0, 2.0, "封印思念魔咒过往我逗留")]
+        official3 = ["封印思念魔咒 过往我保留", "封印思念魔咒 过往我保留"]
+        fixed3, _notes3 = subtitle_step.correct_with_official(
+            rows3, official3, min_ratio=subtitle_step._MATCH_MIN_RATIO)
+        self.assertEqual(fixed3[0][2], "封印思念魔咒 过往我保留")
 
     def test_position_alignment_is_off_for_untrusted_sources(self):
         """来源不够可信（翻唱/说唱版）时**不启用**按位置对齐 —— 位置也可能是另一个版本的。"""
@@ -7753,7 +7782,7 @@ class SubtitleStepTests(unittest.TestCase):
         async def by_lyric(line, limit=6):
             queries.append(line)
             if "看着你的笑" in line:
-                return [{"id": 999, "name": "碎碎念", "artist": "队长"}]
+                return [{"id": "999", "name": "碎碎念", "artist": "队长"}]
             return []
 
         async def lyric(song_id):
@@ -7762,9 +7791,9 @@ class SubtitleStepTests(unittest.TestCase):
                                "我知道我说着太多的一些烂理由", "一些烂理由只为了拥有",
                                "他们说着的话好像不经过脑袋"]]}
 
-        with unittest.mock.patch.object(subtitle_step, "netease_search", no_name), \
-                unittest.mock.patch.object(subtitle_step, "netease_search_by_lyric", by_lyric), \
-                unittest.mock.patch.object(subtitle_step, "netease_lyric", lyric), \
+        with unittest.mock.patch.object(subtitle_step, "_search_songs", no_name), \
+                unittest.mock.patch.object(subtitle_step, "_search_songs_by_lyric", by_lyric), \
+                unittest.mock.patch.object(subtitle_step, "_song_lyric", lyric), \
                 unittest.mock.patch.object(subtitle_step.asyncio, "sleep", no_sleep):
             official, how, min_ratio = asyncio.run(
                 subtitle_step.official_lyrics_for(rows, "看着你的笑我好像就足够"))
@@ -7789,8 +7818,8 @@ class SubtitleStepTests(unittest.TestCase):
         async def flaky_by_name(_song, limit=6):
             calls["n"] += 1
             if calls["n"] == 1:
-                return []                                  # 第一次限流 → 空
-            return [{"id": 7, "name": "有何不可", "artist": "许嵩"}]
+                return []                                  # 第一次接口抽风 → 空
+            return [{"id": "7", "name": "有何不可", "artist": "许嵩"}]
 
         async def by_lyric(_line, limit=6):
             return []
@@ -7799,9 +7828,9 @@ class SubtitleStepTests(unittest.TestCase):
             return {"lines": [{"time": 1.0, "orig": t} for t in
                               ["夏天快要过去", "请你少买冰淇淋"]]}
 
-        with unittest.mock.patch.object(subtitle_step, "netease_search", flaky_by_name), \
-                unittest.mock.patch.object(subtitle_step, "netease_search_by_lyric", by_lyric), \
-                unittest.mock.patch.object(subtitle_step, "netease_lyric", lyric), \
+        with unittest.mock.patch.object(subtitle_step, "_search_songs", flaky_by_name), \
+                unittest.mock.patch.object(subtitle_step, "_search_songs_by_lyric", by_lyric), \
+                unittest.mock.patch.object(subtitle_step, "_song_lyric", lyric), \
                 unittest.mock.patch.object(subtitle_step.asyncio, "sleep", no_sleep):
             official, how, _min_ratio = asyncio.run(
                 subtitle_step.official_lyrics_for(rows, "何不可"))
@@ -7810,11 +7839,10 @@ class SubtitleStepTests(unittest.TestCase):
         self.assertEqual(calls["n"], 2)
 
     def test_official_lyrics_are_fetched_once_and_reused(self):
-        """同一首歌全程**只取一次**歌词（2026-09-22：重复取词把网易云惹限流，
-        而限流的表现是"返回空"，整条链会静默退化成"没找到官方歌词"）。
+        """同一首歌全程**只取一次**歌词（少给对端添压力，也避免被当成高频访问）。
 
-        顺带钉住 `netease_search` 的返回字段（它改成走带缓存的 `netease_lyric` 了，
-        语种/行数/预览仍要给出来）。
+        顺带钉住 QQ 那条链路的返回字段（搜索 → 取词 → 语种/行数/预览）与歌词源：
+        2026-09-22 从网易云换到 QQ音乐（用户：「不要用她的了 经常限流」）。
         """
         import asyncio
 
@@ -7842,33 +7870,36 @@ class SubtitleStepTests(unittest.TestCase):
             async def __aexit__(self, *_exc):
                 return False
 
-            async def get(self, url, params=None):
+            async def get(self, url, params=None, headers=None):
                 calls.append(url)
-                if "/search/" in url:
-                    return _Resp({"result": {"songs": [{
-                        "id": 42, "name": "有何不可", "artists": [{"name": "许嵩"}],
-                        "album": {"name": "自定义"}}]}})
+                if "client_search_cp" in url:
+                    return _Resp({"data": {"song": {"list": [{
+                        "songmid": "0039MnYb0qxYhV", "songname": "有何不可",
+                        "singer": [{"name": "许嵩"}], "albumname": "自定义"}]}}})
                 return _Resp({
-                    "lrc": {"lyric": "[00:01.00]夏天快要过去\n[00:03.00]请你少买冰淇淋"},
-                    "tlyric": {"lyric": "[00:01.00]Summer is gone"},
+                    "lyric": "[ti:有何不可]\n[ar:许嵩]\n[00:01.00]夏天快要过去\n"
+                             "[00:03.00]请你少买冰淇淋\n[00:05.00]词：许嵩\n",
+                    "trans": "",
                 })
 
         lyrics_worker._LYRIC_CACHE.clear()
+        lyrics_worker._HAVE_LYRIC_CACHE.clear()
         try:
             with unittest.mock.patch.object(lyrics_worker.httpx, "AsyncClient", _Client):
-                first = asyncio.run(lyrics_worker.netease_lyric(42))
-                second = asyncio.run(lyrics_worker.netease_lyric(42))
-                found = asyncio.run(lyrics_worker.netease_search("有何不可"))
-            lyric_calls = [url for url in calls if "/song/lyric" in url]
+                first = asyncio.run(lyrics_worker.song_lyric("0039MnYb0qxYhV"))
+                second = asyncio.run(lyrics_worker.song_lyric("0039MnYb0qxYhV"))
+                found = asyncio.run(lyrics_worker.search_songs_with_lyrics("有何不可"))
+            lyric_calls = [url for url in calls if "fcg_query_lyric_new" in url]
             self.assertEqual(len(lyric_calls), 1, f"歌词被重复取了：{calls}")
             self.assertEqual([line["orig"] for line in first["lines"]],
-                             ["夏天快要过去", "请你少买冰淇淋"])
+                             ["夏天快要过去", "请你少买冰淇淋"], "制作人员行必须被滤掉")
             self.assertEqual(second, first)
             self.assertEqual(found[0]["lineCount"], 2)
-            self.assertTrue(found[0]["hasZh"])
             self.assertEqual(found[0]["preview"], "夏天快要过去")
+            self.assertEqual(found[0]["id"], "0039MnYb0qxYhV", "id 必须是 songmid（取词要用它）")
         finally:
             lyrics_worker._LYRIC_CACHE.clear()
+            lyrics_worker._HAVE_LYRIC_CACHE.clear()
 
     def test_uia_has_thread_com_init_helper(self):
         """uiautomation 要求每个线程自己初始化 COM：批量里它是从 asyncio.to_thread
