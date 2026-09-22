@@ -68,10 +68,19 @@ _SONG_IN_TITLE = re.compile(r"《([^》]{1,40})》")
 GENERIC_SONGS = set(PLACEHOLDER_VALUES) | {
     "", "无", "未知", "未知歌曲", "无歌曲", "未识别歌曲", "none", "null", "无题",
 }
-_MATCH_MIN_RATIO = 0.6          # 官方歌词很可信时，允许的修正门槛
+_MATCH_MIN_RATIO = 0.6          # 官方歌词很可信时，允许的修正门槛（= 可信来源，允许按顺序对齐改错句）
 _STRICT_MATCH_RATIO = 0.85      # 歌词来源只是"同款/翻唱/说唱版"时，只改几乎一致的句子
 _TRUSTED_COVERAGE = 0.85        # 识别文本与官方歌词重合到这个程度才算"同一版本"
-_MIN_LYRIC_COVERAGE = 0.7       # 候选官方歌词至少要覆盖识别文本的 70% 才敢拿来校对
+_MIN_LYRIC_COVERAGE = 0.6       # 候选至少要覆盖识别文本的 60% 才敢拿来校对（口径见 lyric_coverage）
+
+# **按顺序对齐**（2026-09-22 加）：剪映会把整句听错（实测 006《说书》「书中说仙人有胭脂正轻薄」
+# 其实是「书上说 仙人能点石成金箔」，整句只有 0.36 像 —— 全曲"找最像的一行"永远对不上它），
+# 但它的**位置**是对的。所以可信来源下再按顺序对一次，位置锚定 + 长度相容就认。
+_ALIGN_ADVANCE = 0.4            # 对齐推进门槛：这一行"确实对上了"，游标才往后走
+_ALIGN_FLOOR = 0.3              # 敢按位置替换的最低相似度（再低就不动，宁可少改）
+_ALIGN_LEN_SLACK = 3            # 长度相容：差超过这么多字就不认（防把「喔」换成一句完整歌词）
+_ALIGN_WINDOW = 6               # 顺序对齐时往后看几行（官方行常比识别行细，要留余量）
+_THROTTLE_RETRY_WAIT = 2.0      # 搜索返回空时等这么久重试一次（实测网易云限流的表现就是"空结果"）
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +113,73 @@ def _norm(text: str) -> str:
     return "".join(ch for ch in text if ch.isalnum())
 
 
+def align_official_lines(recognized: list[str], official: list[str], *,
+                         advance: float = _ALIGN_ADVANCE, window: float = _ALIGN_WINDOW
+                         ) -> list[tuple[int | None, float, bool]]:
+    """把识别行按**顺序**对到官方歌词行：返回每行的 `(官方行号 | None, 相似度, 是否按位置推定)`。
+
+    为什么必须按顺序（而不是"全曲找最像的一句"）：副歌在歌词里会重复出现好几次，全曲找最像
+    会把后面那句对到前面那次副歌上；剪映的时间轴是准的，**顺序**才是可靠信息。
+
+    两遍：
+      ① 顺序游标扫一遍，记下每行最像的官方行与相似度（只在这一行确实像到 `advance` 时才把
+         游标往后推，避免一行对错、后面全跟着偏）；
+      ② **两侧都锚定、且中间官方行数刚好等于缺口行数** → 位置无歧义，逐行推定填上
+         （`是否按位置推定=True`）。只在歌首/歌尾或两个锚点之间做，且要求行数严格相等。
+    """
+    positions: list[tuple[int | None, float]] = []
+    cursor = 0
+    for text in recognized:
+        norm = _norm(text)
+        best_j, best_ratio = None, 0.0
+        for j in range(cursor, min(len(official), cursor + max(1, int(window)))):
+            onorm = _norm(official[j])
+            if not onorm:
+                continue
+            if norm and (norm in onorm or onorm in norm):
+                ratio = 1.0                      # 剪映拆句/并句：算完全命中
+            else:
+                ratio = difflib.SequenceMatcher(None, norm, onorm).ratio()
+            if ratio > best_ratio:
+                best_j, best_ratio = j, ratio
+        positions.append((best_j, best_ratio))
+        if best_j is None:
+            continue
+        # 拆句（相似度拉满）时**不前进**：官方一行可能被剪映拆成好几段
+        cursor = best_j if best_ratio >= 0.95 else (best_j + 1 if best_ratio >= advance else cursor)
+
+    out: list[tuple[int | None, float, bool]] = [
+        (j, ratio, False) if (j is not None and ratio >= advance) else (None, 0.0, False)
+        for j, ratio in positions
+    ]
+    # 第二遍：两侧都锚定、且中间官方行数刚好等于缺口行数 → 位置无歧义，逐个补上
+    anchor = -1
+    for index in range(len(out) + 1):
+        at_end = index == len(out)
+        if not at_end and out[index][0] is None:
+            continue
+        gap = index - anchor - 1
+        if gap:
+            prev_j = out[anchor][0] if anchor >= 0 else None
+            next_j = None if at_end else out[index][0]
+            if prev_j is None and next_j is not None and next_j == gap:
+                for offset in range(1, gap + 1):          # 歌首：官方前 gap 行正好对上
+                    out[offset - 1] = (offset - 1, 0.0, True)
+            elif next_j is None and prev_j is not None and len(out) - anchor - 1 == len(official) - prev_j - 1:
+                for offset in range(1, gap + 1):          # 歌尾：两边剩余行数相等
+                    out[anchor + offset] = (prev_j + offset, 0.0, True)
+            elif prev_j is not None and next_j is not None and next_j - prev_j - 1 == gap:
+                for offset in range(1, gap + 1):          # 两个锚点之间，行数正好对上
+                    out[anchor + offset] = (prev_j + offset, 0.0, True)
+        anchor = index
+
+    # 没锚定的行也把"最像的那一行"带上（不推进游标、相似度可能很低），交给调用方按门槛决定
+    for index, (j, ratio) in enumerate(positions):
+        if out[index][0] is None and j is not None:
+            out[index] = (j, ratio, False)
+    return out
+
+
 def correct_with_official(rows: list[tuple[float, float, str]],
                           official: list[str],
                           min_ratio: float = _MATCH_MIN_RATIO
@@ -114,23 +190,26 @@ def correct_with_official(rows: list[tuple[float, float, str]],
       · 识别文本与官方某行归一化后相同 → 保留
       · 识别文本是官方某行的子串（剪映把一行拆成多段）→ 保留，不改
       · 相似度 ≥ `min_ratio` → 用官方那行替换文字（时间轴照旧）
+      · 可信来源（`min_ratio == _MATCH_MIN_RATIO`）时再按**顺序对齐**兜一层：整句听错、
+        全曲找最像也只像一点点的行（实测 0.4 上下），只要位置能锚定就换成官方原文
       · 其余 → 保持原样并在 notes 里标注"无法核对"
 
     `min_ratio` 由**歌词来源的可信度**决定（见 `official_lyrics_for`）：来源只匹配了七成，
     说明可能是翻唱/说唱/remix 版，这时只改几乎完全一致的句子——绝不拿"另一个版本"的歌词
-    去覆盖识别结果（实测条目 #4 的候选全是说唱版，重合仅 57%）。
+    去覆盖识别结果（实测条目 #4 的候选全是说唱版，重合仅 57%）。**按顺序对齐只在可信来源
+    下启用**，同一个理由：来源不可信时，"位置"也可能是另一个版本的歌词。
     """
     if not official:
         return rows, ["没有官方歌词，跳过文字核对"]
     official_norm = [(_norm(o), o) for o in official if _norm(o)]
-    # 官方歌词常含「为你唱这首歌 没有什么风格」这种一行两句：拆成片段备查
-    pieces = set()
-    for norm_text, _o in official_norm:
-        pieces.add(norm_text)
+
+    trusted = min_ratio <= _MATCH_MIN_RATIO + 1e-9
+    aligned = (align_official_lines([text for _a, _b, text in rows], official)
+               if trusted else None)
 
     out: list[tuple[float, float, str]] = []
     notes: list[str] = []
-    for start, end, text in rows:
+    for index, (start, end, text) in enumerate(rows):
         norm = _norm(text)
         best_ratio, best_official = 0.0, ""
         for onorm, otext in official_norm:
@@ -144,10 +223,28 @@ def correct_with_official(rows: list[tuple[float, float, str]],
             ratio = difflib.SequenceMatcher(None, norm, onorm).ratio()
             if ratio > best_ratio:
                 best_ratio, best_official = ratio, otext
-        if norm == _norm(best_official):
-            out.append((start, end, text))
-        elif best_ratio >= 0.95:
-            out.append((start, end, text))          # 拆句/并句，保留剪映断句
+
+        # 可信来源下兜一层：**按顺序**对上的那一行（整句听错时全曲找最像也找不出它）
+        reason = ""
+        if aligned is not None and best_ratio < min_ratio:
+            position, position_ratio, inferred = aligned[index]
+            if position is not None:
+                proposed = official_norm[position][1]
+                length_ok = abs(len(norm) - len(_norm(proposed))) <= _ALIGN_LEN_SLACK
+                if best_ratio >= 0.95:
+                    pass                                  # 已经是拆句/并句，不动
+                elif inferred and best_ratio < _ALIGN_FLOOR:
+                    # 两侧锚定、行数严格相等 → 位置无歧义，直接采官方原文
+                    best_official, reason = proposed, "整句没听出来，按上下文位置推定"
+                elif position_ratio >= _ALIGN_FLOOR and length_ok and position_ratio >= best_ratio - 1e-9:
+                    best_ratio, best_official = position_ratio, proposed
+                    reason = f"整句听错，按顺序对齐；相似度 {best_ratio:.2f}"
+
+        if norm == _norm(best_official) or best_ratio >= 0.95:
+            out.append((start, end, text))            # 命中 / 拆句并句：保留剪映断句
+        elif reason:
+            out.append((start, end, best_official))
+            notes.append(f"{start:6.2f}s 「{text}」→「{best_official}」（{reason}）")
         elif best_ratio >= min_ratio:
             out.append((start, end, best_official))
             notes.append(f"{start:6.2f}s 「{text}」→「{best_official}」（相似度 {best_ratio:.2f}）")
@@ -200,56 +297,71 @@ def pick_lyric_query(rows: list[tuple[float, float, str]], *, top: int = 2) -> l
 
 
 def lyric_coverage(recognized: list[str], official: list[str]) -> float:
-    """识别文本有多大比例能在官方歌词里找到（0~1）——用来判断这个候选是不是同一首歌。
+    """识别文本与官方歌词**整段字符**重合度（0~1）——判断这个候选是不是同一首歌。
 
-    逐行归一化后「子串命中」或「相似度 ≥0.75」都算命中（识别有错字时仍能认出）。
+    2026-09-22 换的口径（原来是「逐行相似度 ≥0.75 的行数占比」）：剪映识别错几个字，
+    整行就掉到 0.75 以下，5 句里错两句 → 0.6 → 被 0.7 门槛整首挡掉。实测今天的 8 条里
+    有 5 条就是这样"一条都没校对"。整段字符口径按**字符**算（顺序对齐后能对上的字符占比），
+    错几个字只扣那几个字，正确的歌稳稳在 0.8 以上，错误的歌（不同歌词）仍在 0.4 以下。
     """
-    official_norm = [_norm(o) for o in official if _norm(o)]
-    if not recognized or not official_norm:
+    rec = _norm("".join(recognized))
+    off = _norm("".join(official))
+    if not rec or not off:
         return 0.0
-    hit = 0
-    for text in recognized:
-        norm = _norm(text)
-        if len(norm) < 2:
-            continue
-        if any(norm in o for o in official_norm):
-            hit += 1
-            continue
-        if any(difflib.SequenceMatcher(None, norm, o).ratio() >= 0.75 for o in official_norm):
-            hit += 1
-    return hit / max(1, len([t for t in recognized if len(_norm(t)) >= 2]))
+    matcher = difflib.SequenceMatcher(None, rec, off, autojunk=False)
+    matched = sum(block.size for block in matcher.get_matching_blocks())
+    return matched / len(rec)
 
 
 async def official_lyrics_for(rows: list[tuple[float, float, str]], song: str
                               ) -> tuple[list[str], str, float]:
-    """定位这条视频对应的官方歌词：**歌名搜索 + 歌词搜索两路，按与识别文本的重合度选**。
+    """定位这条视频对应的官方歌词：**歌名 + 标题当歌词 + 识别歌词三路搜索，按重合度选**。
 
-    返回 `(官方歌词行, 来源说明, 修正门槛 min_ratio)`；两边都没找到就返回 `([], 说明, 0)`。
+    返回 `(官方歌词行, 来源说明, 修正门槛 min_ratio)`；都没找到就返回 `([], 说明, 0)`。
+
+    **三路都要走**（2026-09-22 实测的教训）：① 歌名搜索（`type=1`）经常一个候选都给不出来
+    ——今天的《说书》《我要找到你》《可不可以》《碎碎念》《讨厌》《呆头鸟》全是空手；
+    ② **标题当歌词搜**（`type=1006`）反而准，因为标题多半就是副歌那句
+    ——004 的标题「看着你的笑我好像就足够」一搜就是《碎碎念》-队长；
+    ③ 识别出来的歌词行搜（剪映听错太多时会落空，如 006《说书》整句是编的，但仍值得一试）。
+    三路的结果**按与识别文本的整段重合度排序**，谁像就用谁——不再只看歌名那一路。
 
     **门槛跟着可信度走**（这条很重要）：来源与识别文本重合 ≥85% 才算"同一版本"，允许按
-    0.6 的相似度改字；只重合 70%~85% 说明多半是翻唱/说唱/remix 版，只允许改 ≥0.85 的
-    （几乎完全一致的）句子——否则会把另一个版本的歌词混进来（实测条目 #4 的候选全是说唱版）。
+    0.6 的相似度改字、并允许按顺序对齐修正整句听错的行；只重合 60%~85% 说明多半是翻唱/
+    说唱/remix 版，只允许改 ≥0.85 的（几乎完全一致的）句子——否则会把另一个版本的歌词
+    混进来（实测条目 #4 的候选全是说唱版）。
     """
     recognized = [text for _a, _b, text in rows]
     candidates: list[tuple[int, str]] = []          # (song_id, 来源说明)
     notes: list[str] = []
 
+    async def search(how: str, query: str, *, by_lyric: bool) -> list[dict[str, Any]]:
+        """搜一次，**空结果再重试一次** —— 网易云限流的表现就是"返回空"而不是报错。"""
+        for attempt in range(2):
+            try:
+                found = (await netease_search_by_lyric(query, limit=6) if by_lyric
+                         else await netease_search(query, limit=6))
+            except Exception as error:               # noqa: BLE001
+                notes.append(f"{how}搜索失败（{error}）")
+                return []
+            if found:
+                return found
+            if attempt == 0:
+                await asyncio.sleep(_THROTTLE_RETRY_WAIT)
+        return []
+
     if song:
-        try:
-            by_name = await netease_search(song, limit=6)
-        except Exception as error:                   # noqa: BLE001
-            by_name, notes = [], [f"歌名搜索失败（{error}）"]
-        candidates += [(int(c["id"]), f"歌名搜索《{c.get('name')}》- {c.get('artist')}")
-                       for c in by_name]
+        for c in await search(f"歌名《{song}》", song, by_lyric=False):
+            candidates.append((int(c["id"]), f"歌名搜索《{c.get('name')}》- {c.get('artist')}"))
+        # 标题/歌名**当歌词**再搜一次（歌名搜不到时的主力，实测最有效的一路）
+        for c in await search(f"标题「{song}」", song, by_lyric=True):
+            candidates.append((int(c["id"]),
+                               f"歌词搜索（标题「{song}」）→《{c.get('name')}》- {c.get('artist')}"))
 
     for query in pick_lyric_query(rows):
-        try:
-            found = await netease_search_by_lyric(query, limit=6)
-        except Exception as error:                   # noqa: BLE001
-            notes.append(f"歌词搜索失败（{error}）")
-            break
-        candidates += [(int(c["id"]), f"歌词搜索「{query}」→《{c.get('name')}》- {c.get('artist')}")
-                       for c in found]
+        for c in await search(f"歌词「{query}」", query, by_lyric=True):
+            candidates.append((int(c["id"]),
+                               f"歌词搜索（识别行「{query}」）→《{c.get('name')}》- {c.get('artist')}"))
 
     best: tuple[float, list[str], str] = (0.0, [], "")
     seen_ids: set[int] = set()
@@ -273,7 +385,7 @@ async def official_lyrics_for(rows: list[tuple[float, float, str]], song: str
         min_ratio = _MATCH_MIN_RATIO if best[0] >= _TRUSTED_COVERAGE else _STRICT_MATCH_RATIO
         return best[1], best[2], min_ratio
     if best[0] <= 0:
-        return [], "；".join(notes) or "歌名与歌词两路搜索都没找到官方歌词", 0.0
+        return [], "；".join(notes) or "歌名 / 标题 / 歌词三路搜索都没找到官方歌词", 0.0
     return [], f"找到的候选与识别文本重合度太低（最高 {best[0]:.0%}），不用于校对", 0.0
 
 

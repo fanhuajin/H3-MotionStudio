@@ -82,7 +82,12 @@ def _parse_lrc(raw: str) -> list[tuple[float, str]]:
 
 
 async def netease_search(query: str, limit: int = 6) -> list[dict[str, Any]]:
-    """搜索并附带歌词语种/翻译可用性信息（供前端挑选正确语种条目）。"""
+    """搜索并附带歌词语种/翻译可用性信息（供前端挑选正确语种条目）。
+
+    ⚠️ 这里对**每个候选**都要取一次歌词来判语种/行数，而调用方（`subtitle_step`）随后还要
+    再取一次同一条 —— 2026-09-22 实测网易云会因此限流（表现是**返回空**，整条链静默退化成
+    "没找到官方歌词"）。所以改走带缓存的 `netease_lyric()`：同一首歌全程只请求一次。
+    """
     candidates: list[dict[str, Any]] = []
     try:
         async with httpx.AsyncClient(timeout=15, headers=_NETEASE_HEADERS) as client:
@@ -94,41 +99,28 @@ async def netease_search(query: str, limit: int = 6) -> list[dict[str, Any]]:
     if not songs:
         return candidates
 
-    async def enrich(song: dict[str, Any]) -> dict[str, Any] | None:
+    for song in songs[:limit]:
         song_id = song.get("id")
         if not song_id:
-            return None
-        item: dict[str, Any] = {
+            continue
+        try:
+            payload = await netease_lyric(int(song_id))
+        except Exception:  # noqa: BLE001 —— 取不到歌词的候选直接跳过（与原实现一致）
+            continue
+        lines = [str(line.get("orig") or "") for line in (payload.get("lines") or [])]
+        if not lines:
+            continue
+        candidates.append({
             "id": int(song_id),
             "name": song.get("name") or "",
             "artist": ((song.get("artists") or [{}])[0].get("name")) or "",
             "album": ((song.get("album") or {}).get("name")) or "",
-        }
-        try:
-            async with httpx.AsyncClient(timeout=15, headers=_NETEASE_HEADERS) as client:
-                lyric_response = await client.get(
-                    f"{_NETEASE}/song/lyric", params={"id": song_id, "lv": 1, "kv": 1, "tv": -1}
-                )
-                payload = lyric_response.json()
-            lrc_lines = _parse_lrc(((payload.get("lrc") or {}).get("lyric") or ""))
-            zh_lines = _parse_lrc(((payload.get("tlyric") or {}).get("lyric") or ""))
-        except (httpx.HTTPError, ValueError):
-            return None
-        if not lrc_lines:
-            return None
-        body = " ".join(text for _, text in lrc_lines[:12])
-        lang = detect_lang(body)
-        item["lang"] = lang
-        item["langLabel"] = lang_label(lang)
-        item["hasZh"] = len(zh_lines) > 0
-        item["lineCount"] = len(lrc_lines)
-        item["preview"] = lrc_lines[0][1][:36] if lrc_lines else ""
-        return item
-
-    for song in songs[:limit]:
-        enriched = await enrich(song)
-        if enriched:
-            candidates.append(enriched)
+            "lang": payload.get("lang"),
+            "langLabel": lang_label(str(payload.get("lang") or "")),
+            "hasZh": bool(payload.get("hasZh")),
+            "lineCount": len(lines),
+            "preview": lines[0][:36] if lines else "",
+        })
     return candidates
 
 
@@ -163,8 +155,17 @@ async def netease_search_by_lyric(line: str, limit: int = 8) -> list[dict[str, A
     return out
 
 
+# 取过的歌词缓存（同一进程内）：① 同一条视频里"候选富化"与"打分"会用同一个 song_id；
+# ② 批量里同一个创作者常翻唱同一首歌。2026-09-22 因为重复取词被网易云限流，故加这层。
+_LYRIC_CACHE: dict[int, dict[str, Any]] = {}
+
+
 async def netease_lyric(song_id: int) -> dict[str, Any]:
-    """取某条目的完整歌词：lines=[{time, orig, zh}]、lang、hasZh。"""
+    """取某条目的完整歌词：lines=[{time, orig, zh}]、lang、hasZh（**带进程内缓存**）。"""
+    key = int(song_id)
+    cached = _LYRIC_CACHE.get(key)
+    if cached is not None:
+        return cached
     async with httpx.AsyncClient(timeout=15, headers=_NETEASE_HEADERS) as client:
         response = await client.get(f"{_NETEASE}/song/lyric", params={"id": song_id, "lv": 1, "kv": 1, "tv": -1})
         response.raise_for_status()
@@ -184,9 +185,11 @@ async def netease_lyric(song_id: int) -> dict[str, Any]:
         if zh:
             zh_count += 1
         lines.append({"time": round(t, 3), "orig": text, "zh": zh})
-    return {
+    result = {
         "lang": detect_lang(body),
         "hasZh": zh_count > 0,
         "lines": lines,
     }
+    _LYRIC_CACHE[key] = result
+    return result
 
