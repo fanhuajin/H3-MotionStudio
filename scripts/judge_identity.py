@@ -37,7 +37,13 @@ from PIL import Image  # noqa: E402
 from backend import batch_ai  # noqa: E402
 
 PUBLISH_ROOT = Path(r"E:\AI_Exports\H3-MotionStudio\发布成品")
-IDENTITY = PUBLISH_ROOT / "晚柠.png"
+# 身份原型：发布根上的 `晚柠.png` 已于 2026-09-22 删除（它与「本人固定参考.png」sha 相同）。
+# 这里按候选顺序找，老位置还在就继续用。
+IDENTITY_CANDIDATES = (
+    Path(r"E:\AI_Assets\PortraitIdentity\本人固定参考.png"),
+    PUBLISH_ROOT / "晚柠.png",
+)
+IDENTITY = next((p for p in IDENTITY_CANDIDATES if p.is_file()), IDENTITY_CANDIDATES[0])
 PERSON = "人物图.png"
 MIN_BYTES = 50 * 1024        # 小于这个体积视为「没生成成功」（与仓库既有约定一致）
 

@@ -13,9 +13,33 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from backend import chatgpt_cdp as cdp
 from scripts.cover_common import PUBLISH_ROOT, SPECS, build_prompt, existing_cover, parse_copy
 
-IDENTITY = PUBLISH_ROOT / "晚柠.png"
-SING_PROMPT = PUBLISH_ROOT / "4比3图片.txt"
-DANCE_PROMPT = PUBLISH_ROOT / "9比16图片.txt"
+# 身份原型与规则提示词**按候选顺序找**，不再写死发布根：发布成品根上的
+# `晚柠.png` / `4比3图片.txt` / `9比16图片.txt` 已于 2026-09-22 删除
+# （`晚柠.png` 与「本人固定参考.png」是同一个文件、sha 相同；两份提示词与桌面那份
+#  逐字节相同、仓库 `backend/prompts/` 里也有同口径的一份）。
+# 顺序：桌面（用户手改的那份）→ 发布根（老位置还在就用它）→ 仓库规范位置。
+def _first_existing(paths) -> Path:
+    options = tuple(Path(p) for p in paths)
+    for path in options:
+        if path.is_file():
+            return path
+    return options[-1]
+
+
+IDENTITY = _first_existing((
+    Path(r"E:\AI_Assets\PortraitIdentity\本人固定参考.png"),
+    PUBLISH_ROOT / "晚柠.png",
+))
+SING_PROMPT = _first_existing((
+    Path.home() / "Desktop" / "4比3图片.txt",
+    PUBLISH_ROOT / "4比3图片.txt",
+    PROJECT_ROOT / "backend" / "prompts" / "4x3唱歌构图.txt",
+))
+DANCE_PROMPT = _first_existing((
+    Path.home() / "Desktop" / "9比16图片.txt",
+    PUBLISH_ROOT / "9比16图片.txt",
+    PROJECT_ROOT / "backend" / "prompts" / "9x16跳舞构图.txt",
+))
 STOP_FILE = PROJECT_ROOT / "data" / "cover-stop.flag"
 
 

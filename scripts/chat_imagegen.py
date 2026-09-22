@@ -91,6 +91,37 @@ PERSON = "人物图.png"
 SING_RULE = "4比3图片.txt"
 DANCE_RULE = "9比16图片.txt"
 
+# 身份原型 / 规则文件按候选顺序找，**不再写死发布根**（2026-09-22：发布成品根上的
+# `晚柠.png` 与用户桌面那两份提示词已删除，保留仓库自带的那一份）。
+# 顺序：桌面（用户手改的那份）→ 发布根（老位置，还能找到就用）→ 仓库里的规范位置。
+IDENTITY_CANDIDATES = (
+    Path(r"E:\AI_Assets\PortraitIdentity\本人固定参考.png"),   # 与 backend/batch_worker.IDENTITY_PATH 同一个文件
+    PUBLISH_ROOT / IDENTITY,
+)
+RULE_CANDIDATES = {
+    "singing": (Path.home() / "Desktop" / SING_RULE, PUBLISH_ROOT / SING_RULE,
+                PROJECT_ROOT / "backend" / "prompts" / "4x3唱歌构图.txt"),
+    "dance": (Path.home() / "Desktop" / DANCE_RULE, PUBLISH_ROOT / DANCE_RULE,
+              PROJECT_ROOT / "backend" / "prompts" / "9x16跳舞构图.txt"),
+}
+
+
+def first_existing(paths) -> Path:
+    """返回第一个存在的候选；都不存在就返回最后一个（让报错指着一个明确的位置）。"""
+    options = tuple(Path(p) for p in paths)
+    for path in options:
+        if path.is_file():
+            return path
+    return options[-1]
+
+
+def identity_path() -> Path:
+    return first_existing(IDENTITY_CANDIDATES)
+
+
+def rule_path(kind: str) -> Path:
+    return first_existing(RULE_CANDIDATES.get(kind) or RULE_CANDIDATES["dance"])
+
 SING_RATIO, DANCE_RATIO, BILI_RATIO, DOUYIN_RATIO = 4 / 3, 9 / 16, 4 / 3, 3 / 4
 RATIO_TOLERANCE = 0.06
 STEP_ORDER = ("person", "bili", "douyin")
@@ -868,7 +899,7 @@ def audit_person_identity(page, folders: list[Path], args) -> int:
     """
     if args.fix_below <= 0:
         return 0
-    identity = PUBLISH_ROOT / IDENTITY_IMAGE
+    identity = identity_path()
     if not identity.is_file():
         log(f"身份原型不存在，跳过身份返工：{identity}")
         return 0
@@ -1109,9 +1140,9 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
 
     # gate 1
     if step == "person":
-        rule = PUBLISH_ROOT / (SING_RULE if kind == "singing" else DANCE_RULE)
+        rule = rule_path(kind)
         scene = folder / SCENE
-        identity = PUBLISH_ROOT / IDENTITY
+        identity = identity_path()
         copy_path = folder / COPY
         for label, path in (("抽帧", scene), ("晚柠", identity), ("发布文案", copy_path), ("规则", rule)):
             if not path.is_file():
