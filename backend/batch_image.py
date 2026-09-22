@@ -24,6 +24,7 @@ from typing import Any, Awaitable, Callable
 import httpx
 from PIL import Image, ImageFilter
 
+from . import netproxy
 from .settings import env_value
 
 OFFICIAL_URL = "https://api.openai.com/v1"
@@ -39,6 +40,9 @@ ProgressCallback = Callable[[float, str], Awaitable[None]]
 # （用户 2026-09-19：「人物相似度 必须70%以上」）。批量备料与 /images 页面共用。
 PERSON_MIN_SIMILARITY = 70
 PERSON_MAX_ATTEMPTS = 3
+
+# 本进程里最近一次**成功**的请求方案（见 `remember_plan` / `request_plans`）。
+_STICKY_PLAN: tuple[str, str] | None = None
 
 
 def base_url() -> str:
@@ -68,6 +72,8 @@ def describe() -> dict[str, str]:
         "model": model(),
         "configured": "1" if configured() else "0",
         "mode": env_value("H3_BATCH_IMAGE_MODE", "auto"),
+        # 中转站直连不通时必须走代理，否则出图会静默退回"源视频取帧"（2026-09-22 事故）。
+        "proxy": netproxy.describe(),
     }
 
 
@@ -86,7 +92,20 @@ def request_plans() -> list[tuple[str, str]]:
             plans.append(("multi", "image"))
     if mode in {"auto", "composite"}:
         plans.append(("composite", explicit or "image"))
+    # 本进程里**已经成功过**的那一套排到最前：`auto` 会按顺序把每一套都真跑一遍出图，
+    # 每套 90~330 秒且都算一次额度（2026-09-22 实测 329s = multi 170s + composite 92s）。
+    # 既然 99% 的情况都是同一套通，就没必要每次都从头试一遍；
+    # 它万一不通，下面 for 循环照样会退回去把其它几套都试完。
+    if mode == "auto" and _STICKY_PLAN is not None and _STICKY_PLAN in plans:
+        plans.remove(_STICKY_PLAN)
+        plans.insert(0, _STICKY_PLAN)
     return plans
+
+
+def remember_plan(plan: str, field: str) -> None:
+    """记住这一次成功的「方案 + 字段名」，下一次出图优先用它（见 `request_plans`）。"""
+    global _STICKY_PLAN
+    _STICKY_PLAN = (plan, field)
 
 
 def _api_error(response: httpx.Response) -> str:
@@ -270,12 +289,71 @@ async def swap_face_with_prototype(
     return output_path
 
 
+_ROUTE_KEY = "relay"
+_route_proxy: str | None = None
+_route_note: str = ""
+
+
+def _route(key: str = _ROUTE_KEY) -> str | None:
+    """当前这次出图该用的代理（None = 直连）。"""
+
+    return _route_proxy
+
+
+async def _prepare_route() -> str:
+    """出图之前判定一次出网路线：**直连优先，直连不通才走代理**。
+
+    路线说明记进 `_route_note`，调用方写进日志 —— 用户能看到这次到底走没走代理。
+    """
+    global _route_proxy, _route_note
+    proxy, note = await netproxy.probe_route_async(f"{base_url()}/models")
+    _route_proxy = proxy or None
+    _route_note = note
+    return note
+
+
+def route_note() -> str:
+    """本次出图**实际**用的出网方式（给日志/报错用）。"""
+    return _route_note or netproxy.describe()
+
+
+async def _retry_with_other_route(
+    data: dict[str, str], files: list[tuple[str, tuple[str, tuple[str, bytes, str]]]], output_path: Path
+) -> bool:
+    """一次真实请求失败后，**换另一条路**再试一次（直连↔代理）。
+
+    为什么值得多试一次：VPN 断掉的那一刻，恰好正在跑的那条请求会失败，
+    但下一条完全可以是通的 —— 重试一次就能救回来，不用等到下一次备料。
+    ⚠️ 用户显式配置的路线（`H3_IMAGE_PROXY`）**不在这里改**（`probe_route` 会照配置返回），
+    免得把"强制直连"变成"偷偷走代理"。
+    """
+    global _route_proxy, _route_note
+    netproxy.note_failure()
+    probe = f"{base_url()}/models"
+    proxy, note = await netproxy.probe_route_async(probe)
+    if (proxy or None) == _route_proxy:
+        return False  # 判出来还是同一条路，没必要再打一次
+    _route_proxy, _route_note = (proxy or None), note
+    try:
+        response = await _post(data, files)
+        if response.is_error:
+            return False
+        _store(response, output_path)
+        return True
+    except (httpx.HTTPError, RuntimeError):
+        return False
+
+
 async def _post(
     data: dict[str, str], files: list[tuple[str, tuple[str, bytes, str]]]
 ) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+    # 出网路线由 `generate_candidate_image` 事先判定好（`_prepare_route`）。
+    # 2026-09-22 事故：直连被解析到无效 IP、全部超时，出图失败后 `batch_worker`
+    # 按设计退回"源视频取帧"，用户看到的就是「人物图 = 抽帧图」。
+    url = f"{base_url()}/images/edits"
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, proxy=_route()) as client:
         return await client.post(
-            f"{base_url()}/images/edits",
+            url,
             headers={"Authorization": f"Bearer {api_key()}"},
             data=data,
             files=files,
@@ -289,7 +367,10 @@ def _store(response: httpx.Response, output_path: Path) -> Path:
     if encoded:
         output_path.write_bytes(base64.b64decode(encoded))
     elif entry.get("url"):
-        download = httpx.get(str(entry["url"]), timeout=REQUEST_TIMEOUT)
+        # 图片地址由中转站给出（可能是境外对象存储/COS），沿用**这次出图用的那条路线**。
+        image_url = str(entry["url"])
+        with httpx.Client(timeout=REQUEST_TIMEOUT, proxy=_route()) as client:
+            download = client.get(image_url)
         if download.is_error:
             raise RuntimeError(f"图片已生成但下载失败：HTTP {download.status_code}")
         output_path.write_bytes(download.content)
@@ -321,6 +402,11 @@ async def generate_candidate_image(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.unlink(missing_ok=True)
     work_dir = output_path.parent
+
+    # **先判定出网路线**（直连优先、直连不通才走代理）：中转站直连被墙时，
+    # 没有这一步就会全线连接超时 → `batch_worker` 退回"源视频取帧"，用户看到的
+    # 就是「人物图 = 抽帧图」（2026-09-22）。判定只花一次廉价只读请求。
+    await _prepare_route()
 
     started = time.monotonic()
     state = {"stop": False}
@@ -360,10 +446,18 @@ async def generate_candidate_image(
                     failures.append(f"[{plan}/{field}] {_api_error(response)}")
                     continue
                 _store(response, output_path)
+                remember_plan(plan, field)
             except httpx.HTTPError as error:
                 # 传输层异常（连接失败、超时、TLS 等）不是 HTTP 错误响应，必须一起回退，
                 # 否则换个地址/字段名的机会都没有就直接抛穿了。
                 failures.append(f"[{plan}/{field}] 连接失败：{type(error).__name__}: {str(error)[:160]}")
+                # 这次走的路线可能已经坏了（比如 VPN 刚断）：作废判定结果，
+                # **换另一条路再试一次**（现在是直连就改走代理，反之亦然）。
+                rerouted = await _retry_with_other_route(data, files, output_path)
+                if rerouted:
+                    if on_progress:
+                        await on_progress(1.0, "候选人物图已生成")
+                    return output_path
                 continue
             if on_progress:
                 await on_progress(1.0, "候选人物图已生成")

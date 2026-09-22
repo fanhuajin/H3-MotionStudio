@@ -10263,5 +10263,97 @@ class DownloadDurationGateTests(unittest.TestCase):
             self.assertFalse(written[0].exists(), "时长短一截的文件不许留在下载目录里")
 
 
+class NetProxyRoutingTests(unittest.TestCase):
+    """出图走哪条出网路线：**直连优先，直连不通才自动改走代理**（2026-09-22）。
+
+    那天的故障：用户 VPN 断了，中转站 `api.teamorouter.com` 直连全部 `ConnectError`，
+    出图失败后 `batch_worker` 按设计退回"源视频取帧"——用户看到的就是
+    「怎么生成的人物图完成不像就是抽帧图啊」。所以这条口径必须钉住：
+    直连能用就别绕代理；直连不通要能自己切过去；本机地址（ComfyUI、自调用）永远直连。
+    """
+
+    PROXY_KEYS = ("H3_IMAGE_PROXY", "H3_BATCH_IMAGE_PROXY", "H3_NO_PROXY",
+                  "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+                  "HTTP_PROXY", "http_proxy")
+
+    def setUp(self):
+        from backend import netproxy
+
+        self.netproxy = netproxy
+        saved = {key: os.environ.get(key) for key in self.PROXY_KEYS}
+        self.addCleanup(self._restore_env, saved)
+        for key in self.PROXY_KEYS:
+            os.environ.pop(key, None)
+        with patch.object(netproxy, "_user_env", return_value=""):
+            netproxy.note_failure()
+
+    def _restore_env(self, saved):
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.netproxy.note_failure()
+
+    def test_loopback_and_self_calls_never_go_through_a_proxy(self) -> None:
+        self.assertIsNone(self.netproxy.for_url("http://127.0.0.1:15188/system_stats"))
+        self.assertIsNone(self.netproxy.for_url("http://localhost:15111/api/batches/latest"))
+        self.assertIsNone(self.netproxy.for_url("http://[::1]:15111/api/config"))
+        self.assertTrue(self.netproxy.is_local("http://127.0.0.1:15111/"))
+
+    def test_direct_is_preferred_when_it_works(self) -> None:
+        """直连能通就不绕代理（实测中转站直连 0.3s、走代理 0.4s，多一跳没意义）。"""
+        calls: list[str] = []
+
+        def fake_probe(url, proxy, timeout):
+            calls.append(proxy)
+            return proxy == ""          # 只有直连能通
+
+        with patch.object(self.netproxy, "_auto_proxy", return_value="http://127.0.0.1:7897"):
+            with patch.object(self.netproxy, "_probe", side_effect=fake_probe):
+                proxy, note = self.netproxy.probe_route("https://api.example/v1/models")
+
+        self.assertEqual(proxy, "")
+        self.assertIn("直连可用", note)
+        self.assertEqual(calls, [""])   # 判定成功就不再试代理
+
+    def test_direct_failure_falls_back_to_the_local_proxy(self) -> None:
+        def fake_probe(url, proxy, timeout):
+            return proxy == "http://127.0.0.1:7897"   # 只有代理能通
+
+        with patch.object(self.netproxy, "_auto_proxy", return_value="http://127.0.0.1:7897"):
+            with patch.object(self.netproxy, "_probe", side_effect=fake_probe):
+                proxy, note = self.netproxy.probe_route("https://api.example/v1/models")
+
+        self.assertEqual(proxy, "http://127.0.0.1:7897")
+        self.assertIn("自动改走代理", note)
+
+    def test_the_route_is_rechecked_after_a_real_request_fails(self) -> None:
+        """VPN 断掉的那一刻，正在跑的那次请求失败 → 下次必须重新判定，不能一直用坏路线。"""
+        with patch.object(self.netproxy, "_auto_proxy", return_value="http://127.0.0.1:7897"):
+            with patch.object(self.netproxy, "_probe", side_effect=lambda url, p, t: p == ""):
+                self.netproxy.probe_route("https://api.example/v1/models")
+            with patch.object(self.netproxy, "_probe", side_effect=lambda url, p, t: p != ""):
+                cached, _ = self.netproxy.probe_route("https://api.example/v1/models")
+                self.assertEqual(cached, "")            # 缓存里还是直连
+                self.netproxy.note_failure()
+                rechecked, note = self.netproxy.probe_route("https://api.example/v1/models")
+        self.assertEqual(rechecked, "http://127.0.0.1:7897")
+        self.assertIn("自动改走代理", note)
+
+    def test_an_explicit_proxy_setting_wins_over_probing(self) -> None:
+        """用户手动设了 H3_IMAGE_PROXY 就听他的：不许偷偷改回直连，也不许拿探测覆盖。"""
+        os.environ["H3_IMAGE_PROXY"] = "http://127.0.0.1:7897"
+        with patch.object(self.netproxy, "_probe", side_effect=AssertionError("不该探测")):
+            proxy, note = self.netproxy.probe_route("https://api.example/v1/models")
+        self.assertEqual(proxy, "http://127.0.0.1:7897")
+        self.assertIn("H3_IMAGE_PROXY", note)
+
+        os.environ["H3_IMAGE_PROXY"] = "direct"      # 显式要求直连
+        proxy, note = self.netproxy.probe_route("https://api.example/v1/models")
+        self.assertEqual(proxy, "")
+        self.assertIn("强制直连", note)
+
+
 if __name__ == "__main__":
     unittest.main()

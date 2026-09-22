@@ -62,6 +62,23 @@ function Test-ServiceReady {
     }
 }
 
+# 端口上**有没有人在监听**（用来找本机代理：连得上 = 有服务）。
+function Test-PortListening {
+    param([int]$Port, [string]$TargetHost = '127.0.0.1')
+    $client = $null
+    try {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        $async = $client.BeginConnect($TargetHost, $Port, $null, $null)
+        if (-not $async.AsyncWaitHandle.WaitOne(250)) { return $false }
+        $client.EndConnect($async)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($client) { try { $client.Close() } catch { } }
+    }
+}
+
 # ComfyUI 的健康检查走 `/system_stats`（后端那套 `/api/config` 是它自己的）。
 function Test-ComfyReady {
     param([string]$Url, [int]$TimeoutSeconds = 3)
@@ -155,6 +172,27 @@ if ($env:H3_COMFY_URL) {
 
 if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'node_modules'))) {
     npm install --prefer-offline --no-audit --no-fund
+}
+
+# 中转站（出图）**直连不通时必须走代理** —— 2026-09-22 事故：`api.teamorouter.com`
+# 被解析到无效 IP，后端 httpx 直连全部超时，出图失败后按设计退回"源视频取帧"，
+# 用户看到的是「人物图 = 抽帧图」。后端自己也会自动探测（见 backend\netproxy.py），
+# 这里额外把结果写进进程环境变量，让链路更明确、也方便排查。
+# ⚠️ 只设**后端进程**的环境变量，不动用户的注册表与系统代理设置。
+if ($env:H3_IMAGE_PROXY) {
+    Write-Host ('出图代理按已配置的值：' + $env:H3_IMAGE_PROXY) -ForegroundColor DarkGray
+} else {
+    foreach ($proxyPort in @(7897, 7890, 10809, 1080)) {
+        if (Test-PortListening -Port $proxyPort) {
+            $env:H3_IMAGE_PROXY = 'http://127.0.0.1:' + $proxyPort
+            Write-Host ('检测到本机代理（127.0.0.1:' + $proxyPort + '），出图请求走它。') -ForegroundColor DarkGray
+            break
+        }
+    }
+    if (-not $env:H3_IMAGE_PROXY) {
+        Write-Host '提示：未检测到本机代理端口；若出图报"连接失败"而人物图变成抽帧图，' -ForegroundColor Yellow
+        Write-Host '      请确认代理软件在跑，或设置 H3_IMAGE_PROXY=http://127.0.0.1:端口 后重启。' -ForegroundColor Yellow
+    }
 }
 
 $venvPython = Join-Path $projectRoot '.venv\Scripts\python.exe'

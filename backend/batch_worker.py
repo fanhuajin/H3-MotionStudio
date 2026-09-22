@@ -1807,10 +1807,13 @@ async def _prepare_review_work(
             if provider == "local":
                 batch_store.add_item_log(batch_id, item_id, "已向本地 Krea2 发出人物图请求（本地采样）……")
             else:
+                # 走没走代理要留痕：2026-09-22 那次"人物图变成抽帧图"就是直连不通，
+                # 而日志里只有一句笼统的连接失败，看不出是代理没生效。
                 batch_store.add_item_log(
                     batch_id, item_id,
                     f"已向中转站发出人物图请求（相似度门槛 {batch_image.PERSON_MIN_SIMILARITY}，"
-                    f"不够会自动重做，最多 {batch_image.PERSON_MAX_ATTEMPTS} 次）……",
+                    f"不够会自动重做，最多 {batch_image.PERSON_MAX_ATTEMPTS} 次；"
+                    f"{batch_image.route_note()}）……",
                 )
             if provider == "local":
                 await batch_portrait.generate_portrait(
@@ -1865,7 +1868,13 @@ async def _prepare_review_work(
         except Exception as error:
             await asyncio.to_thread(shutil.copy2, scene_frame, fallback_image)
             image_path = fallback_image
-            note = f"候选图生成失败，已退回源视频取帧：{error}"
+            # 用户看到这张图会直接问「怎么人物图就是抽帧图」——所以话要说全：
+            # 这是**出图失败的兜底**，不是新规则；出片能继续，但这条要重出。
+            note = (
+                f"⚠️ 候选人物图生成失败，已退回源视频取帧（这张图就是抽帧，不是生成图）：{error}"
+                f"（出网方式：{batch_image.route_note()}）。"
+                "可在图片与封面页对本条点「重新生成这一步」重出。"
+            )
             warning = f"{warning} {note}".strip()
             batch_store.add_item_log(batch_id, item_id, note)
 
