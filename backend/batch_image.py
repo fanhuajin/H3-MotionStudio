@@ -429,18 +429,26 @@ async def generate_candidate_image(
                 "H3_BATCH_IMAGE_MODE 配置不正确；可选 auto / multi（多图编辑）/ composite（拼合成单图）"
             )
         for plan, field in plans:
-            data, files, _ = _build_request(
-                plan,
-                field,
-                scene_image=Path(scene_image),
-                # 注意**不能**写 Path(identity_image)：封面走单参考时它是 None，Path(None) 会抛
-                # TypeError（"argument should be a str or an os.PathLike ... not 'NoneType'"）。
-                identity_image=Path(identity_image) if identity_image is not None else None,
-                prompt=prompt,
-                ratio=ratio,
-                work_dir=work_dir,
-            )
+            # ⚠️ **组请求也要放进 try 里**：`_build_request` 在 `composite` 模式下要求两张参考图，
+            # 而**封面只发一张**（`identity_image=None`，见 `_generate_cover` 的注释）—— 这个
+            # RuntimeError 以前会直接抛穿整个请求，`multi` 那套（单图编辑）根本没机会试，
+            # 用户看到的就是「composite 模式必须同时给场景图与身份图」、两张封面全不出
+            # （2026-09-22 实测：人物图 132 秒出好了，两张封面各 42 秒报这个错）。
+            # 现在把它当成"这一套方案不可用"，继续试下一套 —— 单参考请求照样能出封面。
+            data: dict[str, str] = {}
+            files: list[tuple[str, tuple[str, bytes, str]]] = []
             try:
+                data, files, _ = _build_request(
+                    plan,
+                    field,
+                    scene_image=Path(scene_image),
+                    # 注意**不能**写 Path(identity_image)：封面走单参考时它是 None，Path(None) 会抛
+                    # TypeError（"argument should be a str or an os.PathLike ... not 'NoneType'"）。
+                    identity_image=Path(identity_image) if identity_image is not None else None,
+                    prompt=prompt,
+                    ratio=ratio,
+                    work_dir=work_dir,
+                )
                 response = await _post(data, files)
                 if response.is_error:
                     failures.append(f"[{plan}/{field}] {_api_error(response)}")
@@ -453,11 +461,16 @@ async def generate_candidate_image(
                 failures.append(f"[{plan}/{field}] 连接失败：{type(error).__name__}: {str(error)[:160]}")
                 # 这次走的路线可能已经坏了（比如 VPN 刚断）：作废判定结果，
                 # **换另一条路再试一次**（现在是直连就改走代理，反之亦然）。
-                rerouted = await _retry_with_other_route(data, files, output_path)
+                rerouted = bool(data) and await _retry_with_other_route(data, files, output_path)
                 if rerouted:
                     if on_progress:
                         await on_progress(1.0, "候选人物图已生成")
                     return output_path
+                continue
+            except RuntimeError as error:
+                # 这套方案的**输入组装**不适用（最典型：composite 需要两张图、而封面只有一张）。
+                # 用 `continue` 而不是 re-raise —— 否则会一直炸到用户面前。
+                failures.append(f"[{plan}/{field}] 不适用：{error}")
                 continue
             if on_progress:
                 await on_progress(1.0, "候选人物图已生成")

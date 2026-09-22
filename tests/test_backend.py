@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from pathlib import Path
 import asyncio
+import base64
 import json
 import os
 import re
@@ -10353,6 +10354,91 @@ class NetProxyRoutingTests(unittest.TestCase):
         proxy, note = self.netproxy.probe_route("https://api.example/v1/models")
         self.assertEqual(proxy, "")
         self.assertIn("强制直连", note)
+
+
+class CoverSingleReferenceFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """封面只发**一张**参考图，`composite`（拼合）方案对它天然不适用 —— 必须换下一套方案。
+
+    2026-09-22 实测：人物图 132 秒正常出好，两张封面各 42 秒报
+    「composite 模式必须同时给场景图与身份图」全都不出（`_build_request` 在 composite 下
+    要求两张图，而封面按口径只能给一张 —— 给两张会把两个人一起画进封面）。
+    原来那个 RuntimeError 是在 `try` **外面**抛的，直接炸穿整个请求，`multi`（单图编辑）
+    根本没机会试；现在把它当成「这一套不适用」继续往下试。
+    """
+
+    def setUp(self):
+        from backend import batch_image
+
+        self.batch_image = batch_image
+        self.addCleanup(setattr, batch_image, "_STICKY_PLAN", None)
+        batch_image._STICKY_PLAN = None
+        self.root = Path(tempfile.mkdtemp(prefix="h3-cover-fallback-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    async def _run(self, scene: Path, identity: Path | None, *, multi_ok: bool = True) -> Path:
+        from backend import batch_image
+
+        plans: list[tuple[str, str]] = []
+        real_build = batch_image._build_request
+
+        def build(plan, field, **kwargs):
+            plans.append((plan, field))
+            if plan == "composite" and kwargs.get("identity_image") is None:
+                raise RuntimeError("composite 模式必须同时给场景图与身份图")
+            return real_build(plan, field, **kwargs)
+
+        class StubResponse:
+            def __init__(self, error: bool) -> None:
+                self.is_error = error
+                self.status_code = 400
+                self.text = '{"error": {"message": "multi 不支持"}}'
+
+            def json(self) -> dict:
+                return {"data": [{"b64_json": base64.b64encode(b"fake-png").decode()}]}
+
+        async def fake_post(data, files):
+            # `plans` 的最后一个就是这次要发的那一套方案
+            plan = plans[-1][0]
+            if plan == "multi" and not multi_ok:
+                return StubResponse(True)
+            return StubResponse(False)
+
+        async def no_probe():
+            return "直连可用"
+
+        out = self.root / "cover.png"
+        with patch.object(batch_image, "_build_request", side_effect=build):
+            with patch.object(batch_image, "_post", side_effect=fake_post):
+                with patch.object(batch_image, "_prepare_route", side_effect=no_probe):
+                    await batch_image.generate_candidate_image(
+                        scene_image=scene, identity_image=identity,
+                        prompt="封面提示词", ratio="3:4", output_path=out,
+                    )
+        self.plans = plans
+        return out
+
+    def _png(self, name: str, *, size: tuple[int, int] = (60, 45)) -> Path:
+        """写一张**真** PNG：composite 方案会真的把两张图拼起来（`compose_reference`）。"""
+        path = self.root / name
+        Image.new("RGB", size, (120, 140, 160)).save(path)
+        return path
+
+    async def test_a_single_reference_cover_skips_the_composite_plan(self) -> None:
+        scene = self._png("person.png")
+        out = await self._run(scene, None)
+        self.assertTrue(out.is_file())
+        # composite 不适用 → 必须退到 multi（第一套就是 multi，这里验证它没被炸掉）
+        self.assertTrue(self.plans, "至少应该真的试过一套方案")
+        self.assertIn("multi", [plan for plan, _ in self.plans])
+
+    async def test_two_references_still_fall_back_to_the_composite_plan(self) -> None:
+        """人物图那一步（两张参考图）照样按顺序回退：multi 失败 → composite。"""
+        scene = self._png("scene.png")
+        identity = self._png("identity.png", size=(40, 30))
+        out = await self._run(scene, identity, multi_ok=False)
+        self.assertTrue(out.is_file())
+        self.assertEqual([plan for plan, _ in self.plans][0], "multi")
+        self.assertIn(("composite", "image"), self.plans)
 
 
 if __name__ == "__main__":
