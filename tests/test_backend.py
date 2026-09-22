@@ -2340,6 +2340,87 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertIn("没有自动改格式或换线路重试", message)
             self.assertEqual(calls, ["image"])
 
+    def test_same_billed_image_request_key_shares_one_upstream_call(self) -> None:
+        """批量后台与图片工作台撞在一起时，共享同一张结果，只调用一次中转站。"""
+        import asyncio
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            calls = 0
+
+            async def fake_once(**kwargs):
+                nonlocal calls
+                calls += 1
+                entered.set()
+                await release.wait()
+                target = Path(kwargs["output_path"])
+                target.write_bytes(b"one-paid-result")
+                return target
+
+            async def run():
+                first = asyncio.create_task(batch_image.generate_candidate_image(
+                    scene_image=root / "scene.png", prompt="p", ratio="4:3",
+                    output_path=root / "a.png", request_key="person:123",
+                ))
+                await entered.wait()
+                second = asyncio.create_task(batch_image.generate_candidate_image(
+                    scene_image=root / "scene.png", prompt="p", ratio="4:3",
+                    output_path=root / "b.png", request_key="person:123",
+                ))
+                release.set()
+                await asyncio.gather(first, second)
+
+            with patch.object(batch_image, "_generate_candidate_image_once", fake_once):
+                asyncio.run(run())
+            self.assertEqual(calls, 1)
+            self.assertEqual((root / "a.png").read_bytes(), (root / "b.png").read_bytes())
+
+    def test_same_person_judge_request_key_shares_one_ds_call(self) -> None:
+        """两个入口同时验同一张人物图时，只产生一次 DS 视觉计费。"""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            identity = root / "identity.png"
+            candidate = root / "candidate.png"
+            Image.new("RGB", (8, 8), "white").save(identity)
+            Image.new("RGB", (8, 8), "black").save(candidate)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            calls = 0
+            result = {
+                "same_person": True,
+                "similarity": 92,
+                "differences": [],
+                "compliant": True,
+                "issues": [],
+                "verdict": "通过",
+            }
+
+            async def fake_chat(**_kwargs):
+                nonlocal calls
+                calls += 1
+                entered.set()
+                await release.wait()
+                return result
+
+            async def run():
+                first = asyncio.create_task(batch_ai.judge_person_image(
+                    identity, candidate, request_key="judge:person:123",
+                ))
+                await entered.wait()
+                second = asyncio.create_task(batch_ai.judge_person_image(
+                    identity, candidate, request_key="judge:person:123",
+                ))
+                release.set()
+                return await asyncio.gather(first, second)
+
+            with patch.object(batch_ai, "_chat_structured", fake_chat):
+                first_result, second_result = asyncio.run(run())
+            self.assertEqual(calls, 1)
+            self.assertEqual(first_result, result)
+            self.assertEqual(second_result, result)
+
     def test_batch_image_provider_selection(self) -> None:
         """全自动开着 → 用中转站出图；关掉才回到「用户自己出图」的老默认。
 
@@ -3009,6 +3090,28 @@ class WorkflowPreparationTests(unittest.TestCase):
                     name="t", label="测试",
                 ))
         self.assertEqual(calls, 1)
+
+    def test_submitted_ds_analysis_is_not_resubmitted_after_restart(self) -> None:
+        """同一输入已有未确认的 DS 请求时，恢复流程必须走免计费兜底。"""
+        from backend import batch_worker
+
+        key = "same-analysis-input"
+        self.assertTrue(batch_worker._analysis_request_uncertain({
+            "analysisRequestKey": key,
+            "analysisRequestState": "submitted",
+        }, key))
+        self.assertTrue(batch_worker._analysis_request_uncertain({
+            "analysisRequestKey": key,
+            "analysisRequestState": "unknown",
+        }, key))
+        self.assertFalse(batch_worker._analysis_request_uncertain({
+            "analysisRequestKey": key,
+            "analysisRequestState": "completed",
+        }, key))
+        self.assertFalse(batch_worker._analysis_request_uncertain({
+            "analysisRequestKey": "changed-input",
+            "analysisRequestState": "submitted",
+        }, key))
 
     def test_unhandled_errors_answer_json_with_a_readable_detail(self) -> None:
         """未处理异常必须回 **JSON**（HTTP 500），不能回纯文本 `Internal Server Error`。

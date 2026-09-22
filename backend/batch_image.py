@@ -35,6 +35,7 @@ REQUEST_TIMEOUT = 900.0
 # 3:4 是给**抖音封面**用的（1086×1448）—— 用户 2026-09-19：「封面也用api生成 不需要本地」。
 IMAGE_SIZES = {"4:3": "1536x1152", "9:16": "1152x2048", "3:4": "1152x1536"}
 ProgressCallback = Callable[[float, str], Awaitable[None]]
+_BILLED_INFLIGHT: dict[str, asyncio.Future[tuple[bytes | None, str]]] = {}
 
 # 人物图仍按 70 分展示自检结果，但默认只生成一次。图片接口按次计费，低分后自动重做
 # 会让「点击一次」产生 2~3 笔费用；需要重做时由用户在图片工作台明确点击。
@@ -361,7 +362,7 @@ def _store(response: httpx.Response, output_path: Path) -> Path:
     return output_path
 
 
-async def generate_candidate_image(
+async def _generate_candidate_image_once(
     *,
     scene_image: Path,
     identity_image: Path | None = None,
@@ -411,12 +412,9 @@ async def generate_candidate_image(
                 "H3_BATCH_IMAGE_MODE 配置不正确；可选 auto / multi（多图编辑）/ composite（拼合成单图）"
             )
         for plan, field in plans:
-            # ⚠️ **组请求也要放进 try 里**：`_build_request` 在 `composite` 模式下要求两张参考图，
-            # 而**封面只发一张**（`identity_image=None`，见 `_generate_cover` 的注释）—— 这个
-            # RuntimeError 以前会直接抛穿整个请求，`multi` 那套（单图编辑）根本没机会试，
-            # 用户看到的就是「composite 模式必须同时给场景图与身份图」、两张封面全不出
-            # （2026-09-22 实测：人物图 132 秒出好了，两张封面各 42 秒报这个错）。
-            # 现在把它当成"这一套方案不可用"，继续试下一套 —— 单参考请求照样能出封面。
+            # 组请求也放进 try 里，以便把 composite 缺第二张参考图之类的配置错误翻译成
+            # 可读提示。`request_plans()` 现在始终只返回一套显式方案，任何失败都不会再拿
+            # 真实出图请求试下一种格式。
             data: dict[str, str] = {}
             files: list[tuple[str, tuple[str, bytes, str]]] = []
             try:
@@ -443,8 +441,8 @@ async def generate_candidate_image(
                 netproxy.note_failure()
                 break
             except RuntimeError as error:
-                # 这套方案的**输入组装**不适用（最典型：composite 需要两张图、而封面只有一张）。
-                # 用 `continue` 而不是 re-raise —— 否则会一直炸到用户面前。
+                # 输入组装不适用（最典型：composite 需要两张图、而封面只有一张）。
+                # 记录后退出；不能自动换方案再产生新的计费请求。
                 failures.append(f"[{plan}/{field}] 不适用：{error}")
                 break
             if on_progress:
@@ -466,6 +464,50 @@ async def generate_candidate_image(
     raise RuntimeError(f"中转站出图失败：{detail}{hint}")
 
 
+async def generate_candidate_image(
+    *,
+    scene_image: Path,
+    identity_image: Path | None = None,
+    prompt: str,
+    ratio: str,
+    output_path: Path,
+    on_progress: ProgressCallback | None = None,
+    request_key: str | None = None,
+) -> Path:
+    """计费出图入口；相同 request_key 正在执行时共享结果，不再向中转站重复提交。"""
+    output_path = Path(output_path)
+    key = str(request_key or "").strip()
+    if not key:
+        return await _generate_candidate_image_once(
+            scene_image=scene_image, identity_image=identity_image, prompt=prompt, ratio=ratio,
+            output_path=output_path, on_progress=on_progress,
+        )
+    existing = _BILLED_INFLIGHT.get(key)
+    if existing is not None:
+        payload, error = await asyncio.shield(existing)
+        if payload is None:
+            raise RuntimeError(error)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(payload)
+        return output_path
+
+    completion: asyncio.Future[tuple[bytes | None, str]] = asyncio.get_running_loop().create_future()
+    _BILLED_INFLIGHT[key] = completion
+    try:
+        result = await _generate_candidate_image_once(
+            scene_image=scene_image, identity_image=identity_image, prompt=prompt, ratio=ratio,
+            output_path=output_path, on_progress=on_progress,
+        )
+        completion.set_result((result.read_bytes(), ""))
+        return result
+    except BaseException as exc:
+        if not completion.done():
+            completion.set_result((None, str(exc)))
+        raise
+    finally:
+        _BILLED_INFLIGHT.pop(key, None)
+
+
 async def generate_person_image(
     *,
     scene_image: Path,
@@ -477,6 +519,7 @@ async def generate_person_image(
     min_similarity: int = PERSON_MIN_SIMILARITY,
     max_attempts: int = PERSON_MAX_ATTEMPTS,
     compliance: dict[str, Any] | None = None,
+    request_key: str | None = None,
 ) -> tuple[Path, int]:
     """出人物图并做身份/着装自检；默认只生成一次，避免自动重复扣费。
 
@@ -495,6 +538,25 @@ async def generate_person_image(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     work_dir = output_path.parent
+    # 请求与 DS 检查都已完成、只是在调用方保存/登记前进程中断：最终候选文件本身就是
+    # 最可靠的检查点。直接复用，不能因为 attempt 临时文件已经收走就再出一张。
+    if output_path.is_file() and output_path.stat().st_size > 0:
+        cached_report: dict[str, Any] = {}
+        judge_cache = work_dir / f"{output_path.stem}_attempt1{output_path.suffix}.judge.json"
+        try:
+            cached_report = json.loads(judge_cache.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            cached_report = {}
+        if compliance is not None:
+            compliance.update({
+                "compliant": cached_report.get("compliant"),
+                "issues": [str(item) for item in (cached_report.get("issues") or [])],
+            })
+        try:
+            cached_score = max(0, min(100, int(cached_report.get("similarity"))))
+        except (TypeError, ValueError):
+            cached_score = -1
+        return output_path, cached_score
     best_bytes: bytes | None = None
     best_score = -1
     best_compliant: bool | None = None
@@ -503,18 +565,52 @@ async def generate_person_image(
     last_issues: list[str] = []
     for attempt in range(1, max(1, max_attempts) + 1):
         candidate = work_dir / f"{output_path.stem}_attempt{attempt}{output_path.suffix}"
-        await generate_candidate_image(
-            scene_image=Path(scene_image),
-            identity_image=Path(identity_image) if identity_image is not None else None,
-            prompt=prompt,
-            ratio=ratio,
-            output_path=candidate,
-            on_progress=on_progress,
-        )
+        image_pending = candidate.with_name(candidate.name + ".request-pending")
+        if not candidate.is_file():
+            if image_pending.is_file():
+                raise RuntimeError(
+                    "上一次人物图请求已经提交但结果未确认；为避免重复扣费，本次没有自动重发。"
+                    "请先核对中转站后台，再到图片工作台明确重做"
+                )
+            image_pending.write_text(
+                json.dumps({"submittedAt": time.time(), "model": model(), "ratio": ratio}),
+                encoding="utf-8",
+            )
+            try:
+                await generate_candidate_image(
+                    scene_image=Path(scene_image),
+                    identity_image=Path(identity_image) if identity_image is not None else None,
+                    prompt=prompt,
+                    ratio=ratio,
+                    output_path=candidate,
+                    on_progress=on_progress,
+                    request_key=request_key,
+                )
+            except BaseException:
+                # 包括 CancelledError：请求可能已到服务端，保留 pending 让新 runner 不再盲发。
+                raise
+            else:
+                image_pending.unlink(missing_ok=True)
         try:
             from . import batch_ai
 
-            result = await batch_ai.judge_person_image(Path(identity_image), candidate)
+            judge_cache = candidate.with_name(candidate.name + ".judge.json")
+            judge_pending = candidate.with_name(candidate.name + ".judge-pending")
+            if judge_cache.is_file():
+                result = json.loads(judge_cache.read_text(encoding="utf-8"))
+            else:
+                if judge_pending.is_file():
+                    raise RuntimeError("人物图综合自检上次已提交但结果未确认，不自动重复调用 DS")
+                judge_pending.write_text(str(time.time()), encoding="utf-8")
+                try:
+                    result = await batch_ai.judge_person_image(
+                        Path(identity_image), candidate, request_key=request_key
+                    )
+                except BaseException:
+                    raise
+                else:
+                    judge_cache.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+                    judge_pending.unlink(missing_ok=True)
             score = max(0, min(100, int(result.get("similarity") or 0)))
         except Exception:  # noqa: BLE001 - 自检失败不该把出图判失败
             candidate.replace(output_path)

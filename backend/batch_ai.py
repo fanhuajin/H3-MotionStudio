@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -440,10 +441,24 @@ PERSON_IMAGE_JUDGE_SCHEMA = {
     },
     "required": ["same_person", "similarity", "differences", "compliant", "issues", "verdict"],
 }
+_PERSON_JUDGE_INFLIGHT: dict[str, asyncio.Future[tuple[dict[str, Any] | None, str]]] = {}
 
 
-async def judge_person_image(identity: Path, candidate: Path) -> dict[str, Any]:
+async def judge_person_image(
+    identity: Path, candidate: Path, *, request_key: str | None = None
+) -> dict[str, Any]:
     """一次视觉调用同时完成身份与着装检查，避免同一张成图向 DS 发送两遍。"""
+    key = str(request_key or "").strip()
+    existing = _PERSON_JUDGE_INFLIGHT.get(key) if key else None
+    if existing is not None:
+        result, error = await asyncio.shield(existing)
+        if result is None:
+            raise RuntimeError(error)
+        return dict(result)
+    completion: asyncio.Future[tuple[dict[str, Any] | None, str]] | None = None
+    if key:
+        completion = asyncio.get_running_loop().create_future()
+        _PERSON_JUDGE_INFLIGHT[key] = completion
     instruction = (
         IDENTITY_JUDGE_INSTRUCTION
         + "\n\n【同时检查发布着装】\n"
@@ -455,12 +470,23 @@ async def judge_person_image(identity: Path, candidate: Path) -> dict[str, Any]:
         {"type": "image_url", "image_url": {"url": _data_url(identity), "detail": "high"}},
         {"type": "image_url", "image_url": {"url": _data_url(candidate), "detail": "high"}},
     ]
-    return await _chat_structured(
-        content=content,
-        schema=PERSON_IMAGE_JUDGE_SCHEMA,
-        name="person_image_check",
-        label="人物图综合自检失败",
-    )
+    try:
+        result = await _chat_structured(
+            content=content,
+            schema=PERSON_IMAGE_JUDGE_SCHEMA,
+            name="person_image_check",
+            label="人物图综合自检失败",
+        )
+        if completion is not None:
+            completion.set_result((dict(result), ""))
+        return result
+    except BaseException as exc:
+        if completion is not None and not completion.done():
+            completion.set_result((None, str(exc)))
+        raise
+    finally:
+        if key:
+            _PERSON_JUDGE_INFLIGHT.pop(key, None)
 
 
 

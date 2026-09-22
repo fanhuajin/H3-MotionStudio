@@ -1644,10 +1644,27 @@ async def _prepare_review_work(
         batch_store.add_item_log(
             batch_id, item_id, "本条相同输入的 DS 预审已经完成，直接复用已付费结果。"
         )
+    elif _analysis_request_uncertain(previous_ai, analysis_key):
+        # 上一代 runner 可能在 DS 已完成推理、响应尚未落库时被取消/重启。此时再次提交最
+        # 容易重复扣费；宁可用源作品信息兜底，也不在没有用户新反馈的情况下自动再请求。
+        result = batch_ai.fallback_result(kind=item["kind"], description=meta_desc, tags=meta_tags)
+        result.update({
+            "analysisRequestKey": analysis_key,
+            "analysisRequestState": "unknown",
+        })
+        warning = "上一次 DS 预审已提交但结果未确认，为避免重复扣费，本次沿用源作品信息。"
+        batch_store.add_item_log(batch_id, item_id, warning)
     else:
         batch_store.set_item_milestone(
             batch_id, item_id, "prepare", status="running", progress=20, currentNode="正在分析画面与撰写文案"
         )
+        submitted_ai = {
+            **previous_ai,
+            "analysisRequestKey": analysis_key,
+            "analysisRequestState": "submitted",
+            "analysisRequestAt": now_iso(),
+        }
+        _set_item(batch_id, item_id, ai=submitted_ai)
         try:
             result = await batch_ai.analyze(
                 kind=item["kind"],
@@ -1660,6 +1677,8 @@ async def _prepare_review_work(
                 previous=previous_ai,
             )
             result["analysisCacheKey"] = analysis_key
+            result["analysisRequestKey"] = analysis_key
+            result["analysisRequestState"] = "completed"
             # DS 已经返回就立刻做检查点。后续图片接口失败、进程重启或用户重跑时，不能再为
             # 同一份联系表和提示词付一次分析费用。
             _set_item(batch_id, item_id, ai={**previous_ai, **result})
@@ -1667,6 +1686,10 @@ async def _prepare_review_work(
             raise
         except Exception as error:
             result = batch_ai.fallback_result(kind=item["kind"], description=meta_desc, tags=meta_tags)
+            result.update({
+                "analysisRequestKey": analysis_key,
+                "analysisRequestState": "unknown",
+            })
             warning = f"模型分析不可用，已降级为源作品信息：{error}"
             batch_store.add_item_log(batch_id, item_id, warning)
 
@@ -1853,6 +1876,7 @@ async def _prepare_review_work(
                     output_path=target_image,
                     on_progress=report,
                     compliance=compliance_report,
+                    request_key=f"person:{str(item.get('awemeId') or item_id).strip()}:{ratio}",
                 )
                 spent = int(time.monotonic() - image_started)
                 if similarity >= 0:
@@ -2496,6 +2520,14 @@ def _analysis_cache_key(
         "promptFingerprint": batch_ai.compliance_fingerprint(),
     }, ensure_ascii=False, sort_keys=True).encode("utf-8"))
     return digest.hexdigest()
+
+
+def _analysis_request_uncertain(previous: dict[str, Any], analysis_key: str) -> bool:
+    """同一份 DS 输入已提交但结果未知时，禁止后台自动再次计费。"""
+    return (
+        previous.get("analysisRequestKey") == analysis_key
+        and previous.get("analysisRequestState") in {"submitted", "unknown"}
+    )
 
 
 def default_action_plan(duration: float) -> tuple[str, str]:

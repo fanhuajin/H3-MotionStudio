@@ -113,7 +113,7 @@ class ImageWorkbenchTests(unittest.TestCase):
                 Path(output_path).write_bytes(png_shade(1152, 2048, 10 * len(attempts)))
                 return Path(output_path)
 
-            async def fake_judge(identity, candidate):
+            async def fake_judge(identity, candidate, **_):
                 return {"same_person": False, "similarity": 50, "differences": [],
                         "compliant": True, "issues": [], "verdict": "low"}
 
@@ -140,7 +140,7 @@ class ImageWorkbenchTests(unittest.TestCase):
                 Path(output_path).write_bytes(png_shade(1152, 2048, 10 * len(attempts)))
                 return Path(output_path)
 
-            async def fake_judge(identity, candidate):
+            async def fake_judge(identity, candidate, **_):
                 return {"same_person": True, "similarity": 80, "differences": [],
                         "compliant": False, "issues": ["露出事业线"], "verdict": "不合规"}
 
@@ -166,7 +166,7 @@ class ImageWorkbenchTests(unittest.TestCase):
                 Path(output_path).write_bytes(png_shade(1152, 2048, 90))
                 return Path(output_path)
 
-            async def boom(identity, candidate):
+            async def boom(identity, candidate, **_):
                 raise RuntimeError("视觉端点不可用")
 
             with patch.object(workbench.batch_image, "defocus_reference_face", fake_defocus), \
@@ -186,6 +186,91 @@ class ImageWorkbenchTests(unittest.TestCase):
         note = workbench._compliance_note({"compliant": False, "issues": ["吊带背心", "网袜"]})
         self.assertIn("未通过", note)
         self.assertIn("吊带背心", note)
+
+    def test_uncertain_cover_request_is_not_automatically_repeated(self) -> None:
+        """进程中断后留下 pending：批量自动链路必须停住，不能再扣一笔。"""
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / ".h3-bilibili-request-pending").write_text("submitted", encoding="utf-8")
+            calls = 0
+
+            async def fake_generate(**kwargs):
+                nonlocal calls
+                calls += 1
+
+            with patch.object(workbench.batch_image, "generate_candidate_image", fake_generate):
+                with self.assertRaisesRegex(RuntimeError, "避免重复扣费"):
+                    asyncio.run(workbench._generate_cover(folder, "bilibili", "singing"))
+            self.assertEqual(calls, 0)
+
+    def test_interrupted_person_request_is_not_automatically_repeated(self) -> None:
+        """人物图 attempt 留有请求标记时，不再调用图片接口。"""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            output = root / "person.png"
+            (root / "person_attempt1.png.request-pending").write_text("submitted", encoding="utf-8")
+            calls = 0
+
+            async def fake_generate(**kwargs):
+                nonlocal calls
+                calls += 1
+
+            with patch.object(workbench.batch_image, "generate_candidate_image", fake_generate):
+                with self.assertRaisesRegex(RuntimeError, "结果未确认"):
+                    asyncio.run(workbench.batch_image.generate_person_image(
+                        scene_image=root / "scene.png", identity_image=root / "identity.png",
+                        prompt="p", ratio="4:3", output_path=output,
+                    ))
+            self.assertEqual(calls, 0)
+
+    def test_workbench_keeps_person_request_marker_across_restart(self) -> None:
+        """图片工作台的人物图检查点必须落在作品目录，不能随临时目录消失。"""
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            Image.new("RGB", (1080, 1920)).save(folder / "抽帧.jpg")
+            checkpoint = folder / ".h3-person-work"
+            checkpoint.mkdir()
+            marker = checkpoint / "person_attempt1.png.request-pending"
+            marker.write_text("submitted", encoding="utf-8")
+            calls = 0
+
+            async def fake_generate(**_kwargs):
+                nonlocal calls
+                calls += 1
+
+            with patch.object(workbench.batch_image, "defocus_reference_face", fake_defocus), \
+                 patch.object(workbench.batch_image, "generate_candidate_image", fake_generate), \
+                 patch.object(workbench, "person_prompt", lambda folder, kind: "提示词"):
+                with self.assertRaisesRegex(RuntimeError, "结果未确认"):
+                    asyncio.run(workbench._generate_person(folder, "dance"))
+            self.assertEqual(calls, 0)
+            self.assertTrue(marker.is_file(), "失败后的检查点要保留给重启后的 runner")
+
+    def test_completed_person_checkpoint_is_reused_without_another_image_call(self) -> None:
+        """出图完成但尚未登记时，恢复流程直接采用落盘结果。"""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            output = root / "person.png"
+            output.write_bytes(png_shade(1152, 2048, 44))
+            (root / "person_attempt1.png.judge.json").write_text(
+                '{"similarity": 88, "compliant": true, "issues": []}', encoding="utf-8",
+            )
+            calls = 0
+
+            async def fake_generate(**_kwargs):
+                nonlocal calls
+                calls += 1
+
+            report: dict[str, object] = {}
+            with patch.object(workbench.batch_image, "generate_candidate_image", fake_generate):
+                path, score = asyncio.run(workbench.batch_image.generate_person_image(
+                    scene_image=root / "scene.png", identity_image=root / "identity.png",
+                    prompt="p", ratio="4:3", output_path=output, compliance=report,
+                ))
+            self.assertEqual(calls, 0)
+            self.assertEqual(path, output)
+            self.assertEqual(score, 88)
+            self.assertIs(report.get("compliant"), True)
 
     def test_automation_started_at_does_not_restart_on_every_status_update(self) -> None:
         """「已用 N 秒」用后端记的开始时间算 —— 页面切走再切回来不许从 0 重新数。"""

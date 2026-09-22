@@ -42,6 +42,8 @@ AUTOMATIONS: dict[str, dict[str, Any]] = {}
 # 不放进 AUTOMATIONS 是因为那条消息每 2 秒被页面读一次，混进状态里会互相覆盖。
 _PERSON_NOTES: dict[str, str] = {}
 _AUTO_LOCK = asyncio.Lock()
+# 批量后台与图片工作台会从不同入口触发封面；按「作品目录 + 平台」合并同一时刻的请求。
+_COVER_INFLIGHT: dict[tuple[str, str], asyncio.Future[tuple[bool, str]]] = {}
 
 
 def _folder_id(folder: Path) -> str:
@@ -498,7 +500,9 @@ def _compliance_note(report: dict[str, Any]) -> str:
     )
 
 
-async def _generate_person(folder: Path, kind: str) -> int:
+async def _generate_person(
+    folder: Path, kind: str, *, allow_uncertain_retry: bool = False
+) -> int:
     """API 出一张人物图并做身份/着装综合自检，不因低分暗中再次扣费。
 
     用户 2026-09-19：「人物相似度 必须70%以上」。
@@ -513,7 +517,14 @@ async def _generate_person(folder: Path, kind: str) -> int:
     """
     frame = asset_path(folder, "frame")
     ratio = "4:3" if kind == "singing" else "9:16"
-    work = Path(tempfile.mkdtemp(prefix="h3-auto-person-"))
+    # 必须放在作品目录里，不能用系统临时目录：后端重启会清掉临时路径里的 pending，
+    # 下一轮就会误以为从未提交过并再次扣费。成功后才清理；失败/取消则留下检查点。
+    work = folder / ".h3-person-work"
+    if allow_uncertain_retry and work.is_dir():
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    completed = False
     try:
         scene, _ = await batch_image.defocus_reference_face(frame, work)
         candidate = work / "person.png"
@@ -528,18 +539,23 @@ async def _generate_person(folder: Path, kind: str) -> int:
             ratio=ratio,
             output_path=candidate,
             compliance=report,
+            request_key=f"person:{folder.name.rsplit('_', 1)[-1].strip()}:{ratio}",
         )
         note = _compliance_note(report)
         if note:
             _PERSON_NOTES[_folder_id(folder)] = note
         save_upload(folder, "person", candidate.read_bytes(), kind)
+        completed = True
         return similarity
     finally:
-        import shutil
-        shutil.rmtree(work, ignore_errors=True)
+        if completed:
+            import shutil
+            shutil.rmtree(work, ignore_errors=True)
 
 
-async def _generate_cover(folder: Path, stage: str, kind: str) -> None:
+async def _generate_cover(
+    folder: Path, stage: str, kind: str, *, allow_uncertain_retry: bool = False
+) -> None:
     """封面走**第三方 API** 出带标题文字的成图（用户 2026-09-19：「封面也用api生成 不需要本地」）。
 
     提示词用 `prompt(folder, stage, kind)`（里面就是发布文案的标题与简介）；
@@ -550,8 +566,34 @@ async def _generate_cover(folder: Path, stage: str, kind: str) -> None:
     历史上这里曾是「本地确定性合成」（人物图 + 模糊背景垫底），因为中转站对封面类请求
     偶有审核失败；现在改为 API 直出，失败会如实写进 automation.message 由页面显示。
     """
+    key = (str(folder.resolve()).lower(), stage)
+    existing = _COVER_INFLIGHT.get(key)
+    if existing is not None:
+        ok, detail = await asyncio.shield(existing)
+        if ok:
+            return
+        raise RuntimeError(detail)
+
+    loop = asyncio.get_running_loop()
+    completion: asyncio.Future[tuple[bool, str]] = loop.create_future()
+    _COVER_INFLIGHT[key] = completion
+    marker = folder / f".h3-{stage}-request-pending"
+    destination = folder / COVER_NAMES[stage]
     work = Path(tempfile.mkdtemp(prefix="h3-auto-cover-"))
     try:
+        if marker.is_file() and not allow_uncertain_retry:
+            # 若新封面比 marker 更新，说明上次已经成功落盘、只是进程没来得及清 marker。
+            if destination.is_file() and destination.stat().st_mtime > marker.stat().st_mtime:
+                marker.unlink(missing_ok=True)
+                completion.set_result((True, ""))
+                return
+            raise RuntimeError(
+                f"上一次{stage}封面请求已提交但结果未确认；为避免重复扣费，本次没有自动重发。"
+                "请核对中转站后台后，在图片工作台明确点击这一步重做"
+            )
+        if allow_uncertain_retry:
+            marker.unlink(missing_ok=True)
+        marker.write_text(json.dumps({"submittedAt": time.time(), "stage": stage}), encoding="utf-8")
         candidate = work / f"{stage}.png"
         await batch_image.generate_candidate_image(
             scene_image=asset_path(folder, "person"),
@@ -561,9 +603,17 @@ async def _generate_cover(folder: Path, stage: str, kind: str) -> None:
             prompt=prompt(folder, stage, kind),
             ratio="4:3" if stage == "bilibili" else "3:4",
             output_path=candidate,
+            request_key=f"cover:{str(folder.resolve()).lower()}:{stage}",
         )
         save_upload(folder, stage, candidate.read_bytes())
+        marker.unlink(missing_ok=True)
+        completion.set_result((True, ""))
+    except BaseException as exc:
+        if not completion.done():
+            completion.set_result((False, str(exc)))
+        raise
     finally:
+        _COVER_INFLIGHT.pop(key, None)
         import shutil
         shutil.rmtree(work, ignore_errors=True)
 
@@ -596,7 +646,10 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                     if force or not (folder / PERSON_NAME).is_file():
                         _set_auto(folder_id, status="running", stage="person",
                                   message=f"正在生成人物图（只请求一次，完成后检查相似度）", kind=kind)
-                        person_score = await _generate_person(folder, kind)
+                        person_score = await _generate_person(
+                            folder, kind,
+                            allow_uncertain_retry=bool(force and stage == "person"),
+                        )
                     continue
                 if not (folder / PERSON_NAME).is_file():
                     raise RuntimeError("请先生成人物图，再做封面")
@@ -604,7 +657,12 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                     continue
                 _set_auto(folder_id, status="running", stage=step,
                           message=f"正在生成{label}", kind=kind)
-                await _generate_cover(folder, step, kind)
+                await _generate_cover(
+                    folder, step, kind,
+                    # 单步按钮带 force=true，是用户明确授权在核对账单后重做；整条/批量自动
+                    # 不能越过「上次结果未知」闸门。
+                    allow_uncertain_retry=bool(force and stage == step),
+                )
             done = "人物图与封面已自动补齐" if not stage else "已完成生成"
             if stage in (None, "person") and person_score >= 0:
                 done += f"（人物图相似度 {person_score}/100）"
