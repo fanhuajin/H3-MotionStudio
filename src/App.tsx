@@ -968,15 +968,15 @@ export function App() {
             <span>音色转换</span>
             {isRvcRoute && <i />}
           </a>
-          <a className={isRvcTrainingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/rvc-training">
-            <Graph />
-            <span>音色训练进度</span>
-            {isRvcTrainingRoute && <i />}
-          </a>
           <a className={isSubtitleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/subtitle">
             <ClosedCaptioning />
             <span>生成字幕</span>
             {isSubtitleRoute && <i />}
+          </a>
+          <a className={isRvcTrainingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/rvc-training">
+            <Graph />
+            <span>音色训练进度</span>
+            {isRvcTrainingRoute && <i />}
           </a>
         </nav>
 
