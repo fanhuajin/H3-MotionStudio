@@ -1919,4 +1919,13 @@ body {
 .training-metrics strong { font-size: 18px; }
 .training-note { margin: 22px 0 0; color: #8d9db4; font-size: 13px; }
 .training-error { color: #f09b9b; }
+.training-shutdown { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-top: 22px; padding: 19px 20px; border: 1px solid #34435a; border-radius: 10px; background: #17243a; }
+.training-shutdown strong { font-size: 16px; }
+.training-shutdown p { margin: 7px 0 0; color: #a0aec4; font-size: 13px; }
+.training-shutdown small { display: block; margin-top: 8px; }
+.training-switch { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 9px; min-width: 93px; padding: 6px 11px 6px 6px; border: 1px solid #4b596e; border-radius: 999px; background: #2d394c; color: #d9e5f7; cursor: pointer; }
+.training-switch span { width: 20px; height: 20px; border-radius: 50%; background: #aebdd0; }
+.training-switch.on { background: #176e65; border-color: #35c5a5; }
+.training-switch.on span { background: #e4fff8; }
+.training-switch:disabled { opacity: .6; cursor: wait; }
 @media (max-width: 700px) { .training-page { padding: 25px 18px; } .training-header { flex-wrap: wrap; } .training-header button { margin-left: 0; } .training-metrics { grid-template-columns: 1fr; } }

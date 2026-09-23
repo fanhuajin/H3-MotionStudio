@@ -30,6 +30,7 @@ from . import input_preview
 from . import image_workbench
 from . import rvc_batch
 from . import rvc_training
+from . import rvc_training_shutdown
 from . import batch_worker
 from .rvc_batch import (
     BATCH_MILESTONES as RVC_BATCH_MILESTONES,
@@ -428,6 +429,20 @@ app = FastAPI(title="H3 MotionStudio", version="0.1.0", lifespan=lifespan)
 @app.get("/api/rvc-training/progress")
 async def rvc_training_progress():
     return rvc_training.progress()
+
+
+class RvcTrainingShutdownRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/rvc-training/shutdown")
+async def rvc_training_shutdown_status():
+    return rvc_training_shutdown.status()
+
+
+@app.put("/api/rvc-training/shutdown")
+async def rvc_training_shutdown_set(request: RvcTrainingShutdownRequest):
+    return rvc_training_shutdown.set_enabled(request.enabled)
 
 
 @app.exception_handler(Exception)
