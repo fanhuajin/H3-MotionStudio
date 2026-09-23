@@ -57,7 +57,7 @@ export function RvcTrainingRoute() {
   return <main className="training-page">
     <header className="training-header">
       <div className="training-icon"><MicrophoneStage size={28} weight="fill" /></div>
-      <div><p className="training-eyebrow">RVC 模型训练</p><h1>音色训练进度</h1><p>mogoo · 48kHz · v2 · 带音高</p></div>
+      <div><p className="training-eyebrow">RVC 模型训练</p><h1>音色训练</h1><p>mogoo · 48kHz · v2 · 带音高</p></div>
       <button type="button" onClick={() => void refresh()}><ArrowsClockwise size={18} /> 刷新</button>
     </header>
     {error && <p className="training-error">{error}</p>}

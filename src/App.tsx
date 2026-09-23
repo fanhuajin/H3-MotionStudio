@@ -975,7 +975,7 @@ export function App() {
           </a>
           <a className={isRvcTrainingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/rvc-training">
             <Graph />
-            <span>音色训练进度</span>
+            <span>音色训练</span>
             {isRvcTrainingRoute && <i />}
           </a>
         </nav>
