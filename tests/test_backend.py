@@ -9344,7 +9344,7 @@ class PortraitAdoptionTests(unittest.TestCase):
                 outcome = batch_worker.adopt_published_portrait(publish)
 
             self.assertEqual(outcome["action"], "upload")
-            self.assertFalse(outcome["needsWake"])
+            self.assertTrue(outcome["needsWake"], "换图后要唤醒备料区补封面")
             row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
             self.assertEqual(row["status"], "confirmed")
             self.assertEqual(Path(row["ai"]["reference_image_path"]).read_bytes(), b"user-portrait-B")
@@ -9427,26 +9427,28 @@ class PortraitAdoptionTests(unittest.TestCase):
                 )
                 self.assertEqual(row["ai"]["portrait_watch"]["sha"], self._sha(b"user-portrait-E"))
 
-    def test_swapping_the_portrait_regenerates_the_two_covers(self) -> None:
-        """真的换了图 → 两张封面按新人物图**重出**（封面是按旧人图出的，不重出还是旧脸）。"""
+    def test_swapping_the_portrait_moves_old_covers_back_to_prep(self) -> None:
+        """换图后旧封面失效，runner 补缺；不另起可能与出片并发的收费任务。"""
         from backend import batch_worker
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
             root = Path(folder)
             store, batch_id, item_id, publish, _ = self._fixture(root, status="completed")
             self._portrait(publish, b"user-portrait-F")
-            calls: list[tuple] = []
+            for name in ("B站4x3.png", "抖音3x4.png"):
+                (publish / name).write_bytes(b"old-cover")
 
             with patch.object(batch_worker, "batch_store", store), patch.object(
                 batch_worker, "DATA_DIR", root / "data"
-            ), patch.object(
-                batch_worker, "spawn_api_covers",
-                lambda *a, **k: (calls.append((a, k)), True)[1],
             ), patch.object(batch_worker, "restart_item_to_run", lambda *a: True):
-                batch_worker.adopt_published_portrait(publish)
+                outcome = batch_worker.adopt_published_portrait(publish)
 
-            self.assertEqual(len(calls), 1, calls)
-            self.assertTrue(calls[0][1].get("force"), "必须 force=True，否则已存在的封面不会重出")
+            self.assertTrue(outcome["needsWake"])
+            self.assertFalse((publish / "B站4x3.png").exists())
+            self.assertFalse((publish / "抖音3x4.png").exists())
+            archived = list((publish / ".previous-covers").rglob("*.png"))
+            self.assertEqual(len(archived), 2)
+            self.assertTrue(all(path.read_bytes() == b"old-cover" for path in archived))
 
     def test_fallback_frame_candidate_is_left_alone(self) -> None:
         """目录里那张就是备料留下的**兜底取帧图**（sha 与候选图相同）→ 不算你的成图，不动。"""

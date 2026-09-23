@@ -2929,8 +2929,8 @@ def adopt_published_portrait(
       · `awaiting_review`（挂图 + 放行）/ `confirmed`（只换图）/ `failed`（挂图 + 重跑）
         / `skipped`、`completed`（挂图 + 重跑，用户 2026-09-20：「我替换之后你需要自动帮我
         换成我替换的图片」）；`pending` / `revising` / `running` / `deleted` 一律不动；
-      · **真的换了图（sha 变了）** 时，两张封面按新人物图**重出**（封面是按旧人物图出的，
-        不重出就还是旧脸/旧手）；
+      · **真的换了图（sha 变了）** 时，旧封面先归档，备料主链路再按新人物图补齐；
+        已补好的一张不会因另一张失败而重复收费；
       · **同一张图只驱动一次**（`ai.portrait_watch.sha` 记账），重启后也不会重复跑；
       · 目录里那张与条目候选图 sha 相同、且不需要放行 → 什么都不做（避免无谓改写）。
 
@@ -2996,6 +2996,13 @@ def adopt_published_portrait(
             return None
         adopted = target
 
+    archived = False
+    if needs_upload and full_auto_enabled():
+        try:
+            archived = _archive_stale_covers(folder, sha)
+        except OSError:
+            return None  # 旧封面还没安全移走，不登记新图以免跳过后续重试
+
     def apply(row: dict[str, Any]) -> None:
         fields = row.setdefault("ai", {})
         if needs_upload:
@@ -3018,13 +3025,12 @@ def adopt_published_portrait(
         restart_item_to_run(batch_id, item_id)
         batch_store.add_item_log(batch_id, item_id, "已按新的人物图重跑这一条（成片会用你换的这张）。")
         needs_wake = True
-    if needs_upload:
-        # 封面是**按旧人物图出的**（人脸/手都来自它），换了图就得按新图重出，否则封面还是旧图。
-        # `force=True` 才会覆盖已存在的那两张；出图失败只写日志，绝不影响出片。
-        if spawn_api_covers(batch_id, item_id, force=True):
-            batch_store.add_item_log(
-                batch_id, item_id, "人物图换了，已把两张封面按新人物图重新生成。"
-            )
+    if needs_upload and full_auto_enabled():
+        # 旧封面对应旧人物图。先移出有效文件名，runner 才会在备料区补图；
+        # 出图失败时已完成的新封面仍留在原处，重试只补缺的那张。
+        if archived:
+            batch_store.add_item_log(batch_id, item_id, "人物图已替换，旧封面已归档；备料区将重新生成封面。")
+        needs_wake = True
     return {
         "batchId": batch_id,
         "itemId": item_id,
@@ -3032,6 +3038,24 @@ def adopt_published_portrait(
         "title": str(item.get("title") or folder.name),
         "needsWake": needs_wake,
     }
+
+
+def _archive_stale_covers(folder: Path, portrait_sha: str) -> bool:
+    """把旧人物图对应的封面移出有效文件名，保留原文件供回看。"""
+    existing = [folder / name for names in PUBLISH_COVER_ALIASES.values()
+                for name in names if _present_file(folder, name)]
+    if not existing:
+        return False
+    archive = folder / ".previous-covers" / portrait_sha[:12]
+    archive.mkdir(parents=True, exist_ok=True)
+    for path in existing:
+        target = archive / path.name
+        number = 1
+        while target.exists():
+            target = archive / f"{path.stem}-{number}{path.suffix}"
+            number += 1
+        path.replace(target)
+    return True
 
 
 def _ideal_publish_folder(item: dict[str, Any]) -> Path:
