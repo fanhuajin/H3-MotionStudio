@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readJson } from "./api";
-import { formatElapsedMs, useNowTick } from "./jobTime";
+import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
   ArrowClockwise,
   ArrowUUpLeft,
@@ -98,6 +98,10 @@ function itemIsRendering(item: BatchItem): boolean {
  * 绝不写 0 或假百分比（项目铁律：进度不得造假）。
  */
 function itemPercent(item: BatchItem): number | null {
+  if (item.status === "running" && ["download", "prepare"].includes(item.stage)) {
+    const step = (item.milestones || []).find((row) => row.id === item.stage && row.status === "running");
+    return step ? stepPercent(step) : null;
+  }
   const child = item.childJob?.progress;
   if (typeof child === "number" && child > 0) return Math.round(child);
   const video = (item.milestones || []).find(
@@ -392,14 +396,7 @@ function responseMessage(response: Response, fallback: string): Promise<string> 
     .catch((reason) => (reason instanceof Error ? reason.message : fallback));
 }
 
-/**
- * 状态筛选标签：**只要两档 —— 「未完成 / 已完成」**（2026-09-15 用户：「其实状态我不关注其他的
- * 内容我只关注还未完成的 和已经完成的。除了已经完成的其他的都算未完成的」）。
- *
- * 细状态没有丢：**每一行的状态徽章照旧显示**（待确认 / 备料中 / 出片中 / 已确认 / 已跳过 /
- * 已失败），所以合在「未完成」里也能一眼看出这条卡在哪一步、哪几条需要你动手。
- * 「未完成」= 除 `completed` 以外的一切（含已跳过 / 已失败 —— 用户明确说它们算未完成）。
- */
+/** 备料、待出片和已跳过分区；已完成条目在出片区默认折叠。 */
 type TabId = "prep" | "render" | "archive";
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "prep", label: "备料区" },
@@ -408,9 +405,33 @@ const TABS: Array<{ id: TabId; label: string }> = [
 ];
 const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
   prep: (item) => !["completed", "skipped"].includes(item.status) && !item.prepReady,
-  render: (item) => !["skipped"].includes(item.status) && (Boolean(item.prepReady) || item.status === "completed"),
+  render: (item) => !["skipped", "completed"].includes(item.status) && Boolean(item.prepReady),
   archive: (item) => item.status === "skipped",
 };
+
+function itemZoneStatus(item: BatchItem): string {
+  if (item.status === "confirmed" && !item.prepReady) return "备料中";
+  return batchStatusLabel(item.status, item.stage);
+}
+
+function prepElapsedMs(item: BatchItem, nowMs: number): number | null {
+  const startedAt = (item.milestones || []).find((step) => step.id === "download")?.startedAt
+    || (item.milestones || []).find((step) => step.id === "prepare")?.startedAt;
+  return elapsedMs(startedAt, null, nowMs);
+}
+
+function prepPhase(item: BatchItem): string {
+  const runningStep = (item.milestones || []).find((step) => step.status === "running");
+  if (runningStep?.currentNode) return runningStep.currentNode;
+  if (item.stage === "download") return "下载源视频";
+  if (item.status === "confirmed" && !item.prepReady) {
+    const recent = (item.logs || []).slice(-3).map((row) => row.message).join(" ");
+    if (recent.includes("抖音封面请求")) return "抖音封面生成中";
+    if (recent.includes("B站封面请求")) return "B站封面生成中";
+    return "补齐封面";
+  }
+  return "备料中";
+}
 
 /**
  * 页内确认框的内容。**不用 `window.confirm`**：系统原生的灰白弹框跟这套深色壳子完全不是
@@ -441,6 +462,7 @@ export function BatchRoute() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 状态筛选标签只要两档：**默认「未完成」**（2026-09-15 用户：「除了已经完成的其他的都算未完成的」）
   const [activeTab, setActiveTab] = useState<TabId>("prep");
+  const [showCompleted, setShowCompleted] = useState(false);
   // 批量操作勾选：后台表格交互（2026-09-15 用户要求批量确认/跳过/删除）。
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busyAction, setBusyAction] = useState("");
@@ -460,7 +482,20 @@ export function BatchRoute() {
     setBatch((current) => {
       if (current?.id === incoming.id && current.updatedAt && incoming.updatedAt
         && current.updatedAt > incoming.updatedAt) return current;
-      return incoming;
+      if (current?.id !== incoming.id) return incoming;
+      const previous = new Map(current.items.map((item) => [item.id, item]));
+      return {
+        ...incoming,
+        items: incoming.items.map((item) => {
+          const before = previous.get(item.id);
+          if (!before || before.status !== item.status) return item;
+          return {
+            ...item,
+            prepReady: item.prepReady ?? before.prepReady,
+            publishChain: item.publishChain ?? before.publishChain,
+          };
+        }),
+      };
     });
   }, []);
   // 页内确认框（替代 window.confirm）：`askConfirm()` 返回 Promise<boolean>，
@@ -499,7 +534,10 @@ export function BatchRoute() {
     return [...items].sort((a, b) => (KIND_RANK[a.kind] ?? 9) - (KIND_RANK[b.kind] ?? 9));
   }, [batch]);
   // 当前标签下显示的条目；展开的详情行也只在当前标签里渲染。
-  const filteredItems = useMemo(() => visibleItems.filter(TAB_MATCH[activeTab]), [visibleItems, activeTab]);
+  const completedItems = useMemo(() => visibleItems.filter((item) => item.status === "completed"), [visibleItems]);
+  const filteredItems = useMemo(() => visibleItems.filter((item) =>
+    TAB_MATCH[activeTab](item) || (activeTab === "render" && showCompleted && item.status === "completed")
+  ), [visibleItems, activeTab, showCompleted]);
   const selected = useMemo(
     () => visibleItems.find((item) => item.id === selectedId) || null,
     [visibleItems, selectedId],
@@ -954,9 +992,7 @@ export function BatchRoute() {
 
   // 已运行时间：批次还在跑就实时跳秒；已结束显示总耗时。
   const batchLive = Boolean(batch && !batch.finishedAt && !["completed", "cancelled", "failed"].includes(batch.status));
-  // 时间只统计「本条」的出片（2026-09-15 用户：「你只需统计 本条的时间 我不关心所有任务的时间」；
-  // 2026-09-20 用户：「时间应该在出片上 备料我不关心时间」）：表格里给**正在出片的那一条**显示时间，
-  // 备料中 / 排队中 / 等确认一律不显示；展开详情头部另有「本条出片用时」。
+  // 当前备料和出片条目各自实时计时；排队与已完成条目不跳秒。
   const queueLive = visibleItems.some(
     (item) => !item.finishedAt && ["running", "revising", "confirmed"].includes(item.status),
   );
@@ -1437,7 +1473,7 @@ export function BatchRoute() {
           <section className="batch-review">
             <div className="batch-review-copy">
               <div className="batch-review-title">
-                <span>{atReview ? "等待你的确认" : `本条信息 · ${batchStatusLabel(item.status, item.stage)}${editable ? "" : "（只读）"}`}</span>
+                <span>{atReview ? "等待你的确认" : `本条信息 · ${itemZoneStatus(item)}${editable ? "" : "（只读）"}`}</span>
                 <small>{atReview ? `按 ${selectedRatio} 出片 · 确认前不会启动 ComfyUI` : `按 ${selectedRatio} 出片`}</small>
               </div>
 
@@ -1518,7 +1554,7 @@ export function BatchRoute() {
                 {item.childJob?.cleanBatch && <i>去字幕 {item.childJob.cleanBatch}/{item.childJob.cleanBatches}</i>}
                 {item.childJob?.upscaleBatch && <i>二采 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</i>}
               </div>
-              <small>{batchStatusLabel(item.status, item.stage)}</small>
+              <small>{itemZoneStatus(item)}</small>
             </div>
           </div>
           <div className="batch-steps">
@@ -1806,6 +1842,16 @@ export function BatchRoute() {
                   只留一个**恢复用**的「继续」，且只在批次已经处于暂停状态时出现 —— 这个状态页面
                   自己造不出来（唯一来源是本地服务在备料中途重启时的安全暂停），不留就会卡死。 */}
               <div className="batch-table-controls">
+                {activeTab === "render" && completedItems.length > 0 && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    aria-expanded={showCompleted}
+                    onClick={() => { setSelectedIds(new Set()); setShowCompleted((value) => !value); }}
+                  >
+                    {showCompleted ? "收起已完成" : `查看已完成 ${completedItems.length} 条`}
+                  </button>
+                )}
                 {batch.status === "paused" && !batch.recoveryActive && (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 )}
@@ -1946,7 +1992,7 @@ export function BatchRoute() {
                           </td>
                           <td className="batch-status-cell">
                             <span className={`batch-status ${item.status}`}>
-                              {batchStatusLabel(item.status, item.stage)}
+                              {itemZoneStatus(item)}
                               {/* 进度直接在列表这一行显示，不用点开（2026-09-15 用户：「除了时间
                                   进入也同步的列表中 像现在的 17% 这样的 我有时候不想点开来看」）；
                                   只认真实非零进度，0/null 不显示数字（进度不得造假）。 */}
@@ -1967,9 +2013,16 @@ export function BatchRoute() {
                                   <Timer weight="fill" />恢复中 · {item.childJob.currentNodeTitle}
                                 </small>
                               )}
-                            {/* 时间只给出片：谁在出片就给谁跳秒（并行时 currentItemId 可能指着备料的那条，
-                                所以不能只看它）；备料 / 下载 / 排队 / 等确认一律不显示时间。
-                                不要「已用」这类标签字。 */}
+                            {batch?.status === "running"
+                              && batch.currentItemId === item.id
+                              && !item.prepReady
+                              && ["running", "confirmed"].includes(item.status)
+                              && prepElapsedMs(item, batchNowTick) !== null && (
+                                <small className="batch-elapsed">
+                                  <Timer weight="fill" />备料已用 {formatElapsedMs(prepElapsedMs(item, batchNowTick)!)} · {prepPhase(item)}
+                                </small>
+                              )}
+                            {/* 出片只给当前正在生成视频的条目计时。 */}
                             {batch?.status === "running"
                               && itemRenderText(item)
                               && (itemIsRendering(item) || item.id === batch?.currentItemId) && (
