@@ -457,11 +457,16 @@ class BatchCreateRequest(BaseModel):
     autoStart: bool = False
     # 整批跑完后是否自动关机（页面开关，默认关闭）
     shutdownOnComplete: bool = False
+    autoRender: bool = True
 
 
 class BatchShutdownRequest(BaseModel):
     """「所有任务完成后自动关机」开关（批次级，默认关闭）。"""
 
+    enabled: bool
+
+
+class BatchAutoRenderRequest(BaseModel):
     enabled: bool
 
 
@@ -547,6 +552,10 @@ def _resume_batch(batch_id: str, notice: str) -> dict[str, Any]:
     自愈所需的接管能力。
     """
     runner_alive = batch_run_alive(batch_id)
+    # 用户**主动**让这一批跑起来（开跑/继续/确认/重新开始）= 上一次的"连续失败"已经处理过了，
+    # 计数从这里重新开始。否则熔断（streak 攒到 2）之后点继续，再失败**一条**就又立刻停批，
+    # 与"连续 2 条才熔断"的设计不符（2026-09-23 实测：坏代理熔断后 streak=3，无法恢复）。
+    batch_worker.reset_failure_streak(batch_id)
     state = batch_store.update(
         batch_id,
         status="running",
@@ -796,6 +805,9 @@ def _with_publish_chain(state: dict[str, Any] | None) -> dict[str, Any] | None:
     if not state:
         return state
     for item in state.get("items") or []:
+        item["prepReady"] = batch_worker._covers_ready(item) if batch_worker.full_auto_enabled() else bool(
+            (item.get("ai") or {}).get("reference_image_path")
+        )
         if str(item.get("status")) in {"deleted", "pending", "revising"}:
             continue                     # 还没出片：不查磁盘
         try:
@@ -833,14 +845,13 @@ async def create_batch(request: BatchCreateRequest):
         dance_ratio = normalize_batch_ratio(request.danceRatio, "dance")
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    state = new_batch_state(singing, dance, singing_ratio, dance_ratio, request.shutdownOnComplete)
+    state = new_batch_state(singing, dance, singing_ratio, dance_ratio, request.shutdownOnComplete, request.autoRender)
     batch_store.create(state)
     if request.shutdownOnComplete:
         # 开关在建批次时就已经打开：立刻挂上看护任务（批次跑完那一刻才真的排关机）
         ensure_shutdown_watcher()
     if request.autoStart:
         # 点「加入队列」直接开跑：预热 ComfyUI 后按队列逐条准备（下载 → 出图/文案 → 等确认）
-        spawn(_prewarm_comfy())
         return _resume_batch(
             state["id"], f"已加入队列 {len(state['items'])} 条，正在下载并生成人物图与发布文案。"
         )
@@ -869,8 +880,7 @@ async def start_batch(batch_id: str):
         raise HTTPException(409, "批次已取消，请新建一个批次")
     if not _pending_items(state):
         raise HTTPException(409, "队列里没有待处理的任务")
-    spawn(_prewarm_comfy())
-    return _resume_batch(batch_id, "已开跑：正在预热 ComfyUI 并按队列逐条处理。")
+    return _resume_batch(batch_id, "已开跑：先完成全部备料，再按设置出片。")
 
 
 @app.post("/api/batches/{batch_id}/items")
@@ -904,7 +914,6 @@ async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest
     state = batch_store.get(batch_id) or state
     if request.autoStart and state.get("status") != "paused" and not state.get("pauseRequested"):
         # 点「加入队列」直接开跑：预热 ComfyUI 后按队列顺序准备（下载 → 出图/文案 → 等确认）
-        spawn(_prewarm_comfy())
         return _resume_batch(batch_id, f"{note} 正在下载并生成人物图与发布文案。")
     # 没启动过 / 暂停中的批次只入队，不因为「加任务」就把流程跑起来
     return _wake_batch(batch_id, note)
@@ -931,6 +940,31 @@ async def resume_batch(batch_id: str):
     if state.get("status") == "completed":
         raise HTTPException(409, "批次已经完成")
     return _resume_batch(batch_id, "批次已继续运行。")
+
+
+@app.post("/api/batches/{batch_id}/auto-render")
+async def set_batch_auto_render(batch_id: str, request: BatchAutoRenderRequest):
+    state = _batch_or_404(batch_id)
+    if state.get("status") == "cancelled":
+        raise HTTPException(409, "批次已取消")
+    batch_store.update(batch_id, autoRender=request.enabled, renderRequested=False)
+    note = "自动出片已开启；备料区清空后开始出片。" if request.enabled else "自动出片已关闭；备料完成后等待手动启动。"
+    if request.enabled and state.get("status") not in {"paused", "failed", "completed"}:
+        return _resume_batch(batch_id, note)
+    return batch_store.update(batch_id, notice=note)
+
+
+@app.post("/api/batches/{batch_id}/render")
+async def start_batch_render(batch_id: str):
+    state = _batch_or_404(batch_id)
+    if state.get("status") in {"cancelled", "paused", "failed"}:
+        raise HTTPException(409, "批次已停止，请先继续或处理失败条目")
+    if batch_worker._prep_remaining(state):
+        raise HTTPException(409, "备料区还有未完成任务；全部备料完成后才能开始出片")
+    if not any(item.get("status") == "confirmed" for item in state.get("items") or []):
+        raise HTTPException(409, "出片区没有等待出片的任务")
+    batch_store.update(batch_id, renderRequested=True)
+    return _resume_batch(batch_id, "已请求出片；备料区所有任务完成后开始逐条出片。")
 
 
 @app.post("/api/batches/{batch_id}/shutdown-on-complete")

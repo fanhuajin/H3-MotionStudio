@@ -226,7 +226,10 @@ def _cancel_stale_prep_task(
     state = batch_store.get(batch_id) or {}
     current = next((row for row in state.get("items") or [] if row.get("id") == item_id), None)
     if current and str(current.get("status")) == "running":
-        _set_item(batch_id, item_id, status="pending", stage="queued", finishedAt=None)
+        cover_only = bool(current.get("coverOnlyPrep"))
+        _set_item(batch_id, item_id, status="confirmed" if cover_only else "pending",
+                  stage="confirmed" if cover_only else "queued", finishedAt=None,
+                  coverOnlyPrep=False)
         for milestone in current.get("milestones") or []:
             if milestone.get("status") == "running":
                 batch_store.set_item_milestone(
@@ -440,6 +443,7 @@ def new_batch_state(
     singing_ratio: str | None = None,
     dance_ratio: str | None = None,
     shutdown_on_complete: bool = False,
+    auto_render: bool = True,
 ) -> dict[str, Any]:
     """新建批次。比例是**条目级**字段：歌曲默认 4:3、跳舞默认 9:16，用户在页面里逐条可改。
 
@@ -473,6 +477,8 @@ def new_batch_state(
         "currentItemId": items[0]["id"] if items else None,
         "pauseRequested": False,
         "runnerActive": False,
+        "autoRender": bool(auto_render),
+        "renderRequested": False,
         # 整批跑完后是否自动关机：**默认关闭**，用户在批量页的开关里打开（2026-09-15）
         "shutdownOnComplete": bool(shutdown_on_complete),
         "notice": "任务已创建，准备处理第 1 条。" if items else "没有任务。",
@@ -815,6 +821,7 @@ def restart_item_to_run(batch_id: str, item_id: str) -> bool:
             revisionFeedback="",
             revisionMode="",
             videoAttempts=0,        # 手动重新开始：把「出片失败自动重试」的额度也还回来
+            forceRender=True,
         )
         for milestone in row.get("milestones") or []:
             if milestone.get("id") == "video" or milestone.get("status") == "error":
@@ -1475,12 +1482,17 @@ async def _prepare_review(
 
 
 async def _run_prep(batch_id: str, item_id: str) -> None:
-    """备料一条：下载 → 预审（分析 + 出图素材 + 候选图 + 文案）。
-
-    2026-09-20 起**备料跑在后台任务里**（以前是内联在 runner 循环里 `await`，一跑就把循环
-    卡住，出片期间没法继续备下一条）。用户口径：「第一条备好之后优先出片，出片的过程中
-    一条一条备料」——所以 runner 最多同时持有一个备料任务 + 一个出片任务（**并发 1**）。
-    """
+    """单链路备料：下载、预审、人物图、文案和两张封面全部落盘。"""
+    existing = _item(batch_id, item_id)
+    if existing.get("status") == "confirmed":
+        _set_item(batch_id, item_id, status="running", stage="prepare", coverOnlyPrep=True)
+        try:
+            await _finish_prep_covers(batch_id, item_id)
+        except BaseException:
+            _set_item(batch_id, item_id, status="confirmed", stage="confirmed", coverOnlyPrep=False)
+            raise
+        _set_item(batch_id, item_id, status="confirmed", stage="confirmed", coverOnlyPrep=False)
+        return
     await _download(batch_id, item_id)
     refreshed = _item(batch_id, item_id)
     if refreshed.get("skipRequested") or refreshed.get("deleteRequested"):
@@ -1488,6 +1500,36 @@ async def _run_prep(batch_id: str, item_id: str) -> None:
     feedback = str(refreshed.get("revisionFeedback") or "")
     mode = str(refreshed.get("revisionMode") or "both")
     await _prepare_review(batch_id, item_id, feedback=feedback, mode=mode)
+    await _finish_prep_covers(batch_id, item_id)
+
+
+def _covers_ready(item: dict[str, Any]) -> bool:
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    return bool(folder and folder.is_dir() and publish_published_image(folder)
+                and (folder / "发布文案.txt").is_file()
+                and all(any(_present_file(folder, name) for name in names)
+                        for names in PUBLISH_COVER_ALIASES.values()))
+
+
+async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
+    """补齐封面并确认文件落盘；未完成的条目留在备料区。"""
+    item = _item(batch_id, item_id)
+    if not full_auto_enabled():
+        return
+    if _covers_ready(item):
+        return
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    if folder is None and Path(str((item.get("ai") or {}).get("reference_image_path") or "")).is_file():
+        await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
+        item = _item(batch_id, item_id)
+        folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    if folder is None or publish_published_image(folder) is None:
+        raise RuntimeError("人物图尚未落入发布目录，无法完成备料")
+    if not (folder / "发布文案.txt").is_file():
+        raise RuntimeError("发布文案尚未落盘，无法完成备料")
+    await _generate_covers_via_api(batch_id, item_id, folder)
+    if not _covers_ready(_item(batch_id, item_id)):
+        raise RuntimeError("封面未全部生成；已保留现有文件，请检查日志后重试缺失部分")
 
 
 def _adopt_previous_work(batch_id: str, item_id: str) -> bool:
@@ -1840,8 +1882,8 @@ async def _prepare_review_work(
             batch_store.set_item_milestone(
                 batch_id, item_id, "prepare", status="running", progress=32, currentNode="正在生成候选人物图"
             )
-            # **显式记一条「请求已发出」**：中转站同尺寸也可能 40 秒到 4 分钟不等
-            # （实测 019 56s / 023 62s / 020 251s），用户看不到「开始了没有」会以为卡住
+
+            # **显式记一条「请求已发出」**：中转站同尺寸也可能 40 秒到 4 分钟不等            # （实测 019 56s / 023 62s / 020 251s），用户看不到「开始了没有」会以为卡住
             # （2026-09-19：「怎么确定发送了请求 感觉有的时候快有的时候慢 我都不知道开始了没有」）。
             image_started = time.monotonic()
             if provider == "local":
@@ -1904,17 +1946,16 @@ async def _prepare_review_work(
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            await asyncio.to_thread(shutil.copy2, scene_frame, fallback_image)
-            image_path = fallback_image
-            # 用户看到这张图会直接问「怎么人物图就是抽帧图」——所以话要说全：
-            # 这是**出图失败的兜底**，不是新规则；出片能继续，但这条要重出。
+            # **不退回抽帧**（用户 2026-09-23：「回退抽帧也是错误的，直接告诉我错误就好了」）：
+            # 一张「人物图 = 抽帧」的废图会一路带到成片（脸是模型自己编的）和封面，还白烧
+            # 几十分钟 GPU。直接让这一条备料失败：批次把它标黄、继续下一条，修好后点「重新开始」。
             note = (
-                f"⚠️ 候选人物图生成失败，已退回源视频取帧（这张图就是抽帧，不是生成图）：{error}"
-                f"（出网方式：{batch_image.route_note()}）。"
-                "可在图片与封面页对本条点「重新生成这一步」重出。"
+                f"⚠️ 候选人物图生成失败：{error}"
+                f"（出网方式：{batch_image.route_note()}）。本次**不退回抽帧**；"
+                "请在图片与封面页点「重新生成这一步」，或点「重新开始」重跑这一条。"
             )
-            warning = f"{warning} {note}".strip()
             batch_store.add_item_log(batch_id, item_id, note)
+            raise RuntimeError(note) from error
 
         # 换脸锁定身份：编辑模型是重新合成脸，只靠提示词保不住五官。
         # **默认关闭**：用户实测 ReActor 换脸「效果太差」（贴脸感明显、肤色与脖子对不上），
@@ -2078,14 +2119,14 @@ async def _prepare_review_work(
     if _cgi_auto_cover():
         _maybe_spawn_covers(batch_id, item_id)
 
-    # 【全自动】封面走**中转站**（用户 2026-09-19：「全自动吧…现在直接用api生成」）：
-    # 人物图与发布文案刚刚由 `deliver_review_materials()` 落进发布目录，现在出封面
-    # 才能保证图上的标题/简介就是最终那一版。与出片**并行**（API 出图不吃显卡）。
-    if full_auto_enabled() and result.get("reference_image_path"):
-        spawn_api_covers(batch_id, item_id)
+    # 【全自动】封面**已改到「出片完成之后」再出**（2026-09-23）：
+    # 见 `_mark_delivered()` 末尾的 `spawn_api_covers()`。原时机是这里（备料完成后立刻发，
+    # 与出片并行）——但封面拿到图后的本地 VOSR2 放大要和视频抢 GPU，且进队时机不确定，
+    # 出现过「钱付了、封面卡住」的情况。封面在发布前才用得上，晚十几分钟没有任何影响。
 
     # **自动放行出片**：默认也已关闭（图片自动化的一部分）——上传人物图后停在
     # 「等待你的确认」，点「确认并出片」才走视频链路。想恢复自动放行：`H3_AUTO_CONFIRM=1`。
+    # （人物图失败时备料会直接抛错标黄这条，走不到这里 —— 所以这里不需要再判别废图。）
     if _cgi_auto_confirm():
         fresh = _item(batch_id, item_id)
         if str((fresh.get("ai") or {}).get("reference_image_path") or "").strip():
@@ -2152,10 +2193,10 @@ def spawn_api_covers(
 ) -> bool:
     """【全自动】用**中转站**出这条的两张封面（后台任务，与出片并行）。
 
-    时机很重要（踩过坑）：必须在「人物图 + 发布文案」都落进发布目录**之后**才出封面 ——
-    封面上的大字就是 `发布文案.txt` 的标题、小字是简介，先出封面就会把旧标题画进图里。
-    所以调用点是 `_prepare_review_work()` 里 `deliver_review_materials()` 之后，
-    以及提交出片前的那道体检（`ensure_publish_images`）。
+    时机（2026-09-23 调整）：**成片交付之后**才出封面 —— 见 `_mark_delivered()`。
+    原来在备料完成后立刻发（与出片并行），但封面拿到图后的本地 VOSR2 放大要和视频抢 GPU，
+    且进队时机取决于中转站何时返回，出现过「钱付了、封面卡住」。封面发布前才用得上，
+    晚十几分钟没有影响；而且此时 `发布文案.txt` 是 `_deliver()` 写过的最终版，图上的字更准。
 
     `only_missing=True`：两张封面都在就直接返回，不白跑（重新开始时避免重复出图）。
     `force=True`：**已存在的封面也要重出**（人物图被换掉时必须这样，见 `adopt_published_portrait`）。
@@ -2840,6 +2881,22 @@ def _find_item_for_folder(folder: Path) -> tuple[dict[str, Any], dict[str, Any]]
             ]
             if len(hits) == 1:
                 return batch, hits[0]
+        # ⚠️ 批次**收尾之后**（completed / cancelled）就不在 `active_batches()` 里了，而
+        # `ADOPTABLE_ITEM_STATUSES` 明确包含 completed / skipped —— 于是「批次跑完/跳过后换人物图」
+        # 这条链路会**静默失效**（2026-09-23 实测：011 换了人物图既不登记、也不重出封面，
+        # 因为这里返回 None 后被 `_register_published_portrait` 的 except 吞掉）。
+        # 这里按作品号**跨批次**再找一次；仍然只在唯一命中时才认。
+        recent = [
+            item for item in batch_store.items_for_aweme(aweme)
+            if str(item.get("status") or "") != "deleted"
+        ]
+        if len(recent) == 1:
+            batch_id = str(recent[0].get("_batchId") or "")
+            batch = batch_store.get(batch_id) if batch_id else None
+            if batch is not None:
+                for item in batch.get("items") or []:
+                    if str(item.get("id") or "") == str(recent[0].get("id") or ""):
+                        return batch, item
     return None
 
 
@@ -3307,6 +3364,9 @@ def _write_publish_image(folder: Path, image: Path | None) -> Path | None:
     """
     if image is None:
         return None
+    # 交付前的尺寸保险：本地放大没跑成（后端在排队期间被杀/重启）时，中转站那张 1k 图
+    # （9:16 只有 576×1024）会被直接发出去。这里就地补到改造前的交付尺寸（纯本地 lanczos）。
+    image = batch_image.ensure_deliverable_file(image)
     suffix = image.suffix.lower() if image.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} else ".png"
     target = folder / f"人物图{suffix}"
     staging = folder / f".人物图{suffix}.incoming"
@@ -3445,10 +3505,12 @@ async def _mark_delivered(batch_id: str, item_id: str, outputs: dict[str, str], 
         status="completed",
         stage="completed",
         outputs=outputs,
+        forceRender=False,
         finishedAt=now_iso(),
         error=None,
     )
     batch_store.add_item_log(batch_id, item_id, f"{note}{outputs['folder']}")
+    # 封面已是备料完成条件，交付视频后不再发起任何图片请求。
 
 
 async def _salvage_deliver(batch_id: str, item_id: str) -> bool:
@@ -3836,6 +3898,18 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
     `video_task`（一次只有一个）+ `_wait_for_free_pipeline` 保证，这里改的是**状态是否诚实**。
     """
     item = _item(batch_id, item_id)
+    if not item.get("forceRender"):
+        outputs = dict(item.get("outputs") or {})
+        folder = _recorded_publish_folder(item)
+        existing = Path(str(outputs.get("videoFinal") or ""))
+        if not existing.is_file() and folder is not None:
+            existing = folder / "最终成片.mp4"
+        if existing.is_file() and existing.stat().st_size > 0:
+            outputs["videoFinal"] = str(existing)
+            _set_item(batch_id, item_id, status="completed", stage="completed",
+                      outputs=outputs, finishedAt=now_iso(), error=None)
+            batch_store.add_item_log(batch_id, item_id, "已有最终成片，直接沿用；未重复提交出片任务。")
+            return
     # 源视频可能已经被清理掉（用户重新开始一条老任务时很常见）：先补下载，
     # 否则提交视频任务时会直接抛「文件不存在」，看起来像系统坏了。
     if not Path(str(item.get("sourcePath") or "")).is_file():
@@ -3992,6 +4066,24 @@ def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _next_prep(state: dict[str, Any]) -> dict[str, Any] | None:
+    """已有封面缺口的旧条目先补料，再处理新链接。"""
+    for item in _priority_sorted(state.get("items") or []):
+        if item.get("status") == "confirmed" and full_auto_enabled() and not _covers_ready(item):
+            return item
+    return _next_work(state, allow_confirmed=False)
+
+
+def _prep_remaining(state: dict[str, Any]) -> bool:
+    return any(
+        item.get("status") in {"pending", "revising", "awaiting_review"}
+        or (item.get("status") == "running" and item.get("stage") in {"download", "prepare"})
+        or (item.get("status") in {"confirmed", "failed"}
+            and full_auto_enabled() and not _covers_ready(item))
+        for item in state.get("items") or []
+    )
+
+
 def _fail_item_and_batch(
     batch_id: str, item_id: str, message: str, *, generation: int | None = None
 ) -> None:
@@ -4030,8 +4122,12 @@ MAX_ITEM_VIDEO_ATTEMPTS = 2
 FAILURE_STREAK_LIMIT = 2
 
 
-def _reset_failure_streak(batch_id: str) -> None:
-    """一条真正交付成功后把「连续失败」清零（熔断只看**连续**失败）。"""
+def reset_failure_streak(batch_id: str) -> None:
+    """一条真正交付成功后把「连续失败」清零（熔断只看**连续**失败）。
+
+    也由 `app._resume_batch()` 调用：用户主动让批次跑起来（开跑/继续/确认/重新开始）说明
+    上一次的失败已经处理过了，计数该从零开始 —— 否则熔断后点继续，再失败一条就又会停批。
+    """
     state = batch_store.get(batch_id) or {}
     if int(state.get("failureStreak") or 0):
         batch_store.update(batch_id, failureStreak=0, lastFailure="")
@@ -4133,7 +4229,8 @@ def reset_dangling_running_items(
         if job_id and job_id in live:
             continue
         rendering = str(item.get("stage") or "") == "video"
-        target, stage = ("confirmed", "confirmed") if rendering else ("pending", "queued")
+        cover_only = bool(item.get("coverOnlyPrep"))
+        target, stage = ("confirmed", "confirmed") if rendering or cover_only else ("pending", "queued")
 
         def apply(row: dict[str, Any], target: str = target, stage: str = stage) -> None:
             row.update(
@@ -4145,6 +4242,7 @@ def reset_dangling_running_items(
                 finishedAt=None,
                 deleteRequested=False,
                 skipRequested=False,
+                coverOnlyPrep=False,
             )
             for milestone in row.get("milestones") or []:
                 if milestone.get("status") in {"running", "error"}:
@@ -4168,17 +4266,9 @@ def reset_dangling_running_items(
 
 
 async def run_batch(batch_id: str) -> None:
-    """批次 runner：**出片优先、备料并行一条** —— 第一条备好就开跑，出片期间继续备下一条。
+    """批次单链路：先完成所有备料，再按开关决定是否逐条出片。
 
-    用户 2026-09-20 的最终口径：「**第一条备好之后优先出片，出片的过程中一条一条备料**」。
-    所以 runner 手里最多同时有两个后台任务：
-
-    - `video_task`（**全局只有一条**，出片是 GPU 独占的单链路）；
-    - `prep_task`（**并发 1**，一次只备一条：下载 → 抽帧 → 分析 → 人物图 → 两张封面）。
-
-    每一轮先看有没有「已确认」的条目 → 有就立刻出片（优先）；否则看有没有要备料的 →
-    丢进后台备料，然后回到循环顶继续转。这样 GPU 一交付，下一条**已经备好**，不用再等
-    2~5 分钟的备料（这一段以前是完全串在出片前面的，GPU 白等）。
+    视频与备料互斥。出片时追加备料，当前视频安全结束后先处理新增任务。
 
     失败策略（用户同一天定）：备料失败跳过继续、出片失败自动重试 1 次、**连续 2 条失败
     熔断停批** —— 见 `_soft_fail_item`。
@@ -4269,7 +4359,7 @@ async def run_batch(batch_id: str) -> None:
                         ):
                             return
                     else:
-                        _reset_failure_streak(batch_id)      # 真交付成功了：连续失败清零
+                        reset_failure_streak(batch_id)      # 真交付成功了：连续失败清零
                 continue
             # ①b 后台备料落定：备料失败**不拖住整批**（标黄跳过继续），取消/DuplicateItem
             #     仍然按老规矩收尾。
@@ -4309,11 +4399,18 @@ async def run_batch(batch_id: str) -> None:
                     continue
                 batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
                 return
+            # 换代时旧视频仍可能安全收尾；它释放前，新 runner 不能开始备料或下一条出片。
+            stale_videos = {task for task in _STALE_VIDEO_TASKS if not task.done()}
+            if stale_videos:
+                await asyncio.wait(stale_videos, timeout=3)
+                continue
             # ③a **出片优先**：没有出片在跑、队列里有「已确认」的条目 → 立刻开跑。
             #     用户 2026-09-20：「第一条备好之后优先出片」。注意这里**不能**用 `_next_work`：
             #     它是"先备料（pending/revising）、再出片"的顺序，会先挑到待备料的那一条，
             #     于是已经备好的条目反而要等备料做完才轮到 GPU。
-            if video_task is None:
+            if video_task is None and prep_task is None and not _prep_remaining(state) and (
+                state.get("autoRender", True) or state.get("renderRequested", False)
+            ):
                 pick = _next_confirmed(state)
                 if pick is not None:
                     task = asyncio.create_task(_process_confirmed(batch_id, pick["id"]))
@@ -4327,9 +4424,9 @@ async def run_batch(batch_id: str) -> None:
                         notice=_running_notice(pick, state, prep_row),
                     )
                     continue
-            # ③b **备料并行一条**：出片在跑时照样备下一条（一次只备一条，API 不会被洪峰打）。
-            if prep_task is None:
-                candidate = _next_work(state, allow_confirmed=False)
+            # ③b 备料与出片共用单链路：有视频在跑时绝不启动备料。
+            if prep_task is None and video_task is None:
+                candidate = _next_prep(state)
                 if candidate is not None:
                     if candidate.get("skipRequested"):
                         await _finish_abandoned(
@@ -4355,6 +4452,22 @@ async def run_batch(batch_id: str) -> None:
             if pending_tasks:
                 await asyncio.wait(pending_tasks, timeout=3)
                 continue
+            if _prep_remaining(state):
+                batch_store.update(
+                    batch_id, status="awaiting_review", stage="prep_attention",
+                    runnerActive=False, notice="备料区仍有未完成任务；处理失败或待确认条目后才能出片。",
+                )
+                return
+            if _next_confirmed(state) is not None and not (
+                state.get("autoRender", True) or state.get("renderRequested", False)
+            ):
+                batch_store.update(
+                    batch_id, status="awaiting_review", stage="ready_to_render",
+                    runnerActive=False, notice="备料已完成，出片区等待你点击「开始出片」。",
+                )
+                return
+            if state.get("renderRequested"):
+                batch_store.update(batch_id, renderRequested=False)
             items = state.get("items") or []
             waiting = [row for row in items if row.get("status") == "awaiting_review"]
             if waiting:

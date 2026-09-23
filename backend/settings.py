@@ -113,6 +113,10 @@ def _user_env(name: str) -> str:
 WORKFLOW_DIR = COMFY_ROOT / "user" / "default" / "workflows" / "video"
 SINGING_WORKFLOW = WORKFLOW_DIR / "视频-单图唱歌-自动拼接40秒内-4x3-运镜版.json"
 UPSCALE_WORKFLOW = WORKFLOW_DIR / "视频-成片输入-独立二采-RealESRGAN4x转1080P-8GB高清加强版.json"
+# VOSR2 版二采：与 RealESRGAN 版**接口节点 id 完全一致**（2 输入视频 / 5 目标尺寸 /
+# 7 帧率 / 8 输出），所以 `prepare_upscale_workflow()` 不用改。`H3_UPSCALE_ENGINE=vosr2`
+# 时启用；默认 esrgan，回滚只改这一个词。
+UPSCALE_WORKFLOW_VOSR2 = WORKFLOW_DIR / "视频-成片输入-独立二采-VOSR2-转1080P-8GB.json"
 # 动作迁移链路：先去字幕（ProPainter 固定底部），再长视频替换/动作迁移
 CLEAN_WORKFLOW = WORKFLOW_DIR / "视频-去字幕-ProPainter-固定底部.json"
 MIGRATE_WORKFLOW = WORKFLOW_DIR / "视频-长视频替换-4x3加速版-ProPainter输入.json"
@@ -162,6 +166,18 @@ UPSCALE_MODEL_X2 = "RealESRGAN_x2plus.pth"
 # 提交时按 ceil(源帧数 / 每批帧数) 预估总段数，运行时每个 VHS meta-batch
 # 窗口（一次新 prompt 执行 = 处理一批帧）推进「放大 X/N」徽章。
 UPSCALE_BATCH_FRAMES = 8
+
+# 出图后的本地放大：中转站按 1k 档请求（`batch_image.image_sizes()`），出图后用 VOSR2 2×
+# 放回 2k 档。人物图与两张封面共用同一条出图函数，所以这一处生效三处。
+# 关掉本地放大（`H3_IMAGE_UPSCALE=off`）时，1k 的图会以原尺寸交付（封面仍会被缩放到
+# TARGETS 尺寸，等于放大，会软）—— 所以正常情况下不要关。
+IMAGE_UPSCALE_SCALE = 2
+IMAGE_UPSCALE_SETTINGS = {
+    "quality_profile": "speed", "tile_strategy": "auto", "tile_size": 512, "tile_overlap": 32,
+    "vae_tile_size": 1024, "vae_tile_overlap": 32, "image_batch": 1, "frame_batch": 2,
+    "dino_batch": 2, "temporal_cache": False, "cache_threshold": 0.003, "cache_refresh": 4,
+    "memory_policy": "auto", "color_alignment": "wavelet",
+}
 
 # 动作迁移模型组合（博主 wan21_scail-2_loop 配置复刻）：
 # - int8_convrot 主模型（RTX30 走 INT8 张量核，比 fp8 更省/更快）文件存在则自动启用
@@ -307,6 +323,31 @@ def normalize_batch_ratio(ratio: str | None, kind: str = "singing") -> str:
     return value
 
 
+def upscale_engine() -> str:
+    """二采引擎：`esrgan`（默认，RealESRGAN 4×，行为与过去完全一致）或 `vosr2`。"""
+    return (env_value("H3_UPSCALE_ENGINE") or "esrgan").strip().lower()
+
+
+def upscale_engine_name() -> str:
+    """二采引擎给用户看的短名：里程碑与日志统一用它，别写死 RealESRGAN。"""
+    return "VOSR2" if upscale_engine() == "vosr2" else "RealESRGAN 4×"
+
+
+def image_upscale_engine() -> str:
+    """出图后是否本地放大：`vosr2`（默认，1k 档出图 → VOSR2 2× 回 2k 档）或 `off`。"""
+    return (env_value("H3_IMAGE_UPSCALE") or "vosr2").strip().lower()
+
+
+def image_identity_crop() -> bool:
+    """身份图是否先裁成「头+肩」再送中转站（默认开）。
+
+    身份原图是有事业线的深 V 照片，中转站按图片审核时，人物图这条（抽帧 + 身份图）比
+    只发抽帧的封面更容易被 400 拦掉；提示词里图二只负责脸型五官，裁掉胸口不影响身份。
+    `H3_IMAGE_IDENTITY_CROP=off` 可关掉（对照排查用）。
+    """
+    return (env_value("H3_IMAGE_IDENTITY_CROP") or "on").strip().lower() != "off"
+
+
 def required_paths() -> dict[str, Path]:
     paths = {
         "ComfyUI Python": COMFY_PYTHON,
@@ -322,6 +363,9 @@ def required_paths() -> dict[str, Path]:
     }
     if RVC_INDEX.is_file():
         paths["音色索引"] = RVC_INDEX
+    # 切到 VOSR2 二采时，把那份工作流也纳入环境检查（缺了会在启动时就报出来，而不是等出片）
+    if upscale_engine() == "vosr2":
+        paths["VOSR2 二采工作流"] = UPSCALE_WORKFLOW_VOSR2
     # 动作迁移的默认人物图只在存在时校验：缺失时用户上传人物图即可
     if MIGRATE_REFERENCE.is_file():
         paths["动作迁移人物图"] = MIGRATE_REFERENCE

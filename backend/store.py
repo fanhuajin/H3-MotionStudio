@@ -8,7 +8,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from .settings import DB_PATH, RVC_MODEL
+from .settings import DB_PATH, RVC_MODEL, upscale_engine_name
 
 
 def now_iso() -> str:
@@ -35,7 +35,12 @@ def initial_milestones(use_rvc: bool = True, use_upscale: bool = True) -> list[d
     ]
     if use_upscale:
         milestones.append(
-            {"id": "upscale", "label": "二采放大 4×", "subtitle": "RealESRGAN 逐帧超分并收 1080p 档", "status": "pending"}
+            {
+                "id": "upscale",
+                "label": f"二采放大（{upscale_engine_name()}）",
+                "subtitle": "逐帧放大并收 1080p 档",
+                "status": "pending",
+            }
         )
     if use_rvc:
         milestones += [
@@ -50,7 +55,7 @@ def initial_milestones(use_rvc: bool = True, use_upscale: bool = True) -> list[d
 def upscale_milestones() -> list[dict[str, Any]]:
     """二采放大路由里程碑：放大 → 收 1080p 档输出。"""
     return [
-        {"id": "upscale", "label": "RealESRGAN 逐帧放大", "subtitle": "8 帧分批超采样", "status": "pending"},
+        {"id": "upscale", "label": f"{upscale_engine_name()} 逐帧放大", "subtitle": "8 帧分批放大", "status": "pending"},
         {"id": "hd", "label": "收 1080p 档输出", "subtitle": "缩放并封装输出视频", "status": "pending"},
     ]
 
@@ -132,7 +137,12 @@ def migrate_milestones(
     ]
     if use_upscale:
         milestones.append(
-            {"id": "upscale", "label": "二采放大 4×", "subtitle": "RealESRGAN 逐帧超分并收 1080p 档", "status": "pending"}
+            {
+                "id": "upscale",
+                "label": f"二采放大（{upscale_engine_name()}）",
+                "subtitle": "逐帧放大并收 1080p 档",
+                "status": "pending",
+            }
         )
     return milestones
 

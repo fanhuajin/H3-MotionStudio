@@ -8,7 +8,7 @@ import re
 import shutil
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from PIL import Image
 
@@ -736,7 +736,9 @@ class WorkflowPreparationTests(unittest.TestCase):
 
         with patch.object(batch_worker, "batch_store", RunStore()), patch.object(
             batch_worker, "_download", fake_download
-        ), patch.object(batch_worker, "_prepare_review", fake_prepare):
+        ), patch.object(batch_worker, "_prepare_review", fake_prepare), patch.object(
+            batch_worker, "_finish_prep_covers", new_callable=AsyncMock
+        ):
             asyncio.run(batch_worker.run_batch("b1"))
 
         by_index = {item["index"]: item for item in box["state"]["items"]}
@@ -820,6 +822,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                 batch_worker, "_process_confirmed", fake_video
             ), patch.object(batch_worker, "_download", fake_download), patch.object(
                 batch_worker, "_prepare_review", fake_prepare
+            ), patch.object(batch_worker, "_covers_ready", return_value=True), patch.object(
+                batch_worker, "_finish_prep_covers", new_callable=AsyncMock
             ):
                 runner = asyncio.create_task(batch_worker.run_batch("b1"))
                 await asyncio.wait_for(video_started.wait(), timeout=5)
@@ -1099,7 +1103,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                 )
             )
             self.assertEqual(started["status"], "running")
-            self.assertEqual(len(spawned), 2)   # run_batch + ComfyUI 预热
+            self.assertEqual(len(spawned), 1)   # 只启动 runner；备料阶段不预热 ComfyUI
             self.assertIn("下载并生成人物图与发布文案", started["notice"])
 
             # 暂停中的批次：即使 autoStart 也只入队，不违背用户的暂停
@@ -1113,7 +1117,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                 )
             )
             self.assertEqual(paused["status"], "paused")
-            self.assertEqual(len(spawned), 2)
+            self.assertEqual(len(spawned), 1)
             # 逐条启动的入口已经收掉：入口只有「加入队列并开始」
             self.assertNotIn(
                 "/api/batches/{batch_id}/items/{item_id}/start",
@@ -1341,7 +1345,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         async def scenario() -> None:
             with patch.object(batch_worker, "batch_store", _BoxStore(box)), patch.object(
                 batch_worker, "_process_confirmed", flaky_video
-            ), patch.object(batch_worker, "_run_prep", no_prep):
+            ), patch.object(batch_worker, "_run_prep", no_prep), patch.object(
+                batch_worker, "_covers_ready", return_value=True
+            ):
                 await asyncio.wait_for(batch_worker.run_batch("b1"), timeout=5)
 
         asyncio.run(scenario())
@@ -1383,7 +1389,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         async def scenario() -> None:
             with patch.object(batch_worker, "batch_store", _BoxStore(box)), patch.object(
                 batch_worker, "_process_confirmed", always_fail
-            ), patch.object(batch_worker, "_run_prep", no_prep):
+            ), patch.object(batch_worker, "_run_prep", no_prep), patch.object(
+                batch_worker, "_covers_ready", return_value=True
+            ):
                 await asyncio.wait_for(batch_worker.run_batch("b1"), timeout=5)
 
         asyncio.run(scenario())
@@ -1394,14 +1402,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 每条都试过两次（首次 + 一次重试）
         self.assertEqual([row["videoAttempts"] for row in box["state"]["items"]], [1, 1])
 
-    def test_batch_preps_the_next_item_while_one_renders(self) -> None:
-        """用户 2026-09-20：「**第一条备好之后优先出片，出片的过程中一条一条备料**」。
-
-        两条都要钉住：
-          · 出片仍然**全局单链路**（`video_task` 只有一个）；
-          · 出片在跑时 runner **照样备下一条**（`prep_task` 只有一个，并发 1）——
-            这样 GPU 一交付，下一条已经备好，不用再干等 2~5 分钟的备料。
-        """
+    def test_batch_finishes_prep_before_render_and_never_overlaps(self) -> None:
+        """备料和出片共用单链路；待备料全部做完才开始视频。"""
         import asyncio
 
         from backend import batch_worker
@@ -1460,29 +1462,24 @@ class WorkflowPreparationTests(unittest.TestCase):
             order.append(f"prep-{item_id}")
             for item in box["state"]["items"]:
                 if item["id"] == item_id:
-                    item["status"] = "awaiting_review"
+                    item["status"] = "confirmed"
 
         async def scenario() -> None:
             with patch.object(batch_worker, "batch_store", RunStore()), patch.object(
                 batch_worker, "_process_confirmed", fake_video
-            ), patch.object(batch_worker, "_run_prep", fake_prep):
+            ), patch.object(batch_worker, "_run_prep", fake_prep), patch.object(
+                batch_worker, "_covers_ready", return_value=True
+            ):
                 runner = asyncio.create_task(batch_worker.run_batch("b1"))
                 await asyncio.wait_for(video_started.wait(), timeout=5)
-                for _ in range(300):
-                    if box["state"]["items"][1]["status"] == "awaiting_review":
-                        break
-                    await asyncio.sleep(0.01)
-                # 出片还在跑（没交付），第 2 条已经备完料
-                self.assertNotIn("video-end", order)
-                self.assertEqual(order[0], "video-start")
-                self.assertEqual(order[1], f"prep-{state['items'][1]['id']}")
+                self.assertEqual(order[0], f"prep-{state['items'][1]['id']}")
+                self.assertEqual(order[1], "video-start")
                 release.set()
                 await asyncio.wait_for(runner, timeout=5)
 
         asyncio.run(scenario())
-        # 出片仍是单链路：全局只有一次出片，而且它在备料之前就开始了
-        self.assertEqual(order.count("video-start"), 1)
-        self.assertEqual(order.count("video-end"), 1)
+        self.assertEqual(order.count("video-start"), 2)
+        self.assertEqual(order.count("video-end"), 2)
 
     def test_batch_strictly_runs_one_video_at_a_time(self) -> None:
         """出片**永远是单链路**：源码级钉子（备料可以并行，出片不行）。"""
@@ -1493,7 +1490,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         source = inspect.getsource(batch_worker.run_batch)
         self.assertIn("asyncio.create_task(_process_confirmed", source)
         self.assertIn("prep_task: asyncio.Task | None = None", source)
-        self.assertIn("_next_work(state, allow_confirmed=False)", source)
+        self.assertIn("_next_prep(state)", source)
         self.assertIn("_next_confirmed(state)", source)
         # 「出片在跑就什么都不挑」那版已经被 2026-09-20 的口径取代
         self.assertNotIn("item = None if video_task is not None else _next_work(state)", source)
@@ -2246,8 +2243,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                     self.assertTrue(batch_image.configured())
                     self.assertEqual(batch_image.base_url(), "https://relay.example/v1")
                     self.assertEqual(batch_image.model(), "gpt-image-2.5-sunburst")
-            self.assertEqual(batch_image.IMAGE_SIZES["4:3"], "1536x1152")
-            self.assertEqual(batch_image.IMAGE_SIZES["9:16"], "1152x2048")
+            self.assertEqual(batch_image.IMAGE_SIZES_2K["4:3"], "1536x1152")
+            self.assertEqual(batch_image.IMAGE_SIZES_2K["9:16"], "1152x2048")
         finally:
             for name, value in saved.items():
                 if value is None:
@@ -2259,7 +2256,7 @@ class WorkflowPreparationTests(unittest.TestCase):
     def test_batch_image_sizes_match_relay_constraints(self) -> None:
         """中转站约束：宽高均为 16 的倍数、长宽比 ≤3:1、总像素 655360~8294400，且比例精确。"""
         for ratio, expected in (("4:3", (4, 3)), ("9:16", (9, 16))):
-            width, height = (int(part) for part in batch_image.IMAGE_SIZES[ratio].split("x"))
+            width, height = (int(part) for part in batch_image.image_sizes()[ratio].split("x"))
             self.assertEqual(width % 16, 0, f"{ratio} 宽不是 16 的倍数")
             self.assertEqual(height % 16, 0, f"{ratio} 高不是 16 的倍数")
             self.assertLessEqual(max(width, height), 3840)
@@ -2269,6 +2266,7 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertLessEqual(pixels, 8_294_400)
             # 比例必须精确：不能用 1536x1024 这种 3:2 冒充 4:3
             self.assertEqual(width * expected[1], height * expected[0], f"{ratio} 比例不精确")
+            self.assertTrue(batch_image.needs_local_upscale(ratio))
 
     def test_batch_image_uses_one_explicit_request_shape(self) -> None:
         """计费出图不能自动试三种格式：一次操作只允许一种请求形态。"""
@@ -2316,7 +2314,7 @@ class WorkflowPreparationTests(unittest.TestCase):
             Image.new("RGB", (240, 320), "#884466").save(identity)
             calls: list[str] = []
 
-            async def boom(data, files):
+            async def boom(data, files, *, proxy=None):
                 calls.append(files[0][0])
                 raise _httpx.ConnectError("All connection attempts failed")
 
@@ -2337,8 +2335,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                     )
             message = str(caught.exception)
             self.assertIn("连接失败", message)
-            self.assertIn("没有自动改格式或换线路重试", message)
-            self.assertEqual(calls, ["image"])
+            self.assertLessEqual(len(calls), 2)
+            self.assertTrue(all(field == "image" for field in calls))
 
     def test_same_billed_image_request_key_shares_one_upstream_call(self) -> None:
         """批量后台与图片工作台撞在一起时，共享同一张结果，只调用一次中转站。"""
@@ -2564,9 +2562,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         """
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertIn("【过度裸露 · 发布级硬要求", prompt)
-            self.assertIn("不得明显露出事业线", prompt)
-            self.assertIn("只露上胸的一点点", prompt)
+            self.assertIn("【着装合规 · 发布级硬要求", prompt)
+            self.assertIn("胸口必须被衣服完整盖住", prompt)
+            self.assertIn("上胸露出一小部分", prompt)
             self.assertIn("优先于「沿用图一服装」", prompt)
             # 平台明确不算违规的，必须在提示词里写清"照常保留"，否则模型还是会保守化
             self.assertIn("吊带、抹胸、一字肩、露肩", prompt)
@@ -2577,7 +2575,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 合规块必须在身份块**之前**：脸仍是最后一条（身份优先级最高）
         prompt = batch_ai.compose_image_prompt("dance", "video", "换成吊带", "both")
         self.assertLess(
-            prompt.index("【过度裸露 · 发布级硬要求"),
+            prompt.index("【着装合规 · 发布级硬要求"),
             prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
         )
         self.assertTrue(prompt.rstrip().endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
@@ -3811,22 +3809,14 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 批量删除 / 跳过要把受影响的条目列出来
         self.assertIn("items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`)", source)
 
-    def test_batch_status_tabs_are_only_open_and_completed(self) -> None:
-        """标签只要两档「未完成 / 已完成」，默认「未完成」；细状态仍保留在行内徽章上。
-
-        2026-09-15 用户：「其实状态我不关注其他的内容我只关注还未完成的 和已经完成的。
-        除了已经完成的其他的都算未完成的」——所以不再有 待确认/备料中/出片中/已跳过/已失败 这些
-        筛选标签，但**行内状态徽章照旧**显示细状态（否则在「未完成」里认不出卡在哪一步）。
-        """
+    def test_batch_status_tabs_show_prep_and_render_zones(self) -> None:
+        """批量页按备料、出片两区组织，状态徽章仍保留。"""
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
-        # 只有两个标签，且默认「未完成」
-        self.assertIn('type TabId = "open" | "completed";', source)
-        self.assertIn('{ id: "open", label: "未完成" }', source)
-        self.assertIn('{ id: "completed", label: "已完成" }', source)
-        self.assertIn('useState<TabId>("open")', source)
-        # 「未完成」= 除 completed 以外的一切（含已跳过 / 已失败）
-        self.assertIn('open: (item) => item.status !== "completed",', source)
-        self.assertIn('completed: (item) => item.status === "completed",', source)
+        self.assertIn('type TabId = "prep" | "render" | "archive";', source)
+        self.assertIn('{ id: "prep", label: "备料区" }', source)
+        self.assertIn('{ id: "render", label: "出片区" }', source)
+        self.assertIn('useState<TabId>("prep")', source)
+        self.assertIn('prepBlocked', source)
         # 细状态没有被删掉：行内徽章仍按 item.status 显示（再带上 stage，好把并行的
         # 「备料中」与「出片中」分开 —— 2026-09-20 用户看到两条「正在处理」问过为什么）
         self.assertIn("batchStatusLabel(item.status, item.stage)", source)
@@ -6086,14 +6076,15 @@ class WorkflowPreparationTests(unittest.TestCase):
             P.media_metadata = fake_metadata
             P.probe_media_frames = fake_frames
             P.run_comfy_workflow = fake_run
-            result = asyncio.run(
-                P.run_upscale_pass(
-                    job_id,
-                    source,
-                    input_tag="upscale_src",
-                    batch_fields=("upscaleBatch", "upscaleBatches"),
+            with patch.object(P, "upscale_engine", return_value="esrgan"):
+                result = asyncio.run(
+                    P.run_upscale_pass(
+                        job_id,
+                        source,
+                        input_tag="upscale_src",
+                        batch_fields=("upscaleBatch", "upscaleBatches"),
+                    )
                 )
-            )
             source_survived = source.is_file()
         finally:
             P.store, P.media_metadata, P.probe_media_frames, P.run_comfy_workflow = originals
@@ -8197,7 +8188,7 @@ class BatchRunnerTakeoverTests(unittest.TestCase):
 
             with patch.object(batch_worker, "batch_store", stub), patch.object(
                 batch_worker, "_process_confirmed", fake_video
-            ):
+            ), patch.object(batch_worker, "_covers_ready", return_value=True):
                 # ① 第一代 runner 出片到一半（正 await 后台出片任务）
                 first = asyncio.create_task(batch_worker.run_batch("b1"))
                 for _ in range(300):
@@ -10558,7 +10549,7 @@ class CoverSingleReferenceFallbackTests(unittest.IsolatedAsyncioTestCase):
                 self.text = '{"error": {"message": "multi 不支持"}}'
 
             def json(self) -> dict:
-                return {"data": [{"b64_json": base64.b64encode(b"fake-png").decode()}]}
+                return {"data": [{"b64_json": base64.b64encode(scene.read_bytes()).decode()}]}
 
         async def fake_post(data, files):
             # `plans` 的最后一个就是这次要发的那一套方案
@@ -10574,10 +10565,11 @@ class CoverSingleReferenceFallbackTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(batch_image, "_build_request", side_effect=build):
             with patch.object(batch_image, "_post", side_effect=fake_post):
                 with patch.object(batch_image, "_prepare_route", side_effect=no_probe):
-                    await batch_image.generate_candidate_image(
-                        scene_image=scene, identity_image=identity,
-                        prompt="封面提示词", ratio="3:4", output_path=out,
-                    )
+                    with patch.object(batch_image, "_upscale_after_relay", new_callable=AsyncMock):
+                        await batch_image.generate_candidate_image(
+                            scene_image=scene, identity_image=identity,
+                            prompt="封面提示词", ratio="3:4", output_path=out,
+                        )
         return out
 
     def _png(self, name: str, *, size: tuple[int, int] = (60, 45)) -> Path:

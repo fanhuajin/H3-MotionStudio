@@ -47,8 +47,11 @@ from .settings import (
     UPSCALE_BATCH_FRAMES,
     UPSCALE_MODEL_X4,
     UPSCALE_WORKFLOW,
+    UPSCALE_WORKFLOW_VOSR2,
     canvas_params,
     singing_canvas_params,
+    upscale_engine,
+    upscale_engine_name,
 )
 from .store import now_iso, store
 from .video_integrity import truncation_reason
@@ -1286,7 +1289,7 @@ async def run_pipeline(job_id: str) -> None:
             # RVC 与最终成片都以高清成片为输入。
             output = original
             if state.get("useUpscale", True):
-                store.add_log(job_id, "二采放大开关已开启：先做 RealESRGAN 4× 并收 1080p 档，再进入音色转换。")
+                store.add_log(job_id, f"二采放大开关已开启：先做 {upscale_engine_name()} 并收 1080p 档，再进入音色转换。")
                 upscaled = await run_upscale_pass(job_id, original, output_tag="高清")
                 store.update(job_id, enhancedOutput=str(upscaled), enhancedReady=True)
                 store.add_log(job_id, f"高清成片已保存：{upscaled.name}")
@@ -1883,7 +1886,7 @@ async def run_migrate_pipeline(job_id: str) -> None:
             # 结果即该任务的最终成片；关闭时迁移成片就是最终成片。
             final = draft
             if state.get("useUpscale", True):
-                store.add_log(job_id, "二采放大开关已开启：迁移成片再做 RealESRGAN 4× 并收 1080p 档。")
+                store.add_log(job_id, f"二采放大开关已开启：迁移成片再做 {upscale_engine_name()} 并收 1080p 档。")
                 upscaled = await run_upscale_pass(job_id, draft, output_tag="迁移高清")
                 final = await asyncio.to_thread(mark_final_version, upscaled)
                 store.update(job_id, enhancedOutput=str(final), enhancedReady=True)
@@ -2003,17 +2006,29 @@ async def run_upscale_pass(
         stage=stage,
         **{batch_fields[0]: 1 if batches else None, batch_fields[1]: batches},
     )
+    engine = upscale_engine()
+    if engine == "vosr2":
+        if not UPSCALE_WORKFLOW_VOSR2.is_file():
+            raise PipelineError("找不到 VOSR2 版二采工作流", str(UPSCALE_WORKFLOW_VOSR2))
+        engine_label = "TE-Speed-VOSR2"
+        workflow_path = UPSCALE_WORKFLOW_VOSR2
+        # VOSR2 工作流里没有超分模型加载器；把模型名注进去会写坏节点，必须传 None。
+        upscale_model = None
+    else:
+        engine_label = f"4×（{UPSCALE_MODEL_X4}）"
+        workflow_path = UPSCALE_WORKFLOW
+        upscale_model = UPSCALE_MODEL_X4
     store.add_log(
         job_id,
-        f"二采放大 4×（RealESRGAN_x4plus）：{width}×{height} → {target[0]}×{target[1]}"
+        f"二采放大 {engine_label}：{width}×{height} → {target[0]}×{target[1]}"
         + (f" · 预计 {batches} 批（每批 {UPSCALE_BATCH_FRAMES} 帧，8GB 显存保护）" if batches else ""),
     )
     workflow = prepare_upscale_workflow(
         linked.name,
         f"video/H3_MotionStudio/{job_id}_{output_tag}",
-        UPSCALE_WORKFLOW,
+        workflow_path,
         scale=target,
-        upscale_model=UPSCALE_MODEL_X4,
+        upscale_model=upscale_model,
     )
     result = await run_comfy_workflow(job_id, "upscale", workflow, "8", batch_fields=batch_fields)
     store.update(job_id, **{batch_fields[0]: None})
@@ -2036,7 +2051,8 @@ async def run_upscale_job(job_id: str) -> None:
             scale = (int(state["targetWidth"]), int(state["targetHeight"]))
             store.add_log(
                 job_id,
-                f"二采放大：{state.get('multiplier') or '4x'}（固定 4×） · {state.get('upscaleModel') or UPSCALE_MODEL_X4}",
+                f"二采放大：{state.get('multiplier') or '4x'}（固定 4×） · "
+                + ("TE-Speed-VOSR2" if upscale_engine() == "vosr2" else (state.get("upscaleModel") or UPSCALE_MODEL_X4)),
             )
             final = await run_upscale_pass(
                 job_id,

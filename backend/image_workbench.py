@@ -247,10 +247,10 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
 - 手部出现任何结构错误都算不合格，必须重画到正确为止。
 {batch_ai.SHARPNESS_BLOCK.strip()}
 
-【过度裸露 · 发布级硬要求】
-- 按平台规则原文只有三条：不得**明显**露出**事业线/乳沟**（乳沟清晰可见才算，只露一点点不算）、
-  不得**透视/裸色**到像没穿衣服、不得紧身到**凸点**这类轮廓线过于突出。服装沿用参考图
-  （人物图已过这道判据），不要把领口开低到露沟、不要加透视，其余（吊带、露肩、露腰腹、短裤）照旧。""".strip()
+【着装合规 · 发布级硬要求】
+- 按平台着装规范三条：领口不要开得过低、胸口被衣服完整盖住（上胸露出一小部分是可以的）、
+  面料必须完全不透明（不要「能看见里面」的效果）、衣服不要紧到把身体轮廓线顶出来。服装沿用参考图
+  （人物图已过这道判据），不要把领口开低、不要用半透明面料，其余（吊带、露肩、露腰腹、短裤）照旧。""".strip()
 
 
 def material_zip(folder: Path, stage: str, kind: str) -> bytes:
@@ -310,7 +310,9 @@ def _wake_batch_soon(batch_id: str) -> None:
     task.add_done_callback(_WAKE_TASKS.discard)
 
 
-def save_upload(folder: Path, stage: str, payload: bytes, kind: str = "singing") -> dict[str, Any]:
+def save_upload(
+    folder: Path, stage: str, payload: bytes, kind: str = "singing", *, allow_repair: bool = False
+) -> dict[str, Any]:
     if stage not in {"person", "bilibili", "douyin"}:
         raise ValueError("图片类型无效")
     try:
@@ -319,6 +321,13 @@ def save_upload(folder: Path, stage: str, payload: bytes, kind: str = "singing")
     except OSError as exc:
         raise ValueError("请选择有效的 PNG、JPG 或 WebP 图片") from exc
     width, height = image.size
+    if allow_repair and min(width, height) < 640:
+        # 我们自己的出图（1k 档出图 + 本地 VOSR2 放大）：放大是内存里的任务，后端在排队
+        # 期间被杀就没了 —— 这时不能把这张**已经付过钱**的图判成「分辨率太低」，本地补一刀。
+        image, note = batch_image.ensure_deliverable_image(image)
+        if note:
+            width, height = image.size
+            logger.warning("出图短边不足，已本地补到 %sx%s（%s）", width, height, stage)
     if min(width, height) < 640:
         raise ValueError("图片分辨率太低，短边至少需要 640 像素")
     if stage == "person":
@@ -544,7 +553,7 @@ async def _generate_person(
         note = _compliance_note(report)
         if note:
             _PERSON_NOTES[_folder_id(folder)] = note
-        save_upload(folder, "person", candidate.read_bytes(), kind)
+        save_upload(folder, "person", candidate.read_bytes(), kind, allow_repair=True)
         completed = True
         return similarity
     finally:
@@ -605,7 +614,7 @@ async def _generate_cover(
             output_path=candidate,
             request_key=f"cover:{str(folder.resolve()).lower()}:{stage}",
         )
-        save_upload(folder, stage, candidate.read_bytes())
+        save_upload(folder, stage, candidate.read_bytes(), allow_repair=True)
         marker.unlink(missing_ok=True)
         completion.set_result((True, ""))
     except BaseException as exc:

@@ -191,6 +191,7 @@ interface BatchItem {
   } | null;
   error?: string | null;
   warning?: string | null;
+  prepReady?: boolean;
 }
 
 interface BatchState {
@@ -203,6 +204,8 @@ interface BatchState {
   notice?: string;
   pauseRequested?: boolean;
   recoveryActive?: boolean;
+  autoRender?: boolean;
+  renderRequested?: boolean;
   /** 整批跑完后是否自动关机（页面开关，**默认关闭**） */
   shutdownOnComplete?: boolean;
   /** 时间戳（ISO）：用来算「已运行多久」 */
@@ -342,6 +345,7 @@ function readInputDraft() {
     // 「全部完成后自动关机」：**默认关闭**（2026-09-15 用户：「默认关闭」）。
     // 还没建批次时先记在本地，点「准备任务」时随批次一起提交。
     shutdownOn: parsed.shutdownOn === true,
+    autoRenderOn: parsed.autoRenderOn !== false,
   };
 }
 
@@ -395,14 +399,16 @@ function responseMessage(response: Response, fallback: string): Promise<string> 
  * 已失败），所以合在「未完成」里也能一眼看出这条卡在哪一步、哪几条需要你动手。
  * 「未完成」= 除 `completed` 以外的一切（含已跳过 / 已失败 —— 用户明确说它们算未完成）。
  */
-type TabId = "open" | "completed";
+type TabId = "prep" | "render" | "archive";
 const TABS: Array<{ id: TabId; label: string }> = [
-  { id: "open", label: "未完成" },
-  { id: "completed", label: "已完成" },
+  { id: "prep", label: "备料区" },
+  { id: "render", label: "出片区" },
+  { id: "archive", label: "已跳过" },
 ];
 const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
-  open: (item) => item.status !== "completed",
-  completed: (item) => item.status === "completed",
+  prep: (item) => !["completed", "skipped"].includes(item.status) && !item.prepReady,
+  render: (item) => !["skipped"].includes(item.status) && (Boolean(item.prepReady) || item.status === "completed"),
+  archive: (item) => item.status === "skipped",
 };
 
 /**
@@ -428,11 +434,12 @@ export function BatchRoute() {
   const [danceOn, setDanceOn] = useState(initial.danceOn);
   // 「全部完成后自动关机」（默认关闭）：有批次时以批次上的值为准，没有批次时用本地草稿
   const [shutdownOn, setShutdownOn] = useState(initial.shutdownOn);
+  const [autoRenderOn, setAutoRenderOn] = useState(initial.autoRenderOn);
   const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 状态筛选标签只要两档：**默认「未完成」**（2026-09-15 用户：「除了已经完成的其他的都算未完成的」）
-  const [activeTab, setActiveTab] = useState<TabId>("open");
+  const [activeTab, setActiveTab] = useState<TabId>("prep");
   // 批量操作勾选：后台表格交互（2026-09-15 用户要求批量确认/跳过/删除）。
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busyAction, setBusyAction] = useState("");
@@ -490,6 +497,11 @@ export function BatchRoute() {
     [visibleItems, selectedId],
   );
   const tabCount = (id: TabId) => visibleItems.filter(TAB_MATCH[id]).length;
+  const prepBlocked = visibleItems.some((item) =>
+    ["pending", "revising", "awaiting_review"].includes(item.status)
+    || (item.status === "running" && ["download", "prepare"].includes(item.stage))
+    || (["confirmed", "failed"].includes(item.status) && !item.prepReady),
+  );
 
   const loadLatest = useCallback(async () => {
     try {
@@ -507,8 +519,8 @@ export function BatchRoute() {
   }, [loadLatest]);
 
   useEffect(() => {
-    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn, shutdownOn }));
-  }, [singing, dance, singingOn, danceOn, shutdownOn]);
+    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn, shutdownOn, autoRenderOn }));
+  }, [singing, dance, singingOn, danceOn, shutdownOn, autoRenderOn]);
 
   /**
    * 自动关机状态：单独轮询（批次轮询 3.5 秒一次，这里 5 秒一次足够）。
@@ -593,7 +605,7 @@ export function BatchRoute() {
       // 新建批次时把「全部完成后自动关机」一起提交（追加时该开关已经挂在批次上，由开关接口改）
       const payload = append
         ? { singingUrls, danceUrls, autoStart }
-        : { singingUrls, danceUrls, autoStart, shutdownOnComplete: shutdownOn };
+        : { singingUrls, danceUrls, autoStart, shutdownOnComplete: shutdownOn, autoRender: autoRenderOn };
       const response = await fetch(target, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1593,9 +1605,9 @@ export function BatchRoute() {
         <div>
           <p className="batch-kicker">SERIAL PRODUCTION</p>
           <h1>批量视频制作</h1>
-          <p>粘贴链接即可开始。系统逐条准备候选图和发布文案，只有你确认后才生成该条视频。</p>
+          <p>先完成整批备料，再逐条出片。每条人物图、文案和两张封面齐备后自动进入出片区。</p>
           <p className="batch-priority-hint">
-            出片顺序与列表排序：<strong>跳舞优先</strong>，再唱歌（各自的编号独立）；备料与出片重叠，ComfyUI 全程常驻。
+            两区内均按<strong>跳舞优先</strong>，再唱歌；备料区有待处理任务时，不启动下一条出片。
           </p>
         </div>
         {batch && (
@@ -1609,7 +1621,7 @@ export function BatchRoute() {
       <section className="batch-input-card">
         <div className="batch-prepare-head">
           <span>准备任务</span>
-          <small>点「准备任务」后立即开始：下载抖音视频 → 生成人物图与发布文案 → 停下来等你确认；确认后「确认并出片」直接开跑 ComfyUI 出片</small>
+          <small>下载抖音视频 → 抽帧分析 → 人物图与发布文案 → B站和抖音封面；已有文件直接沿用</small>
         </div>
         <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
           <label className={singingOn ? "" : "off"}>
@@ -1657,6 +1669,21 @@ export function BatchRoute() {
             )}
           </label>
         </div>
+        {!batch && <div className="batch-shutdown-row">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoRenderOn}
+            className={`batch-switch ${autoRenderOn ? "on" : ""}`}
+            onClick={() => setAutoRenderOn((value) => !value)}
+          >
+            <i />{autoRenderOn ? "已开启" : "已关闭"}
+          </button>
+          <span>
+            <b>备料完成后自动出片</b>
+            <small>默认开启。关闭后，全部备料完成才可在出片区手动启动。</small>
+          </span>
+        </div>}
         <div className="batch-shutdown-row">
           <button
             type="button"
@@ -1677,7 +1704,7 @@ export function BatchRoute() {
           </span>
         </div>
         <div className="batch-input-actions">
-          <p><ListChecks /> 重复链接会自动跳过；备好料就停下来等你确认，点「确认并出片」才真正出片。</p>
+          <p><ListChecks /> 重复链接会自动跳过；出片由下方开关控制，默认自动开始。</p>
           <div className="batch-input-buttons">
             <button
               className="batch-primary"
@@ -1715,6 +1742,35 @@ export function BatchRoute() {
 
       {batch && (
         <section className="batch-workspace">
+          <div className="batch-zone-control">
+            <div>
+              <strong>备料区 {tabCount("prep")} 条 → 出片区 {tabCount("render")} 条</strong>
+              <small>整批备料优先。每条两张封面都保存后，自动转入出片区。</small>
+            </div>
+            <div className="batch-zone-actions">
+              <span>备料完成后自动出片</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={batch.autoRender !== false}
+                className={`batch-switch ${batch.autoRender !== false ? "on" : ""}`}
+                disabled={Boolean(busyAction)}
+                onClick={() => void call("auto-render", "POST", { enabled: batch.autoRender === false })}
+              >
+                <i />{batch.autoRender !== false ? "已开启" : "已关闭"}
+              </button>
+              {batch.autoRender === false && (
+                <button
+                  className="batch-primary small"
+                  disabled={Boolean(busyAction) || prepBlocked || !visibleItems.some((item) => item.status === "confirmed")}
+                  title={prepBlocked ? "备料区全部完成后才能开始出片" : "逐条开始出片"}
+                  onClick={() => void call("render")}
+                >
+                  <Play weight="fill" />{batch.renderRequested ? "已安排出片" : "开始出片"}
+                </button>
+              )}
+            </div>
+          </div>
           <div className="batch-table-card">
             <div className="batch-table-head">
               <div className="batch-tabs" role="tablist" aria-label="按状态筛选">

@@ -1876,3 +1876,21 @@ body {
 .image-workbench-blank p { font-size: 11px; }
 @media (max-width: 1120px) { .image-workbench-shell { grid-template-columns: 240px minmax(0,1fr); } .image-workbench-content { grid-template-columns: 1fr; } .image-workbench-preview { min-height: 400px; } }
 @media (max-width: 760px) { .image-workbench-page { padding: 24px 14px 42px; } .image-workbench-head { align-items: stretch; flex-direction: column; } .image-workbench-shell { grid-template-columns: 1fr; } .image-workbench-list { border-right: 0; border-bottom: 1px solid var(--shell-line); } .image-workbench-items { max-height: 230px; } .image-stage-tabs,.image-action-grid { grid-template-columns: 1fr; } .image-workbench-title { align-items: stretch; flex-direction: column; } }
+.batch-zone-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+  border: 1px solid rgba(138, 161, 190, .24);
+  border-radius: 16px;
+  background: rgba(22, 32, 48, .9);
+}
+.batch-zone-control > div:first-child { display: grid; gap: .35rem; }
+.batch-zone-control strong { font-size: 1rem; }
+.batch-zone-control small { color: #aebed0; }
+.batch-zone-actions { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .batch-zone-control { align-items: flex-start; flex-direction: column; }
+}
