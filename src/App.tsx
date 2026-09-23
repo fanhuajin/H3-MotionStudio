@@ -31,6 +31,7 @@ import { MigrateRoute } from "./MigrateRoute";
 import { ImageWorkbenchRoute } from "./ImageWorkbenchRoute";
 import { QueuePanel } from "./QueuePanel";
 import { RvcRoute } from "./RvcRoute";
+import { RvcTrainingRoute } from "./RvcTrainingRoute";
 import { SubtitleRoute } from "./SubtitleRoute";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
@@ -905,6 +906,7 @@ export function App() {
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
   const isRvcRoute = path === "/rvc";
+  const isRvcTrainingRoute = path === "/rvc-training";
   const isSubtitleRoute = path === "/subtitle";
   const isBatchRoute = path === "/batch";
   const isSingingRoute = path === "/singing";
@@ -966,6 +968,11 @@ export function App() {
             <span>音色转换</span>
             {isRvcRoute && <i />}
           </a>
+          <a className={isRvcTrainingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/rvc-training">
+            <Graph />
+            <span>音色训练进度</span>
+            {isRvcTrainingRoute && <i />}
+          </a>
           <a className={isSubtitleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/subtitle">
             <ClosedCaptioning />
             <span>生成字幕</span>
@@ -985,7 +992,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
-        {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
+        {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isRvcTrainingRoute ? <RvcTrainingRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
       </div>
     </div>
   );

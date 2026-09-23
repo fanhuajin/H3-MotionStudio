@@ -1894,3 +1894,29 @@ body {
 @media (max-width: 760px) {
   .batch-zone-control { align-items: flex-start; flex-direction: column; }
 }
+.training-page { max-width: 980px; margin: 0 auto; padding: 48px 32px; color: #eff4ff; }
+.training-header { display: flex; align-items: center; gap: 18px; margin-bottom: 30px; }
+.training-header h1 { margin: 2px 0 5px; font-size: 30px; }
+.training-header p { margin: 0; color: #9daac0; }
+.training-eyebrow { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; }
+.training-icon { width: 56px; height: 56px; border-radius: 15px; display: grid; place-items: center; background: #173448; color: #65d6f2; }
+.training-header button { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; border: 1px solid #41516a; border-radius: 9px; padding: 9px 13px; background: #142033; color: #e8f1ff; cursor: pointer; }
+.training-panel { border: 1px solid #34435a; border-radius: 18px; padding: 30px; background: #111b2d; }
+.training-status { display: flex; align-items: center; gap: 9px; color: #afbed3; }
+.training-dot { width: 9px; height: 9px; border-radius: 50%; background: #8895a9; }
+.training-dot.running { background: #43d6a0; box-shadow: 0 0 12px #43d6a0; }
+.training-dot.completed { background: #60b8ff; }
+.training-dot.failed,.training-dot.stopped { background: #f07878; }
+.training-count { margin: 20px 0 14px; }
+.training-count strong { font-size: 64px; line-height: 1; }
+.training-count span { color: #a9b6c8; font-size: 23px; }
+.training-progress { height: 13px; background: #273248; border-radius: 999px; overflow: hidden; }
+.training-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#4c81ec,#46d9d0); transition: width .5s; }
+.training-percent { margin: 10px 0 27px; color: #a9b6c8; }
+.training-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+.training-metrics div { padding: 16px; border: 1px solid #2c3b52; border-radius: 10px; background: #17243a; }
+.training-metrics small { display: block; margin-bottom: 8px; color: #a0aec4; }
+.training-metrics strong { font-size: 18px; }
+.training-note { margin: 22px 0 0; color: #8d9db4; font-size: 13px; }
+.training-error { color: #f09b9b; }
+@media (max-width: 700px) { .training-page { padding: 25px 18px; } .training-header { flex-wrap: wrap; } .training-header button { margin-left: 0; } .training-metrics { grid-template-columns: 1fr; } }
