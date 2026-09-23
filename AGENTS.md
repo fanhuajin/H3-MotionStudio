@@ -1,5 +1,7 @@
 # Prototype Instructions
 
+- **【2026-09-23 独立二采路由】** `/upscale` 固定使用 VOSR2 二采工作流并收 1080p；页面的标题、说明、步骤和结果须与真实引擎一致，不再显示旧 RealESRGAN 4× 流程。修改后等当前批量完成再重启后端（用户明确要求）。
+
 Run the local server yourself and open the preview in the browser available to this environment. Do not give the user server-start instructions when you can run it.
 
 Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.

@@ -37,6 +37,7 @@ export interface JobState {
   sourceFps?: number | null;
   /** 二采放大任务参数（kind === "upscale"） */
   multiplier?: string | null;
+  upscaleEngine?: "vosr2" | "esrgan" | null;
   /** 独立音色转换任务参数（kind === "rvc"） */
   voiceModel?: string | null;
   /** 唱歌/迁移链路内嵌的二采放大分批进度（8 帧/批） */

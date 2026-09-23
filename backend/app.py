@@ -2137,9 +2137,9 @@ async def create_upscale_job(
     width = int(metadata.get("width") or 1440)
     height = int(metadata.get("height") or 1080)
     scale = _upscale_target(width, height)
-    # 二采放大固定 4×：不再提供 2× 选项，统一用 RealESRGAN_x4plus。
-    multiplier = "4x"
-    model = UPSCALE_MODEL_X4
+    # 独立二采固定使用 VOSR2 工作流；旧任务的倍率字段仅用于历史兼容。
+    multiplier = "2x"
+    model = None
     source_frames = int(metadata.get("frames") or 0) or None
     estimated_segments = (
         max(1, (source_frames + UPSCALE_BATCH_FRAMES - 1) // UPSCALE_BATCH_FRAMES)
@@ -2152,6 +2152,7 @@ async def create_upscale_job(
         "kind": "upscale",
         "multiplier": multiplier,
         "upscaleModel": model,
+        "upscaleEngine": "vosr2",
         "targetWidth": scale[0],
         "targetHeight": scale[1],
         "status": "queued",
@@ -2171,11 +2172,14 @@ async def create_upscale_job(
         "progress": 0,
         "progressValue": None,
         "progressMax": None,
-        "milestones": upscale_milestones(),
+        "milestones": [
+            {"id": "upscale", "label": "VOSR2 视频放大", "subtitle": "8 帧分批处理", "status": "pending"},
+            {"id": "hd", "label": "收 1080p 档输出", "subtitle": "缩放并封装输出视频", "status": "pending"},
+        ],
         "logs": [{
             "time": created_at,
             "message": (
-                f"已接收放大源：{source_name_text} · {width}×{height} · 倍数 {multiplier}（固定） → 输出 {scale[0]}×{scale[1]}"
+                f"已接收放大源：{source_name_text} · {width}×{height} · VOSR2 二采 → 输出 {scale[0]}×{scale[1]}"
                 + (f" · 预计 {estimated_segments} 段（每段 {UPSCALE_BATCH_FRAMES} 帧分批）" if estimated_segments else "")
             ),
         }],

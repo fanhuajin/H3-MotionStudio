@@ -1976,8 +1976,9 @@ async def run_upscale_pass(
     stage: str = "upscaling",
     scale: tuple[int, int] | None = None,
     batch_fields: tuple[str, str] = ("upscaleBatch", "upscaleBatches"),
+    engine: str | None = None,
 ) -> Path:
-    """在已启动的 ComfyUI 内把成片做 RealESRGAN 4× 并收 1080p 档。
+    """在已启动的 ComfyUI 内把成片二采并收 1080p 档。
 
     唱歌链路（RVC 之前）与动作迁移链路（收尾）内嵌使用；调用方负责保证
     ComfyUI 已经起来（`resources.ensure_comfy`）以及在 RVC 前关闭它。
@@ -2006,7 +2007,7 @@ async def run_upscale_pass(
         stage=stage,
         **{batch_fields[0]: 1 if batches else None, batch_fields[1]: batches},
     )
-    engine = upscale_engine()
+    engine = engine or upscale_engine()
     if engine == "vosr2":
         if not UPSCALE_WORKFLOW_VOSR2.is_file():
             raise PipelineError("找不到 VOSR2 版二采工作流", str(UPSCALE_WORKFLOW_VOSR2))
@@ -2036,7 +2037,7 @@ async def run_upscale_pass(
 
 
 async def run_upscale_job(job_id: str) -> None:
-    """独立「二采放大」任务：固定 4× RealESRGAN 放大并收 1080p 档。"""
+    """独立「二采放大」任务：使用 VOSR2 二采并收 1080p 档。"""
     async with pipeline_lock:
         state = store.get(job_id)
         if not state:
@@ -2051,8 +2052,7 @@ async def run_upscale_job(job_id: str) -> None:
             scale = (int(state["targetWidth"]), int(state["targetHeight"]))
             store.add_log(
                 job_id,
-                f"二采放大：{state.get('multiplier') or '4x'}（固定 4×） · "
-                + ("TE-Speed-VOSR2" if upscale_engine() == "vosr2" else (state.get("upscaleModel") or UPSCALE_MODEL_X4)),
+                "二采放大：TE-Speed-VOSR2 → 1080p",
             )
             final = await run_upscale_pass(
                 job_id,
@@ -2061,6 +2061,7 @@ async def run_upscale_job(job_id: str) -> None:
                 output_tag="upscale",
                 scale=scale,
                 batch_fields=("currentSegment", "estimatedSegments"),
+                engine="vosr2",
             )
             final = await asyncio.to_thread(mark_upscale_final, final)
             estimated_segments = (store.get(job_id) or {}).get("estimatedSegments")

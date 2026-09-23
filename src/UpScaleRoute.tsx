@@ -35,7 +35,7 @@ type RecentItem = {
 type RecentPayload = { jobs: RecentItem[] };
 
 const SKELETON_MILESTONES: Milestone[] = [
-  { id: "upscale", label: "RealESRGAN 逐帧放大", subtitle: "8 帧分批超采样", status: "pending" },
+  { id: "upscale", label: "VOSR2 视频放大", subtitle: "8 帧分批处理", status: "pending" },
   { id: "hd", label: "收 1080p 档输出", subtitle: "缩放并封装输出视频", status: "pending" },
 ];
 
@@ -256,8 +256,8 @@ export function UpScaleRoute() {
       <header className="route-hero">
         <div>
           <p className="route-eyebrow"><span /> H3 · UPSCALE</p>
-          <h1>二采放大，<em>统一 4×。</em></h1>
-          <p className="route-description">对任意视频做 RealESRGAN 4× 放大，并统一收到 1080p 标准档（4:3→1440×1080、9:16→1080×1920、16:9→1920×1080）。</p>
+          <h1>二采放大，<em>VOSR2。</em></h1>
+          <p className="route-description">对任意视频使用 VOSR2 二采放大，并统一收到 1080p 标准档（4:3→1440×1080、9:16→1080×1920、16:9→1920×1080）。</p>
         </div>
         <span className={`connection ${job?.status === "running" ? "connected" : "idle"}`}>
           <span className="connection-dot" />
@@ -336,9 +336,9 @@ export function UpScaleRoute() {
 
           <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
             {submitting || jobActive ? <SpinnerGap className="spin" /> : <MagnifyingGlassPlus weight="fill" />}
-            {submitting ? "正在创建任务…" : jobActive ? "放大任务运行中" : "开始 4× 放大"}
+            {submitting ? "正在创建任务…" : jobActive ? "放大任务运行中" : "开始 VOSR2 二采"}
           </button>
-          <p className="field-note">放大倍数固定 4×（RealESRGAN_x4plus），不再提供 2× 选项。</p>
+          <p className="field-note">使用 VOSR2 放大，输出按视频比例收至 1080p 标准档。</p>
         </section>
 
         <section className="execution-panel" aria-label="执行进度与结果">
@@ -390,7 +390,7 @@ export function UpScaleRoute() {
                   <div className="result-title">
                     <FilmSlate />
                     <div>
-                      <strong>最终成片 · {multiplierLabel(job.multiplier)} 放大</strong>
+                      <strong>最终成片 · {job.upscaleEngine === "vosr2" ? "VOSR2 二采" : `${multiplierLabel(job.multiplier)} 放大`}</strong>
                       <span>{job.output?.width && job.output?.height ? `${job.output.width} × ${job.output.height}` : ""}</span>
                     </div>
                   </div>
