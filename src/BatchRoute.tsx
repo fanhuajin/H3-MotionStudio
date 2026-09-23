@@ -396,13 +396,13 @@ function responseMessage(response: Response, fallback: string): Promise<string> 
     .catch((reason) => (reason instanceof Error ? reason.message : fallback));
 }
 
-/** 备料、待出片、已完成和已跳过各自分区。 */
-type TabId = "prep" | "render" | "completed" | "archive";
+/** 备料、待出片、已跳过和已完成各自分区。 */
+type TabId = "prep" | "render" | "archive" | "completed";
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "prep", label: "备料区" },
   { id: "render", label: "出片区" },
-  { id: "completed", label: "已完成" },
   { id: "archive", label: "已跳过" },
+  { id: "completed", label: "已完成" },
 ];
 const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
   prep: (item) => !["completed", "skipped"].includes(item.status) && !item.prepReady,

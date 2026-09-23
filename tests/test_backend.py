@@ -3815,10 +3815,11 @@ class WorkflowPreparationTests(unittest.TestCase):
     def test_batch_status_tabs_show_prep_and_render_zones(self) -> None:
         """批量页分开备料、出片、已完成；状态徽章仍保留。"""
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
-        self.assertIn('type TabId = "prep" | "render" | "completed" | "archive";', source)
+        self.assertIn('type TabId = "prep" | "render" | "archive" | "completed";', source)
         self.assertIn('{ id: "prep", label: "备料区" }', source)
         self.assertIn('{ id: "render", label: "出片区" }', source)
         self.assertIn('{ id: "completed", label: "已完成" }', source)
+        self.assertLess(source.index('{ id: "archive", label: "已跳过" }'), source.index('{ id: "completed", label: "已完成" }'))
         self.assertIn('completed: (item) => item.status === "completed"', source)
         self.assertNotIn('showCompleted', source)
         self.assertIn('useState<TabId>("prep")', source)
