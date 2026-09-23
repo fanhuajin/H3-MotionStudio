@@ -197,6 +197,7 @@ interface BatchItem {
 interface BatchState {
   id: string;
   status: string;
+  updatedAt?: string;
   total: number;
   completedCount: number;
   deletedCount?: number;
@@ -455,6 +456,13 @@ export function BatchRoute() {
   // 先把上次的队列读回来再允许提交：否则刚打开页面就点「加入队列」会新开一个批次，
   // 看到的现象就是「我排好的队列不见了」。
   const [loaded, setLoaded] = useState(false);
+  const acceptBatchState = useCallback((incoming: BatchState) => {
+    setBatch((current) => {
+      if (current?.id === incoming.id && current.updatedAt && incoming.updatedAt
+        && current.updatedAt > incoming.updatedAt) return current;
+      return incoming;
+    });
+  }, []);
   // 页内确认框（替代 window.confirm）：`askConfirm()` 返回 Promise<boolean>，
   // 所以调用点可以 `if (!(await askConfirm(...))) return;` 继续写同步逻辑。
   const [confirmAsk, setConfirmAsk] = useState<ConfirmAsk | null>(null);
@@ -508,11 +516,11 @@ export function BatchRoute() {
       const response = await fetch("/api/batches/latest", { cache: "no-store" });
       if (response.status === 204) return;
       if (!response.ok) throw new Error(await responseMessage(response, "无法读取上次批次"));
-      setBatch(await readJson<BatchState>(response, "无法读取上次批次"));
+      acceptBatchState(await readJson<BatchState>(response, "无法读取上次批次"));
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [acceptBatchState]);
 
   useEffect(() => {
     loadLatest().catch((reason) => setError(String(reason.message || reason)));
@@ -551,19 +559,19 @@ export function BatchRoute() {
     if (!batch?.id) return;
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${protocol}://${location.host}/api/batches/${batch.id}/ws`);
-    socket.onmessage = (event) => setBatch(JSON.parse(event.data));
+    socket.onmessage = (event) => acceptBatchState(JSON.parse(event.data));
     socket.onerror = () => undefined;
     const poll = window.setInterval(() => {
       fetch(`/api/batches/${batch.id}`, { cache: "no-store" })
         .then((response) => response.ok ? response.json() : null)
-        .then((state) => state && setBatch(state))
+        .then((state) => state && acceptBatchState(state))
         .catch(() => undefined);
     }, 3500);
     return () => {
       socket.close();
       window.clearInterval(poll);
     };
-  }, [batch?.id]);
+  }, [batch?.id, acceptBatchState]);
 
   // 详情**完全由用户自己点开**（2026-09-15 用户：「我希望启动页面的时候 列表默认都是收起来的
   // 由我自己点击要查看哪个」）：不再自动跟随「当前条目」、也不再在状态变化时抢着切换标签 ——
@@ -1598,6 +1606,10 @@ export function BatchRoute() {
       </div>
     );
   };
+
+  if (!loaded) {
+    return <main className="batch-page" role="status" aria-live="polite">正在读取批次…</main>;
+  }
 
   return (
     <main className="batch-page">
