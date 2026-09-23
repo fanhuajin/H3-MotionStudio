@@ -396,16 +396,18 @@ function responseMessage(response: Response, fallback: string): Promise<string> 
     .catch((reason) => (reason instanceof Error ? reason.message : fallback));
 }
 
-/** 备料、待出片和已跳过分区；已完成条目在出片区默认折叠。 */
-type TabId = "prep" | "render" | "archive";
+/** 备料、待出片、已完成和已跳过各自分区。 */
+type TabId = "prep" | "render" | "completed" | "archive";
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "prep", label: "备料区" },
   { id: "render", label: "出片区" },
+  { id: "completed", label: "已完成" },
   { id: "archive", label: "已跳过" },
 ];
 const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
   prep: (item) => !["completed", "skipped"].includes(item.status) && !item.prepReady,
   render: (item) => !["skipped", "completed"].includes(item.status) && Boolean(item.prepReady),
+  completed: (item) => item.status === "completed",
   archive: (item) => item.status === "skipped",
 };
 
@@ -462,7 +464,6 @@ export function BatchRoute() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 状态筛选标签只要两档：**默认「未完成」**（2026-09-15 用户：「除了已经完成的其他的都算未完成的」）
   const [activeTab, setActiveTab] = useState<TabId>("prep");
-  const [showCompleted, setShowCompleted] = useState(false);
   // 批量操作勾选：后台表格交互（2026-09-15 用户要求批量确认/跳过/删除）。
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busyAction, setBusyAction] = useState("");
@@ -534,10 +535,7 @@ export function BatchRoute() {
     return [...items].sort((a, b) => (KIND_RANK[a.kind] ?? 9) - (KIND_RANK[b.kind] ?? 9));
   }, [batch]);
   // 当前标签下显示的条目；展开的详情行也只在当前标签里渲染。
-  const completedItems = useMemo(() => visibleItems.filter((item) => item.status === "completed"), [visibleItems]);
-  const filteredItems = useMemo(() => visibleItems.filter((item) =>
-    TAB_MATCH[activeTab](item) || (activeTab === "render" && showCompleted && item.status === "completed")
-  ), [visibleItems, activeTab, showCompleted]);
+  const filteredItems = useMemo(() => visibleItems.filter(TAB_MATCH[activeTab]), [visibleItems, activeTab]);
   const selected = useMemo(
     () => visibleItems.find((item) => item.id === selectedId) || null,
     [visibleItems, selectedId],
@@ -1842,16 +1840,6 @@ export function BatchRoute() {
                   只留一个**恢复用**的「继续」，且只在批次已经处于暂停状态时出现 —— 这个状态页面
                   自己造不出来（唯一来源是本地服务在备料中途重启时的安全暂停），不留就会卡死。 */}
               <div className="batch-table-controls">
-                {activeTab === "render" && completedItems.length > 0 && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    aria-expanded={showCompleted}
-                    onClick={() => { setSelectedIds(new Set()); setShowCompleted((value) => !value); }}
-                  >
-                    {showCompleted ? "收起已完成" : `查看已完成 ${completedItems.length} 条`}
-                  </button>
-                )}
                 {batch.status === "paused" && !batch.recoveryActive && (
                   <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
                 )}

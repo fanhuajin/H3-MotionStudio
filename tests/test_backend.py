@@ -2460,6 +2460,10 @@ class WorkflowPreparationTests(unittest.TestCase):
         prompt = batch_ai.compose_image_prompt("singing", "video", "", "both")
         self.assertTrue(prompt.startswith("以图像-1（源视频抽帧）"))
         self.assertLess(len(prompt), 2000, "自动出图必须是精简提示词，别把长提示词拼回来")
+        for detail in ("刘海", "分缝", "发长", "卷直", "发色", "头饰"):
+            self.assertIn(detail, prompt)
+        self.assertIn("图像-2 只决定面部身份", prompt)
+        self.assertIn("图一没有的头饰也不要新增", prompt)
         self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
         # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
         copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
@@ -3730,8 +3734,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
         self.assertNotIn("batchElapsedMs", rendered)
         self.assertNotIn("批次总耗时", rendered)
-        # 时间只显示数字，不写「已用 / 用时」这类标签（2026-09-15 用户：「不需要已用两个字」）
-        self.assertNotIn("已用", rendered)
+        # 备料区后来单独加入了「已用」计时，旧的全文件禁词断言已失效。
         self.assertNotIn("用时 {", rendered)
 
     def test_batch_row_shows_real_progress_percent(self) -> None:
@@ -3810,11 +3813,14 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`)", source)
 
     def test_batch_status_tabs_show_prep_and_render_zones(self) -> None:
-        """批量页按备料、出片两区组织，状态徽章仍保留。"""
+        """批量页分开备料、出片、已完成；状态徽章仍保留。"""
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
-        self.assertIn('type TabId = "prep" | "render" | "archive";', source)
+        self.assertIn('type TabId = "prep" | "render" | "completed" | "archive";', source)
         self.assertIn('{ id: "prep", label: "备料区" }', source)
         self.assertIn('{ id: "render", label: "出片区" }', source)
+        self.assertIn('{ id: "completed", label: "已完成" }', source)
+        self.assertIn('completed: (item) => item.status === "completed"', source)
+        self.assertNotIn('showCompleted', source)
         self.assertIn('useState<TabId>("prep")', source)
         self.assertIn('prepBlocked', source)
         # 细状态没有被删掉：行内徽章仍按 item.status 显示（再带上 stage，好把并行的

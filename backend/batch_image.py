@@ -276,7 +276,7 @@ def _blur_region(image: Image.Image, box: dict[str, float]) -> Image.Image:
 
 
 def _locate_face_local(image_path: Path) -> dict[str, float] | None:
-    """用本机 OpenCV Haar 定位最大人脸；没有依赖或没识别到就返回 None，不调用计费 API。
+    """用本机 OpenCV Haar 定位可信人脸；没有依赖或没识别到就返回 None，不调用计费 API。
 
     ⚠️ 必须用 `np.fromfile + cv2.imdecode` 读图：`cv2.imread` 在 Windows 上**读不了带中文的
     路径**，而发布目录/中间目录全是中文名（`发布成品\\singing\\011_唱歌_爱情转移_...\\.h3-person-work`）
@@ -295,8 +295,26 @@ def _locate_face_local(image_path: Path) -> dict[str, float] | None:
         faces = cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=4, minSize=(40, 40))
         if len(faces) == 0:
             return None
-        x, y, width, height = max(faces, key=lambda row: int(row[2]) * int(row[3]))
         image_height, image_width = gray.shape[:2]
+        eyes = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+        candidates = []
+        for x, y, width, height in faces:
+            # Haar 会把衣服或胸前的纹理误判成更大的脸。先核对眼睛，再按画面位置选框。
+            upper_face = gray[y:y + int(height * 0.6), x:x + width]
+            eye_boxes = eyes.detectMultiScale(upper_face, scaleFactor=1.08, minNeighbors=4, minSize=(12, 12))
+            eye_centers = sorted(int(ex + ew / 2) for ex, ey, ew, eh in eye_boxes)
+            has_eye_pair = any(
+                width * 0.15 <= right - left <= width * 0.8
+                for i, left in enumerate(eye_centers) for right in eye_centers[i + 1:]
+            )
+            if has_eye_pair:
+                candidates.append((int(x), int(y), int(width), int(height)))
+        if not candidates:
+            return None
+        x, y, width, height = max(
+            candidates,
+            key=lambda row: (row[2] * row[3]) / (1 + row[1] / image_height),
+        )
         # 稍微扩框，确保眉眼、双颊和下巴都被模糊掉。
         pad_x, pad_y = int(width * 0.12), int(height * 0.12)
         return {
@@ -320,8 +338,7 @@ async def defocus_reference_face(scene_image: Path, work_dir: Path) -> tuple[Pat
     """
     scene_image = Path(scene_image)
     target = Path(work_dir) / f"{scene_image.stem}-noface.png"
-    if target.is_file():
-        return target, True
+    # 本地检测廉价，重算可避免源帧替换后继续把旧的糊脸图送给中转站。
 
     with Image.open(scene_image) as opened:
         image = opened.convert("RGB")
