@@ -127,6 +127,18 @@ export function ImageWorkbenchRoute() {
     }
   }, [busy, refresh]);
 
+  const copyPrompt = useCallback(async (itemId: string, step: Stage) => {
+    try {
+      const data = await readJson<{ prompt: string }>(
+        fetch(`/api/image-workbench/${itemId}/prompt/${step}`), "读取提示词失败",
+      );
+      await navigator.clipboard.writeText(data.prompt);
+      setNotice(`已复制${STAGES.find((row) => row.id === step)?.label || "图片"}当前使用的提示词。`);
+    } catch (error) {
+      setNotice(String((error as Error).message || error));
+    }
+  }, []);
+
   /** 把所有缺图的作品排上队列（后端严格一条一条跑，不并发）。 */
   /** 停止自动出图队列：正在跑的那一步跑完就停，排队的立刻取消。 */
   const stopAuto = useCallback(async () => {
@@ -259,6 +271,7 @@ export function ImageWorkbenchRoute() {
                     disabled={busy || (stage !== "person" && !item.assets.person)}
                     title={stage !== "person" && !item.assets.person ? "请先生成人物图，再做封面" : undefined}
                   ><SpinnerGap className={busy ? "spin" : undefined} />{stageAsset ? "重新生成这一步" : "API 自动生成这一步"}</button>
+                  <button onClick={() => void copyPrompt(item.id, stage)}><ClipboardText />复制当前提示词</button>
                 </div>
                 <label className="image-drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file) upload(file); }}>
                   <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) upload(file); }} />

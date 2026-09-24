@@ -3227,7 +3227,14 @@ async def image_workbench_asset(folder_id: str, key: str):
 async def image_workbench_prompt(folder_id: str, stage: str, kind: str = Query("singing")):
     try:
         folder = image_workbench.resolve_folder(folder_id)
-        return {"prompt": image_workbench.prompt(folder, stage, kind)}
+        if stage not in {"person", "bilibili", "douyin"}:
+            raise ValueError("不支持的图片步骤")
+        actual_kind = image_workbench.infer_kind(folder) or kind
+        # 人物图自动出图实际调用 person_prompt；封面实际调用 prompt。
+        # 复制按钮必须取同一来源，避免手工重做时拿到另一版文字。
+        value = (image_workbench.person_prompt(folder, actual_kind) if stage == "person"
+                 else image_workbench.prompt(folder, stage, actual_kind))
+        return {"prompt": value}
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(404, str(exc)) from exc
 
