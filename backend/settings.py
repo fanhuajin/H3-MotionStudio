@@ -189,13 +189,10 @@ DIFFUSION_MODELS_DIR = COMFY_ROOT / "models" / "diffusion_models"
 RVC_ROOT = COMFY_HOME / "RVC"
 RVC_PYTHON = RVC_ROOT / ".venv" / "Scripts" / "python.exe"
 RVC_SCRIPT = RVC_ROOT / "convert_video_to_my_voice.py"
-# H3 唱歌链路默认音色：mogoo_v1（2026-09-11 用户要求从 wanwansu_v1 切换；用抖音博主
-# 「Mogoo蘑菇」主页全部 198 个作品训练，193 条干声 / 74.9 分钟 / 1248 片段，
-# 素材与再训流程归档在 E:\AI_Assets\RVC\Projects\mogoo_v1\）。
-# 切音色前务必先跑该项目的 scripts\verify_speakers_channel.py（CAM++ 声纹校验）。
-RVC_MODEL = RVC_ROOT / "assets" / "weights" / "mogoo_v1.pth"
-# mogoo_v1 专属检索索引；文件缺失时转换脚本会退化为无索引模式。
-RVC_INDEX = RVC_ROOT / "assets" / "indices" / "mogoo_v1.index"
+# H3 唱歌链路默认音色：2026-09-24 完成的 mogoo 48k / v2 / 500 轮。
+# 原 mogoo_v1 模型与索引保留，可供对比和回退。
+RVC_MODEL = RVC_ROOT / "assets" / "weights" / "mogoo_48k_v2.pth"
+RVC_INDEX = RVC_ROOT / "assets" / "indices" / "mogoo_48k_v2.index"
 
 # 剪映手书（内部名 JYgangbi）：剪映缓存字体；直出版默认 白字细描边·字号≈剪映字号10。
 JY_SHOU_SHU_FONT = Path(

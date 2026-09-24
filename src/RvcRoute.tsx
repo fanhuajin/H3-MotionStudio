@@ -39,7 +39,7 @@ type RecentPayload = { jobs: RecentItem[] };
 
 // 默认音色名（仅骨架文案；真实模型由后端 backend/settings.py 的 RVC_MODEL 决定，
 // 任务结果里的 job.voiceModel 优先）。改音色时同步这里。
-const DEFAULT_VOICE_LABEL = "mogoo_v1";
+const DEFAULT_VOICE_LABEL = "mogoo_48k_v2";
 
 const SKELETON_MILESTONES: Milestone[] = [
   { id: "handoff", label: "关闭 ComfyUI", subtitle: "释放内存和显存，切换到 RVC", status: "pending" },
@@ -463,7 +463,7 @@ export function RvcRoute() {
 
           <div className="field-block">
             <div className="field-heading"><h2><span>2.</span> 目标音色</h2></div>
-            <p className="field-note">固定使用默认音色 <strong>{DEFAULT_VOICE_LABEL}</strong>（v1 / 40k / RMVPE，检索索引 {DEFAULT_VOICE_LABEL}.index）；执行前会先完全关闭 ComfyUI，避免与生成链路抢占显存。</p>
+            <p className="field-note">固定使用默认音色 <strong>{DEFAULT_VOICE_LABEL}</strong>（v2 / 48k / RMVPE，检索索引 {DEFAULT_VOICE_LABEL}.index）；执行前会先完全关闭 ComfyUI，避免与生成链路抢占显存。</p>
           </div>
 
           {(localError || job?.errorSummary) && (
