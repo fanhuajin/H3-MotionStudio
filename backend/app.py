@@ -869,6 +869,8 @@ async def create_batch(request: BatchCreateRequest):
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     state = new_batch_state(singing, dance, singing_ratio, dance_ratio, request.shutdownOnComplete, request.autoRender, request.shutdownAfterPrep)
+    if not state["items"]:
+        raise HTTPException(400, "唱歌和跳舞填写了相同链接，重复链接已从两边去掉；请填写不同的链接")
     batch_store.create(state)
     if request.shutdownOnComplete or request.shutdownAfterPrep:
         # 开关在建批次时就已经打开：立刻挂上看护任务（批次跑完那一刻才真的排关机）
@@ -931,7 +933,7 @@ async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest
     duplicates = int(result.get("duplicates") or 0)
     note = f"已加入 {added} 条新任务，已排到队尾。"
     if duplicates:
-        note += f"（跳过 {duplicates} 条已经在队列里的重复链接）"
+        note += f"（过滤 {duplicates} 条重复链接，含唱歌与跳舞两边相同的链接）"
     if not added:
         return batch_store.update(batch_id, notice=note)
     state = batch_store.get(batch_id) or state

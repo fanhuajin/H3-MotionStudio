@@ -313,6 +313,15 @@ def unique_urls(values: list[str]) -> list[str]:
     return result
 
 
+def filter_cross_kind_urls(singing_urls: list[str], dance_urls: list[str]) -> tuple[list[str], list[str]]:
+    """同一链接同时被填到唱歌和跳舞时，两边都去掉，避免猜测视频类型。"""
+    singing = unique_urls(singing_urls)
+    dance = unique_urls(dance_urls)
+    overlap = {url_key(url) for url in singing} & {url_key(url) for url in dance}
+    return ([url for url in singing if url_key(url) not in overlap],
+            [url for url in dance if url_key(url) not in overlap])
+
+
 # 链接判重时忽略的**跟踪参数**（只丢这些；不认识的参数一律保留，避免把作品号丢掉）。
 _TRACKING_QUERY_PREFIXES = ("utm_", "share_", "track_")
 _TRACKING_QUERY_NAMES = {
@@ -459,9 +468,8 @@ def new_batch_state(
         "singing": normalize_batch_ratio(singing_ratio, "singing"),
         "dance": normalize_batch_ratio(dance_ratio, "dance"),
     }
-    rows = [("singing", url) for url in unique_urls(singing_urls)] + [
-        ("dance", url) for url in unique_urls(dance_urls)
-    ]
+    singing_clean, dance_clean = filter_cross_kind_urls(singing_urls, dance_urls)
+    rows = [("singing", url) for url in singing_clean] + [("dance", url) for url in dance_clean]
     items = _build_items(rows, defaults, 0, created)
     return {
         "id": batch_id,
@@ -498,7 +506,7 @@ def append_batch_items(
     """给已有批次追加条目：批次随时能加，新条目排在队尾（编号接着往下排）。
 
     用户 2026-09-10：「可以让我随时添加新的任务，删除单条任务」「重复的记得过滤掉」。
-    重复链接按「类型 + 链接指纹」（忽略大小写/结尾斜杠/查询串）比对已有条目后直接跳过，
+    重复链接按链接指纹比对已有条目后直接跳过；同次提交跨类型重复时两边都去掉，
     只把明确不要了的（已删除 / 已跳过）排除在判重之外，返回跳过的条数给页面提示，
     避免同一条视频被做两遍。
     """
@@ -509,11 +517,8 @@ def append_batch_items(
         "singing": normalize_batch_ratio(singing_ratio, "singing"),
         "dance": normalize_batch_ratio(dance_ratio, "dance"),
     }
-    singing_clean = unique_urls(singing_urls)
-    dance_clean = unique_urls(dance_urls)
+    singing_clean, dance_clean = filter_cross_kind_urls(singing_urls, dance_urls)
     rows = [("singing", url) for url in singing_clean] + [("dance", url) for url in dance_clean]
-    if not rows:
-        raise ValueError("请至少填写一条抖音链接")
     # 同一次粘贴里就重复的（含写法不同）也要算进「已过滤的重复」，否则用户看不到它被吃掉了
     raw_count = sum(1 for url in list(singing_urls) + list(dance_urls) if str(url or "").strip())
     created = now_iso()
@@ -522,13 +527,13 @@ def append_batch_items(
     def apply(row: dict[str, Any]) -> None:
         items = list(row.get("items") or [])
         known = {
-            item_key(str(item.get("kind") or ""), str(item.get("url") or ""))
+            url_key(str(item.get("url") or ""))
             for item in items
             if item.get("status") not in {"deleted", "skipped"}
         }
         fresh: list[tuple[str, str]] = []
         for kind, url in rows:
-            key = item_key(kind, url)
+            key = url_key(url)
             if key in known:
                 result["duplicates"] += 1
                 continue
