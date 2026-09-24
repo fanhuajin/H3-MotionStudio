@@ -584,6 +584,12 @@ async def _generate_cover(
         save_upload(folder, stage, candidate.read_bytes(), allow_repair=True)
         marker.unlink(missing_ok=True)
         completion.set_result((True, ""))
+    except batch_image.PolicyRejected as exc:
+        # 明确的 400 拒绝没有待确认结果；允许用户之后在异常区点「重试」。
+        marker.unlink(missing_ok=True)
+        if not completion.done():
+            completion.set_result((False, str(exc)))
+        raise
     except BaseException as exc:
         if not completion.done():
             completion.set_result((False, str(exc)))

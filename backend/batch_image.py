@@ -460,6 +460,10 @@ class RelayUnreachable(RuntimeError):
     """
 
 
+class PolicyRejected(RuntimeError):
+    """图片请求明确收到内容政策 400，结果已确定为拒绝。"""
+
+
 def _is_not_sent(failure: str) -> bool:
     """失败记录是不是"连接根本没建立"（请求没送出）。"""
     return "连接失败：ConnectError" in failure or "连接失败：ConnectTimeout" in failure
@@ -865,6 +869,8 @@ async def _generate_candidate_image_once(
             f"中转站出图失败：{detail}。请求**没有送到中转站**（一定没有计费）："
             "换另一条线路也没连上，请检查网络或代理后重试"
         )
+    if policy_rejected:
+        raise PolicyRejected(f"中转站出图失败：{detail}{hint}")
     raise RuntimeError(f"中转站出图失败：{detail}{hint}")
 
 
