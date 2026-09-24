@@ -2611,7 +2611,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         block = batch_ai.SHARPNESS_BLOCK
         self.assertIn("脸、头发和双手清晰", block)
         self.assertIn("若图一的手有拖影", block)
-        self.assertIn("清晰、简单的自然手势", block)
+        self.assertIn("保留手的位置和朝向并补清细节", block)
+        self.assertIn("位置接近的简单自然手势", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【清晰度】", prompt)
