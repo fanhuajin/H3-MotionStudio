@@ -1,5 +1,7 @@
 # Prototype Instructions
 
+- **【2026-09-24 备料完成后关机】** 批量页新增默认关闭的「备料完成后关机」开关。开启时关闭自动出片，整批条目均备料齐全、尚未出片且没有运行中工作时安排系统关机，沿用 60 秒倒计时与取消关机；手动开始出片或重新开启自动出片会关闭此开关。此次改动不要重启正在运行的后端，用户会自行重启。
+
 - **【2026-09-24 默认音色改为 mogoo_48k_v2】** 用户要求 H3 影动高清工作台和独立的便携音色转换器都切到新训练的音色。`mogoo_48k_v2.pth` 是 v2 / 48k / 带音高 / 500 轮的最终模型；`assets/indices/mogoo_48k_v2.index` 是对应的 768 维索引。工作台 `backend/settings.py`、两个前端默认标签、仓库外 `D:\Comfyui\RVC\convert_video_to_my_voice.py` 默认模型均须一致。便携工具 `D:\soft\MyVoiceConverter\SasablueVoiceConverter\app.py` 的初始选择也须是该模型；它的 weights/indices 是共享 RVC 目录的 junction。两套转换代码传 `vc.tgt_sr`，按模型原生采样率输出（当前 48000）；旧 40k 模型和索引保留可回退。本条覆盖下文关于默认 `mogoo_v1` 和固定 40000 输出的旧说明。
 
 - **【2026-09-23 独立二采路由】** `/upscale` 固定使用 VOSR2 二采工作流并收 1080p；页面的标题、说明、步骤和结果须与真实引擎一致，不再显示旧 RealESRGAN 4× 流程。修改后等当前批量完成再重启后端（用户明确要求）。

@@ -444,6 +444,7 @@ def new_batch_state(
     dance_ratio: str | None = None,
     shutdown_on_complete: bool = False,
     auto_render: bool = True,
+    shutdown_after_prep: bool = False,
 ) -> dict[str, Any]:
     """新建批次。比例是**条目级**字段：歌曲默认 4:3、跳舞默认 9:16，用户在页面里逐条可改。
 
@@ -477,10 +478,11 @@ def new_batch_state(
         "currentItemId": items[0]["id"] if items else None,
         "pauseRequested": False,
         "runnerActive": False,
-        "autoRender": bool(auto_render),
+        "autoRender": bool(auto_render) and not shutdown_after_prep,
+        "shutdownAfterPrep": bool(shutdown_after_prep),
         "renderRequested": False,
         # 整批跑完后是否自动关机：**默认关闭**，用户在批量页的开关里打开（2026-09-15）
-        "shutdownOnComplete": bool(shutdown_on_complete),
+        "shutdownOnComplete": bool(shutdown_on_complete) and not shutdown_after_prep,
         "notice": "任务已创建，准备处理第 1 条。" if items else "没有任务。",
         "items": items,
     }
@@ -4872,9 +4874,15 @@ def shutdown_unfinished_items(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 def batch_ready_for_shutdown(state: dict[str, Any]) -> bool:
     """这个批次是不是「真的全部做完了」——只有它为真才会排关机。"""
-    if not state.get(SHUTDOWN_FLAG):
+    if not state.get(SHUTDOWN_FLAG) and not state.get("shutdownAfterPrep"):
         return False
     items = state.get("items") or []
+    if state.get("shutdownAfterPrep"):
+        if not items or state.get("autoRender") or state.get("renderRequested") or state.get("pauseRequested"):
+            return False
+        if any(item.get("status") in {"running", "completed"} or item.get("videoJobId") for item in items):
+            return False
+        return not any(item.get("status") in {"pending", "revising", "awaiting_review", "failed"} for item in items) and any(item.get("status") == "confirmed" for item in items)
     if not items or shutdown_unfinished_items(state):
         return False
     # 至少有一条真的出完片：全是「失败 / 跳过」时更像是出了故障，不关机器（用户回来还要处理）。
@@ -4985,7 +4993,7 @@ def schedule_shutdown(state: dict[str, Any]) -> dict[str, Any]:
     if batch_id:
         batch_store.update(
             batch_id,
-            notice=f"全部条目已完成，{seconds} 秒后自动关机；点「取消关机」可以撤销。",
+            notice=f"{'备料已完成' if state.get('shutdownAfterPrep') else '全部条目已完成'}，{seconds} 秒后自动关机；点「取消关机」可以撤销。",
         )
     logger.info("批量任务已全部完成，将在 %s 秒后自动关机", seconds)
     return record
@@ -5014,8 +5022,8 @@ def _clear_shutdown_flag(batch_id: str) -> None:
         return
     try:
         state = batch_store.get(batch_id)
-        if state and state.get(SHUTDOWN_FLAG):
-            batch_store.update(batch_id, **{SHUTDOWN_FLAG: False})
+        if state and (state.get(SHUTDOWN_FLAG) or state.get("shutdownAfterPrep")):
+            batch_store.update(batch_id, shutdownOnComplete=False, shutdownAfterPrep=False)
     except KeyError:
         pass
 
@@ -5128,7 +5136,7 @@ def set_batch_shutdown_on_complete(batch_id: str, enabled: bool) -> dict[str, An
         record = _read_pending_shutdown()
         if record and str(record.get("batchId") or "") == batch_id:
             cancel_pending_shutdown(notice="已关闭「全部完成后自动关机」，本次关机已取消。")
-    state = batch_store.update(batch_id, **{SHUTDOWN_FLAG: bool(enabled)})
+    state = batch_store.update(batch_id, **{SHUTDOWN_FLAG: bool(enabled), "shutdownAfterPrep": False if enabled else state.get("shutdownAfterPrep", False)})
     if enabled:
         ensure_shutdown_watcher()
         # 打开开关时批次可能早就跑完了（事后才开）：立刻评估一次，不用等下一个轮询
@@ -5138,3 +5146,23 @@ def set_batch_shutdown_on_complete(batch_id: str, enabled: bool) -> dict[str, An
             logger.warning("自动关机评估失败", exc_info=True)
         state = batch_store.get(batch_id) or state
     return state
+
+
+def set_batch_shutdown_after_prep(batch_id: str, enabled: bool) -> dict[str, Any]:
+    """备料全部完成后关机；开启时暂停自动出片。"""
+    state = batch_store.get(batch_id)
+    if state is None:
+        raise KeyError(batch_id)
+    if enabled and shutdown_disabled():
+        raise ValueError("本机已禁用自动关机（环境变量 H3_AUTO_SHUTDOWN=0）")
+    record = _read_pending_shutdown()
+    if not enabled and record and str(record.get("batchId") or "") == batch_id:
+        cancel_pending_shutdown(notice="已关闭「备料完成后关机」，本次关机已取消。")
+    changes = {"shutdownAfterPrep": bool(enabled)}
+    if enabled:
+        changes.update(autoRender=False, renderRequested=False, shutdownOnComplete=False)
+    state = batch_store.update(batch_id, **changes)
+    if enabled:
+        ensure_shutdown_watcher()
+        shutdown_tick()
+    return batch_store.get(batch_id) or state

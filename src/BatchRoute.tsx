@@ -213,6 +213,7 @@ interface BatchState {
   renderRequested?: boolean;
   /** 整批跑完后是否自动关机（页面开关，**默认关闭**） */
   shutdownOnComplete?: boolean;
+  shutdownAfterPrep?: boolean;
   /** 时间戳（ISO）：用来算「已运行多久」 */
   createdAt?: string;
   startedAt?: string | null;
@@ -350,6 +351,7 @@ function readInputDraft() {
     // 「全部完成后自动关机」：**默认关闭**（2026-09-15 用户：「默认关闭」）。
     // 还没建批次时先记在本地，点「准备任务」时随批次一起提交。
     shutdownOn: parsed.shutdownOn === true,
+    shutdownAfterPrepOn: parsed.shutdownAfterPrepOn === true,
     autoRenderOn: parsed.autoRenderOn !== false,
   };
 }
@@ -458,6 +460,7 @@ export function BatchRoute() {
   const [danceOn, setDanceOn] = useState(initial.danceOn);
   // 「全部完成后自动关机」（默认关闭）：有批次时以批次上的值为准，没有批次时用本地草稿
   const [shutdownOn, setShutdownOn] = useState(initial.shutdownOn);
+  const [shutdownAfterPrepOn, setShutdownAfterPrepOn] = useState(initial.shutdownAfterPrepOn);
   const [autoRenderOn, setAutoRenderOn] = useState(initial.autoRenderOn);
   const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
   const [batch, setBatch] = useState<BatchState | null>(null);
@@ -563,8 +566,8 @@ export function BatchRoute() {
   }, [loadLatest]);
 
   useEffect(() => {
-    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn, shutdownOn, autoRenderOn }));
-  }, [singing, dance, singingOn, danceOn, shutdownOn, autoRenderOn]);
+    localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn, shutdownOn, shutdownAfterPrepOn, autoRenderOn }));
+  }, [singing, dance, singingOn, danceOn, shutdownOn, shutdownAfterPrepOn, autoRenderOn]);
 
   /**
    * 自动关机状态：单独轮询（批次轮询 3.5 秒一次，这里 5 秒一次足够）。
@@ -649,7 +652,7 @@ export function BatchRoute() {
       // 新建批次时把「全部完成后自动关机」一起提交（追加时该开关已经挂在批次上，由开关接口改）
       const payload = append
         ? { singingUrls, danceUrls, autoStart }
-        : { singingUrls, danceUrls, autoStart, shutdownOnComplete: shutdownOn, autoRender: autoRenderOn };
+        : { singingUrls, danceUrls, autoStart, shutdownOnComplete: shutdownOn && !shutdownAfterPrepOn, shutdownAfterPrep: shutdownAfterPrepOn, autoRender: autoRenderOn && !shutdownAfterPrepOn };
       const response = await fetch(target, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -779,6 +782,13 @@ export function BatchRoute() {
     });
   };
 
+  const toggleShutdownAfterPrep = () => {
+    const next = !(batch ? Boolean(batch.shutdownAfterPrep) : shutdownAfterPrepOn);
+    setShutdownAfterPrepOn(next);
+    if (next) { setAutoRenderOn(false); setShutdownOn(false); }
+    if (batch) void call("shutdown-after-prep", "POST", { enabled: next });
+  };
+
   /** 撤销已经排好的自动关机（倒计时里点「取消关机」）。 */
   const cancelShutdown = async () => {
     setBusyAction("shutdown-cancel");
@@ -798,6 +808,7 @@ export function BatchRoute() {
 
   // 开关显示的永远是**当前批次**的值（没批次才用本地草稿）
   const shutdownSwitchOn = batch ? Boolean(batch.shutdownOnComplete) : shutdownOn;
+  const prepShutdownSwitchOn = batch ? Boolean(batch.shutdownAfterPrep) : shutdownAfterPrepOn;
   // 倒计时每秒跳：后端只给时间戳，剩几秒在本地算
   const shutdownTick = useNowTick(Boolean(shutdown.pending));
   const shutdownSecondsLeft = shutdown.pending
@@ -1731,6 +1742,15 @@ export function BatchRoute() {
           </span>
         </div>}
         <div className="batch-shutdown-row">
+          <button type="button" role="switch" aria-checked={prepShutdownSwitchOn}
+            className={`batch-switch ${prepShutdownSwitchOn ? "on" : ""}`}
+            disabled={Boolean(busyAction)} onClick={toggleShutdownAfterPrep}>
+            <i />{prepShutdownSwitchOn ? "已开启" : "已关闭"}
+          </button>
+          <span><b><Power weight="fill" /> 备料完成后关机</b>
+            <small>默认关闭。整批备料齐全后关机，并关闭自动出片；关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
+        </div>
+        <div className="batch-shutdown-row">
           <button
             type="button"
             role="switch"
@@ -1773,7 +1793,7 @@ export function BatchRoute() {
         <div className="batch-alert shutdown">
           <Power weight="fill" />
           <span>
-            所有任务已完成，<b>{shutdownSecondsLeft}</b> 秒后自动关机。
+            {batch?.shutdownAfterPrep ? "整批备料已完成" : "所有任务已完成"}，<b>{shutdownSecondsLeft}</b> 秒后自动关机。
             <small>还有任务要处理的话现在点右边就能撤销。</small>
           </span>
           <button

@@ -398,9 +398,9 @@ class BatchStore:
         """
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                "SELECT state_json FROM batches WHERE state_json LIKE ?"
+                "SELECT state_json FROM batches WHERE state_json LIKE ? OR state_json LIKE ?"
                 " ORDER BY created_at DESC, rowid DESC LIMIT 20",
-                ('%"shutdownOnComplete": true%',),
+                ('%"shutdownOnComplete": true%', '%"shutdownAfterPrep": true%'),
             ).fetchall()
         states: list[dict[str, Any]] = []
         for row in rows:

@@ -72,6 +72,7 @@ from .batch_worker import (
     run_batch,
     salvage_abandoned_items,
     set_batch_shutdown_on_complete,
+    set_batch_shutdown_after_prep,
     set_item_migrate_mode,
     set_item_ratio,
     set_item_remove_subtitles,
@@ -478,6 +479,7 @@ class BatchCreateRequest(BaseModel):
     autoStart: bool = False
     # 整批跑完后是否自动关机（页面开关，默认关闭）
     shutdownOnComplete: bool = False
+    shutdownAfterPrep: bool = False
     autoRender: bool = True
 
 
@@ -866,9 +868,9 @@ async def create_batch(request: BatchCreateRequest):
         dance_ratio = normalize_batch_ratio(request.danceRatio, "dance")
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    state = new_batch_state(singing, dance, singing_ratio, dance_ratio, request.shutdownOnComplete, request.autoRender)
+    state = new_batch_state(singing, dance, singing_ratio, dance_ratio, request.shutdownOnComplete, request.autoRender, request.shutdownAfterPrep)
     batch_store.create(state)
-    if request.shutdownOnComplete:
+    if request.shutdownOnComplete or request.shutdownAfterPrep:
         # 开关在建批次时就已经打开：立刻挂上看护任务（批次跑完那一刻才真的排关机）
         ensure_shutdown_watcher()
     if request.autoStart:
@@ -968,7 +970,7 @@ async def set_batch_auto_render(batch_id: str, request: BatchAutoRenderRequest):
     state = _batch_or_404(batch_id)
     if state.get("status") == "cancelled":
         raise HTTPException(409, "批次已取消")
-    batch_store.update(batch_id, autoRender=request.enabled, renderRequested=False)
+    batch_store.update(batch_id, autoRender=request.enabled, renderRequested=False, shutdownAfterPrep=False if request.enabled else state.get("shutdownAfterPrep", False))
     note = "自动出片已开启；备料区清空后开始出片。" if request.enabled else "自动出片已关闭；备料完成后等待手动启动。"
     if request.enabled and state.get("status") not in {"paused", "failed", "completed"}:
         return _resume_batch(batch_id, note)
@@ -984,7 +986,7 @@ async def start_batch_render(batch_id: str):
         raise HTTPException(409, "备料区还有未完成任务；全部备料完成后才能开始出片")
     if not any(item.get("status") == "confirmed" for item in state.get("items") or []):
         raise HTTPException(409, "出片区没有等待出片的任务")
-    batch_store.update(batch_id, renderRequested=True)
+    batch_store.update(batch_id, renderRequested=True, shutdownAfterPrep=False)
     return _resume_batch(batch_id, "已请求出片；备料区所有任务完成后开始逐条出片。")
 
 
@@ -1003,6 +1005,15 @@ async def set_shutdown_on_complete(batch_id: str, request: BatchShutdownRequest)
         raise HTTPException(409, str(error)) from error
 
 
+@app.post("/api/batches/{batch_id}/shutdown-after-prep")
+async def set_shutdown_after_prep(batch_id: str, request: BatchShutdownRequest):
+    _batch_or_404(batch_id)
+    try:
+        return set_batch_shutdown_after_prep(batch_id, bool(request.enabled))
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
 @app.get("/api/system/shutdown")
 async def get_shutdown_status():
     """页面顶部的关机倒计时：有没有在倒计时、还剩多少秒。"""
@@ -1012,9 +1023,10 @@ async def get_shutdown_status():
 @app.post("/api/system/shutdown/cancel")
 async def cancel_shutdown():
     """撤销已经排好的自动关机（`shutdown /a`）。"""
-    return JSONResponse(
-        cancel_pending_shutdown(notice="已取消自动关机。"), headers={"Cache-Control": "no-store"}
-    )
+    result = cancel_pending_shutdown(notice="已取消自动关机。")
+    if result.get("batchId"):
+        batch_store.update(result["batchId"], shutdownOnComplete=False, shutdownAfterPrep=False)
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/batches/{batch_id}/cancel")

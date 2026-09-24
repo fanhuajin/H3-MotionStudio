@@ -6508,6 +6508,7 @@ class BatchShutdownTests(unittest.TestCase):
         state = new_batch_state(["https://v.douyin.com/a"], [])
         # 默认关闭：新建批次与老批次都不能自己打开
         self.assertFalse(state["shutdownOnComplete"])
+        self.assertFalse(state["shutdownAfterPrep"])
         store.create(state)
         with patch.object(batch_worker, "batch_store", store):
             opened = batch_worker.set_batch_shutdown_on_complete(state["id"], True)
@@ -6527,6 +6528,24 @@ class BatchShutdownTests(unittest.TestCase):
             with patch.object(batch_worker, "batch_store", store):
                 with self.assertRaises(ValueError):
                     batch_worker.set_batch_shutdown_on_complete(state["id"], True)
+
+    def test_shutdown_after_prep_waits_for_every_preparation_and_disables_render(self) -> None:
+        from backend import batch_worker
+
+        store = self._store()
+        state = new_batch_state(["https://v.douyin.com/a", "https://v.douyin.com/b"], [])
+        store.create(state)
+        with patch.object(batch_worker, "batch_store", store):
+            opened = batch_worker.set_batch_shutdown_after_prep(state["id"], True)
+            self.assertFalse(opened["autoRender"])
+            self.assertTrue(opened["shutdownAfterPrep"])
+            self.assertFalse(batch_worker.batch_ready_for_shutdown(opened))
+            for item in state["items"]:
+                store.mutate_item(state["id"], item["id"], lambda row: row.update(status="confirmed"))
+            ready = store.get(state["id"])
+            self.assertTrue(batch_worker.batch_ready_for_shutdown(ready))
+            self.assertEqual(batch_worker.shutdown_tick(), "scheduled")
+            self.assertEqual(_SHUTDOWN_CALLS, [batch_worker.shutdown_delay_seconds()])
 
     def test_batch_shutdown_waits_until_every_item_is_done(self) -> None:
         """只要有条目还在排队 / 等你确认 / 待出片 / 出片，就不许关机。"""
