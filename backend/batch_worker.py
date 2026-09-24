@@ -4105,7 +4105,7 @@ def _prep_remaining(state: dict[str, Any]) -> bool:
     return any(
         item.get("status") in {"pending", "revising", "awaiting_review"}
         or (item.get("status") == "running" and item.get("stage") in {"download", "prepare"})
-        or (item.get("status") in {"confirmed", "failed"}
+        or (item.get("status") == "confirmed"
             and full_auto_enabled() and not _covers_ready(item))
         for item in state.get("items") or []
     )
@@ -4143,18 +4143,13 @@ def _fail_item_and_batch(
     )
 
 
-# 失败策略（用户 2026-09-20 定）：出片失败自动重试 1 次（共 2 次尝试）；
-# 备料失败直接跳过；**连续 2 条失败**才熔断停批（避免把剩下十几条全毁一遍）。
+# 出片失败自动重试 1 次（共 2 次尝试）；最终失败的条目留在异常区，
+# 其余条目继续运行，不因失败数量停批。
 MAX_ITEM_VIDEO_ATTEMPTS = 2
-FAILURE_STREAK_LIMIT = 2
 
 
 def reset_failure_streak(batch_id: str) -> None:
-    """一条真正交付成功后把「连续失败」清零（熔断只看**连续**失败）。
-
-    也由 `app._resume_batch()` 调用：用户主动让批次跑起来（开跑/继续/确认/重新开始）说明
-    上一次的失败已经处理过了，计数该从零开始 —— 否则熔断后点继续，再失败一条就又会停批。
-    """
+    """交付成功或用户重新开跑后清零连续失败计数，保留诊断信息的准确性。"""
     state = batch_store.get(batch_id) or {}
     if int(state.get("failureStreak") or 0):
         batch_store.update(batch_id, failureStreak=0, lastFailure="")
@@ -4163,12 +4158,7 @@ def reset_failure_streak(batch_id: str) -> None:
 def _soft_fail_item(
     batch_id: str, item_id: str, stage: str, message: str, *, generation: int | None = None
 ) -> bool:
-    """一条失败但**不拖住整批**：标失败 + 记连续失败数；返回是否已熔断（True = 调用方 return）。
-
-    与 `_fail_item_and_batch`（一条失败就停整批）的区别就是这一条：备料失败、出片重试后
-    仍失败都走这里，批次继续往下跑；只有连续 `FAILURE_STREAK_LIMIT` 条失败才停下等人工 ——
-    连续失败通常意味着环境坏了（ComfyUI 挂了 / 中转站欠费），继续跑只会把后面的全毁一遍。
-    """
+    """单条失败进入异常区，其余条目继续；返回值保留给调用方的停止判断。"""
     if generation is not None and batch_run_superseded(batch_id, generation):
         return False        # 旧代 runner 不许写任何状态
     _set_item(batch_id, item_id, status="failed", stage="failed", error=message, childJob=None)
@@ -4185,20 +4175,8 @@ def _soft_fail_item(
     )
     state = batch_store.get(batch_id) or {}
     streak = int(state.get("failureStreak") or 0) + 1
-    tripped = streak >= FAILURE_STREAK_LIMIT
     batch_store.update(batch_id, failureStreak=streak, lastFailure=f"{stage}：{message}"[:200])
-    if tripped:
-        batch_store.add_item_log(
-            batch_id, item_id, f"连续 {streak} 条失败，已停下等人工处理（避免把后面的条目全毁一遍）。"
-        )
-        batch_store.update(
-            batch_id,
-            status="failed",
-            stage="failed",
-            runnerActive=False,
-            notice=f"连续 {streak} 条失败（最近一次在「{stage}」），已停下等你处理。",
-        )
-    return tripped
+    return False
 
 
 def _retry_item_video_once(batch_id: str, item_id: str, message: str, *, attempts: int) -> None:
@@ -4297,8 +4275,8 @@ async def run_batch(batch_id: str) -> None:
 
     视频与备料互斥。出片时追加备料，当前视频安全结束后先处理新增任务。
 
-    失败策略（用户同一天定）：备料失败跳过继续、出片失败自动重试 1 次、**连续 2 条失败
-    熔断停批** —— 见 `_soft_fail_item`。
+    备料失败进入异常区继续，出片失败自动重试 1 次后进入异常区；
+    异常条目不阻塞其余任务 —— 见 `_soft_fail_item`。
 
     **每一轮都认「代」**：用户点「重新开始」会推进代数（`take_over_batch_run`），
     这一代过期的 runner 立刻退出，把批次让给新 runner —— 否则旧 runner 一旦卡在某个
@@ -4482,7 +4460,7 @@ async def run_batch(batch_id: str) -> None:
             if _prep_remaining(state):
                 batch_store.update(
                     batch_id, status="awaiting_review", stage="prep_attention",
-                    runnerActive=False, notice="备料区仍有未完成任务；处理失败或待确认条目后才能出片。",
+                    runnerActive=False, notice="备料区仍有待处理任务；处理后才能出片，异常条目可稍后补跑。",
                 )
                 return
             if _next_confirmed(state) is not None and not (
@@ -4518,8 +4496,8 @@ async def run_batch(batch_id: str) -> None:
                 currentItemId=None,
                 currentIndex=state.get("total") or 0,
                 finishedAt=now_iso(),
-                notice="全部条目已完成。"
-                + (f" 有 {len(failed)} 条失败，可在表格里点「重新开始」补跑。" if failed else "")
+                notice=("其余条目已完成。" if failed else "全部条目已完成。")
+                + (f" 有 {len(failed)} 条异常，可在「异常」标签里点「重新开始」补跑。" if failed else "")
                 + (" 部分歌词字幕需要稍后重试。" if warnings else ""),
             )
             return

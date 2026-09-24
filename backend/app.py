@@ -985,7 +985,7 @@ async def start_batch_render(batch_id: str):
     if state.get("status") in {"cancelled", "paused", "failed"}:
         raise HTTPException(409, "批次已停止，请先继续或处理失败条目")
     if batch_worker._prep_remaining(state):
-        raise HTTPException(409, "备料区还有未完成任务；全部备料完成后才能开始出片")
+        raise HTTPException(409, "备料区还有待处理任务；完成后即可开始出片，异常条目可稍后补跑")
     if not any(item.get("status") == "confirmed" for item in state.get("items") or []):
         raise HTTPException(409, "出片区没有等待出片的任务")
     batch_store.update(batch_id, renderRequested=True, shutdownAfterPrep=False)

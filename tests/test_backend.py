@@ -1361,12 +1361,19 @@ class WorkflowPreparationTests(unittest.TestCase):
             row.get("logs"),
         )
 
-    def test_two_failures_in_a_row_stop_the_batch(self) -> None:
-        """连续 2 条出片都失败（重试后仍失败）→ **熔断停批**，写明最近一次失败在哪一环。
+    def test_failed_cover_does_not_block_ready_items(self) -> None:
+        from backend import batch_worker
 
-        这是失败策略的另一半：一条失败不该拖住整批（跳过去继续），但连续失败通常意味着
-        环境坏了（ComfyUI 挂了 / 中转站欠费），继续跑只会把后面的条目全毁一遍。
-        """
+        state = {"items": [{"status": "failed"}, {"status": "confirmed"}]}
+        with patch.object(batch_worker, "full_auto_enabled", return_value=True), patch.object(
+            batch_worker, "_covers_ready", side_effect=lambda item: item["status"] == "confirmed"
+        ):
+            self.assertFalse(batch_worker._prep_remaining(state))
+            state["items"][1]["status"] = "pending"
+            self.assertTrue(batch_worker._prep_remaining(state))
+
+    def test_two_failures_in_a_row_finish_with_exceptions(self) -> None:
+        """连续失败的条目进入异常区，批次仍能完成。"""
         import asyncio
 
         from backend import batch_worker
@@ -1395,8 +1402,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                 await asyncio.wait_for(batch_worker.run_batch("b1"), timeout=5)
 
         asyncio.run(scenario())
-        self.assertEqual(box["state"]["status"], "failed")
-        self.assertIn("连续 2 条失败", box["state"]["notice"])
+        self.assertEqual(box["state"]["status"], "completed")
+        self.assertIn("2 条异常", box["state"]["notice"])
         self.assertIn("出片", box["state"]["lastFailure"])
         self.assertEqual([row["status"] for row in box["state"]["items"]], ["failed", "failed"])
         # 每条都试过两次（首次 + 一次重试）
@@ -3831,10 +3838,12 @@ class WorkflowPreparationTests(unittest.TestCase):
     def test_batch_status_tabs_show_prep_and_render_zones(self) -> None:
         """批量页分开备料、出片、已完成；状态徽章仍保留。"""
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
-        self.assertIn('type TabId = "prep" | "render" | "archive" | "completed";', source)
+        self.assertIn('type TabId = "prep" | "render" | "exception" | "archive" | "completed";', source)
         self.assertIn('{ id: "prep", label: "备料区" }', source)
         self.assertIn('{ id: "render", label: "出片区" }', source)
+        self.assertIn('{ id: "exception", label: "异常" }', source)
         self.assertIn('{ id: "completed", label: "已完成" }', source)
+        self.assertIn('exception: (item) => item.status === "failed"', source)
         self.assertLess(source.index('{ id: "archive", label: "已跳过" }'), source.index('{ id: "completed", label: "已完成" }'))
         self.assertIn('completed: (item) => item.status === "completed"', source)
         self.assertNotIn('showCompleted', source)

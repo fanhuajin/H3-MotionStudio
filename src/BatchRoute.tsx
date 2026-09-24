@@ -398,17 +398,19 @@ function responseMessage(response: Response, fallback: string): Promise<string> 
     .catch((reason) => (reason instanceof Error ? reason.message : fallback));
 }
 
-/** 备料、待出片、已跳过和已完成各自分区。 */
-type TabId = "prep" | "render" | "archive" | "completed";
+/** 备料、待出片、异常、已跳过和已完成各自分区。 */
+type TabId = "prep" | "render" | "exception" | "archive" | "completed";
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "prep", label: "备料区" },
   { id: "render", label: "出片区" },
+  { id: "exception", label: "异常" },
   { id: "archive", label: "已跳过" },
   { id: "completed", label: "已完成" },
 ];
 const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
-  prep: (item) => !["completed", "skipped"].includes(item.status) && !item.prepReady,
-  render: (item) => !["skipped", "completed"].includes(item.status) && Boolean(item.prepReady),
+  prep: (item) => !["completed", "skipped", "failed"].includes(item.status) && !item.prepReady,
+  render: (item) => !["skipped", "completed", "failed"].includes(item.status) && Boolean(item.prepReady),
+  exception: (item) => item.status === "failed",
   completed: (item) => item.status === "completed",
   archive: (item) => item.status === "skipped",
 };
@@ -547,7 +549,7 @@ export function BatchRoute() {
   const prepBlocked = visibleItems.some((item) =>
     ["pending", "revising", "awaiting_review"].includes(item.status)
     || (item.status === "running" && ["download", "prepare"].includes(item.stage))
-    || (["confirmed", "failed"].includes(item.status) && !item.prepReady),
+    || (item.status === "confirmed" && !item.prepReady),
   );
 
   const loadLatest = useCallback(async () => {
@@ -1738,7 +1740,7 @@ export function BatchRoute() {
           </button>
           <span>
             <b>备料完成后自动出片</b>
-            <small>默认开启。关闭后，全部备料完成才可在出片区手动启动。</small>
+            <small>默认开启。关闭后，待处理备料完成即可在出片区手动启动；异常条目可稍后补跑。</small>
           </span>
         </div>}
         <div className="batch-shutdown-row">
@@ -1810,8 +1812,8 @@ export function BatchRoute() {
         <section className="batch-workspace">
           <div className="batch-zone-control">
             <div>
-              <strong>备料区 {tabCount("prep")} 条 → 出片区 {tabCount("render")} 条</strong>
-              <small>整批备料优先。每条两张封面都保存后，自动转入出片区。</small>
+              <strong>备料区 {tabCount("prep")} 条 → 出片区 {tabCount("render")} 条 · 异常 {tabCount("exception")} 条</strong>
+              <small>整批备料优先。失败条目进入异常区，不阻塞其余条目出片。</small>
             </div>
             <div className="batch-zone-actions">
               <span>备料完成后自动出片</span>
