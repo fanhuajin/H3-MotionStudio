@@ -2620,6 +2620,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("若图一的手有拖影", block)
         self.assertIn("保留手的位置和朝向并补清细节", block)
         self.assertIn("位置接近的简单自然手势", block)
+        self.assertIn("不多指、不缺指、不粘连", block)
+        self.assertIn("肤色、亮度和皮肤纹理与脸及手臂一致", block)
+        self.assertIn("袖口纹理及衣肤交界清楚", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【清晰度】", prompt)
