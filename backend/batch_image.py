@@ -64,7 +64,7 @@ MIN_IMAGE_SIDE = 640
 # 没有任何记录），而它又是随机的 —— 同一份提示词重发常能过。所以只对这种情况自动重发。
 # 其它失败（超时/断连）可能已经计费，一律不重发。
 POLICY_RETRIES = 2
-POLICY_RETRY_DELAY = 600.0
+POLICY_RETRY_DELAY = 5.0
 
 
 def image_sizes() -> dict[str, str]:
@@ -804,12 +804,12 @@ async def _generate_candidate_image_once(
                 ):
                     policy_attempt += 1
                     logger.warning(
-                        "中转站以内容政策拒绝；等待至少 10 分钟后重试（第 %s/%s 次）：%s",
-                        policy_attempt, POLICY_RETRIES, _api_error(response)[:120],
+                        "中转站以内容政策拒绝（第 %s 次，不计费），重发同一请求：%s",
+                        policy_attempt, _api_error(response)[:120],
                     )
                     if on_progress:
-                        await on_progress(0.0, f"中转站以内容政策拒绝；10 分钟后重试（{policy_attempt}/{POLICY_RETRIES}）")
-                    await asyncio.sleep(POLICY_RETRY_DELAY)
+                        await on_progress(0.0, f"中转站以内容政策拒绝，正在重试（{policy_attempt}/{POLICY_RETRIES}）")
+                    await asyncio.sleep(POLICY_RETRY_DELAY * policy_attempt)
                     response = await _post_with_route_fallback(data, files)
                 if response.is_error:
                     failures.append(f"[{plan}/{field}] {_api_error(response)}")
