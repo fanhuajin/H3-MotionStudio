@@ -794,6 +794,10 @@ def restart_item_to_run(batch_id: str, item_id: str) -> bool:
     if pending_item is not None and not candidate.is_file():
         adopted = _adopt_published_image_for_restart(batch_id, item_id, pending_item)
 
+    # 点「重试」明确授权补发缺失的封面。授权只供本轮备料消费一次；
+    # 自动恢复和其它触发点仍遵守“结果未知不重发”的成本闸。
+    retry_missing_covers = str((pending_item or {}).get("status") or "") == "failed"
+
     def reset(row: dict[str, Any]) -> None:
         ai = row.get("ai") or {}
         if adopted is not None:
@@ -829,6 +833,7 @@ def restart_item_to_run(batch_id: str, item_id: str) -> bool:
             revisionMode="",
             videoAttempts=0,        # 手动重新开始：把「出片失败自动重试」的额度也还回来
             forceRender=True,
+            retryMissingCovers=retry_missing_covers,
         )
         for milestone in row.get("milestones") or []:
             if milestone.get("id") == "video" or milestone.get("status") == "error":
@@ -1534,7 +1539,12 @@ async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
         raise RuntimeError("人物图尚未落入发布目录，无法完成备料")
     if not (folder / "发布文案.txt").is_file():
         raise RuntimeError("发布文案尚未落盘，无法完成备料")
-    await _generate_covers_via_api(batch_id, item_id, folder)
+    retry_authorized = bool(item.get("retryMissingCovers"))
+    if retry_authorized:
+        _set_item(batch_id, item_id, retryMissingCovers=False)
+    await _generate_covers_via_api(
+        batch_id, item_id, folder, allow_uncertain_retry=retry_authorized
+    )
     if not _covers_ready(_item(batch_id, item_id)):
         raise RuntimeError("封面未全部生成；已保留现有文件，请检查日志后重试缺失部分")
 
@@ -2235,7 +2245,8 @@ def spawn_api_covers(
 
 
 async def _generate_covers_via_api(
-    batch_id: str, item_id: str, folder: Path, *, force: bool = False
+    batch_id: str, item_id: str, folder: Path, *, force: bool = False,
+    allow_uncertain_retry: bool = False,
 ) -> None:
     """走中转站出两张封面：`B站4x3.png`（4:3）与 `抖音3x4.png`（3:4）。
 
@@ -2253,7 +2264,12 @@ async def _generate_covers_via_api(
             batch_store.add_item_log(batch_id, item_id, f"已向中转站发出{label}请求……")
             started = time.monotonic()
             try:
-                await image_workbench._generate_cover(folder, stage, kind)
+                if allow_uncertain_retry:
+                    await image_workbench._generate_cover(
+                        folder, stage, kind, allow_uncertain_retry=True
+                    )
+                else:
+                    await image_workbench._generate_cover(folder, stage, kind)
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001 - 封面失败不该把整条作品判失败
