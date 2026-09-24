@@ -21,7 +21,7 @@ from . import batch_ai, batch_image
 from . import batch_worker as batch_worker
 from .batch_store import batch_store
 from .batch_worker import IDENTITY_PATH
-from .settings import BATCH_OUTPUT_ROOT, PROJECT_ROOT, PUBLISH_KIND_DIRS
+from .settings import BATCH_OUTPUT_ROOT, PUBLISH_KIND_DIRS
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -193,36 +193,10 @@ def asset_path(folder: Path, key: str) -> Path:
     return path
 
 
-def _base_person_prompt(kind: str) -> str:
-    desktop = Path(os.environ.get("USERPROFILE", "")) / "Desktop" / ("4比3图片.txt" if kind == "singing" else "9比16图片.txt")
-    fallback = PROJECT_ROOT / "backend" / "prompts" / ("4x3唱歌构图.txt" if kind == "singing" else "9x16跳舞构图.txt")
-    source = desktop if desktop.is_file() else fallback
-    return source.read_text(encoding="utf-8-sig", errors="replace").strip() if source.is_file() else ""
-
-
 def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
     copy = _copy_text(folder)
     if stage == "person":
-        ratio = "4:3 横版" if kind == "singing" else "9:16 竖版"
-        activity = "正在自然演唱" if kind == "singing" else "正在自然跳舞"
-        return f"""{_base_person_prompt(kind)}
-
-请编辑生成一张适合 ComfyUI 后续生成视频的写实人物图。
-- 图一（抽帧）决定场景、背景、灯光、镜头、姿态和服饰风格，尽量保持一致；若服饰过于普通，只做符合原造型与场景的精致化升级。
-- 图二（固定人物参考）只决定人物身份与五官；眼睛、鼻子、嘴唇、脸型、下巴必须稳定自然，禁止混入图一人物的五官。
-- 人物状态：{activity}；画幅：{ratio}。
-- 皮肤保留真实纹理，避免塑料感、过度磨皮和明显 AI 味；头发、牙齿、下巴边缘自然。
-- 手可以入镜，但必须结构正确、五指自然、不粘连、不多指、不少指。
-{batch_ai.SHARPNESS_BLOCK.strip()}
-{batch_ai.BACKGROUND_CLEAN_BLOCK.strip()}
-- **过度裸露（发布级硬要求）**：按平台规则原文只有三条——① 不得**明显**露出事业线/乳沟
-  （乳沟清晰可见、面积不小才算；只露上胸一点点、领口略低是可以的）；② 不得穿透视、裸色到
-  像没穿衣服；③ 不得紧身到凸点这类轮廓线过于突出。
-  **吊带、抹胸、一字肩、露肩、露锁骨、露上胸一小部分、露腰腹、短裤、正常修身的针织衫都不算
-  违规，必须照常保留**；只是图一若明显命中上面三条，就换成同一气质但不露沟、不透、不凸点的款式——
-  **换的时候不要保留图一的领口形状**：把胸口完全盖住，领口改成圆领/高领或到锁骨的小方领，
-  镂空与蕾丝一律换成不透的正常面料。
-- 不要文字、Logo、水印、边框。输出单张成图。""".strip()
+        return batch_ai.compose_image_prompt(kind)
     # 画幅话术只写比例、不写平台名（用户 2026-09-20：封面多平台复用，提示词里出现
     # 「B站」/「抖音」会让模型把对应平台的 logo 画进封面）。
     # 2026-09-21：封面**只加**「只能有这一个人」这一句主体约束，**不写**背景清理规则
@@ -240,17 +214,10 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
 简介：
 {introduction}
 
-【手部硬要求 · 用户 2026-09-19：手可以入镜，但不能出问题】
-- 人物的姿势与手势**沿用参考图**，不要自行设计新手势（不要比心、不要剪刀手、不要指尖相触）。
-- 手可以入镜，但手指必须结构完全正确：五指分明、数量正确、手指不交叉、不打结、不粘连，
-  指节弯曲方向与指甲朝向自然；画不准就把手改成简单自然的姿势（自然垂放或轻放身侧）。
-- 手部出现任何结构错误都算不合格，必须重画到正确为止。
+沿用参考图的服装与自然妆感。
+【手部硬要求】沿用参考图的姿态与手势，不要自行设计新手势；手若入镜须五指分明、结构自然。
 {batch_ai.SHARPNESS_BLOCK.strip()}
-
-【着装合规 · 发布级硬要求】
-- 按平台着装规范三条：领口不要开得过低、胸口被衣服完整盖住（上胸露出一小部分是可以的）、
-  面料必须完全不透明（不要「能看见里面」的效果）、衣服不要紧到把身体轮廓线顶出来。服装沿用参考图
-  （人物图已过这道判据），不要把领口开低、不要用半透明面料，其余（吊带、露肩、露腰腹、短裤）照旧。""".strip()
+{batch_ai.PLATFORM_SAFE_BLOCK.strip()}""".strip()
 
 
 def material_zip(folder: Path, stage: str, kind: str) -> bytes:

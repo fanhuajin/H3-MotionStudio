@@ -2458,12 +2458,16 @@ class WorkflowPreparationTests(unittest.TestCase):
         所以这里**不再断言"以造型提示词文件开头"**，改断言确实是精简模板。
         """
         prompt = batch_ai.compose_image_prompt("singing", "video", "", "both")
-        self.assertTrue(prompt.startswith("以图像-1（源视频抽帧）"))
-        self.assertLess(len(prompt), 2000, "自动出图必须是精简提示词，别把长提示词拼回来")
+        self.assertTrue(prompt.startswith("生成一张供视频制作使用的写实单人照片"))
+        self.assertLess(len(prompt), 900, "自动出图必须保持精简")
         for detail in ("刘海", "分缝", "发长", "卷直", "发色", "头饰"):
             self.assertIn(detail, prompt)
-        self.assertIn("图像-2 只决定面部身份", prompt)
-        self.assertIn("图一没有的头饰也不要新增", prompt)
+        self.assertIn("图二只提供面部身份", prompt)
+        self.assertIn("没有头饰就不添加", prompt)
+        self.assertIn("自然精致淡妆", prompt)
+        self.assertIn("脸和颈部明暗一致", prompt)
+        for sensitive in ("乳沟", "事业线", "透视", "裸色", "凸点", "隐私部位"):
+            self.assertNotIn(sensitive, prompt)
         self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
         # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
         copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
@@ -2471,7 +2475,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         for mode in ("image", "both"):
             changed = batch_ai.compose_image_prompt("singing", "video", "头顶留白压到 2%", mode)
             self.assertIn("头顶留白压到 2%", changed)
-            self.assertIn("本次必须优先满足的修改要求", changed)
+            self.assertIn("【本次修改】", changed)
 
     def test_batch_ai_image_prompt_carries_the_song(self) -> None:
         """歌曲必须真的进入出图提示词，否则「图一给造型、歌曲给情绪」落不了地。"""
@@ -2489,18 +2493,27 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertIn("【本次歌曲】《爱如潮水》", prompt)
         self.assertIn("抒情慢板，克制的失恋感", prompt)
-        self.assertIn("歌曲只用来决定人物的情绪表达", prompt)
-        self.assertIn("不要因为歌曲改动上面已经定好的服装与场景", prompt)
+        self.assertIn("歌曲只影响表情与整体氛围", prompt)
+        self.assertIn("不改变服装或场景类型", prompt)
 
         # 3) 跳舞没有歌曲，不能凭空塞一个歌曲块
         self.assertNotIn("【本次歌曲】", batch_ai.compose_image_prompt("dance"))
         # 4) 没识别出歌名时也不能留一个空歌曲块
         self.assertNotIn("【本次歌曲】", batch_ai.compose_image_prompt("singing", "video", song_name=""))
 
+    def test_song_redesign_prompt_does_not_claim_a_source_style(self) -> None:
+        prompt = batch_ai.compose_image_prompt("singing", "redesign", song_name="爱如潮水")
+        self.assertIn("图一与图二都是同一人物的身份参考", prompt)
+        self.assertIn("根据歌曲氛围设计自然的发型", prompt)
+        self.assertNotIn("图一提供姿态、服装", prompt)
+        self.assertNotIn("保留图一的室内或室外属性", prompt)
+        self.assertNotIn("参考图一的造型与配色", prompt)
+        self.assertLess(len(prompt), 900)
+
     def test_batch_ai_image_prompt_carries_composition_spec(self) -> None:
         """构图规格取自用户的构图参考图实测值，且必须按画布比例分别注入。"""
         singing = batch_ai.compose_image_prompt("singing")
-        self.assertIn("【构图规格 · 按用户的构图参考图实测】", singing)
+        self.assertIn("【构图】", singing)
         self.assertIn("0%~1%", singing)          # 4:3 参考实测：头发几乎贴边
         self.assertIn("50%~55%", singing)        # 4:3 参考实测：脸占画面高度
 
@@ -2544,11 +2557,10 @@ class WorkflowPreparationTests(unittest.TestCase):
             "singing", "video", "换个背景", "both", song_name="爱如潮水", song_mood="抒情"
         )
         self.assertTrue(prompt.rstrip().endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
-        self.assertIn("图二是唯一的人物身份与面部来源", prompt)
-        self.assertIn("禁止把两张脸融合", prompt)
-        self.assertIn("一律牺牲其他要求、保住图二的脸", prompt)
+        self.assertIn("图二是唯一的面部身份参考", prompt)
+        self.assertIn("不混入图一的脸", prompt)
         # 跳舞同样受身份约束保护
-        self.assertIn("保住图二的脸", batch_ai.compose_image_prompt("dance"))
+        self.assertIn("图二是唯一的面部身份参考", batch_ai.compose_image_prompt("dance"))
 
     def test_platform_compliance_block_is_in_every_image_prompt(self) -> None:
         """2026-09-20 小红书处罚事故：出图提示词里必须有**过度裸露**硬约束。
@@ -2566,20 +2578,18 @@ class WorkflowPreparationTests(unittest.TestCase):
         """
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertIn("【着装合规 · 发布级硬要求", prompt)
-            self.assertIn("胸口必须被衣服完整盖住", prompt)
-            self.assertIn("上胸露出一小部分", prompt)
-            self.assertIn("优先于「沿用图一服装」", prompt)
-            # 平台明确不算违规的，必须在提示词里写清"照常保留"，否则模型还是会保守化
-            self.assertIn("吊带、抹胸、一字肩、露肩", prompt)
-            self.assertIn("都不算违规", prompt)
+            self.assertIn("【服装】", prompt)
+            self.assertIn("胸前有衣物覆盖", prompt)
+            self.assertIn("面料不透明", prompt)
+            self.assertIn("可调整款式并保持原有气质", prompt)
+            self.assertIn("正常的露肩、露腰或短裤造型", prompt)
         # 只管裸露：姿态、动作、裁切都不许出现在这一段里
         for word in ("摆胯", "腰部波浪", "姿态", "下边缘", "胸线"):
             self.assertNotIn(word, batch_ai.PLATFORM_SAFE_BLOCK)
         # 合规块必须在身份块**之前**：脸仍是最后一条（身份优先级最高）
         prompt = batch_ai.compose_image_prompt("dance", "video", "换成吊带", "both")
         self.assertLess(
-            prompt.index("【着装合规 · 发布级硬要求"),
+            prompt.index("【服装】"),
             prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
         )
         self.assertTrue(prompt.rstrip().endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
@@ -2596,18 +2606,18 @@ class WorkflowPreparationTests(unittest.TestCase):
         光写「禁止虚化」挡不住第②条（模型会认为模糊本来就来自参考图、理应保留）。
         """
         block = batch_ai.SHARPNESS_BLOCK
-        self.assertIn("禁止景深虚化/浅景深把手糊掉", block)
-        self.assertIn("不要照搬那份模糊", block)
-        self.assertIn("宁可手不入镜", block)
+        self.assertIn("脸、头发和双手清晰", block)
+        self.assertIn("若图一的手有拖影", block)
+        self.assertIn("清晰、简单的自然手势", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertIn("【禁止模糊 · 硬要求", prompt)
-            self.assertIn("不要照搬那份模糊", prompt)
+            self.assertIn("【清晰度】", prompt)
+            self.assertIn("若图一的手有拖影", prompt)
             # 仍然必须是精简模板（长提示词会把硬要求淹掉，别借这次改动把它拼回去）
-            self.assertLess(len(prompt), 2000)
+            self.assertLess(len(prompt), 900)
             # 清晰度块在身份块之前（脸仍然排在最后）
             self.assertLess(
-                prompt.index("【禁止模糊 · 硬要求"),
+                prompt.index("【清晰度】"),
                 prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
             )
         # 口径指纹要跟着清晰度块一起变（否则自检会误判「线上已是最新」）
@@ -2622,26 +2632,28 @@ class WorkflowPreparationTests(unittest.TestCase):
         根因：精简模板第一句就是「以图像-1 为唯一的**场景、背景**基准」，抽帧背景里的同框其他人
         （路人/观众/伴舞/镜面倒影）会被照抄进成图，而且画得很怪；原来只在【出片可用性】里带了
         一句「不要……路人」，被淹没了。所以升级成一个独立的硬要求块，并**收进口径指纹**。
-        口径（用户逐条确认）：① 其他人**全部去掉**、只留图像-2 本人一个；② **保留原场景**
-        （类型/空间结构/光线不变）只清杂物 + 补全背景 —— 换成别的场景成片就跟源视频对不上了；
+        口径：① 其他人**全部去掉**、只留图像-2 本人一个；② 2026-09-24 用户选择 B，
+        保留室内外属性、光线与氛围，允许重布置更好看的同类场景；
         ③ **不许用重度虚化糊掉**杂乱背景（那是"藏"不是"清"，而且背景一糊 ComfyUI 就没有可依据的
         空间结构）。
         """
         block = batch_ai.BACKGROUND_CLEAN_BLOCK
-        self.assertIn("只能有图像-2 这一个人", block)
-        self.assertIn("一律不要画进成图", block)
-        self.assertIn("把背景自然补全", block)
-        self.assertIn("保留原场景的类型、空间结构与光线", block)
-        self.assertIn("不许用重度虚化", block)
+        self.assertIn("只保留主体一人", block)
+        self.assertIn("移除路人、倒影和杂物", block)
+        self.assertIn("背景自然完整", block)
+        self.assertIn("可重新布置更整洁的同类场景", block)
+        self.assertIn("保留图一的室内或室外属性、光线方向与氛围", block)
+        self.assertNotIn("保留原场景的类型、空间结构", block)
+        self.assertIn("不用强虚化", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertIn("【背景清理 · 硬要求", prompt)
+            self.assertIn("【背景】", prompt)
             self.assertIn(block.strip(), prompt)
             # 仍然必须是精简模板（长提示词会把硬要求淹掉，别借这次改动把它拼回去）
-            self.assertLess(len(prompt), 2000)
+            self.assertLess(len(prompt), 900)
             # 背景块在身份块之前（脸仍然排在最后）
             self.assertLess(
-                prompt.index("【背景清理 · 硬要求"),
+                prompt.index("【背景】"),
                 prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
             )
         # 口径指纹要跟着背景块一起变（否则自检会误判「线上已是最新」）
@@ -2672,18 +2684,18 @@ class WorkflowPreparationTests(unittest.TestCase):
         """
         block = batch_ai.PLATFORM_SAFE_BLOCK
         # 允许换款式（不再有那条硬约束，引用用户原话的噪音也一起删掉）
-        self.assertIn("为了合规可以换款式、换造型", block)
+        self.assertIn("可调整款式并保持原有气质", block)
         self.assertNotIn("绝对不要换款式", block)
         self.assertNotIn("同款、同色、同材质照旧", block)
         self.assertNotIn("太丑了", block)
         # 合规本身仍需处理的两点（平台①②）
-        self.assertIn("同色、完全不透明", block)
-        self.assertIn("把胸口盖住", block)
+        self.assertIn("面料不透明", block)
+        self.assertIn("胸前有衣物覆盖", block)
         # 自动出图走的是精简模板：长提示词会把这一段淹掉（6628 字 vs 1225 字的实测对照）
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertLess(len(prompt), 2000, "自动出图必须是精简模板")
-            self.assertIn("为了合规可以换款式、换造型", prompt)
+            self.assertLess(len(prompt), 900, "自动出图必须是精简模板")
+            self.assertIn("可调整款式并保持原有气质", prompt)
 
     def test_compliance_judge_uses_the_platform_rule_verbatim(self) -> None:
         """出图后的自检也必须按平台三小条判，并显式豁免吊带/露肩/露脐（别再误杀 012/017）。"""
@@ -2794,7 +2806,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         body = person_body("【身份优先级】保住本人", "【画面比例·硬要求】9:16")
         self.assertIn("【背景清理 · 硬要求】", body)
         self.assertIn("只能有本人这一个人", body)
-        self.assertIn("保留原场景的类型、空间结构与光线", body)
+        self.assertIn("允许重新布置更好看的同类场景", body)
         self.assertIn("不许用重度虚化", BACKGROUND_NOTE)
         self.assertLess(body.index("【背景清理"), body.index("【身份优先级】"))
         self.assertLess(body.index("【身份优先级】"), body.index("【画面比例·硬要求】"))

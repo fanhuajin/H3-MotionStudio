@@ -1792,10 +1792,6 @@ async def _prepare_review_work(
         if item["kind"] == "singing" and style_source == "redesign":
             # 源视频造型不适合出片：改按歌曲情绪重做造型。
             scene = IDENTITY_PATH
-            image_prompt = (
-                "本次没有造型参考图。图像-1 与图像-2 是同一位人物的身份参考，"
-                "请按歌曲情绪完全重新设计造型、服装、背景与灯光。\n\n" + image_prompt
-            )
         else:
             # 图一里是源视频那个人的脸，必须糊掉：否则模型会把别人的五官混进来。
             scene, defocused = await batch_image.defocus_reference_face(scene_frame, work)

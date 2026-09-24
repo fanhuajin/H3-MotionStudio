@@ -347,8 +347,7 @@ class ImageWorkbenchTests(unittest.TestCase):
     def test_prompts_forbid_blurry_hands(self) -> None:
         """2026-09-20 用户：「生成的图片有的手会模糊 禁止模糊」＋「复制提示词也是复制你的」。
 
-        手工入口读的是**用户桌面那份长提示词**（存在就优先），所以这条约束必须写在
-        `prompt()` 的代码里；封面那条路（`_generate_cover`）同样要带。
+        手工复制与自动出图共用精简人物图提示词；封面也须保留清晰度要求。
         ⚠️ 用户 2026-09-20 追加要求**复制出去的那份和自动出图那份是同一段**：所以这里
         直接断言 `batch_ai.SHARPNESS_BLOCK` 原文出现，而不是"含某个词"——
         以后改口径只改 `batch_ai` 一处，四个入口（自动出图 / 复制提示词 / 素材包 / 封面）一起变。
@@ -388,8 +387,8 @@ class ImageWorkbenchTests(unittest.TestCase):
             cover = workbench.prompt(folder, "bilibili", "dance")
             zipped = workbench.material_zip(folder, "person", "dance")
         self.assertIn(block, person, "人物图提示词必须带背景清理整段")
-        self.assertIn("只能有图像-2 这一个人", person)
-        self.assertIn("不许用重度虚化", person)
+        self.assertIn("只保留主体一人", person)
+        self.assertIn("不用强虚化", person)
         self.assertIn("画面里只能有参考图里这一个人", cover)
         self.assertNotIn(block, cover, "封面不写背景风格规则（用户 2026-09-19）")
 
@@ -408,8 +407,7 @@ class ImageWorkbenchTests(unittest.TestCase):
     def test_manual_prompts_carry_the_outfit_compliance_rule(self) -> None:
         """手工入口（复制提示词 / 素材包）也必须带**过度裸露**那三条，且按平台原文豁免吊带/露肩。
 
-        `prompt()` 走的是**用户桌面上的 4比3图片.txt / 9比16图片.txt**（存在就优先），
-        所以这条约束只能写在代码里，不能只改仓库里的提示词文件。
+        `prompt()` 的人物图分支现在与批量备料共用短提示词。
         口径 = 小红书规则页原文（① 大面积裸露 ② 透视/裸色 ③ 紧身到凸点轮廓突出）。
         """
         with tempfile.TemporaryDirectory() as raw:
@@ -417,12 +415,13 @@ class ImageWorkbenchTests(unittest.TestCase):
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             person = workbench.prompt(folder, "person", "dance")
             cover = workbench.prompt(folder, "douyin", "dance")
-        self.assertIn("过度裸露（发布级硬要求）", person)
-        self.assertIn("不得**明显**露出事业线/乳沟", person)
-        self.assertIn("吊带、抹胸、一字肩、露肩", person)
+        self.assertIn("【服装】", person)
+        self.assertIn("胸前有衣物覆盖", person)
+        self.assertIn("自然精致淡妆", person)
+        self.assertLess(len(person), 900)
         self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内
-        self.assertIn("过度裸露 · 发布级硬要求", cover)
-        self.assertIn("不得**明显**露出**事业线/乳沟**", cover)
+        self.assertIn("【服装】", cover)
+        self.assertIn("面料不透明", cover)
 
 
 if __name__ == "__main__":
