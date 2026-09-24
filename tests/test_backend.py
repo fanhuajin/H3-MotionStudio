@@ -2466,6 +2466,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("没有头饰就不添加", prompt)
         self.assertIn("自然精致淡妆", prompt)
         self.assertIn("脸和颈部明暗一致", prompt)
+        self.assertIn("双臂与躯干边界可辨", prompt)
         for sensitive in ("乳沟", "事业线", "透视", "裸色", "凸点", "隐私部位"):
             self.assertNotIn(sensitive, prompt)
         self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
@@ -2505,6 +2506,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         prompt = batch_ai.compose_image_prompt("singing", "redesign", song_name="爱如潮水")
         self.assertIn("图一与图二都是同一人物的身份参考", prompt)
         self.assertIn("根据歌曲氛围设计自然的发型", prompt)
+        self.assertIn("歌曲决定造型、背景氛围与表情", prompt)
+        self.assertNotIn("歌曲只影响表情", prompt)
         self.assertNotIn("图一提供姿态、服装", prompt)
         self.assertNotIn("保留图一的室内或室外属性", prompt)
         self.assertNotIn("参考图一的造型与配色", prompt)

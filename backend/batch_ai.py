@@ -496,13 +496,13 @@ COMPACT_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片
 {compliance}
 {sharpness}
 {background}
-【构图】{composition}。人物轮廓清楚，脸和嘴无遮挡；不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
+【构图】{composition}。人物轮廓清楚，双臂与躯干边界可辨，脸和嘴无遮挡；不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
 
 REDESIGN_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一与图二都是同一人物的身份参考；根据歌曲氛围设计自然的发型、服装与简洁有纵深的背景。自然精致淡妆，眉眼与唇色有轻微妆感；柔和提亮面部，保留真实皮肤纹理，脸和颈部明暗一致。
 {compliance}
 {sharpness}
 【背景】只保留主体一人，场景整洁、光线自然、结构清楚，不用强虚化或密集装饰。
-【构图】{composition}。人物轮廓清楚，脸和嘴无遮挡；不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
+【构图】{composition}。人物轮廓清楚，双臂与躯干边界可辨，脸和嘴无遮挡；不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
 
 REDESIGN_IDENTITY_BLOCK = "\n【身份】以图一和图二的同一人物为身份参考，保持五官比例、脸型、肤色与年龄感。"
 
@@ -571,7 +571,10 @@ def compose_image_prompt(
         song_block = f"\n\n【本次歌曲】{title}"
         if song_mood:
             song_block += f"\n歌曲情绪与氛围：{song_mood}"
-        song_block += "\n歌曲只影响表情与整体氛围，不改变服装或场景类型。"
+        song_block += (
+            "\n歌曲决定造型、背景氛围与表情。" if redesign
+            else "\n歌曲只影响表情与整体氛围，不改变服装或场景类型。"
+        )
         prompt += song_block
     text = (feedback or "").strip()
     if text and mode in {"image", "both"}:
