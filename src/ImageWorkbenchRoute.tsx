@@ -230,7 +230,7 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>「API 自动生成这一步」每次只请求一张；人物图完成后会检查相似度，低分不会暗中重做或重复扣费。需要重做时请再明确点击一次。</p></div>
+        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>人物图先生成一张，放大前用 DS 检查双手；手部不合格时最多定向修改一次并复检。身份低分不会自动重做，封面使用最终人物图。</p></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
           {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}

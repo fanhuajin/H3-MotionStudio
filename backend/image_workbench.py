@@ -448,30 +448,17 @@ def person_prompt(folder: Path, kind: str) -> str:
     )
 
 
-async def _hands_verdict(candidate: Path) -> tuple[bool, int]:
-    """手部自检：返回 (是否合格, 问题条数)。
-
-    判据本身失败（视觉端点不可用等）时**不阻断链路**：按合格放行、不重试 ——
-    自检是质量门槛，不是出片前提（与身份自检同一条口径）。
-    """
-    try:
-        result = await batch_ai.judge_hands(candidate)
-    except Exception:  # noqa: BLE001 - 自检失败不该把整条链路判失败
-        return True, 0
-    problems = [str(item) for item in (result.get("problems") or [])]
-    return bool(result.get("hands_ok")), len(problems)
-
-
 def _compliance_note(report: dict[str, Any]) -> str:
     """把合规自检结果变成一句给用户看的话（拼进 AUTOMATIONS 的收尾消息）。"""
+    hand_note = "手部已定向修正并复检通过；" if report.get("hand_repaired") else ""
     compliant = report.get("compliant")
     if compliant is None:
-        return ""
+        return hand_note.rstrip("；")
     if compliant:
-        return "着装合规自检已通过"
+        return hand_note + "着装合规自检已通过"
     issues = "、".join(str(item) for item in (report.get("issues") or [])[:3]) or "疑似擦边"
     return (
-        f"⚠️ 着装合规自检未通过（{issues}）：本次所有尝试都不合规，"
+        f"{hand_note}⚠️ 着装合规自检未通过（{issues}）：本次所有尝试都不合规，"
         "建议点「重新生成这一步」，或换一个源视频"
     )
 
@@ -479,17 +466,11 @@ def _compliance_note(report: dict[str, Any]) -> str:
 async def _generate_person(
     folder: Path, kind: str, *, allow_uncertain_retry: bool = False
 ) -> int:
-    """API 出一张人物图并做身份/着装综合自检，不因低分暗中再次扣费。
+    """API 生成人物图，放大前检查身份、着装和手部。
 
     用户 2026-09-19：「人物相似度 必须70%以上」。
-    返回最终保留那张的相似度；判据本身失败（模型不可用等）时不重试、不卡链路，
-    直接收下当次结果并返回 -1 —— 自检只是质量门槛，不是出片前提。
-
-    ⚠️ **手指不再做自动判据**（2026-09-19 实测记录见 `AGENTS.md`）：同一条「手部结构对不对」
-    的判据换 DeepSeek / gemini-3.1-pro / gpt-5.6 三个模型标定，结果是「严格提示词把用户认可的
-    图也全判不合格、放宽提示词把你指出的坏图也判成合格」——跟着措辞走而不是看图，不能当门槛。
-    所以手部靠**提示词约束**（`batch_ai.VIDEO_READY_BLOCK` 禁止比心/剪刀手、要求结构正确），
-    出图后由用户在页面上看一眼，不对就点「重新生成这一步」。
+    身份低分与着装问题仍只提示；手部明确有问题时按用户新口径定向修正一次并复检。
+    DS 无结果或修正仍不合格时保留候选图，等待人工处理，不生成封面。
     """
     frame = asset_path(folder, "frame")
     ratio = "4:3" if kind == "singing" else "9:16"
@@ -504,8 +485,7 @@ async def _generate_person(
     try:
         scene, _ = await batch_image.defocus_reference_face(frame, work)
         candidate = work / "person.png"
-        # 单次生成 + 身份/着装综合自检，与批量全自动链路共用同一份实现；低分或不合规时
-        # 页面如实提示，由用户明确点击重做，不在后台继续产生图片费用。
+        # 与批量备料共用流程；只有手部明确不合格才多一次图片修改请求。
         # 两边的行为不会跑偏。合规结论写进状态消息，页面能看到原因。
         report: dict[str, Any] = {}
         _, similarity = await batch_image.generate_person_image(
@@ -627,7 +607,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                 if step == "person":
                     if force or not (folder / PERSON_NAME).is_file():
                         _set_auto(folder_id, status="running", stage="person",
-                                  message=f"正在生成人物图（只请求一次，完成后检查相似度）", kind=kind)
+                                  message="正在生成人物图（放大前检查双手，必要时定向修正一次）", kind=kind)
                         person_score = await _generate_person(
                             folder, kind,
                             allow_uncertain_retry=bool(force and stage == "person"),

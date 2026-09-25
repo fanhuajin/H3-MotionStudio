@@ -1906,7 +1906,8 @@ async def _prepare_review_work(
                 # 而日志里只有一句笼统的连接失败，看不出是代理没生效。
                 batch_store.add_item_log(
                     batch_id, item_id,
-                    f"已向中转站发出人物图请求（本次只生成 1 张；完成后检查相似度，低分不会自动重做；"
+                    f"已向中转站发出人物图请求（首图 1 张；放大前 DS 检查手部，不合格只修正 1 次；"
+                    f"身份低分不会自动重做；"
                     f"{batch_image.route_note()}）……",
                 )
             if provider == "local":
@@ -1920,8 +1921,8 @@ async def _prepare_review_work(
                     on_progress=report,
                 )
             else:
-                # 人物图只请求一次，再用一次 DS 综合检查身份与着装。低分/不合规只提示，
-                # 不在用户没有明确操作时继续烧图片额度。与 /images 页面同一条实现。
+                # 首图后用一次 DS 同时检查身份、着装与手部；只有手部明确不合格
+                # 才按用户新口径在放大前自动定向修正一次。身份低分/着装问题仍只提示。
                 compliance_report: dict[str, object] = {}
                 _, similarity = await batch_image.generate_person_image(
                     scene_image=scene,
@@ -1944,6 +1945,11 @@ async def _prepare_review_work(
                     batch_store.add_item_log(
                         batch_id, item_id,
                         f"候选人物图已生成（用时 {spent} 秒）；身份自检这次没跑成，不影响出片。",
+                    )
+                if compliance_report.get("hand_repaired"):
+                    batch_store.add_item_log(
+                        batch_id, item_id,
+                        "原始人物图手部未通过 DS 检查，已定向修正并复检通过，随后完成放大。",
                     )
                 if compliance_report.get("compliant") is False:
                     issues = "、".join(
