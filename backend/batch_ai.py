@@ -740,7 +740,7 @@ action_prompt / camera_prompt 返回空字符串。"""
 - song_name：识别出的歌曲名（跳舞视频返回空字符串）；无法确定时返回空字符串
 - song_mood：一句话概括这首歌的情绪、调性与氛围（例如「抒情慢板，克制的失恋感，偏冷的蓝调」）；
   这句会直接进入出图提示词，用来决定人物的情绪表达与画面色调。无法确定时返回空字符串
-- tags：**优先用原标签**（去掉 # 后按原顺序取），**不足 5 个才自己补**；恰好 5 个不带 # 的中文标签
+- tags：**优先用原标签**（去掉 # 后按原顺序取），含「抖音」「B站」「小红书」的标签一律跳过，**不足 5 个才自己补**；恰好 5 个不带 # 的中文标签
   （不多不少），不要出现「画面」「描述」「评论区」这类无意义词
 
 {section_three}{adjustment}
@@ -811,7 +811,7 @@ def copy_prompt(
   「看到最后别走开」这类一律禁止，用户明确说过「不要这种话」）；
   必须与{subject}对得上（不要写画面里没有的颜色、道具或场景），但**绝对不要复述画面**
   （不许出现「图中 / 身穿 / 站在…前 / 光线映出」这类描述句）——文案是用来表达自己的，不是画面说明
-- tags：**优先用原标签**（去掉 # 后按原顺序取），**不足 5 个才自己补**
+- tags：**优先用原标签**（去掉 # 后按原顺序取），含「抖音」「B站」「小红书」的标签一律跳过，**不足 5 个才自己补**
   （补的时候按 {tags_rule} 挑）；恰好 5 个不带 # 的中文标签
   （不多不少），不要出现「画面」「描述」「评论区」这类无意义词
 
@@ -1053,7 +1053,7 @@ def _clean_tags(values: Any, *, kind: str = "singing") -> list[str]:
     cleaned: list[str] = []
     for value in values or []:
         name = str(value or "").strip().lstrip("#").strip()
-        if not name or name in cleaned or name in PLACEHOLDER_VALUES:
+        if not name or name in cleaned or name in PLACEHOLDER_VALUES or _has_platform_word(name):
             continue
         if any(marker in name for marker in INTERACTION_MARKERS):
             continue
@@ -1061,6 +1061,10 @@ def _clean_tags(values: Any, *, kind: str = "singing") -> list[str]:
             continue
         cleaned.append(name)
     return cleaned
+
+
+def _has_platform_word(name: str) -> bool:
+    return any(word in name.casefold() for word in ("抖音", "b站", "小红书"))
 
 
 # 「没识别出来」的占位值：模型认不出歌名时可能回这些，绝不能当成标签发出去
@@ -1282,7 +1286,7 @@ def ensure_copy_fields(
             *TAG_POOL.get(kind, TAG_POOL["singing"]),
         ]:
             name = str(candidate or "").strip().lstrip("#").strip()
-            if not name or name in tags or name in PLACEHOLDER_VALUES:
+            if not name or name in tags or name in PLACEHOLDER_VALUES or _has_platform_word(name):
                 continue
             if kind == "dance" and has_singing_wording(name):
                 continue

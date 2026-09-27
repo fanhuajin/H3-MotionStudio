@@ -2970,6 +2970,18 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn('原标签：["舞蹈", "日常"]', captured["text"])
         self.assertIn("能沿用就直接沿用", captured["text"])
 
+    def test_platform_tags_are_removed_and_replaced(self) -> None:
+        result = {
+            "introduction": "已有简介",
+            "tags": ["#抖音热歌", "舞蹈", "B站翻跳", "小红书日常", "卡点"],
+        }
+        batch_ai.ensure_copy_fields(
+            result, kind="dance", source_tags=["抖音热门", "夜景", "B站推荐"]
+        )
+        self.assertEqual(result["tags"][:3], ["舞蹈", "卡点", "夜景"])
+        self.assertEqual(len(result["tags"]), 5)
+        self.assertFalse(any(batch_ai._has_platform_word(tag) for tag in result["tags"]))
+
     def test_source_tags_fill_the_five_slots_before_the_song_name(self) -> None:
         """标签不足 5 个时**原标签优先**（用户 2026-09-21 选了「原标签优先占满 5 个」）。"""
         result = {
