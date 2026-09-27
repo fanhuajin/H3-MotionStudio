@@ -6571,6 +6571,16 @@ class BatchShutdownTests(unittest.TestCase):
             self.assertEqual(batch_worker.shutdown_tick(), "scheduled")
             self.assertEqual(_SHUTDOWN_CALLS, [batch_worker.shutdown_delay_seconds()])
 
+    def test_shutdown_after_prep_ignores_exception_items(self) -> None:
+        from backend import batch_worker
+
+        state = new_batch_state(["https://v.douyin.com/a", "https://v.douyin.com/b"], [], shutdown_after_prep=True)
+        state["items"][0]["status"] = "confirmed"
+        state["items"][1]["status"] = "failed"
+        self.assertTrue(batch_worker.batch_ready_for_shutdown(state))
+        state["items"][1]["status"] = "pending"
+        self.assertFalse(batch_worker.batch_ready_for_shutdown(state))
+
     def test_batch_shutdown_waits_until_every_item_is_done(self) -> None:
         """只要有条目还在排队 / 等你确认 / 待出片 / 出片，就不许关机。"""
         from backend import batch_worker

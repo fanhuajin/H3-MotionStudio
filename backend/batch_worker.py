@@ -4887,7 +4887,8 @@ def batch_ready_for_shutdown(state: dict[str, Any]) -> bool:
             return False
         if any(item.get("status") in {"running", "completed"} or item.get("videoJobId") for item in items):
             return False
-        return not any(item.get("status") in {"pending", "revising", "awaiting_review", "failed"} for item in items) and any(item.get("status") == "confirmed" for item in items)
+        # 异常条目已从备料区移走，不再阻止其余备料完成后的关机。
+        return not any(item.get("status") in {"pending", "revising", "awaiting_review"} for item in items) and any(item.get("status") == "confirmed" for item in items)
     if not items or shutdown_unfinished_items(state):
         return False
     # 至少有一条真的出完片：全是「失败 / 跳过」时更像是出了故障，不关机器（用户回来还要处理）。
