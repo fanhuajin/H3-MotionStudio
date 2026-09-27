@@ -1969,10 +1969,16 @@ async def _prepare_review_work(
             # **不退回抽帧**（用户 2026-09-23：「回退抽帧也是错误的，直接告诉我错误就好了」）：
             # 一张「人物图 = 抽帧」的废图会一路带到成片（脸是模型自己编的）和封面，还白烧
             # 几十分钟 GPU。直接让这一条备料失败：批次把它标黄、继续下一条，修好后点「重新开始」。
+            uncertain_request = "结果未确认" in str(error) or "未重复调用 DS" in str(error)
+            recovery = (
+                "请先核对中转站与 DS 的请求结果；如需重新计费出图，在图片与封面页明确点「重新生成这一步」。"
+                if uncertain_request else
+                "请在图片与封面页点「重新生成这一步」，或点「重新开始」重跑这一条。"
+            )
             note = (
                 f"⚠️ 候选人物图生成失败：{error}"
                 f"（出网方式：{batch_image.route_note()}）。本次**不退回抽帧**；"
-                "请在图片与封面页点「重新生成这一步」，或点「重新开始」重跑这一条。"
+                f"{recovery}"
             )
             batch_store.add_item_log(batch_id, item_id, note)
             raise RuntimeError(note) from error
