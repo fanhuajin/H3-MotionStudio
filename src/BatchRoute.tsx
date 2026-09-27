@@ -170,6 +170,7 @@ interface BatchItem {
   downloadJobId?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  prepAttemptStartedAt?: string | null;
   finishedAt?: string | null;
   /** 源视频文件名（含抖音作品号） */
   sourceName?: string;
@@ -421,8 +422,8 @@ function itemZoneStatus(item: BatchItem): string {
 }
 
 function prepElapsedMs(item: BatchItem, nowMs: number): number | null {
-  const startedAt = (item.milestones || []).find((step) => step.id === "download")?.startedAt
-    || (item.milestones || []).find((step) => step.id === "prepare")?.startedAt;
+  const startedAt = item.prepAttemptStartedAt
+    || (item.milestones || []).find((step) => step.status === "running" && ["download", "prepare"].includes(step.id))?.startedAt;
   return elapsedMs(startedAt, null, nowMs);
 }
 
@@ -2026,7 +2027,7 @@ export function BatchRoute() {
                             {batch?.status === "running"
                               && batch.currentItemId === item.id
                               && !item.prepReady
-                              && ["running", "confirmed"].includes(item.status)
+                              && item.status === "running"
                               && prepElapsedMs(item, batchNowTick) !== null && (
                                 <small className="batch-elapsed">
                                   <Timer weight="fill" />备料已用 {formatElapsedMs(prepElapsedMs(item, batchNowTick)!)} · {prepPhase(item)}

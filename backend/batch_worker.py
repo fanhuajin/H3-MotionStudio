@@ -1495,6 +1495,7 @@ async def _prepare_review(
 
 async def _run_prep(batch_id: str, item_id: str) -> None:
     """单链路备料：下载、预审、人物图、文案和两张封面全部落盘。"""
+    _set_item(batch_id, item_id, prepAttemptStartedAt=now_iso())
     existing = _item(batch_id, item_id)
     if existing.get("status") == "confirmed":
         _set_item(batch_id, item_id, status="running", stage="prepare", coverOnlyPrep=True)
