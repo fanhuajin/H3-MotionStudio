@@ -210,10 +210,6 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
     if youth_styled:
         # 发布文案保持原样；只把送往图片接口的封面描述改为中性舞蹈文案。
         introduction = "轻快的舞步与明亮的节奏，呈现自然大方的舞蹈画面。"
-    outfit = (
-        "画面人物为成年人，保留参考图的面部身份与背景氛围；服装改为配色相近的日常休闲款式。"
-        if youth_styled else "沿用参考图的服装与自然妆感。"
-    )
     return f"""参考人物和背景，将标题、简介融入图片生成 {ratio} 尺寸封面。
 不要添加任何平台的 Logo、水印、角标或文字（标题和简介本身除外）。
 画面里只能有参考图里这一个人：不要添加第二个人、路人、观众、伴舞或其他人物，
@@ -223,7 +219,7 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
 简介：
 {introduction}
 
-{outfit}
+完整保留参考图中人物的服装款式、颜色、配饰、发型、姿态和房间背景；只为标题和简介重新安排画面留白，不更换衣服或场景。
 【手部硬要求】沿用参考图的姿态与手势，不要自行设计新手势；手若入镜须五指分明、结构自然。
 {batch_ai.SHARPNESS_BLOCK.strip()}
 【服装】自然得体的日常服装，面料不透明，适合公开发布。""".strip()
