@@ -5295,6 +5295,31 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original_db
 
+    def test_uncertain_person_request_needs_explicit_retry(self) -> None:
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            from backend import batch_store as store_module
+            with patch.object(store_module, "DB_PATH", root / "batches.db"):
+                store = BatchStore()
+                state = new_batch_state(["https://v.douyin.com/a"], [])
+                state["items"][0]["status"] = "failed"
+                store.create(state)
+                item_id = state["items"][0]["id"]
+                work = root / "batches" / state["id"] / item_id
+                work.mkdir(parents=True)
+                marker = work / "candidate_r0_attempt1.png.request-pending"
+                marker.write_text("submitted", encoding="utf-8")
+                with patch.object(batch_worker, "DATA_DIR", root), patch.object(batch_worker, "batch_store", store):
+                    with self.assertRaises(ValueError):
+                        batch_worker.restart_item_to_run(state["id"], item_id)
+                    self.assertTrue(marker.exists())
+                    batch_worker.restart_item_to_run(state["id"], item_id, allow_uncertain_retry=True)
+                    self.assertFalse(marker.exists())
+                    self.assertEqual(len(list(work.glob("*.previous-unknown-*"))), 1)
+
     def test_restart_without_images_goes_back_to_prep(self) -> None:
         """图被删掉之后「重新开始」必须回备料**重新出图**（2026-09-20 用户要求）。
 

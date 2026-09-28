@@ -1349,7 +1349,7 @@ async def adjust_batch_item(batch_id: str, item_id: str, request: BatchAdjustReq
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/retry")
-async def retry_batch_item(batch_id: str, item_id: str):
+async def retry_batch_item(batch_id: str, item_id: str, allowUncertainRetry: bool = False):
     """重新开始这条任务：失败 / 已跳过 / **已出片**的条目都能重来。
 
     用户 2026-09-14：「跳过的视频允许我重新开始」+「开始中的任务允许取消重新开始」——
@@ -1370,7 +1370,10 @@ async def retry_batch_item(batch_id: str, item_id: str):
 
     # 重置逻辑与批量「重新开始」共用同一份（batch_worker.restart_item_to_run），
     # 免得单条与批量两边的行为慢慢跑偏。
-    direct = restart_item_to_run(batch_id, item_id)
+    try:
+        direct = restart_item_to_run(batch_id, item_id, allow_uncertain_retry=allowUncertainRetry)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
     batch_store.add_item_log(batch_id, item_id, restart_item_log(direct))
     return _resume_batch(batch_id, "已重新开始跳过的条目。")
 

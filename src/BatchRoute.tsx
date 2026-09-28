@@ -720,6 +720,24 @@ export function BatchRoute() {
     await call(`items/${item.id}${action ? `/${action}` : ""}`, method, body);
   };
 
+  const retryFailedItem = async (item: BatchItem) => {
+    const error = item.error || "";
+    if (!error.includes("结果未确认") && !error.includes("未重复调用 DS")) {
+      await itemCallFor(item, "retry");
+      return;
+    }
+    const imageUnknown = error.includes("人物图请求已经提交") || error.includes("人物图请求结果未确认");
+    if (!(await askConfirm({
+      title: imageUnknown ? "重新请求人物图？" : "重新检查修手图？",
+      detail: imageUnknown
+        ? "上次人物图请求结果未知。确认后会再次请求中转站，可能产生新费用；请先核对中转站账单。"
+        : "修手图已保留。确认后只重新调用 DS 检查这张图，可能产生一次检查费用，不会重新生成图片。",
+      items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+      confirmLabel: imageUnknown ? "确认重新出图" : "确认重新检查",
+    }))) return;
+    await itemCallFor(item, "retry?allowUncertainRetry=true");
+  };
+
   /** 批量操作：勾选后一次确认 / 跳过 / 删除（后端逐个校验，出片仍一条一条来）。 */
   const batchOp = async (
     action: "confirm-many" | "retry-many" | "skip-many" | "delete-many",
@@ -1161,7 +1179,7 @@ export function BatchRoute() {
       );
     }
     if (item.status === "failed") {
-      return <button onClick={() => void itemCallFor(item, "retry")}><ArrowClockwise />重试</button>;
+      return <button onClick={() => void retryFailedItem(item)}><ArrowClockwise />重试</button>;
     }
     if (["skipped", "completed"].includes(item.status)) {
       return (
@@ -1233,7 +1251,8 @@ export function BatchRoute() {
                     ) {
                       return;
                     }
-                    await itemCall("retry");
+                    if (item.status === "failed") await retryFailedItem(item);
+                    else await itemCall("retry");
                   })()
                 }
                 title={hasImage ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}

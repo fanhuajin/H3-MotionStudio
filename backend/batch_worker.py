@@ -761,7 +761,15 @@ def _adopt_published_image_for_restart(
     return _adopt_published_image(batch_id, item_id, item, work, revision)
 
 
-def restart_item_to_run(batch_id: str, item_id: str) -> bool:
+def uncertain_person_checkpoints(batch_id: str, item_id: str) -> list[Path]:
+    """只找人物图链路留下的结果未知标记，不触碰已有图片或检查结果。"""
+    work = DATA_DIR / "batches" / batch_id / item_id
+    return sorted(work.glob("candidate_r*_attempt*.png.request-pending")) + sorted(
+        work.glob("candidate_r*_attempt*.png.judge-pending")
+    )
+
+
+def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: bool = False) -> bool:
     """把一条**已经结束**的条目重置成可以重跑的状态，返回它是否直接续跑。
 
     失败 / 已跳过 / 已出片共用的重置逻辑（单条「重试 / 重新开始」与批量「重新开始」
@@ -778,6 +786,12 @@ def restart_item_to_run(batch_id: str, item_id: str) -> bool:
       **强制重出人物图**（用户 2026-09-20 报的就是「重新点击又给我重新出图」）。
     """
     box: dict[str, bool] = {}
+    checkpoints = uncertain_person_checkpoints(batch_id, item_id)
+    if checkpoints and not allow_uncertain_retry:
+        raise ValueError("人物图请求或检查结果仍未确认；普通重试不会重复计费。请明确确认后再重试。")
+    if allow_uncertain_retry:
+        for checkpoint in checkpoints:
+            checkpoint.rename(checkpoint.with_name(f"{checkpoint.name}.previous-unknown-{uuid.uuid4().hex[:8]}"))
 
     # 有候选图就直接续跑；没有但发布目录里有出好的那张 → 先收编，同样是"只重跑出片"。
     # 这两件事要读磁盘/发布目录，放在改状态之前做。
@@ -892,7 +906,11 @@ def restart_batch_items(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
         if status not in RETRYABLE_ITEM_STATUSES:
             rejected.append({"id": item_id, "reason": "还没出片，不用重新开始"})
             continue
-        direct = restart_item_to_run(batch_id, item_id)
+        try:
+            direct = restart_item_to_run(batch_id, item_id)
+        except ValueError as error:
+            rejected.append({"id": item_id, "reason": str(error)})
+            continue
         batch_store.add_item_log(batch_id, item_id, restart_item_log(direct))
         # 「重新开始」时先把发布成品**体检**一次：缺人物图 / 封面就把「缺什么」写进条目日志。
         # 只报告、不自动出图（2026-09-16 用户：「去除图片生成的自动化流程吧 只保留生成字幕的流程」）。
