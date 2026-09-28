@@ -323,6 +323,21 @@ class ImageWorkbenchTests(unittest.TestCase):
                     asyncio.run(workbench._generate_cover(folder, "bilibili", "singing"))
             self.assertFalse(marker.exists())
 
+    def test_coalesced_policy_rejection_clears_cover_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            marker = folder / ".h3-bilibili-request-pending"
+
+            async def rejected(**kwargs):
+                raise RuntimeError("图片接口错误 400：内容政策拒绝")
+
+            with patch.object(workbench.batch_image, "generate_candidate_image", rejected), \
+                 patch.object(workbench, "asset_path", return_value=folder / "人物图.png"), \
+                 patch.object(workbench, "prompt", return_value="封面提示词"):
+                with self.assertRaisesRegex(RuntimeError, "内容政策"):
+                    asyncio.run(workbench._generate_cover(folder, "bilibili", "singing"))
+            self.assertFalse(marker.exists())
+
     def test_interrupted_person_request_is_not_automatically_repeated(self) -> None:
         """人物图 attempt 留有请求标记时，不再调用图片接口。"""
         with tempfile.TemporaryDirectory() as raw:

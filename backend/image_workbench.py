@@ -571,6 +571,10 @@ async def _generate_cover(
             completion.set_result((False, str(exc)))
         raise
     except BaseException as exc:
+        # 同一请求被计费去重层合并时，明确的政策 400 可能被转成 RuntimeError；
+        # 结果已确定为拒绝，不能留下“结果未知”标记阻止用户日后主动重试。
+        if "图片接口错误 400" in str(exc) and "内容政策" in str(exc):
+            marker.unlink(missing_ok=True)
         if not completion.done():
             completion.set_result((False, str(exc)))
         raise

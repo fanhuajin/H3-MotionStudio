@@ -1561,11 +1561,12 @@ async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
     retry_authorized = bool(item.get("retryMissingCovers"))
     if retry_authorized:
         _set_item(batch_id, item_id, retryMissingCovers=False)
-    await _generate_covers_via_api(
+    cover_errors = await _generate_covers_via_api(
         batch_id, item_id, folder, allow_uncertain_retry=retry_authorized
     )
     if not _covers_ready(_item(batch_id, item_id)):
-        raise RuntimeError("封面未全部生成；已保留现有文件，请检查日志后重试缺失部分")
+        detail = f"：{cover_errors[0]}" if cover_errors else ""
+        raise RuntimeError(f"封面未全部生成{detail}；已保留现有文件")
 
 
 def _adopt_previous_work(batch_id: str, item_id: str) -> bool:
@@ -2278,7 +2279,7 @@ def spawn_api_covers(
 async def _generate_covers_via_api(
     batch_id: str, item_id: str, folder: Path, *, force: bool = False,
     allow_uncertain_retry: bool = False,
-) -> None:
+) -> list[str]:
     """走中转站出两张封面：`B站4x3.png`（4:3）与 `抖音3x4.png`（3:4）。
 
     与 `/images` 页面「API 自动生成这一步」是同一个实现（`image_workbench._generate_cover`），
@@ -2288,6 +2289,7 @@ async def _generate_covers_via_api(
 
     item = _item(batch_id, item_id)
     kind = str(item.get("kind") or "singing")
+    errors: list[str] = []
     async with _COVER_LOCK:
         for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
             if not force and any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
@@ -2304,6 +2306,7 @@ async def _generate_covers_via_api(
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001 - 封面失败不该把整条作品判失败
+                errors.append(f"{label}{error}")
                 batch_store.add_item_log(
                     batch_id, item_id,
                     f"{label}自动生成失败（不影响出片，用时 {int(time.monotonic() - started)} 秒）：{error}",
@@ -2313,6 +2316,7 @@ async def _generate_covers_via_api(
                 batch_id, item_id,
                 f"{label}已生成并放进发布目录（用时 {int(time.monotonic() - started)} 秒）。",
             )
+    return errors
 
 
 def _maybe_spawn_covers(batch_id: str, item_id: str, *, only_missing: bool = False) -> bool:
