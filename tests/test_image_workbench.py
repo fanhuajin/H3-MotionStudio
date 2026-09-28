@@ -438,36 +438,33 @@ class ImageWorkbenchTests(unittest.TestCase):
                 workbench.save_upload(folder, "person", png(1152, 2048), "dance")
         self.assertEqual(calls, [folder], "只有封面需要锁文案；人物图不该触发")
 
-    def test_prompts_forbid_broken_hands(self) -> None:
-        """手部只靠提示词约束：不许自创手势、不许画崩（用户 2026-09-19）。"""
+    def test_person_prompt_handles_hands_without_changing_cover_art(self) -> None:
+        """人物图保留手部约束，封面仅沿用已有原图。"""
         self.assertIn("手**可以入镜**", batch_ai.VIDEO_READY_BLOCK)
         self.assertIn("禁止手指比心、剪刀手、指尖相触", batch_ai.VIDEO_READY_BLOCK)
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             cover = workbench.prompt(folder, "bilibili", "dance")
-        self.assertIn("手部硬要求", cover)
-        self.assertIn("五指分明", cover)
-        self.assertIn("不要自行设计新手势", cover)
+        self.assertIn("完整保留原图", cover)
+        self.assertIn("标题：测试标题", cover)
+        self.assertIn("简介：测试简介", cover)
+        self.assertIn("4:3 横版", cover)
+        self.assertNotIn("手部硬要求", cover)
+        self.assertNotIn("五指分明", cover)
 
-    def test_prompts_forbid_blurry_hands(self) -> None:
-        """2026-09-20 用户：「生成的图片有的手会模糊 禁止模糊」＋「复制提示词也是复制你的」。
-
-        手工复制与自动出图共用精简人物图提示词；封面也须保留清晰度要求。
-        ⚠️ 用户 2026-09-20 追加要求**复制出去的那份和自动出图那份是同一段**：所以这里
-        直接断言 `batch_ai.SHARPNESS_BLOCK` 原文出现，而不是"含某个词"——
-        以后改口径只改 `batch_ai` 一处，四个入口（自动出图 / 复制提示词 / 素材包 / 封面）一起变。
-        """
+    def test_person_prompt_keeps_sharpness_rule_out_of_cover(self) -> None:
+        """人物图复制提示词和素材包同源；封面不重复手部清晰度长规则。"""
         block = batch_ai.SHARPNESS_BLOCK.strip()
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             person = workbench.prompt(folder, "person", "dance")
             cover = workbench.prompt(folder, "douyin", "dance")
-            # 素材包里的 提示词.txt 就是 `prompt()` 的产物，这里只验它带同一段
+        # 素材包里的 提示词.txt 就是人物图 `prompt()` 的产物。
             zipped = workbench.material_zip(folder, "person", "dance")
         self.assertIn(block, person, "复制出去的人物图提示词必须是同一段禁止模糊口径")
-        self.assertIn(block, cover, "封面提示词也要带同一段")
+        self.assertNotIn(block, cover, "封面只叠加文字，不重新要求绘制手部")
         import io
         import zipfile
 
@@ -495,7 +492,7 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn(block, person, "人物图提示词必须带背景清理整段")
         self.assertIn("只保留主体一人", person)
         self.assertIn("不用强虚化", person)
-        self.assertIn("画面里只能有参考图里这一个人", cover)
+        self.assertIn("画面仍只有参考图中的一人", cover)
         self.assertNotIn(block, cover, "封面不写背景风格规则（用户 2026-09-19）")
 
         import zipfile
@@ -510,8 +507,8 @@ class ImageWorkbenchTests(unittest.TestCase):
             self.assertIn("只能有参考人物图里这一个人", instruction)
         self.assertIn("只能有参考图里这一个人", cover_common.PROMPT_TEMPLATE)
 
-    def test_manual_prompts_carry_the_outfit_compliance_rule(self) -> None:
-        """手工入口（复制提示词 / 素材包）也必须带**过度裸露**那三条，且按平台原文豁免吊带/露肩。
+    def test_person_prompt_keeps_outfit_rule_out_of_cover(self) -> None:
+        """人物图保留着装约束，封面不重复要求改造原图服装。
 
         `prompt()` 的人物图分支现在与批量备料共用短提示词。
         口径 = 小红书规则页原文（① 大面积裸露 ② 透视/裸色 ③ 紧身到凸点轮廓突出）。
@@ -526,8 +523,8 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("自然精致淡妆", person)
         self.assertLess(len(person), 900)
         self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内
-        self.assertIn("【服装】", cover)
-        self.assertIn("面料不透明", cover)
+        self.assertNotIn("【服装】", cover)
+        self.assertNotIn("面料不透明", cover)
 
 
 if __name__ == "__main__":

@@ -198,25 +198,14 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
         return batch_ai.compose_image_prompt(kind)
     # 画幅话术只写比例、不写平台名（用户 2026-09-20：封面多平台复用，提示词里出现
     # 「B站」/「抖音」会让模型把对应平台的 logo 画进封面）。
-    # 2026-09-21：封面**只加**「只能有这一个人」这一句主体约束，**不写**背景清理规则
-    # （用户 2026-09-19：「封面图不需要出现 背景规则」）—— 背景跟着人物图走即可，
-    # 人物图那一步已经把背景清成单人 + 干净了。
+    # 封面只在人物图上排标题和简介，不再附加人物图生成阶段的手部、服装和背景规则。
     ratio = "4:3 横版" if stage == "bilibili" else "3:4 竖版"
     title = _copy_field(copy, "标题") or _title(copy, folder.name)
     introduction = _copy_field(copy, "简介")
-    return f"""参考人物和背景，将标题、简介融入图片生成 {ratio} 尺寸封面。
-不要添加任何平台的 Logo、水印、角标或文字（标题和简介本身除外）。
-画面里只能有参考图里这一个人：不要添加第二个人、路人、观众、伴舞或其他人物，
-也不要把人物复制成多个。
-标题：
-{title}
-简介：
-{introduction}
-
-沿用参考图的服装与自然妆感。
-【手部硬要求】沿用参考图的姿态与手势，不要自行设计新手势；手若入镜须五指分明、结构自然。
-{batch_ai.SHARPNESS_BLOCK.strip()}
-{batch_ai.PLATFORM_SAFE_BLOCK.strip()}""".strip()
+    return f"""以参考图为底图制作 {ratio} 封面。尽量完整保留原图的人物、姿态、服装、背景、光线和构图；只将下列文字自然融入画面。调整画幅时不要裁掉人物的重要部分。
+标题：{title}
+简介：{introduction}
+画面仍只有参考图中的一人。除标题和简介外，不添加其他文字、平台 Logo、水印或角标。""".strip()
 
 
 def material_zip(folder: Path, stage: str, kind: str) -> bytes:
