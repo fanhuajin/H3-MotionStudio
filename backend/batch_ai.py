@@ -414,11 +414,9 @@ PERSON_IMAGE_JUDGE_SCHEMA = {
         "differences": {"type": "array", "items": {"type": "string"}},
         "compliant": {"type": "boolean"},
         "issues": {"type": "array", "items": {"type": "string"}},
-        "hands_ok": {"type": "boolean"},
-        "hand_issues": {"type": "array", "items": {"type": "string"}},
         "verdict": {"type": "string"},
     },
-    "required": ["same_person", "similarity", "differences", "compliant", "issues", "hands_ok", "hand_issues", "verdict"],
+    "required": ["same_person", "similarity", "differences", "compliant", "issues", "verdict"],
 }
 _PERSON_JUDGE_INFLIGHT: dict[str, asyncio.Future[tuple[dict[str, Any] | None, str]]] = {}
 
@@ -426,7 +424,7 @@ _PERSON_JUDGE_INFLIGHT: dict[str, asyncio.Future[tuple[dict[str, Any] | None, st
 async def judge_person_image(
     identity: Path, candidate: Path, *, request_key: str | None = None
 ) -> dict[str, Any]:
-    """一次视觉调用同时完成身份、着装与手部检查，避免同一张成图向 DS 发送多遍。"""
+    """一次视觉调用同时完成身份与着装检查。"""
     key = str(request_key or "").strip()
     existing = _PERSON_JUDGE_INFLIGHT.get(key) if key else None
     if existing is not None:
@@ -442,11 +440,6 @@ async def judge_person_image(
         IDENTITY_JUDGE_INSTRUCTION
         + "\n\n【同时检查发布着装】\n"
         + COMPLIANCE_JUDGE_INSTRUCTION
-        + "\n\n【手部检查】只看第二张生成图。逐只检查可见的手：明显运动模糊、"
-          "多指、缺指、粘连、反常关节、肤色或亮度与脸和前臂明显不一致，"
-          "以及手腕与袖口交界模糊时，hands_ok=false 并在 hand_issues 简述。"
-          "握拳、自然遮挡或画面裁切导致看不见全部手指，不能仅凭看不到五指判错；"
-          "没有可见的手则 hands_ok=true。只报告看得见的明确问题，不猜测。"
         + "\n第一张图只用于确认身份；第二张图是需要同时检查身份相似度与着装的生成图。"
     )
     content = [
@@ -590,21 +583,6 @@ def compose_image_prompt(
     if text and mode in {"image", "both"}:
         prompt += f"\n【本次修改】{text}"
     return prompt + "\n\n" + (REDESIGN_IDENTITY_BLOCK if redesign else IDENTITY_PRIORITY_BLOCK).strip()
-
-
-def hand_repair_prompt(original_prompt: str) -> str:
-    """以初次生成图为图一，在放大前定向修正手部。"""
-    identity = (REDESIGN_IDENTITY_BLOCK if original_prompt.rstrip().endswith(REDESIGN_IDENTITY_BLOCK.strip())
-                else IDENTITY_PRIORITY_BLOCK).strip()
-    body = original_prompt.replace(identity, "").strip()
-    return (
-        body
-        + "\n【本次手部修正】图一是刚生成的人物图，保持其脸、服装、姿势、场景和构图。"
-          "只修正手、手腕及有拖影的袖口：每只可见的手指数量与关节正确、轮廓清楚，"
-          "肤色和亮度与脸及前臂协调；袖口纹理、衣肤交界自然清晰。"
-          "动作看不清时改成位置相近的简单自然手势。\n\n"
-        + identity
-    )
 
 
 ACTION_RULES = """\

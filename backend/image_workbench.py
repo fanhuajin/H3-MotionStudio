@@ -31,8 +31,7 @@ COVER_NAMES = {"bilibili": "B站4x3.png", "douyin": "抖音3x4.png"}
 LEGACY_COVER_NAMES = {"bilibili": "封面_B站4x3.png", "douyin": "封面_抖音3x4.png"}
 TARGETS = {"bilibili": (1448, 1086), "douyin": (1086, 1448)}
 # 人物图完成后仍检查 70 分门槛，但默认只生成一次；低分由用户明确决定是否重做。
-# ⚠️ 手部**没有**自动判据：三个视觉模型标定下来都不可靠（见 `_generate_person` 的说明），
-# 手部只靠提示词约束 + 用户看图后自己点「重新生成这一步」。
+# 手部只在提示词中约束，成图问题由用户自行处理，不自动校验或重绘。
 PERSON_MIN_SIMILARITY = batch_image.PERSON_MIN_SIMILARITY
 PERSON_MAX_ATTEMPTS = batch_image.PERSON_MAX_ATTEMPTS
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -450,15 +449,14 @@ def person_prompt(folder: Path, kind: str) -> str:
 
 def _compliance_note(report: dict[str, Any]) -> str:
     """把合规自检结果变成一句给用户看的话（拼进 AUTOMATIONS 的收尾消息）。"""
-    hand_note = "手部已定向修正并复检通过；" if report.get("hand_repaired") else ""
     compliant = report.get("compliant")
     if compliant is None:
-        return hand_note.rstrip("；")
+        return ""
     if compliant:
-        return hand_note + "着装合规自检已通过"
+        return "着装合规自检已通过"
     issues = "、".join(str(item) for item in (report.get("issues") or [])[:3]) or "疑似擦边"
     return (
-        f"{hand_note}⚠️ 着装合规自检未通过（{issues}）：本次所有尝试都不合规，"
+        f"⚠️ 着装合规自检未通过（{issues}）：本次所有尝试都不合规，"
         "建议点「重新生成这一步」，或换一个源视频"
     )
 
@@ -466,11 +464,11 @@ def _compliance_note(report: dict[str, Any]) -> str:
 async def _generate_person(
     folder: Path, kind: str, *, allow_uncertain_retry: bool = False
 ) -> int:
-    """API 生成人物图，放大前检查身份、着装和手部。
+    """API 生成人物图，放大前检查身份与着装。
 
     用户 2026-09-19：「人物相似度 必须70%以上」。
-    身份低分与着装问题仍只提示；手部明确有问题时按用户新口径定向修正一次并复检。
-    DS 无结果或修正仍不合格时保留候选图，等待人工处理，不生成封面。
+    身份低分与着装问题只提示；手部问题由用户自行处理。
+    DS 无结果时保留候选图，等待人工处理，不生成封面。
     """
     frame = asset_path(folder, "frame")
     ratio = "4:3" if kind == "singing" else "9:16"
@@ -485,8 +483,7 @@ async def _generate_person(
     try:
         scene, _ = await batch_image.defocus_reference_face(frame, work)
         candidate = work / "person.png"
-        # 与批量备料共用流程；只有手部明确不合格才多一次图片修改请求。
-        # 两边的行为不会跑偏。合规结论写进状态消息，页面能看到原因。
+        # 与批量备料共用流程。合规结论写进状态消息，页面能看到原因。
         report: dict[str, Any] = {}
         _, similarity = await batch_image.generate_person_image(
             scene_image=scene,

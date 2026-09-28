@@ -181,8 +181,8 @@ class ImageWorkbenchTests(unittest.TestCase):
             upscale.assert_not_called()
             self.assertFalse((folder / workbench.PERSON_NAME).is_file())
 
-    def test_bad_hands_get_one_edit_and_second_check_before_upscale(self) -> None:
-        """中转站原图 → DS → 定向修改 → DS 复检 → 放大；不生成第三张。"""
+    def test_hand_result_does_not_trigger_edit_or_block_upscale(self) -> None:
+        """旧检查缓存即使包含手部失败，也只使用首次生成图。"""
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             identity = root / "identity.png"
@@ -190,15 +190,14 @@ class ImageWorkbenchTests(unittest.TestCase):
             events: list[str] = []
 
             async def generate(**kwargs):
-                events.append("edit" if "handfix" in str(kwargs["output_path"]) else "initial")
-                Path(kwargs["output_path"]).write_bytes(png_shade(576, 1024, 80 if len(events) > 2 else 30))
-                self.assertIs(kwargs["upscale"], False)
+                events.append("generate")
+                Path(kwargs["output_path"]).write_bytes(png_shade(576, 1024, 30))
                 return Path(kwargs["output_path"])
 
-            async def judge(_identity, candidate, **_kwargs):
-                events.append("check-edit" if "handfix" in str(candidate) else "check-initial")
+            async def judge(*_args, **_kwargs):
+                events.append("judge")
                 return {"similarity": 85, "compliant": True, "issues": [],
-                        "hands_ok": "handfix" in str(candidate), "hand_issues": []}
+                        "hands_ok": False, "hand_issues": ["手指模糊"]}
 
             async def upscale(path, ratio, progress):
                 events.append("upscale")
@@ -209,44 +208,15 @@ class ImageWorkbenchTests(unittest.TestCase):
                  patch.object(workbench.batch_image, "_upscale_after_relay", upscale):
                 output, score = asyncio.run(workbench.batch_image.generate_person_image(
                     scene_image=root / "scene.png", identity_image=identity,
-                    prompt="图一造型。" + batch_ai.IDENTITY_PRIORITY_BLOCK.strip(),
-                    ratio="9:16", output_path=root / "person.png",
+                    prompt="图一造型", ratio="9:16", output_path=root / "person.png",
                 ))
 
-            self.assertEqual(events, ["initial", "check-initial", "edit", "check-edit", "upscale"])
+            self.assertEqual(events, ["generate", "judge", "upscale"])
             self.assertEqual(score, 85)
-            self.assertEqual(shade_of(output), 80)
+            self.assertEqual(shade_of(output), 30)
+            self.assertFalse((root / "person_attempt1_handfix.png").exists())
 
-    def test_still_bad_after_hand_edit_never_upscales(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            identity = root / "identity.png"
-            identity.write_bytes(png_shade(64, 64, 55))
-            calls = 0
-
-            async def generate(**kwargs):
-                nonlocal calls
-                calls += 1
-                Path(kwargs["output_path"]).write_bytes(png_shade(576, 1024, 30))
-                return Path(kwargs["output_path"])
-
-            async def judge(*_args, **_kwargs):
-                return {"similarity": 85, "compliant": True, "issues": [],
-                        "hands_ok": False, "hand_issues": ["手指模糊"]}
-
-            with patch.object(workbench.batch_image, "generate_candidate_image", generate), \
-                 patch.object(workbench.batch_ai, "judge_person_image", judge), \
-                 patch.object(workbench.batch_image, "_upscale_after_relay") as upscale:
-                with self.assertRaisesRegex(RuntimeError, "修正后仍未通过"):
-                    asyncio.run(workbench.batch_image.generate_person_image(
-                        scene_image=root / "scene.png", identity_image=identity,
-                        prompt="图一造型", ratio="9:16", output_path=root / "person.png",
-                    ))
-            self.assertEqual(calls, 2)
-            upscale.assert_not_called()
-            self.assertFalse((root / "person.png").exists())
-
-    def test_unknown_hand_edit_result_is_not_billed_again(self) -> None:
+    def test_old_hand_edit_pending_does_not_block_original(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             identity = root / "identity.png"
@@ -262,13 +232,14 @@ class ImageWorkbenchTests(unittest.TestCase):
             )
             with patch.object(workbench.batch_image, "generate_candidate_image") as generate, \
                  patch.object(workbench.batch_image, "_upscale_after_relay") as upscale:
-                with self.assertRaisesRegex(RuntimeError, "结果未确认"):
-                    asyncio.run(workbench.batch_image.generate_person_image(
-                        scene_image=root / "scene.png", identity_image=identity,
-                        prompt="图一造型", ratio="9:16", output_path=root / "person.png",
-                    ))
+                output, score = asyncio.run(workbench.batch_image.generate_person_image(
+                    scene_image=root / "scene.png", identity_image=identity,
+                    prompt="图一造型", ratio="9:16", output_path=root / "person.png",
+                ))
             generate.assert_not_called()
-            upscale.assert_not_called()
+            upscale.assert_called_once()
+            self.assertEqual(score, 85)
+            self.assertEqual(output.read_bytes(), original.read_bytes())
 
     def test_definite_person_policy_rejection_does_not_leave_unknown_marker(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

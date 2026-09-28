@@ -937,16 +937,10 @@ async def generate_person_image(
     compliance: dict[str, Any] | None = None,
     request_key: str | None = None,
 ) -> tuple[Path, int]:
-    """首图放大前用同一次 DS 检查身份、着装和手；手不合格时只修正一次。
+    """首图放大前检查身份与着装，不自动校验或重绘手部。
 
-    批量备料与 `/images` 页面的生成按钮共用这一份实现。低于门槛时保留本次结果并展示
-    分数，由用户决定是否明确重做；调用方仍可显式传 max_attempts>1 做离线标定。
-
-    `batch_ai.judge_person_image` 首次综合检查；只有手部明确不合格才多一次
-    图片编辑与 DS 复检。身份低分或着装问题仍只提示，不触发额外出图。
-    调用方显式传 max_attempts>1 时仍会在多张里优先保留合规且分数最高的一张。
-    可选 `compliance` 是调用方传进来的 dict，函数会写入 `compliant` / `issues`，供页面显示。
-    DS 无可用结论或修正后仍不合格时保留检查点并报错，不进入放大和封面。
+    批量备料与 `/images` 共用此流程。身份低分与着装问题只提示，
+    不触发额外出图；显式多次尝试供离线标定使用。计费请求继续保留检查点。
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -966,9 +960,6 @@ async def generate_person_image(
             compliance.update({
                 "compliant": cached_report.get("compliant"),
                 "issues": [str(item) for item in (cached_report.get("issues") or [])],
-                "hands_ok": cached_report.get("hands_ok"),
-                "hand_issues": [str(item) for item in (cached_report.get("hand_issues") or [])],
-                "hand_repaired": bool(cached_report.get("hand_repaired")),
             })
         await _upscale_after_relay(output_path, ratio, on_progress)
         try:
@@ -984,7 +975,6 @@ async def generate_person_image(
     last_compliant: bool | None = None
     last_issues: list[str] = []
     for attempt in range(1, max(1, max_attempts) + 1):
-        hand_repaired = False
         candidate = work_dir / f"{output_path.stem}_attempt{attempt}{output_path.suffix}"
         image_pending = candidate.with_name(candidate.name + ".request-pending")
         if not candidate.is_file():
@@ -1021,7 +1011,7 @@ async def generate_person_image(
             from . import batch_ai
 
             if on_progress:
-                await on_progress(0.0, "原始人物图已生成，正在放大前检查身份、着装与双手")
+                await on_progress(0.0, "原始人物图已生成，正在放大前检查身份与着装")
 
             judge_cache = candidate.with_name(candidate.name + ".judge.json")
             judge_pending = candidate.with_name(candidate.name + ".judge-pending")
@@ -1040,58 +1030,9 @@ async def generate_person_image(
                 else:
                     judge_cache.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
                     judge_pending.unlink(missing_ok=True)
-            if result.get("hands_ok") is False:
-                if on_progress:
-                    await on_progress(0.0, "DS 检查发现手部问题，正在定向修正（仅一次）")
-                repaired = candidate.with_name(candidate.stem + "_handfix" + candidate.suffix)
-                repair_pending = repaired.with_name(repaired.name + ".request-pending")
-                if not repaired.is_file():
-                    if repair_pending.is_file():
-                        raise RuntimeError("手部修正请求结果未确认；为避免重复扣费，未自动重发")
-                    repair_pending.write_text(str(time.time()), encoding="utf-8")
-                    try:
-                        await generate_candidate_image(
-                            scene_image=candidate,
-                            identity_image=Path(identity_image) if identity_image is not None else None,
-                            prompt=batch_ai.hand_repair_prompt(prompt),
-                            ratio=ratio,
-                            output_path=repaired,
-                            on_progress=on_progress,
-                            request_key=f"{request_key or output_path}:handfix",
-                            upscale=False,
-                        )
-                    except BaseException as error:
-                        if isinstance(error, (PolicyRejected, RelayUnreachable)):
-                            repair_pending.unlink(missing_ok=True)
-                        if isinstance(error, asyncio.CancelledError):
-                            raise
-                        raise RuntimeError(f"手部修正请求失败：{error}") from error
-                    repair_pending.unlink(missing_ok=True)
-                repair_cache = repaired.with_name(repaired.name + ".judge.json")
-                repair_judge_pending = repaired.with_name(repaired.name + ".judge-pending")
-                if repair_cache.is_file():
-                    result = json.loads(repair_cache.read_text(encoding="utf-8"))
-                else:
-                    if repair_judge_pending.is_file():
-                        raise RuntimeError("手部修正复检结果未确认；未重复调用 DS")
-                    repair_judge_pending.write_text(str(time.time()), encoding="utf-8")
-                    try:
-                        result = await batch_ai.judge_person_image(
-                            Path(identity_image), repaired,
-                            request_key=f"{request_key or output_path}:handfix-judge",
-                        )
-                    except Exception as error:
-                        raise RuntimeError(f"手部修正复检失败：{error}") from error
-                    repair_cache.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-                    repair_judge_pending.unlink(missing_ok=True)
-                if result.get("hands_ok") is False:
-                    raise RuntimeError("人物图手部修正后仍未通过 DS 复检；候选图已保留，未进入放大和封面")
-                candidate = repaired
-                hand_repaired = True
             score = max(0, min(100, int(result.get("similarity") or 0)))
         except Exception as error:
-            # DS 没有给出可用结论，就无法确认手部可用于视频；保留 1k 文件和请求
-            # 检查点，交由异常区处理，不能先放大、更不能据此生成封面。
+            # DS 没有给出可用结论；保留原始文件和请求检查点，交由异常区处理。
             raise RuntimeError(f"人物图放大前检查失败：{error}") from error
         compliant = bool(result.get("compliant", True))
         issues = [str(item) for item in (result.get("issues") or [])]
@@ -1107,7 +1048,7 @@ async def generate_person_image(
             best_score = score
             best_compliant = compliant
             best_issues = issues
-            best_result = {**result, "hand_repaired": hand_repaired}
+            best_result = result
         # 候选原图与复检结果保留到最终文件放大落盘，重启时可从检查点恢复。
         if score >= min_similarity and compliant:
             break
@@ -1124,9 +1065,6 @@ async def generate_person_image(
                 "issues": best_issues,
                 "last_compliant": last_compliant,
                 "last_issues": last_issues,
-                "hands_ok": best_result.get("hands_ok"),
-                "hand_issues": [str(item) for item in (best_result.get("hand_issues") or [])],
-                "hand_repaired": bool(best_result.get("hand_repaired")),
             }
         )
     return output_path, max(0, best_score)
