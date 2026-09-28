@@ -875,7 +875,7 @@ def restart_item_log(direct: bool) -> str:
     )
 
 
-def restart_batch_items(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
+def restart_batch_items(batch_id: str, item_ids: list[str], *, allow_uncertain_retry: bool = False) -> dict[str, Any]:
     """批量重新开始：失败 / 已跳过 / **已出片**的条目一次全部重来。
 
     用户 2026-09-15：「批量选择选择后加个批量重新开始」——跟批量确认/跳过/删除一套交互。
@@ -907,7 +907,7 @@ def restart_batch_items(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
             rejected.append({"id": item_id, "reason": "还没出片，不用重新开始"})
             continue
         try:
-            direct = restart_item_to_run(batch_id, item_id)
+            direct = restart_item_to_run(batch_id, item_id, allow_uncertain_retry=allow_uncertain_retry)
         except ValueError as error:
             rejected.append({"id": item_id, "reason": str(error)})
             continue

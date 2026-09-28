@@ -547,6 +547,7 @@ class BatchItemIdsRequest(BaseModel):
     """批量操作：一次确认 / 跳过 / 删除多条条目（出片仍严格一条一条）。"""
 
     itemIds: list[str] = Field(default_factory=list)
+    allowUncertainRetry: bool = False
 
 
 def _batch_or_404(batch_id: str) -> dict[str, Any]:
@@ -1483,7 +1484,7 @@ async def retry_batch_items_endpoint(batch_id: str, request: BatchItemIdsRequest
     _batch_or_404(batch_id)
     if not request.itemIds:
         raise HTTPException(400, "请先勾选要重新开始的条目")
-    result = restart_batch_items(batch_id, request.itemIds)
+    result = restart_batch_items(batch_id, request.itemIds, allow_uncertain_retry=request.allowUncertainRetry)
     restarted = result.get("restarted") or []
     rejected = result.get("rejected") or []
     if not restarted:

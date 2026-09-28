@@ -744,7 +744,13 @@ export function BatchRoute() {
     ask?: ConfirmAsk,
   ) => {
     if (!batch || selectedIds.size === 0) return;
-    if (ask && !(await askConfirm(ask))) return;
+    const uncertainRetry = action === "retry-many" && selectedItems.some((item) =>
+      item.status === "failed" && ((item.error || "").includes("结果未确认") || (item.error || "").includes("未重复调用 DS")));
+    const retryAsk = uncertainRetry && ask ? {
+      ...ask,
+      detail: `${ask.detail || ""} 其中有结果未知的计费请求：确认后会逐条重试，可能产生新的图片或 DS 检查费用；请先核对账单。`,
+    } : ask;
+    if (retryAsk && !(await askConfirm(retryAsk))) return;
     const endpoint = `/api/batches/${batch.id}/items/${action}`;
     setBusyAction(action);
     setError("");
@@ -752,7 +758,7 @@ export function BatchRoute() {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemIds: [...selectedIds] }),
+        body: JSON.stringify({ itemIds: [...selectedIds], allowUncertainRetry: uncertainRetry }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, "批量操作失败"));
       setBatch(await readJson<BatchState>(response, "批量操作失败"));
