@@ -1795,7 +1795,7 @@ async def run_clean_workflow(job_id: str, drive_name: str, params: dict[str, Any
 
 
 async def run_migrate_pipeline(job_id: str) -> None:
-    """动作迁移任务：可选去字幕 → SCAIL 长视频动作迁移/人物替换 → 可选 1080P 高清。
+    """动作迁移任务：直接用源视频做 SCAIL 动作迁移/人物替换，再按需二采高清。
 
     不涉及 RVC：输出保留原视频音频与帧率。与其它任务共用 pipeline_lock（单任务互斥）。
     """
@@ -1820,21 +1820,7 @@ async def run_migrate_pipeline(job_id: str) -> None:
             mode = state.get("migrateMode") or "animation"
             drive_name = state["sourceInputName"]
 
-            if state.get("removeSubtitles"):
-                store.update(job_id, stage="cleaning")
-                store.add_log(job_id, "去字幕开关已开启：先运行 ProPainter 去字幕工作流。")
-                cleaned = await run_clean_workflow(
-                    job_id,
-                    drive_name,
-                    params,
-                    f"video/H3_MotionStudio/{job_id}_clean",
-                )
-                store.update(job_id, cleanOutput=str(cleaned), cleanReady=True)
-                store.add_log(job_id, f"无字幕视频已保存：{cleaned.name}")
-                drive_input = await asyncio.to_thread(link_into_input_as, cleaned, job_id, "clean")
-                drive_name = drive_input.name
-            else:
-                store.add_log(job_id, "去字幕开关未开启：直接使用上传的原视频作为驱动视频。")
+            store.add_log(job_id, "直接使用上传的原视频作为驱动视频，不去字幕。")
 
             reference_name = state.get("referenceInputName") or MIGRATE_REFERENCE.name
             if not (COMFY_INPUT / reference_name).is_file():

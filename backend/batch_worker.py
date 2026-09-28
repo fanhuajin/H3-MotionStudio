@@ -2696,7 +2696,7 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
             migrate_mode = "animation"
         data = {
             "ratio": ratio,
-            "remove_subtitles": "1" if ai.get("remove_subtitles") else "0",
+            "remove_subtitles": "0",
             "mode": migrate_mode,
             "content_prompt": str(ai.get("content_prompt") or ""),
             "video_prompt": str(ai.get("video_prompt") or ""),
@@ -3822,7 +3822,7 @@ def reset_review_row(row: dict[str, Any]) -> None:
     """把条目行重置回「等待你的确认」（纯函数，调用方自己负责持久化）。
 
     用户 2026-09-14：「我希望可以回到等待你的确认的页面，有可能我需要重新修改内容」——
-    出片之后想换人物图 / 改画布比例 / 改跳舞条目的「去除字幕」时，必须能退回审核点。
+    出片之后想换人物图 / 改画布比例 / 改迁移模式时，必须能退回审核点。
     `reviewApproved` 一并清掉：退回确认页就代表上一次的放行作废，重新点确认才会再出片。
     旧成片留在发布目录里（`outputs` 不删），只是流程重新变成待办。
     """
@@ -3849,32 +3849,6 @@ def reset_review_row(row: dict[str, Any]) -> None:
 def reset_item_to_review(batch_id: str, item_id: str) -> None:
     batch_store.mutate_item(batch_id, item_id, reset_review_row)
 
-
-def set_item_remove_subtitles(batch_id: str, item_id: str, value: bool) -> dict[str, Any]:
-    """跳舞条目的「是否去除字幕」：和画布比例同一规则，没开始出片就能改。
-
-    用户 2026-09-14：「跳舞视频我想要修改是否去除字幕这个操作」——以前这个值由预审模型
-    给出且**只能看不能改**，现在在审核点（以及任何还没出片的状态）可以自己决定，
-    确认出片时按这个值提交迁移工作流。
-    """
-    item = _item(batch_id, item_id)
-    if str(item.get("kind") or "") != "dance":
-        raise ValueError("只有跳舞条目有「去除字幕」开关")
-    if not item_settings_editable(item):
-        raise ValueError("这一条正在出片或已经完成，请先点「回到确认」再改去除字幕")
-    ai = dict(item.get("ai") or {})
-    ai["remove_subtitles"] = bool(value)
-
-    def apply(row: dict[str, Any]) -> None:
-        row["ai"] = ai
-
-    batch_store.mutate_item(batch_id, item_id, apply)
-    batch_store.add_item_log(
-        batch_id,
-        item_id,
-        "已改为：先跑一遍去字幕再迁移。" if value else "已改为：直接用源视频驱动，不去字幕。",
-    )
-    return batch_store.get(batch_id) or {}
 
 def set_item_migrate_mode(batch_id: str, item_id: str, mode: str) -> dict[str, Any]:
     """跳舞条目的「迁移模式」：动作迁移（默认）/ 人物替换，规则与画布比例完全一致。
@@ -3921,7 +3895,7 @@ async def _finish_abandoned(batch_id: str, item_id: str, *, deleted: bool) -> No
     if not deleted and current.get("reopenRequested"):
         reset_item_to_review(batch_id, item_id)
         batch_store.add_item_log(
-            batch_id, item_id, "已回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认。"
+            batch_id, item_id, "已回到「等待你的确认」，可以换图或改比例后重新确认。"
         )
         if (batch_store.get(batch_id) or {}).get("status") in {"completed", "cancelled", "failed"}:
             batch_store.update(

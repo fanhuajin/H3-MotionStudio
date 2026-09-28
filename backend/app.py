@@ -75,7 +75,6 @@ from .batch_worker import (
     set_batch_shutdown_after_prep,
     set_item_migrate_mode,
     set_item_ratio,
-    set_item_remove_subtitles,
     shutdown_disabled,
     shutdown_status,
     stage_media,
@@ -495,12 +494,6 @@ class BatchAutoRenderRequest(BaseModel):
 
 class BatchItemRatioRequest(BaseModel):
     ratio: str
-
-
-class BatchItemSubtitlesRequest(BaseModel):
-    """跳舞条目的「是否去除字幕」开关。"""
-
-    removeSubtitles: bool
 
 
 class BatchItemMigrateModeRequest(BaseModel):
@@ -1158,22 +1151,6 @@ async def set_batch_item_ratio(
         raise HTTPException(400, str(error)) from error
 
 
-@app.post("/api/batches/{batch_id}/items/{item_id}/remove-subtitles")
-async def set_batch_item_remove_subtitles(
-    batch_id: str, item_id: str, request: BatchItemSubtitlesRequest
-):
-    """跳舞条目：改「是否去除字幕」（出片前先跑一遍 ProPainter 去字幕）。
-
-    这个值原先只由预审模型决定、页面上只能看；用户 2026-09-14 要求可以自己改，
-    规则与画布比例一致——没开始出片就能改，出片时按当前值提交迁移工作流。
-    """
-    _batch_item_or_404(batch_id, item_id)
-    try:
-        return set_item_remove_subtitles(batch_id, item_id, request.removeSubtitles)
-    except ValueError as error:
-        raise HTTPException(400, str(error)) from error
-
-
 @app.post("/api/batches/{batch_id}/items/{item_id}/migrate-mode")
 async def set_batch_item_migrate_mode(
     batch_id: str, item_id: str, request: BatchItemMigrateModeRequest
@@ -1193,7 +1170,7 @@ async def set_batch_item_migrate_mode(
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/reopen-review")
 async def reopen_batch_item_review(batch_id: str, item_id: str):
-    """回到「等待你的确认」：换图 / 改比例 / 改去除字幕后重新确认出片。
+    """回到「等待你的确认」：换图或改比例后重新确认出片。
 
     用户 2026-09-14：「我希望可以回到等待你的确认的页面，有可能我需要重新修改内容，
     现在回不去」——出片之后（含正在出片）必须能退回来重做。
@@ -1244,7 +1221,7 @@ async def reopen_batch_item_review(batch_id: str, item_id: str):
             batch_id, notice="正在安全取消当前出片，取消后这一条会回到「等待你的确认」。"
         )
     batch_store.add_item_log(
-        batch_id, item_id, "已回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认。"
+        batch_id, item_id, "已回到「等待你的确认」，可以换图或改比例后重新确认。"
     )
     state = batch_store.get(batch_id) or {}
     if state.get("status") in {"completed", "cancelled", "failed"}:
@@ -2005,7 +1982,8 @@ async def create_migrate_job(
         raise HTTPException(400, str(error)) from error
     if mode not in {"animation", "replacement"}:
         raise HTTPException(400, "迁移模式只能是 animation（动作迁移）或 replacement（人物替换）")
-    clean_on = remove_subtitles in {"1", "true", "on", "yes"}
+    # 用户已取消去字幕选择；旧客户端即使仍提交 true，也统一直接用源视频。
+    clean_on = False
     # 二采放大开关（默认开启）：迁移成片再做 4× 超分收 1080p 档，结果即最终成片
     upscale_on = use_upscale in {"1", "true", "on", "yes"}
 

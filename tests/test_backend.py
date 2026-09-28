@@ -5663,53 +5663,6 @@ class WorkflowPreparationTests(unittest.TestCase):
             finally:
                 batch_store_module.DB_PATH = original_db
 
-    def test_dance_item_can_toggle_remove_subtitles_before_production(self) -> None:
-        """跳舞条目的「去除字幕」用户可以自己改（2026-09-14）——没开始出片就能改，出片后拒绝。"""
-        from backend import batch_store as batch_store_module
-        from backend import batch_worker
-        from backend.batch_store import BatchStore
-
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
-            original_db = batch_store_module.DB_PATH
-            try:
-                batch_store_module.DB_PATH = Path(folder) / "queue.db"
-                store = BatchStore()
-                state = new_batch_state([], ["https://v.douyin.com/dance"])
-                item = state["items"][0]
-                item.update(
-                    status="awaiting_review",
-                    stage="review",
-                    ai={"reference_image_path": "x.png", "remove_subtitles": True},
-                )
-                store.create(state)
-
-                with patch.object(batch_worker, "batch_store", store):
-                    state_after = batch_worker.set_item_remove_subtitles(state["id"], item["id"], False)
-                    row = state_after["items"][0]
-                    self.assertFalse(row["ai"]["remove_subtitles"])
-                    self.assertTrue(any("不去字幕" in log["message"] for log in row["logs"]))
-                    # 还没出片（confirmed）也能改：用户要求「未开始前的任务都允许修改」
-                    store.mutate_item(state["id"], item["id"], lambda r: r.update(status="confirmed"))
-                    state_after = batch_worker.set_item_remove_subtitles(state["id"], item["id"], True)
-                    self.assertTrue(state_after["items"][0]["ai"]["remove_subtitles"])
-                    # 正在出片 / 已出片：拒绝，要先回到确认
-                    for blocked in ("running", "completed"):
-                        store.mutate_item(state["id"], item["id"], lambda r, s=blocked: r.update(status=s))
-                        with self.assertRaises(ValueError):
-                            batch_worker.set_item_remove_subtitles(state["id"], item["id"], False)
-
-                # 歌曲条目没有这个开关
-                song_state = new_batch_state(["https://v.douyin.com/song"], [])
-                song_state["items"][0].update(status="awaiting_review", ai={"reference_image_path": "x.png"})
-                store.create(song_state)
-                with patch.object(batch_worker, "batch_store", store):
-                    with self.assertRaises(ValueError):
-                        batch_worker.set_item_remove_subtitles(
-                            song_state["id"], song_state["items"][0]["id"], False
-                        )
-            finally:
-                batch_store_module.DB_PATH = original_db
-
     def test_spa_entry_is_never_cached(self) -> None:
         """SPA 入口必须 no-store：index.html 引用带 hash 的 bundle，缓存住刷新也只是旧前端。"""
         import asyncio
@@ -10697,6 +10650,66 @@ class CoverSingleReferenceFallbackTests(unittest.IsolatedAsyncioTestCase):
             await self._run(scene, identity, multi_ok=False)
         self.assertEqual([plan for plan, _ in self.plans][0], "multi")
         self.assertEqual(len(self.plans), 1)
+
+
+class NoSubtitleMigrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_legacy_true_request_creates_a_direct_migration(self) -> None:
+        """旧客户端要求去字幕时，新任务仍直接使用源视频。"""
+        from io import BytesIO
+        from starlette.datastructures import UploadFile
+        from backend import app as app_module
+
+        with tempfile.TemporaryDirectory() as raw:
+            video = UploadFile(BytesIO(b"video"), filename="source.mp4")
+            reference = UploadFile(BytesIO(b"image"), filename="person.png")
+            with patch.object(app_module, "COMFY_INPUT", Path(raw)), \
+                 patch.object(app_module, "gpu_holder", return_value=None), \
+                 patch.object(app_module, "media_metadata", new=AsyncMock(return_value={
+                     "fps": 30, "frames": 90, "duration": 3,
+                 })), \
+                 patch.object(app_module.store, "create"), \
+                 patch.object(app_module, "spawn", side_effect=lambda task: task.close()):
+                state = await app_module.create_migrate_job(
+                    video=video, reference_image=reference, ratio="9:16",
+                    remove_subtitles="1", mode="animation", content_prompt="",
+                    video_prompt="", image_prompt="", use_upscale="0",
+                )
+        self.assertFalse(state["removeSubtitles"])
+        self.assertFalse(any(step["id"] == "paint" for step in state["milestones"]))
+
+
+    async def test_saved_legacy_true_job_skips_propainter(self) -> None:
+        """旧任务里保存的 true 也不得在执行时触发去字幕。"""
+        from unittest.mock import MagicMock
+        from backend import pipeline
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "person.png").write_bytes(b"image")
+            draft = root / "draft.mp4"
+            draft.write_bytes(b"video")
+            state = {
+                "status": "queued", "canvas": "9:16", "migrateMode": "animation",
+                "sourceInputName": "source.mp4", "referenceInputName": "person.png",
+                "removeSubtitles": True, "useUpscale": False,
+            }
+            fake_store = MagicMock()
+            fake_store.get.return_value = state
+            with patch.object(pipeline, "store", fake_store), \
+                 patch.object(pipeline, "COMFY_INPUT", root), \
+                 patch.object(pipeline, "claim_job_run", new=AsyncMock(return_value=True)), \
+                 patch.object(pipeline, "_guard_source_video", new=AsyncMock()), \
+                 patch.object(pipeline.resources, "ensure_comfy", new=AsyncMock()), \
+                 patch.object(pipeline, "raise_if_cancelled"), \
+                 patch.object(pipeline, "prepare_migrate_workflow", return_value={}), \
+                 patch.object(pipeline, "run_clean_workflow", new=AsyncMock()) as clean, \
+                 patch.object(pipeline, "run_comfy_workflow", new=AsyncMock(return_value=draft)), \
+                 patch.object(pipeline, "media_metadata", new=AsyncMock(return_value={})):
+                await pipeline.run_migrate_pipeline("legacy-job")
+            clean.assert_not_awaited()
+            self.assertTrue(any("直接使用上传的原视频" in call.args[1]
+                                for call in fake_store.add_log.call_args_list))
+
 
 
 if __name__ == "__main__":

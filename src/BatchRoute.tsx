@@ -867,7 +867,7 @@ export function BatchRoute() {
   const canReplaceSource = Boolean(
     selected && !["running", "revising", "completed", "deleted"].includes(selected.status),
   );
-  // 画布比例 / 去除字幕：没开始出片的条目都能改（审核区是主要入口，见 renderSettings）
+  // 画布比例：没开始出片的条目能改（审核区是主要入口，见 renderSettings）
   const selectedRatio = selected ? itemRatio(selected) : DEFAULT_RATIO.singing;
   // 出了审核点（已加入队列/出片中/已完成）以后，同一屏信息继续显示，但只读：
   // 用户 2026-09-13「等待你的确认 的信息在加入队列之后也要展示，只是不允许修改了」。
@@ -875,11 +875,6 @@ export function BatchRoute() {
   const changeRatio = (ratio: CanvasRatio) => {
     if (!selected || selectedRatio === ratio) return;
     void itemCall("ratio", "POST", { ratio });
-  };
-  const selectedSubtitles = Boolean(selected?.ai?.remove_subtitles);
-  const changeSubtitles = (value: boolean) => {
-    if (!selected || selectedSubtitles === value) return;
-    void itemCall("remove-subtitles", "POST", { removeSubtitles: value });
   };
   // 迁移模式：动作迁移（默认）/ 人物替换 —— 2026-09-15 用户想试人物替换的效果
   const selectedMigrateMode: MigrateMode =
@@ -889,10 +884,9 @@ export function BatchRoute() {
     void itemCall("migrate-mode", "POST", { mode });
   };
 
-  /** 出片前的两个设置（画布比例 + 跳舞条目的去除字幕）：审核区与「出片前设置」面板共用。 */
+  /** 出片前设置：画布比例与迁移模式。 */
   const renderSettings = (item: BatchItem) => {
     const ratio = itemRatio(item);
-    const subtitles = Boolean(item.ai?.remove_subtitles);
     // 迁移模式：老条目没有这个字段 → 按默认「动作迁移」显示（与出片时提交的默认值一致）
     const migrateMode: MigrateMode =
       item.ai?.migrate_mode === "replacement" ? "replacement" : "animation";
@@ -917,27 +911,6 @@ export function BatchRoute() {
             <i>{ratioDetail(item.kind, ratio)}</i>
           </div>
         </label>
-        {item.kind === "dance" && (
-          <label>
-            <span>去除字幕</span>
-            <div className="batch-ratio-pick" role="radiogroup" aria-label="出片前是否先去字幕">
-              {[true, false].map((value) => (
-                <button
-                  key={String(value)}
-                  type="button"
-                  role="radio"
-                  aria-checked={subtitles === value}
-                  className={subtitles === value ? "selected" : ""}
-                  disabled={Boolean(busyAction)}
-                  onClick={() => changeSubtitles(value)}
-                >
-                  {value ? "先去字幕再迁移" : "不去字幕"}
-                </button>
-              ))}
-              <i>{subtitles ? "出片前先跑一遍 ProPainter 去字幕" : "直接用源视频驱动，不去字幕"}</i>
-            </div>
-          </label>
-        )}
         {item.kind === "dance" && (
           <label>
             <span>迁移模式</span>
@@ -1291,7 +1264,7 @@ export function BatchRoute() {
                 title={
                   renderingNow(item)
                     ? "回到「等待你的确认」：会先安全取消这一条当前的出片"
-                    : "回到「等待你的确认」，可以换图、改比例或改去除字幕后重新确认（不会影响其它条目）"
+                    : "回到「等待你的确认」，可以换图或改比例后重新确认（不会影响其它条目）"
                 }
               >
                 <ArrowUUpLeft />回到确认

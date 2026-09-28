@@ -647,7 +647,7 @@ content_prompt / video_prompt / image_prompt 返回空字符串，remove_subtitl
 - content_prompt：画面内容与人物动作要求（交给动作迁移工作流的「内容提示词」）
 - video_prompt：驱动视频里人物的运动要求
 - image_prompt：参考图人物要求
-- remove_subtitles：源画面是否存在贯穿全程的硬字幕，存在返回 true，否则 false
+- remove_subtitles：固定返回 false，动作迁移直接使用源视频
 
 唯一的例外是**过度裸露**：按小红书规则原文只有三条，`image_prompt` 里要照它写 ——
 ① 不得露出事业线/乳沟（胸部必须被衣服完整盖住）；② 不得写透视、裸色这类像没穿衣服的材质；

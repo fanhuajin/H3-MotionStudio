@@ -45,7 +45,6 @@ const DRAFT_FILE_STORE = "files";
 interface MigrateDraft {
   ratio?: CanvasRatio;
   mode?: MigrateMode;
-  removeSubtitles?: boolean;
   useUpscale?: boolean;
   hd1080?: boolean;
   contentPrompt?: string;
@@ -221,17 +220,9 @@ function ratioNote(ratio: CanvasRatio, mode: MigrateMode) {
   return `${canvas} 成片 · ${mode === "animation" ? "动作迁移" : "人物替换"}`;
 }
 
-function migrateMilestoneSkeleton(removeSubtitles: boolean, mode: MigrateMode, ratio: CanvasRatio, useUpscale: boolean): Milestone[] {
+function migrateMilestoneSkeleton(mode: MigrateMode, ratio: CanvasRatio, useUpscale: boolean): Milestone[] {
   const transfer = mode === "replacement" ? "人物替换" : "动作迁移";
   const list: Milestone[] = [];
-  if (removeSubtitles) {
-    list.push(
-      { id: "read", label: "读取视频与音频", subtitle: "加载带字幕视频", status: "pending" },
-      { id: "mask", label: "定位底部字幕区域", subtitle: "固定底部字幕遮罩", status: "pending" },
-      { id: "paint", label: "ProPainter 时序去字幕", subtitle: "按前后帧修复字幕区域", status: "pending" },
-      { id: "clean_save", label: "输出无字幕视频", subtitle: "保留原音频与帧率", status: "pending" },
-    );
-  }
   list.push(
     { id: "prep", label: "加载 SCAIL 模型与人物参考", subtitle: "读取驱动视频并准备参考人物", status: "pending" },
     { id: "sam", label: "SAM3 人物追踪与遮罩", subtitle: "定位视频与参考图中的人物", status: "pending" },
@@ -300,7 +291,6 @@ export function MigrateRoute() {
   const draft = useMemo(() => readDraft(), []);
   const [ratio, setRatio] = useState<CanvasRatio>(draft?.ratio || "9:16");
   const [mode, setMode] = useState<MigrateMode>(draft?.mode || "animation");
-  const [removeSubtitles, setRemoveSubtitles] = useState<boolean>(draft?.removeSubtitles ?? false);
   const [useUpscale, setUseUpscale] = useState<boolean>(draft?.useUpscale ?? true);
   const [contentPrompt, setContentPrompt] = useState(draft?.contentPrompt ?? "a person singing");
   const [videoPrompt, setVideoPrompt] = useState(draft?.videoPrompt ?? "person");
@@ -322,11 +312,11 @@ export function MigrateRoute() {
   }, [lightboxImage]);
 
   // 运行/排队中的任务显示其真实里程碑；否则按当前表单设置实时预览
-  // （切换 4:3/9:16、模式、去字幕时流程文案立即同步）
+  // （切换 4:3/9:16、模式时流程文案立即同步）
   const liveJob = job && (job.status === "queued" || job.status === "running") ? job : null;
   const milestones = liveJob?.milestones?.length
     ? liveJob.milestones
-    : migrateMilestoneSkeleton(removeSubtitles, mode, ratio, useUpscale);
+    : migrateMilestoneSkeleton(mode, ratio, useUpscale);
   const isBusy = submitting || job?.status === "queued" || job?.status === "running";
   const jobActive = Boolean(liveJob);
   const tickNow = useNowTick(jobActive);
@@ -344,7 +334,6 @@ export function MigrateRoute() {
     writeDraft({
       ratio,
       mode,
-      removeSubtitles,
       useUpscale,
       contentPrompt,
       videoPrompt,
@@ -354,7 +343,7 @@ export function MigrateRoute() {
       imageName: imageFile?.name ?? null,
       imageSize: imageFile?.size ?? null,
     });
-  }, [ratio, mode, removeSubtitles, useUpscale, contentPrompt, videoPrompt, imagePrompt, file, imageFile]);
+  }, [ratio, mode, useUpscale, contentPrompt, videoPrompt, imagePrompt, file, imageFile]);
 
   const connectJob = useCallback((jobId: string) => {
     socketRef.current?.close();
@@ -518,7 +507,6 @@ export function MigrateRoute() {
         if (latest) {
           setRatio((latest.canvas as CanvasRatio) || "9:16");
           setMode((latest.migrateMode as MigrateMode) || "animation");
-          setRemoveSubtitles(Boolean(latest.removeSubtitles));
           setContentPrompt(latest.contentPrompt ?? "a person singing");
           setVideoPrompt(latest.videoPrompt ?? "person");
           setImagePrompt(latest.imagePrompt ?? "person");
@@ -526,7 +514,6 @@ export function MigrateRoute() {
           const draftSource = source as MigrateDraft;
           setRatio(draftSource.ratio || "9:16");
           setMode(draftSource.mode || "animation");
-          setRemoveSubtitles(draftSource.removeSubtitles ?? false);
           setContentPrompt(draftSource.contentPrompt ?? "a person singing");
           setVideoPrompt(draftSource.videoPrompt ?? "person");
           setImagePrompt(draftSource.imagePrompt ?? "person");
@@ -584,7 +571,6 @@ export function MigrateRoute() {
     form.append("video", file);
     if (imageFile) form.append("reference_image", imageFile);
     form.append("ratio", ratio);
-    form.append("remove_subtitles", removeSubtitles ? "1" : "0");
     form.append("use_upscale", useUpscale ? "1" : "0");
     form.append("mode", mode);
     form.append("content_prompt", contentPrompt);
@@ -622,7 +608,7 @@ export function MigrateRoute() {
         <div>
           <p className="route-eyebrow"><span /> H3 · ACTION MIGRATION</p>
           <h1>让参考人物，<em>动起来。</em></h1>
-          <p className="route-description">上传一段动作视频与人物参考图，按所选画布把动作迁移/替换到参考人物身上，可选去字幕，默认再做 4× 二采收 1080p 高清成片。</p>
+          <p className="route-description">上传一段动作视频与人物参考图，直接使用源视频完成动作迁移或人物替换，默认再做 4× 二采收 1080p 高清成片。</p>
         </div>
         <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
       </header>
@@ -738,19 +724,13 @@ export function MigrateRoute() {
             <div className="field-heading"><h2><span>5.</span> 处理选项</h2></div>
             <div className="option-stack">
               <ToggleRow
-                checked={removeSubtitles}
-                onChange={setRemoveSubtitles}
-                title="去除底部字幕"
-                description="视频底部有字幕/水印条时开启：先用 ProPainter 固定底部修复，再把干净视频用于迁移"
-              />
-              <ToggleRow
                 checked={useUpscale}
                 onChange={setUseUpscale}
                 title="二采放大 4×（默认开启）"
                 description="迁移成片再做 RealESRGAN 4× 超分并收 1080p 档，结果即最终成片；关闭则迁移成片即最终成片"
               />
             </div>
-            <p className="field-note">当前设置：{ratioNote(ratio, mode)}{removeSubtitles ? " · 先去除字幕" : ""}{useUpscale ? " · 二采 4× 收 1080p" : " · 不做二采放大"}。输出保留原视频音频与帧率。</p>
+            <p className="field-note">当前设置：{ratioNote(ratio, mode)}{useUpscale ? " · 二采 4× 收 1080p" : " · 不做二采放大"}。输出保留原视频音频与帧率。</p>
           </div>
 
           {!config.environmentReady && config.missingRequirements.length > 0 && (
@@ -766,7 +746,7 @@ export function MigrateRoute() {
 
           <button className="primary-action" onClick={submit} disabled={isBusy || !config.environmentReady}>
             {isBusy ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
-            {isBusy ? "正在执行单链路任务" : `开始${ratio === "9:16" ? "竖版" : "横版"}${removeSubtitles ? "去字幕+" : ""}${mode === "replacement" ? "人物替换" : "动作迁移"}${useUpscale ? "+二采4×" : ""}`}
+            {isBusy ? "正在执行单链路任务" : `开始${ratio === "9:16" ? "竖版" : "横版"}${mode === "replacement" ? "人物替换" : "动作迁移"}${useUpscale ? "+二采4×" : ""}`}
           </button>
         </section>
 
