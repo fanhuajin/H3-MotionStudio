@@ -479,6 +479,19 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("五指分明", cover)
         self.assertIn("不要自行设计新手势", cover)
 
+    def test_cover_prompt_neutralizes_youth_styling_without_changing_publish_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            copy = "标题：\n浅跳一下\n\n简介：\n日系过膝白袜的随性律动，甜妹跳舞"
+            source = folder / "发布文案.txt"
+            source.write_text(copy, encoding="utf-8")
+            cover = workbench.prompt(folder, "bilibili", "dance")
+            self.assertIn("浅跳一下", cover)
+            self.assertIn("日常休闲款式", cover)
+            self.assertNotIn("过膝白袜", cover)
+            self.assertNotIn("甜妹", cover)
+            self.assertEqual(source.read_text(encoding="utf-8"), copy)
+
     def test_prompts_forbid_blurry_hands(self) -> None:
         """2026-09-20 用户：「生成的图片有的手会模糊 禁止模糊」＋「复制提示词也是复制你的」。
 
