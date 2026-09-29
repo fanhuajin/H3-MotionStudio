@@ -1586,12 +1586,18 @@ async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
     retry_authorized = bool(item.get("retryMissingCovers"))
     if retry_authorized:
         _set_item(batch_id, item_id, retryMissingCovers=False)
+    batch_store.set_item_milestone(
+        batch_id, item_id, "prepare", status="running", progress=None, currentNode="正在准备封面"
+    )
     cover_errors = await _generate_covers_via_api(
         batch_id, item_id, folder, allow_uncertain_retry=retry_authorized
     )
     if not _covers_ready(_item(batch_id, item_id)):
         detail = f"：{cover_errors[0]}" if cover_errors else ""
         raise RuntimeError(f"封面未全部生成{detail}；已保留现有文件")
+    batch_store.set_item_milestone(
+        batch_id, item_id, "prepare", status="completed", progress=100, currentNode="两张封面已齐全"
+    )
 
 
 def _adopt_previous_work(batch_id: str, item_id: str) -> bool:
@@ -2310,31 +2316,40 @@ async def _generate_covers_via_api(
     kind = str(item.get("kind") or "singing")
     errors: list[str] = []
     async with _COVER_LOCK:
-        for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
-            if not force and any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
-                continue
-            batch_store.add_item_log(batch_id, item_id, f"已向中转站发出{label}请求……")
-            started = time.monotonic()
-            try:
-                if allow_uncertain_retry:
-                    await image_workbench._generate_cover(
-                        folder, stage, kind, allow_uncertain_retry=True
+        try:
+            for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
+                if not force and any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
+                    continue
+                _set_item(batch_id, item_id, coverStage=stage, coverStartedAt=now_iso())
+                if any(step.get("id") == "prepare" and step.get("status") == "running"
+                       for step in _item(batch_id, item_id).get("milestones") or []):
+                    batch_store.set_item_milestone(
+                        batch_id, item_id, "prepare", currentNode=f"正在生成{label}"
                     )
-                else:
-                    await image_workbench._generate_cover(folder, stage, kind)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:  # noqa: BLE001 - 封面失败不该把整条作品判失败
-                errors.append(f"{label}{error}")
+                batch_store.add_item_log(batch_id, item_id, f"已向中转站发出{label}请求……")
+                started = time.monotonic()
+                try:
+                    if allow_uncertain_retry:
+                        await image_workbench._generate_cover(
+                            folder, stage, kind, allow_uncertain_retry=True
+                        )
+                    else:
+                        await image_workbench._generate_cover(folder, stage, kind)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:  # noqa: BLE001 - 封面失败不该把整条作品判失败
+                    errors.append(f"{label}{error}")
+                    batch_store.add_item_log(
+                        batch_id, item_id,
+                        f"{label}自动生成失败（不影响出片，用时 {int(time.monotonic() - started)} 秒）：{error}",
+                    )
+                    continue
                 batch_store.add_item_log(
                     batch_id, item_id,
-                    f"{label}自动生成失败（不影响出片，用时 {int(time.monotonic() - started)} 秒）：{error}",
+                    f"{label}已生成并放进发布目录（用时 {int(time.monotonic() - started)} 秒）。",
                 )
-                continue
-            batch_store.add_item_log(
-                batch_id, item_id,
-                f"{label}已生成并放进发布目录（用时 {int(time.monotonic() - started)} 秒）。",
-            )
+        finally:
+            _set_item(batch_id, item_id, coverStage=None, coverStartedAt=None)
     return errors
 
 

@@ -345,18 +345,32 @@ class FullAutoImageTests(unittest.TestCase):
 
         root, folder, item = self._item(image="x", covers=("B站4x3.png",))
         calls: list[str] = []
+        item["milestones"] = [{"id": "prepare", "status": "running"}]
+        milestones: list[str] = []
 
         async def fake_generate(folder_arg, stage, kind):
             calls.append(stage)
+            self.assertEqual(item.get("coverStage"), stage)
+            self.assertTrue(item.get("coverStartedAt"))
+
+        def set_item(_batch, _item_id, **changes):
+            item.update(changes)
+
+        def set_milestone(_batch, _item_id, _step, **changes):
+            milestones.append(str(changes.get("currentNode")))
 
         with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), patch.object(
             batch_worker, "_item", lambda *_: item
         ), patch.object(batch_worker.batch_store, "add_item_log", lambda *a, **k: None), patch.object(
             image_workbench, "_generate_cover", fake_generate
+        ), patch.object(batch_worker, "_set_item", set_item), patch.object(
+            batch_worker.batch_store, "set_item_milestone", set_milestone
         ):
             asyncio.run(batch_worker._generate_covers_via_api("b", "item-1", folder))
 
         self.assertEqual(calls, ["douyin"])  # B站那张已经在 → 只出抖音
+        self.assertEqual(milestones, ["正在生成抖音封面"])
+        self.assertIsNone(item.get("coverStage"))
 
     def test_prepare_reuses_an_existing_person_image(self) -> None:
         """备料时已经有候选人物图 → 直接沿用，绝不重复烧出图钱（源码级：生成前先看 previous_image）。"""

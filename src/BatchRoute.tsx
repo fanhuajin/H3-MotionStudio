@@ -171,6 +171,8 @@ interface BatchItem {
   createdAt?: string;
   updatedAt?: string;
   prepAttemptStartedAt?: string | null;
+  coverStage?: "bilibili" | "douyin" | null;
+  coverStartedAt?: string | null;
   finishedAt?: string | null;
   /** 源视频文件名（含抖音作品号） */
   sourceName?: string;
@@ -417,6 +419,7 @@ const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
 };
 
 function itemZoneStatus(item: BatchItem): string {
+  if (item.coverStage && !["failed", "skipped", "completed"].includes(item.status)) return "备料中";
   if (item.status === "confirmed" && !item.prepReady) return "备料中";
   return batchStatusLabel(item.status, item.stage);
 }
@@ -428,6 +431,7 @@ function prepElapsedMs(item: BatchItem, nowMs: number): number | null {
 }
 
 function prepPhase(item: BatchItem): string {
+  if (item.coverStage) return `正在生成${item.coverStage === "bilibili" ? "B站" : "抖音"}封面`;
   const runningStep = (item.milestones || []).find((step) => step.status === "running");
   if (runningStep?.currentNode) return runningStep.currentNode;
   if (item.stage === "download") return "下载源视频";
@@ -2023,9 +2027,17 @@ export function BatchRoute() {
                                 </small>
                               )}
                             {batch?.status === "running"
+                              && item.coverStage
+                              && batch.currentItemId === item.id && (
+                                <small className="batch-elapsed">
+                                  <Timer weight="fill" />{prepPhase(item)} · 已用 {formatElapsedMs(elapsedMs(item.coverStartedAt, null, batchNowTick) || 0)}
+                                </small>
+                              )}
+                            {batch?.status === "running"
                               && batch.currentItemId === item.id
                               && !item.prepReady
                               && item.status === "running"
+                              && !item.coverStage
                               && prepElapsedMs(item, batchNowTick) !== null && (
                                 <small className="batch-elapsed">
                                   <Timer weight="fill" />备料已用 {formatElapsedMs(prepElapsedMs(item, batchNowTick)!)} · {prepPhase(item)}
