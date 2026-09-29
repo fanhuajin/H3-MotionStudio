@@ -1546,6 +1546,27 @@ def _covers_ready(item: dict[str, Any]) -> bool:
                         for names in PUBLISH_COVER_ALIASES.values()))
 
 
+def resume_failed_item_with_complete_images(folder: Path) -> dict[str, str] | None:
+    """用户补齐三张图后，让备料失败的条目离开异常区，不再请求图片接口。"""
+    found = _find_item_for_folder(Path(folder))
+    if found is None:
+        return None
+    batch, item = found
+    if item.get("status") != "failed" or not _covers_ready(item):
+        return None
+    if not Path(str(item.get("sourcePath") or "")).is_file():
+        return None
+    batch_id, item_id = str(batch["id"]), str(item["id"])
+    try:
+        direct = restart_item_to_run(batch_id, item_id)
+    except ValueError:
+        return None
+    if not direct:
+        return None
+    batch_store.add_item_log(batch_id, item_id, "三张图片已补齐，沿用现有文件恢复备料；未重新请求图片接口。")
+    return {"batchId": batch_id, "itemId": item_id}
+
+
 async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
     """补齐封面并确认文件落盘；未完成的条目留在备料区。"""
     item = _item(batch_id, item_id)

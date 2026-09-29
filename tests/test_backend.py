@@ -9457,6 +9457,32 @@ class PortraitAdoptionTests(unittest.TestCase):
             self.assertEqual(Path(row["ai"]["reference_image_path"]).read_bytes(), b"user-portrait-C")
             self.assertTrue(pending.exists())
 
+    def test_last_manual_cover_releases_failed_item_without_new_image_request(self) -> None:
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            store, batch_id, item_id, publish, _ = self._fixture(
+                root, status="failed", source=b"fake-source", candidate=b"user-portrait"
+            )
+            self._portrait(publish, b"user-portrait")
+            (publish / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+            (publish / "B站4x3.png").write_bytes(b"cover")
+            pending = root / "data" / "batches" / batch_id / item_id / "candidate_r0_attempt1.png.request-pending"
+            pending.parent.mkdir(parents=True, exist_ok=True)
+            pending.write_text("submitted", encoding="utf-8")
+            with patch.object(batch_worker, "batch_store", store), patch.object(
+                batch_worker, "DATA_DIR", root / "data"
+            ), patch.object(
+                batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
+            ):
+                self.assertIsNone(batch_worker.resume_failed_item_with_complete_images(publish))
+                (publish / "抖音3x4.png").write_bytes(b"cover")
+                outcome = batch_worker.resume_failed_item_with_complete_images(publish)
+            self.assertEqual(outcome, {"batchId": batch_id, "itemId": item_id})
+            self.assertEqual(store.get(batch_id)["items"][0]["status"], "confirmed")
+            self.assertTrue(pending.exists())
+
     def test_busy_and_unprepared_items_are_never_touched(self) -> None:
         """pending / revising / running 一律不碰（正在跑的活换图会打架）。
 

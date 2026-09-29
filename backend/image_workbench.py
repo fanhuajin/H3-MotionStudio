@@ -334,6 +334,10 @@ def save_upload(
             batch_worker.mark_publish_copy_locked(folder)
         except Exception:  # noqa: BLE001 - 锁标记失败不该影响图片保存
             logger.exception("标记发布文案锁失败（忽略）")
+        recovered = batch_worker.resume_failed_item_with_complete_images(folder)
+        if recovered:
+            meta["recovered"] = recovered
+            _wake_batch_soon(recovered["batchId"])
     return meta
 
 
