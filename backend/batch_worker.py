@@ -4208,6 +4208,9 @@ def _expose_failed_item_in_image_workbench(batch_id: str, item_id: str) -> None:
     folder = _existing_publish_folder(item) or _recorded_publish_folder(item) or _ideal_publish_folder(item)
     folder.mkdir(parents=True, exist_ok=True)
     frame = _item_frame(item)
+    if frame is None:
+        candidate = DATA_DIR / "batches" / batch_id / item_id / "scene-frame.jpg"
+        frame = candidate if candidate.is_file() else None
     if frame is not None and not (folder / PUBLISH_FRAME_NAME).is_file():
         _write_publish_frame(folder, frame)
     copy_path = folder / "发布文案.txt"

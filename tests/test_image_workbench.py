@@ -45,11 +45,13 @@ class ImageWorkbenchTests(unittest.TestCase):
     def test_failed_prepare_creates_uploadable_workbench_entry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            frame = root / "scene-frame.jpg"
+            frame = root / "batches" / "batch" / "item" / "scene-frame.jpg"
+            frame.parent.mkdir(parents=True)
             Image.new("RGB", (1200, 900)).save(frame)
             item = {"id": "item", "kind": "singing", "index": 1, "title": "测试歌曲",
-                    "awemeId": "123", "ai": {"sceneFramePath": str(frame)}, "outputs": {}}
+                    "awemeId": "123", "ai": {}, "outputs": {}}
             with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), \
+                 patch.object(batch_worker, "DATA_DIR", root), \
                  patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \
                  patch.object(batch_worker, "_item", return_value=item), \
                  patch.object(batch_worker, "_set_item") as update:
