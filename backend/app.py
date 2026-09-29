@@ -3193,6 +3193,7 @@ async def get_upload_preview_media(upload_id: str):
 
 @app.get("/api/image-workbench/items")
 async def image_workbench_items():
+    image_workbench.expose_failed_items()
     return {"items": image_workbench.list_items()}
 
 

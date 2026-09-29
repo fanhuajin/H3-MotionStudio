@@ -11,6 +11,7 @@ from unittest.mock import patch
 from PIL import Image
 
 from backend import batch_ai
+from backend import batch_worker
 from backend import chatgpt_image
 from backend import image_workbench as workbench
 
@@ -41,6 +42,25 @@ async def fake_defocus(frame: Path, work: Path) -> tuple[Path, bool]:
 
 
 class ImageWorkbenchTests(unittest.TestCase):
+    def test_failed_prepare_creates_uploadable_workbench_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            frame = root / "scene-frame.jpg"
+            Image.new("RGB", (1200, 900)).save(frame)
+            item = {"id": "item", "kind": "singing", "index": 1, "title": "测试歌曲",
+                    "awemeId": "123", "ai": {"sceneFramePath": str(frame)}, "outputs": {}}
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), \
+                 patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \
+                 patch.object(batch_worker, "_item", return_value=item), \
+                 patch.object(batch_worker, "_set_item") as update:
+                batch_worker._expose_failed_item_in_image_workbench("batch", "item")
+                rows = workbench.list_items()
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["title"], "测试歌曲")
+                self.assertIsNotNone(rows[0]["assets"]["frame"])
+                self.assertIsNone(rows[0]["assets"]["person"])
+                update.assert_called_once()
+
     def test_scan_recognizes_existing_outputs_without_regenerating(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

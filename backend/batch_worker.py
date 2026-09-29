@@ -4181,6 +4181,10 @@ def _soft_fail_item(
     if generation is not None and batch_run_superseded(batch_id, generation):
         return False        # 旧代 runner 不许写任何状态
     _set_item(batch_id, item_id, status="failed", stage="failed", error=message, childJob=None)
+    try:
+        _expose_failed_item_in_image_workbench(batch_id, item_id)
+    except OSError as error:
+        batch_store.add_item_log(batch_id, item_id, f"图片与封面入口准备失败：{error}")
     active_milestone = next(
         (row for row in _item(batch_id, item_id)["milestones"] if row.get("status") == "running"),
         None,
@@ -4196,6 +4200,25 @@ def _soft_fail_item(
     streak = int(state.get("failureStreak") or 0) + 1
     batch_store.update(batch_id, failureStreak=streak, lastFailure=f"{stage}：{message}"[:200])
     return False
+
+
+def _expose_failed_item_in_image_workbench(batch_id: str, item_id: str) -> None:
+    """备料中途失败也要留下可上传图片的发布目录入口。"""
+    item = _item(batch_id, item_id)
+    folder = _existing_publish_folder(item) or _recorded_publish_folder(item) or _ideal_publish_folder(item)
+    folder.mkdir(parents=True, exist_ok=True)
+    frame = _item_frame(item)
+    if frame is not None and not (folder / PUBLISH_FRAME_NAME).is_file():
+        _write_publish_frame(folder, frame)
+    copy_path = folder / "发布文案.txt"
+    if not copy_path.is_file():
+        ai = item.get("ai") or {}
+        title = str(ai.get("title") or item.get("title") or "作品").strip()
+        copy_path.write_text(publish_copy_text({**ai, "title": title}), encoding="utf-8-sig")
+    if str((item.get("outputs") or {}).get("folder") or "") == str(folder.resolve()):
+        return
+    outputs = {**(item.get("outputs") or {}), "folder": str(folder.resolve())}
+    _set_item(batch_id, item_id, outputs=outputs)
 
 
 def _retry_item_video_once(batch_id: str, item_id: str, message: str, *, attempts: int) -> None:

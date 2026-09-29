@@ -151,6 +151,18 @@ def _publish_folders() -> list[Path]:
     return [path for _, _, path in sorted(folders + legacy, key=lambda row: (row[0], row[1]))]
 
 
+def expose_failed_items() -> None:
+    # 旧批次可能在备料失败时尚未写发布目录；打开页面时补齐上传入口。
+    latest = batch_store.latest()
+    if latest:
+        for row in latest.get("items") or []:
+            if row.get("status") == "failed" and not row.get("deleteRequested"):
+                try:
+                    batch_worker._expose_failed_item_in_image_workbench(latest["id"], row["id"])
+                except OSError:
+                    logger.exception("补建异常条目的图片上传入口失败：%s", row.get("id"))
+
+
 def list_items() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for folder in _publish_folders():
