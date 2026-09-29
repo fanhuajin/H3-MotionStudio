@@ -786,13 +786,6 @@ def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: b
       **强制重出人物图**（用户 2026-09-20 报的就是「重新点击又给我重新出图」）。
     """
     box: dict[str, bool] = {}
-    checkpoints = uncertain_person_checkpoints(batch_id, item_id)
-    if checkpoints and not allow_uncertain_retry:
-        raise ValueError("人物图请求或检查结果仍未确认；普通重试不会重复计费。请明确确认后再重试。")
-    if allow_uncertain_retry:
-        for checkpoint in checkpoints:
-            checkpoint.rename(checkpoint.with_name(f"{checkpoint.name}.previous-unknown-{uuid.uuid4().hex[:8]}"))
-
     # 有候选图就直接续跑；没有但发布目录里有出好的那张 → 先收编，同样是"只重跑出片"。
     # 这两件事要读磁盘/发布目录，放在改状态之前做。
     pending_item = next(
@@ -807,6 +800,17 @@ def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: b
     candidate = Path(str((pending_item or {}).get("ai", {}).get("reference_image_path") or ""))
     if pending_item is not None and not candidate.is_file():
         adopted = _adopt_published_image_for_restart(batch_id, item_id, pending_item)
+    ready_image = adopted or candidate
+    direct_resume = (Path(str((pending_item or {}).get("sourcePath") or "")).is_file()
+                     and ready_image.is_file())
+    checkpoints = uncertain_person_checkpoints(batch_id, item_id)
+    # 已有用户上传的候选图且源视频仍在时，直接沿用文件，不再发起人物图请求。
+    # 旧请求的 pending 检查点继续保留，只有需要重新出图才要求用户明确授权。
+    if checkpoints and not allow_uncertain_retry and not direct_resume:
+        raise ValueError("人物图请求或检查结果仍未确认；普通重试不会重复计费。请明确确认后再重试。")
+    if allow_uncertain_retry and not direct_resume:
+        for checkpoint in checkpoints:
+            checkpoint.rename(checkpoint.with_name(f"{checkpoint.name}.previous-unknown-{uuid.uuid4().hex[:8]}"))
 
     # 点「重试」明确授权补发缺失的封面。授权只供本轮备料消费一次；
     # 自动恢复和其它触发点仍遵守“结果未知不重发”的成本闸。

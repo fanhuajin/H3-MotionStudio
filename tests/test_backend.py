@@ -5320,6 +5320,34 @@ class WorkflowPreparationTests(unittest.TestCase):
                     self.assertFalse(marker.exists())
                     self.assertEqual(len(list(work.glob("*.previous-unknown-*"))), 1)
 
+    def test_uploaded_person_image_resumes_despite_old_request_checkpoint(self) -> None:
+        from backend import batch_worker
+        from backend.batch_store import BatchStore
+        from backend import batch_store as store_module
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            root = Path(folder)
+            with patch.object(store_module, "DB_PATH", root / "batches.db"):
+                store = BatchStore()
+                state = new_batch_state([], ["https://v.douyin.com/a"])
+                item = state["items"][0]
+                source = root / "source.mp4"
+                source.write_bytes(b"source")
+                work = root / "batches" / state["id"] / item["id"]
+                work.mkdir(parents=True)
+                candidate = work / "candidate_r0_upload.png"
+                candidate.write_bytes(b"user image")
+                marker = work / "candidate_r0_attempt1.png.request-pending"
+                marker.write_text("submitted", encoding="utf-8")
+                item.update(status="failed", sourcePath=str(source),
+                            ai={"reference_image_path": str(candidate)})
+                store.create(state)
+                with patch.object(batch_worker, "DATA_DIR", root), patch.object(batch_worker, "batch_store", store):
+                    direct = batch_worker.restart_item_to_run(state["id"], item["id"])
+                self.assertTrue(direct)
+                self.assertEqual(store.get(state["id"])["items"][0]["status"], "confirmed")
+                self.assertTrue(marker.exists(), "旧请求检查点应保留供核对")
+
     def test_restart_without_images_goes_back_to_prep(self) -> None:
         """图被删掉之后「重新开始」必须回备料**重新出图**（2026-09-20 用户要求）。
 
@@ -9413,6 +9441,9 @@ class PortraitAdoptionTests(unittest.TestCase):
                 root, status="failed", source=b"fake-source"
             )
             self._portrait(publish, b"user-portrait-C")
+            pending = root / "data" / "batches" / batch_id / item_id / "candidate_r0_attempt1.png.request-pending"
+            pending.parent.mkdir(parents=True, exist_ok=True)
+            pending.write_text("submitted", encoding="utf-8")
 
             with patch.object(batch_worker, "batch_store", store), patch.object(
                 batch_worker, "DATA_DIR", root / "data"
@@ -9424,6 +9455,7 @@ class PortraitAdoptionTests(unittest.TestCase):
             row = next(it for it in store.get(batch_id)["items"] if it["id"] == item_id)
             self.assertNotEqual(row["status"], "failed")
             self.assertEqual(Path(row["ai"]["reference_image_path"]).read_bytes(), b"user-portrait-C")
+            self.assertTrue(pending.exists())
 
     def test_busy_and_unprepared_items_are_never_touched(self) -> None:
         """pending / revising / running 一律不碰（正在跑的活换图会打架）。
