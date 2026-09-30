@@ -383,7 +383,8 @@ def fetch(
             raise DouyinDirectError("拿不到播放直链（aweme/v1/play 没有返回 302）")
         cdn, ratio = resolved
 
-        first_line = (payload["desc"] or "").splitlines()[0].strip()
+        lines = (payload.get("desc") or "").splitlines()
+        first_line = lines[0].strip() if lines else ""
         safe = re.sub(r'[\\/:*?"<>|\s#]+', " ", first_line)[:60].strip() or "douyin"
         dest = dest_dir / f"{safe}_{aweme_id}.mp4"
 
