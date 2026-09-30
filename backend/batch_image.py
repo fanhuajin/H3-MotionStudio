@@ -937,53 +937,19 @@ async def generate_person_image(
     compliance: dict[str, Any] | None = None,
     request_key: str | None = None,
 ) -> tuple[Path, int]:
-    """首图放大前检查身份与着装，不自动校验或重绘手部。
-
-    批量备料与 `/images` 共用此流程。身份低分与着装问题只提示，
-    不触发额外出图；显式多次尝试供离线标定使用。计费请求继续保留检查点。
-    """
+    """直接采用生成结果，不调用 DS 自检；保留图片请求检查点和本地放大。"""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    work_dir = output_path.parent
-    # 请求与 DS 检查都已完成、只是在调用方保存/登记前进程中断：最终候选文件本身就是
-    # 最可靠的检查点。直接复用，不能因为 attempt 临时文件已经收走就再出一张。
-    if output_path.is_file() and output_path.stat().st_size > 0:
-        cached_report: dict[str, Any] = {}
-        judge_cache = output_path.with_name(output_path.name + ".judge.json")
-        if not judge_cache.is_file():
-            judge_cache = work_dir / f"{output_path.stem}_attempt1{output_path.suffix}.judge.json"
-        try:
-            cached_report = json.loads(judge_cache.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            cached_report = {}
-        if compliance is not None:
-            compliance.update({
-                "compliant": cached_report.get("compliant"),
-                "issues": [str(item) for item in (cached_report.get("issues") or [])],
-            })
-        await _upscale_after_relay(output_path, ratio, on_progress)
-        try:
-            cached_score = max(0, min(100, int(cached_report.get("similarity"))))
-        except (TypeError, ValueError):
-            cached_score = -1
-        return output_path, cached_score
-    best_bytes: bytes | None = None
-    best_score = -1
-    best_compliant: bool | None = None
-    best_issues: list[str] = []
-    best_result: dict[str, Any] = {}
-    last_compliant: bool | None = None
-    last_issues: list[str] = []
-    for attempt in range(1, max(1, max_attempts) + 1):
-        candidate = work_dir / f"{output_path.stem}_attempt{attempt}{output_path.suffix}"
-        image_pending = candidate.with_name(candidate.name + ".request-pending")
-        if not candidate.is_file():
-            if image_pending.is_file():
+    candidate = output_path.with_name(f"{output_path.stem}_attempt1{output_path.suffix}")
+    pending = candidate.with_name(candidate.name + ".request-pending")
+    if not output_path.is_file() or not output_path.stat().st_size:
+        if not candidate.is_file() or not candidate.stat().st_size:
+            if pending.is_file():
                 raise RuntimeError(
                     "上一次人物图请求已经提交但结果未确认；为避免重复扣费，本次没有自动重发。"
                     "请先核对中转站后台，再到图片工作台明确重做"
                 )
-            image_pending.write_text(
+            pending.write_text(
                 json.dumps({"submittedAt": time.time(), "model": model(), "ratio": ratio}),
                 encoding="utf-8",
             )
@@ -991,83 +957,20 @@ async def generate_person_image(
                 await generate_candidate_image(
                     scene_image=Path(scene_image),
                     identity_image=Path(identity_image) if identity_image is not None else None,
-                    prompt=prompt,
-                    ratio=ratio,
-                    output_path=candidate,
-                    on_progress=on_progress,
-                    request_key=request_key,
-                    upscale=False,
+                    prompt=prompt, ratio=ratio, output_path=candidate,
+                    on_progress=on_progress, request_key=request_key, upscale=False,
                 )
             except BaseException as error:
-                # 包括 CancelledError：请求可能已到服务端，保留 pending 让新 runner 不再盲发。
-                # **例外**：确定"连接没建立、请求没送出"时（`RelayUnreachable`）标记是假的，
-                # 必须删掉 —— 否则这条会被永久卡住（批准备料这条路没有手动出口）。
                 if isinstance(error, (RelayUnreachable, PolicyRejected)):
-                    image_pending.unlink(missing_ok=True)
+                    pending.unlink(missing_ok=True)
                 raise
             else:
-                image_pending.unlink(missing_ok=True)
-        try:
-            from . import batch_ai
-
-            if on_progress:
-                await on_progress(0.0, "原始人物图已生成，正在放大前检查身份与着装")
-
-            judge_cache = candidate.with_name(candidate.name + ".judge.json")
-            judge_pending = candidate.with_name(candidate.name + ".judge-pending")
-            if judge_cache.is_file():
-                result = json.loads(judge_cache.read_text(encoding="utf-8"))
-            else:
-                if judge_pending.is_file():
-                    raise RuntimeError("人物图综合自检上次已提交但结果未确认，不自动重复调用 DS")
-                judge_pending.write_text(str(time.time()), encoding="utf-8")
-                try:
-                    result = await batch_ai.judge_person_image(
-                        Path(identity_image), candidate, request_key=request_key
-                    )
-                except BaseException:
-                    raise
-                else:
-                    judge_cache.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
-                    judge_pending.unlink(missing_ok=True)
-            score = max(0, min(100, int(result.get("similarity") or 0)))
-        except Exception as error:
-            # DS 没有给出可用结论；保留原始文件和请求检查点，交由异常区处理。
-            raise RuntimeError(f"人物图放大前检查失败：{error}") from error
-        compliant = bool(result.get("compliant", True))
-        issues = [str(item) for item in (result.get("issues") or [])]
-        last_compliant, last_issues = compliant, issues
-        # 选图口径：合规优先，其次相似度。`best_compliant is None` 表示还没选过任何一张。
-        better = (
-            best_bytes is None
-            or (compliant and not best_compliant)
-            or (compliant == best_compliant and score > best_score)
-        )
-        if better:
-            best_bytes = candidate.read_bytes()
-            best_score = score
-            best_compliant = compliant
-            best_issues = issues
-            best_result = result
-        # 候选原图与复检结果保留到最终文件放大落盘，重启时可从检查点恢复。
-        if score >= min_similarity and compliant:
-            break
-    output_path.write_bytes(best_bytes or b"")
-    output_path.with_name(output_path.name + ".judge.json").write_text(
-        json.dumps(best_result, ensure_ascii=False), encoding="utf-8"
-    )
-    await _upscale_after_relay(output_path, ratio, on_progress)
+                pending.unlink(missing_ok=True)
+        output_path.write_bytes(candidate.read_bytes())
     if compliance is not None:
-        # 出图循环跑满仍然不合规时，页面要能看到原因（保留最后一张的判据结果更贴近现状）
-        compliance.update(
-            {
-                "compliant": best_compliant,
-                "issues": best_issues,
-                "last_compliant": last_compliant,
-                "last_issues": last_issues,
-            }
-        )
-    return output_path, max(0, best_score)
+        compliance.update({"compliant": None, "issues": []})
+    await _upscale_after_relay(output_path, ratio, on_progress)
+    return output_path, -1
 
 
 async def judge_compliance_safe(candidate: Path) -> tuple[bool, list[str]]:

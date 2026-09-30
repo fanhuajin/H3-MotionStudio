@@ -1957,8 +1957,8 @@ async def _prepare_review_work(
                 # 而日志里只有一句笼统的连接失败，看不出是代理没生效。
                 batch_store.add_item_log(
                     batch_id, item_id,
-                    f"已向中转站发出人物图请求（首图 1 张；放大前 DS 检查身份与着装；"
-                    f"身份低分不会自动重做；"
+                    f"已向中转站发出人物图请求（首图 1 张；直接使用生成结果，不做自检；"
+                    f"不自动重做；"
                     f"{batch_image.route_note()}）……",
                 )
             if provider == "local":
@@ -1972,7 +1972,7 @@ async def _prepare_review_work(
                     on_progress=report,
                 )
             else:
-                # 首图后用一次 DS 检查身份与着装；手部问题由用户自行处理。
+                # 直接采用生成结果，不发起 DS 自检。
                 compliance_report: dict[str, object] = {}
                 _, similarity = await batch_image.generate_person_image(
                     scene_image=scene,
@@ -1994,7 +1994,7 @@ async def _prepare_review_work(
                 else:
                     batch_store.add_item_log(
                         batch_id, item_id,
-                        f"候选人物图已生成（用时 {spent} 秒）；身份自检这次没跑成，不影响出片。",
+                        f"候选人物图已生成（用时 {spent} 秒）；直接使用生成结果，不做自检。",
                     )
                 if compliance_report.get("compliant") is False:
                     issues = "、".join(

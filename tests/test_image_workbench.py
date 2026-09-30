@@ -146,7 +146,7 @@ class ImageWorkbenchTests(unittest.TestCase):
                 score = asyncio.run(workbench._generate_person(folder, "dance"))
 
             self.assertEqual(len(attempts), 1)
-            self.assertEqual(score, 50)
+            self.assertEqual(score, -1)
             self.assertEqual(shade_of(folder / workbench.PERSON_NAME), 10)
             self.assertFalse(hasattr(workbench.batch_ai, "judge_hands"))
 
@@ -173,11 +173,11 @@ class ImageWorkbenchTests(unittest.TestCase):
                 score = asyncio.run(workbench._generate_person(folder, "dance"))
 
             self.assertEqual(len(attempts), 1)
-            self.assertEqual(score, 80)
+            self.assertEqual(score, -1)
             self.assertEqual(shade_of(folder / workbench.PERSON_NAME), 10)
 
-    def test_person_image_waits_when_the_pre_upscale_judge_fails(self) -> None:
-        """DS 无法判断手部时保留原图检查点，不放大或生成封面。"""
+    def test_person_image_does_not_call_the_pre_upscale_judge(self) -> None:
+        """即使 DS 不可用也直接采用生成结果并放大。"""
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             Image.new("RGB", (1080, 1920)).save(folder / "抽帧.jpg")
@@ -196,12 +196,11 @@ class ImageWorkbenchTests(unittest.TestCase):
                  patch.object(workbench.batch_ai, "judge_person_image", boom), \
                  patch.object(workbench.batch_image, "_upscale_after_relay") as upscale, \
                  patch.object(workbench, "person_prompt", lambda folder, kind: "提示词"):
-                with self.assertRaisesRegex(RuntimeError, "放大前检查失败"):
-                    asyncio.run(workbench._generate_person(folder, "dance"))
+                asyncio.run(workbench._generate_person(folder, "dance"))
 
             self.assertEqual(len(attempts), 1)  # 不因为自检挂了就重做
-            upscale.assert_not_called()
-            self.assertFalse((folder / workbench.PERSON_NAME).is_file())
+            upscale.assert_called_once()
+            self.assertTrue((folder / workbench.PERSON_NAME).is_file())
 
     def test_hand_result_does_not_trigger_edit_or_block_upscale(self) -> None:
         """旧检查缓存即使包含手部失败，也只使用首次生成图。"""
@@ -233,8 +232,8 @@ class ImageWorkbenchTests(unittest.TestCase):
                     prompt="图一造型", ratio="9:16", output_path=root / "person.png",
                 ))
 
-            self.assertEqual(events, ["generate", "judge", "upscale"])
-            self.assertEqual(score, 85)
+            self.assertEqual(events, ["generate", "upscale"])
+            self.assertEqual(score, -1)
             self.assertEqual(shade_of(output), 30)
             self.assertFalse((root / "person_attempt1_handfix.png").exists())
 
@@ -260,8 +259,27 @@ class ImageWorkbenchTests(unittest.TestCase):
                 ))
             generate.assert_not_called()
             upscale.assert_called_once()
-            self.assertEqual(score, 85)
+            self.assertEqual(score, -1)
             self.assertEqual(output.read_bytes(), original.read_bytes())
+
+    def test_old_judge_pending_reuses_image_without_any_paid_call(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            candidate = root / "person_attempt1.png"
+            candidate.write_bytes(png_shade(576, 1024, 30))
+            candidate.with_name(candidate.name + ".judge-pending").write_text("submitted")
+            with patch.object(workbench.batch_image, "generate_candidate_image") as generate, \
+                 patch.object(workbench.batch_ai, "judge_person_image") as judge, \
+                 patch.object(workbench.batch_image, "_upscale_after_relay") as upscale:
+                output, score = asyncio.run(workbench.batch_image.generate_person_image(
+                    scene_image=root / "scene.png", identity_image=root / "identity.png",
+                    prompt="p", ratio="9:16", output_path=root / "person.png",
+                ))
+            generate.assert_not_called()
+            judge.assert_not_called()
+            upscale.assert_called_once()
+            self.assertEqual(output.read_bytes(), candidate.read_bytes())
+            self.assertEqual(score, -1)
 
     def test_definite_person_policy_rejection_does_not_leave_unknown_marker(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -397,8 +415,8 @@ class ImageWorkbenchTests(unittest.TestCase):
                 ))
             self.assertEqual(calls, 0)
             self.assertEqual(path, output)
-            self.assertEqual(score, 88)
-            self.assertIs(report.get("compliant"), True)
+            self.assertEqual(score, -1)
+            self.assertIsNone(report.get("compliant"))
 
     def test_automation_started_at_does_not_restart_on_every_status_update(self) -> None:
         """「已用 N 秒」用后端记的开始时间算 —— 页面切走再切回来不许从 0 重新数。"""

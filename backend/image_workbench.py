@@ -469,12 +469,7 @@ def _compliance_note(report: dict[str, Any]) -> str:
 async def _generate_person(
     folder: Path, kind: str, *, allow_uncertain_retry: bool = False
 ) -> int:
-    """API 生成人物图，放大前检查身份与着装。
-
-    用户 2026-09-19：「人物相似度 必须70%以上」。
-    身份低分与着装问题只提示；手部问题由用户自行处理。
-    DS 无结果时保留候选图，等待人工处理，不生成封面。
-    """
+    """API 生成人物图后直接保存，不进行自动自检。"""
     frame = asset_path(folder, "frame")
     ratio = "4:3" if kind == "singing" else "9:16"
     # 必须放在作品目录里，不能用系统临时目录：后端重启会清掉临时路径里的 pending，
@@ -613,7 +608,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                 if step == "person":
                     if force or not (folder / PERSON_NAME).is_file():
                         _set_auto(folder_id, status="running", stage="person",
-                                  message="正在生成人物图（放大前检查双手，必要时定向修正一次）", kind=kind)
+                                  message="正在生成人物图（生成后直接使用，不做自检）", kind=kind)
                         person_score = await _generate_person(
                             folder, kind,
                             allow_uncertain_retry=bool(force and stage == "person"),
