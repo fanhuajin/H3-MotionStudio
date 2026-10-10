@@ -2481,10 +2481,11 @@ class WorkflowPreparationTests(unittest.TestCase):
         prompt = batch_ai.compose_image_prompt("singing", "video", "", "both")
         self.assertTrue(prompt.startswith("生成一张供视频制作使用的写实单人照片"))
         self.assertLess(len(prompt), 900, "自动出图必须保持精简")
-        for detail in ("刘海", "分缝", "发长", "卷直", "发色", "头饰"):
-            self.assertIn(detail, prompt)
+        self.assertIn("搭配合适的新发型", prompt)
+        self.assertIn("不必完全复制抽帧", prompt)
         self.assertIn("图二只提供面部身份", prompt)
-        self.assertIn("没有头饰就不添加", prompt)
+        self.assertNotIn("肤色与年龄感", prompt)
+        self.assertNotIn("只以源视频抽帧图一为准", prompt)
         self.assertIn("自然精致淡妆", prompt)
         self.assertIn("脸和颈部明暗一致", prompt)
         self.assertIn("双臂与躯干边界可辨", prompt)
@@ -2515,8 +2516,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         )
         self.assertIn("【本次歌曲】《爱如潮水》", prompt)
         self.assertIn("抒情慢板，克制的失恋感", prompt)
-        self.assertIn("歌曲只影响表情与整体氛围", prompt)
-        self.assertIn("不改变服装或场景类型", prompt)
+        self.assertIn("歌曲辅助表情与整体氛围", prompt)
+        self.assertNotIn("不改变服装或场景类型", prompt)
 
         # 3) 跳舞没有歌曲，不能凭空塞一个歌曲块
         self.assertNotIn("【本次歌曲】", batch_ai.compose_image_prompt("dance"))
@@ -2525,7 +2526,8 @@ class WorkflowPreparationTests(unittest.TestCase):
 
     def test_song_redesign_prompt_does_not_claim_a_source_style(self) -> None:
         prompt = batch_ai.compose_image_prompt("singing", "redesign", song_name="爱如潮水")
-        self.assertIn("图一与图二都是同一人物的身份参考", prompt)
+        self.assertIn("图二是唯一的面部身份参考", prompt)
+        self.assertNotIn("图一与图二都是同一人物的身份参考", prompt)
         self.assertIn("根据歌曲氛围设计自然的发型", prompt)
         self.assertIn("歌曲决定造型、背景氛围与表情", prompt)
         self.assertNotIn("歌曲只影响表情", prompt)
@@ -2632,7 +2634,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         block = batch_ai.SHARPNESS_BLOCK
         self.assertIn("脸、头发和双手清晰", block)
         self.assertIn("若图一的手有拖影", block)
-        self.assertIn("保留手的位置和朝向并补清细节", block)
+        self.assertIn("参考其大致位置和朝向补清细节", block)
         self.assertIn("位置接近的简单自然手势", block)
         self.assertIn("不多指、不缺指、不粘连", block)
         self.assertIn("肤色、亮度和皮肤纹理与脸及手臂一致", block)
@@ -2669,8 +2671,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("只保留主体一人", block)
         self.assertIn("移除路人、倒影和杂物", block)
         self.assertIn("背景自然完整", block)
-        self.assertIn("可重新布置更整洁的同类场景", block)
-        self.assertIn("保留图一的室内或室外属性、光线方向与氛围", block)
+        self.assertIn("不照搬抽帧环境", block)
+        self.assertIn("重新设计与本次服装、发型和整体气质协调的背景", block)
+        self.assertNotIn("保留图一的室内或室外属性", block)
         self.assertNotIn("保留原场景的类型、空间结构", block)
         self.assertIn("不用强虚化", block)
         for kind in ("dance", "singing"):
