@@ -1855,26 +1855,18 @@ async def _prepare_review_work(
         song_mood=str(result.get("song_mood") or ""),
         ratio=ratio,
     )
-    scene = scene_frame
-    if provider != "manual":
-        if item["kind"] == "singing" and style_source == "redesign":
-            # 源视频造型不适合出片：改按歌曲情绪重做造型。
-            scene = IDENTITY_PATH
-        else:
-            # 图一里是源视频那个人的脸，必须糊掉：否则模型会把别人的五官混进来。
-            scene, defocused = await batch_image.defocus_reference_face(scene_frame, work)
-            if defocused:
-                batch_store.add_item_log(
-                    batch_id, item_id, "已把参考帧里的人脸模糊掉，避免混入源视频人物的五官。"
-                )
-            else:
-                note = "参考帧人脸定位失败，未能屏蔽源视频人物的脸（可能影响五官一致性）。"
-                warning = f"{warning} {note}".strip()
-                batch_store.add_item_log(batch_id, item_id, note)
+    # 所有类型及 API / local / manual 入口均先屏蔽抽帧的脸；图二始终保持清晰。
+    scene, defocused = await batch_image.defocus_reference_face(scene_frame, work)
+    if not defocused:
+        raise ValueError("抽帧未成功糊脸，已停止人物图生成。")
+    batch_store.add_item_log(
+        batch_id, item_id, "已屏蔽抽帧中的人脸，避免混入源视频人物的五官。"
+    )
 
     # 出图素材写进状态；提示词同时落盘，方便直接从条目目录取用
     result["imagePrompt"] = image_prompt
     result["sceneFramePath"] = str(scene_frame)
+    result["defocusedScenePath"] = str(scene)
     # 记住拼提示词用的参数：用户中途改画布比例时，要能按新比例重拼这一条提示词
     result["imagePromptFeedback"] = feedback
     result["imagePromptMode"] = mode
@@ -1920,7 +1912,7 @@ async def _prepare_review_work(
                     item_id,
                     "已备好出图素材（自动出图已关闭）："
                     f"提示词 {rel / '出图提示词.txt'}；"
-                    f"图一（源视频抽帧）{rel / 'scene-frame.jpg'}；"
+                    f"图一（已糊脸抽帧）{scene}；"
                     f"图二（身份参考）{IDENTITY_PATH}。"
                     "拿这三样去出图，出了把图上传回这一条即可。",
                 )
@@ -2181,7 +2173,7 @@ async def _prepare_review_work(
                 item_id,
                 "出图素材已就绪（自动出图已关闭，等你自己出图后上传回来）："
                 f"提示词 {rel / '出图提示词.txt'}；"
-                f"图一（源视频抽帧）{rel / 'scene-frame.jpg'}；"
+                f"图一（已糊脸抽帧）{scene}；"
                 f"图二（身份参考）{IDENTITY_PATH}。",
             )
 

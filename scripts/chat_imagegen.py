@@ -862,25 +862,16 @@ def defocus_scene(scene: Path, folder: Path) -> Path:
     为什么必须糊：图一里是**源视频那个人**的脸。原样送进去，模型会把那个人的五官
     混进成图，而用户要求「五官必须与晚柠.png 一致」—— 实测就是这条出的问题。
     糊掉之后图一仍然提供发型轮廓、服装、场景、灯光，但不再提供任何可换脸的面部信息。
-    （复用仓库既有的 `batch_image.defocus_reference_face`，它用视觉模型定位人脸框。）
+    （复用仓库既有的 `batch_image.defocus_reference_face`，它用本地 CPU 模型定位人脸框。）
     """
     work = GUARD_DIR / folder.name
-    cache = work / f"{scene.stem}-noface.png"
-    if cache.is_file():
-        log(f"  ↷ 复用已糊脸的图一：{cache.name}")
-        return cache
-    try:
-        from backend.batch_image import defocus_reference_face
-
-        work.mkdir(parents=True, exist_ok=True)
-        path, ok = _run_async(defocus_reference_face(scene, work))
-        if ok and Path(path).is_file():
-            log(f"  ✓ 图一已糊脸：{Path(path).name}（模型看不到源视频那个人的五官了）")
-            return Path(path)
-        log("  ⚠ 没定位到人脸，仍用原图当图一")
-    except Exception as exc:  # 糊脸失败绝不阻断出图
-        log(f"  ⚠ 糊脸失败：{type(exc).__name__}: {exc}（仍用原图）")
-    return scene
+    from backend.batch_image import defocus_reference_face
+    work.mkdir(parents=True, exist_ok=True)
+    path, ok = _run_async(defocus_reference_face(scene, work))
+    if not ok or not Path(path).is_file():
+        raise ValueError("抽帧未成功糊脸，已停止人物图生成。")
+    log(f"  ✓ 图一已糊脸：{Path(path).name}")
+    return Path(path)
 
 
 # --------------------------------------------------------------------------

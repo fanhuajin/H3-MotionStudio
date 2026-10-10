@@ -201,6 +201,8 @@ def asset_path(folder: Path, key: str) -> Path:
     path = choices.get(key)
     if not path or not path.is_file():
         raise FileNotFoundError("图片不存在")
+    if key == "frame":
+        return batch_image.prepare_defocused_reference(path, folder / ".h3-reference-guard")
     return path
 
 
@@ -225,7 +227,7 @@ def material_zip(folder: Path, stage: str, kind: str) -> bytes:
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("提示词.txt", prompt(folder, stage, kind))
         if stage == "person":
-            for filename, key in (("图一_抽帧.jpg", "frame"), ("图二_固定人物参考.png", "identity")):
+            for filename, key in (("图一_已糊脸抽帧.png", "frame"), ("图二_固定人物参考.png", "identity")):
                 try:
                     archive.write(asset_path(folder, key), filename)
                 except FileNotFoundError:
@@ -470,7 +472,9 @@ async def _generate_person(
     folder: Path, kind: str, *, allow_uncertain_retry: bool = False
 ) -> int:
     """API 生成人物图后直接保存，不进行自动自检。"""
-    frame = asset_path(folder, "frame")
+    frame = _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg")
+    if frame is None:
+        raise FileNotFoundError("抽帧不存在")
     ratio = "4:3" if kind == "singing" else "9:16"
     # 必须放在作品目录里，不能用系统临时目录：后端重启会清掉临时路径里的 pending，
     # 下一轮就会误以为从未提交过并再次扣费。成功后才清理；失败/取消则留下检查点。
@@ -481,7 +485,9 @@ async def _generate_person(
     work.mkdir(parents=True, exist_ok=True)
     completed = False
     try:
-        scene, _ = await batch_image.defocus_reference_face(frame, work)
+        scene, defocused = await batch_image.defocus_reference_face(frame, work)
+        if not defocused:
+            raise ValueError("抽帧未成功糊脸，已停止人物图生成。")
         candidate = work / "person.png"
         # 与批量备料共用流程。合规结论写进状态消息，页面能看到原因。
         report: dict[str, Any] = {}

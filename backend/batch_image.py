@@ -327,28 +327,46 @@ def _locate_face_local(image_path: Path) -> dict[str, float] | None:
         return None
 
 
-async def defocus_reference_face(scene_image: Path, work_dir: Path) -> tuple[Path, bool]:
-    """把参考帧（图一）里的人脸糊掉，返回 (文件路径, 是否成功糊掉)。
+def _locate_source_faces(image_path: Path) -> list[dict[str, float]]:
+    """复用 ComfyUI 的 ONNX Runtime，在独立 CPU 进程定位全部人脸。"""
+    import subprocess
+    from .settings import COMFY_ROOT, COMFY_PYTHON
+    model = COMFY_ROOT / "models/insightface/models/buffalo_l/det_10g.onnx"
+    if not model.is_file() or not COMFY_PYTHON.is_file():
+        logger.error("缺少本地 SCRFD 模型或检测运行环境，停止使用未处理抽帧")
+        return []
+    script = Path(__file__).resolve().parents[1] / "scripts/locate_source_faces.py"
+    try:
+        result = subprocess.run(
+            [str(COMFY_PYTHON), str(script), str(image_path), str(model)],
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
+            check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        logger.exception("本地 SCRFD 人脸定位失败，停止使用未处理抽帧")
+        return []
 
-    图一里是**源视频那个人**的脸。直接送进去，模型会把那个人的五官混进成图，
-    而用户要求「五官必须和原型图一致」。把这张脸糊掉之后，图一仍然提供发型轮廓、
-    服装、场景和灯光，但不再提供任何可用于"换脸"的面部信息。
 
-    定位失败时不阻断流程：返回原图并标记未处理，由上层写进日志。
-    """
+def prepare_defocused_reference(scene_image: Path, work_dir: Path) -> Path:
+    """强制屏蔽图一全部检测到的脸；定位失败不允许原图进入生图。"""
     scene_image = Path(scene_image)
-    target = Path(work_dir) / f"{scene_image.stem}-noface.png"
-    # 本地检测廉价，重算可避免源帧替换后继续把旧的糊脸图送给中转站。
-
+    boxes = _locate_source_faces(scene_image)
+    if not boxes:
+        raise ValueError("抽帧人脸定位失败，已停止提交人物图生成，避免融合原视频人物的脸。请换一张脸部清楚的抽帧。")
     with Image.open(scene_image) as opened:
         image = opened.convert("RGB")
-    # 过去这里每条作品都调用一次 DS 视觉模型，只为取一个矩形框。改成本机检测；失败时沿用
-    # 原图并在上层提示，不为一个可选优化额外产生 API 费用。
-    box = await asyncio.to_thread(_locate_face_local, scene_image)
-    if not box:
-        return scene_image, False
+    for box in boxes:
+        _blur_region(image, box)
+    target = Path(work_dir) / f"{scene_image.stem}-noface.png"
     target.parent.mkdir(parents=True, exist_ok=True)
-    _blur_region(image, box).save(target, format="PNG")
+    image.save(target, format="PNG")
+    return target
+
+
+async def defocus_reference_face(scene_image: Path, work_dir: Path) -> tuple[Path, bool]:
+    """批量与图片页共用强制糊脸；失败抛错，不返回原图。"""
+    target = await asyncio.to_thread(prepare_defocused_reference, scene_image, work_dir)
     return target, True
 
 
