@@ -502,7 +502,8 @@ class ImageWorkbenchTests(unittest.TestCase):
             person = workbench.prompt(folder, "person", "dance")
             cover = workbench.prompt(folder, "douyin", "dance")
         # 素材包里的 提示词.txt 就是人物图 `prompt()` 的产物。
-            zipped = workbench.material_zip(folder, "person", "dance")
+            with patch.object(workbench, "asset_path", return_value=folder / "发布文案.txt"):
+                zipped = workbench.material_zip(folder, "person", "dance")
         self.assertIn(block, person, "复制出去的人物图提示词必须是同一段禁止模糊口径")
         self.assertNotIn(block, cover, "封面只叠加文字，不重新要求绘制手部")
         import io
@@ -528,7 +529,8 @@ class ImageWorkbenchTests(unittest.TestCase):
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             person = workbench.prompt(folder, "person", "dance")
             cover = workbench.prompt(folder, "bilibili", "dance")
-            zipped = workbench.material_zip(folder, "person", "dance")
+            with patch.object(workbench, "asset_path", return_value=folder / "发布文案.txt"):
+                zipped = workbench.material_zip(folder, "person", "dance")
         self.assertIn(block, person, "人物图提示词必须带背景清理整段")
         self.assertIn("只保留主体一人", person)
         self.assertIn("不用强虚化", person)

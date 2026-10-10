@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageOps
 
 from . import netproxy
 from .settings import (
@@ -355,12 +355,21 @@ def prepare_defocused_reference(scene_image: Path, work_dir: Path) -> Path:
     if not boxes:
         raise ValueError("抽帧人脸定位失败，已停止提交人物图生成，避免融合原视频人物的脸。请换一张脸部清楚的抽帧。")
     with Image.open(scene_image) as opened:
-        image = opened.convert("RGB")
+        image = ImageOps.exif_transpose(opened).convert("RGB")
     for box in boxes:
         _blur_region(image, box)
     target = Path(work_dir) / f"{scene_image.stem}-noface.png"
     target.parent.mkdir(parents=True, exist_ok=True)
-    image.save(target, format="PNG")
+    # 复制/下载与生图可能同时请求图一；原子替换避免读到半写入 PNG。
+    import os
+    import tempfile
+    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".png", delete=False) as temporary:
+        staging = Path(temporary.name)
+    try:
+        image.save(staging, format="PNG")
+        os.replace(staging, target)
+    finally:
+        staging.unlink(missing_ok=True)
     return target
 
 

@@ -209,7 +209,7 @@ def asset_path(folder: Path, key: str) -> Path:
 def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
     copy = _copy_text(folder)
     if stage == "person":
-        return batch_ai.compose_image_prompt(kind)
+        return person_prompt(folder, kind)
     # 画幅话术只写比例、不写平台名（用户 2026-09-20：封面多平台复用，提示词里出现
     # 「B站」/「抖音」会让模型把对应平台的 logo 画进封面）。
     # 封面只在人物图上排标题和简介，不再附加人物图生成阶段的手部、服装和背景规则。
@@ -228,10 +228,7 @@ def material_zip(folder: Path, stage: str, kind: str) -> bytes:
         archive.writestr("提示词.txt", prompt(folder, stage, kind))
         if stage == "person":
             for filename, key in (("图一_已糊脸抽帧.png", "frame"), ("图二_固定人物参考.png", "identity")):
-                try:
-                    archive.write(asset_path(folder, key), filename)
-                except FileNotFoundError:
-                    pass
+                archive.write(asset_path(folder, key), filename)
         else:
             archive.write(asset_path(folder, "person"), PERSON_NAME)
             copy_path = folder / "发布文案.txt"
@@ -432,14 +429,7 @@ def _clear_stop() -> None:
 
 
 def person_prompt(folder: Path, kind: str) -> str:
-    """人物图提示词：**和批量备料用的是同一份**（`batch_ai.compose_image_prompt`）。
-
-    用户 2026-09-19 实测后明确：「按照你刚刚生成的图片流程来 你刚刚生成的很好」——
-    那一版是「造型提示词文件（`9x16跳舞构图.txt` / `4x3唱歌构图.txt`）+ 构图规格 +
-    歌曲信息 + 末尾身份优先级块」，约 5400 字，效果明显优于本模块原先的精简版。
-    所以**自动出图**改用这一份；`prompt()` 原样保留给「复制提示词 / 下载素材包」两个
-    手动入口，不改动用户已有的手工流程。
-    """
+    """自动出图、复制与素材包共用当前精简人物图提示词。"""
     song_name, song_mood = "", ""
     aweme = folder.name.rsplit("_", 1)[-1].strip()
     for item in batch_store.items_for_aweme(aweme) or []:

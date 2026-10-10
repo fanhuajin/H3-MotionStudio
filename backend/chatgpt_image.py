@@ -209,28 +209,15 @@ def _generate_candidate_sync(batch_id: str, item_id: str, feedback: str = "") ->
         )
         return
 
-    # 优先用用户桌面上的提示词（唱歌 4:3 / 跳舞 9:16）；缺失才退回项目生成的那份
-    prompt = prompt_for_kind(str(item.get("kind") or "singing"))
-    if not prompt:
-        if not prompt_file.is_file():
-            bw.batch_store.add_item_log(
-                batch_id, item_id, "自动生成图被跳过：找不到提示词（桌面文件与项目提示词都没有）。"
-            )
-            return
-        prompt = prompt_file.read_text(encoding="utf-8")
-    else:
-        bw.batch_store.add_item_log(
-            batch_id, item_id,
-            "使用你桌面上的提示词：" + ("9比16图片.txt" if str(item.get("kind")) == "dance" else "4比3图片.txt"),
-        )
-
+    from . import batch_ai, batch_image
+    ai = item.get("ai") or {}
+    scene = batch_image.prepare_defocused_reference(scene, work / ".h3-reference-guard")
+    prompt = batch_ai.compose_image_prompt(
+        str(item.get("kind") or "singing"), str(ai.get("style_source") or "video"),
+        feedback, "image", song_name=str(ai.get("song_name") or ""),
+        song_mood=str(ai.get("song_mood") or ""), ratio=bw.item_ratio(item),
+    )
     images: list[Path] = [scene, IDENTITY_IMAGE]
-    if feedback:
-        # 带意见：把当前候选图也带上，让 AI 基于这张改
-        cur = Path(str((item.get("ai") or {}).get("reference_image_path") or ""))
-        if cur.is_file():
-            images = [cur, IDENTITY_IMAGE]
-        prompt = prompt.rstrip() + f"\n\n【修改意见】{feedback}"
 
     out = _out_path(batch_id, item_id, "反馈" if feedback else "")
     try:

@@ -2730,9 +2730,11 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
             "ratio": ratio,
             "remove_subtitles": "0",
             "mode": migrate_mode,
-            "content_prompt": str(ai.get("content_prompt") or ""),
+            "content_prompt": (batch_ai.motion_reference_prompt(str(ai.get("content_prompt") or ""))
+                               if migrate_mode == "animation" else str(ai.get("content_prompt") or "")),
             "video_prompt": str(ai.get("video_prompt") or ""),
-            "image_prompt": str(ai.get("image_prompt") or ""),
+            "image_prompt": (batch_ai.motion_reference_prompt(str(ai.get("image_prompt") or ""))
+                             if migrate_mode == "animation" else str(ai.get("image_prompt") or "")),
             "use_upscale": "1",
         }
         endpoint = "/api/jobs/migrate"

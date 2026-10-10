@@ -1132,21 +1132,24 @@ def run_step(page, step: str, folder: Path, kind: str, args) -> dict:
 
     # gate 1
     if step == "person":
-        rule = rule_path(kind)
         scene = folder / SCENE
         identity = identity_path()
         copy_path = folder / COPY
-        for label, path in (("抽帧", scene), ("晚柠", identity), ("发布文案", copy_path), ("规则", rule)):
+        for label, path in (("抽帧", scene), ("晚柠", identity), ("发布文案", copy_path)):
             if not path.is_file():
                 log(f"门1 ✗ 缺少{label}：{path}")
                 return {"code": EXIT_GATE1}
         want_ratio = SING_RATIO if kind == "singing" else DANCE_RATIO
-        scene_used = defocus_scene(scene, folder) if args.identity_guard else scene
+        scene_used = defocus_scene(scene, folder)
         # 消息正文 = 禁止模糊 + 身份优先级 + 画面比例（身份与比例排在最后，模型最后读到）
-        body = person_body(identity_block() if args.identity_guard else "", ratio_line(want_ratio))
-        images, prompt_file = [scene_used, identity], rule
+        from backend import batch_ai, chatgpt_image
+        prompt_file = chatgpt_image.write_prompt_attachment(
+            batch_ai.compose_image_prompt(kind), f"{folder.name}_人物图提示词.txt"
+        )
+        body = ratio_line(want_ratio)
+        images = [scene_used, identity]
         log(f"门1 ✓ {scene.name}{probe_image(scene)} {identity.name}{probe_image(identity)} "
-            f"规则={rule.name} ｜ 图一={'已糊脸' if scene_used != scene else '原图'}"
+            f"规则={prompt_file.name} ｜ 图一={'已糊脸' if scene_used != scene else '原图'}"
             f" ｜ 身份块={'开' if body else '关'}")
     else:
         person = folder / PERSON
@@ -1308,7 +1311,7 @@ def main() -> int:
     parser.add_argument("--identity-guard", dest="identity_guard", action="store_true", default=True,
                         help="糊掉图一的脸并在末尾追加身份优先级块（默认开）")
     parser.add_argument("--no-identity-guard", dest="identity_guard", action="store_false",
-                        help="关掉身份护栏（用于对比测试）")
+                        help="兼容旧参数；人物图仍强制糊脸")
     parser.add_argument("--min-similarity", type=int, default=60,
                         help="人物图身份相似度门槛（默认 60，用户 2026-09-19 定的规格："
                              "60 以上就可以；封面不判身份）。0 = 只要判据返回就通过")

@@ -150,7 +150,7 @@ def run(filters, force=False, timeout=1200.0, retries=1):
         print("没有匹配的可处理作品目录")
         return 0
 
-    for required in (IDENTITY, SING_PROMPT, DANCE_PROMPT):
+    for required in (IDENTITY,):
         if not required.is_file():
             print(f"缺少必需文件：{required}")
             return 2
@@ -178,10 +178,15 @@ def run(filters, force=False, timeout=1200.0, retries=1):
         if valid_portrait(row["portrait"]) and not force:
             print("  [已有] 人物图.png，不重复生成")
         else:
-            pfile = prompt_path_for(row["kind"])
-            prompt = pfile.read_text(encoding="utf-8-sig", errors="replace")
-            print(f'  → 人物图：抽帧.jpg=图一，晚柠.png=图二，使用 {pfile.name}', flush=True)
-            got = generate_with_retry([row["frame"], IDENTITY], prompt, row["portrait"],
+            from backend import batch_ai, batch_image
+            try:
+                scene = batch_image.prepare_defocused_reference(row["frame"], folder / ".h3-reference-guard")
+            except (ValueError, OSError) as exc:
+                failed.append(f'{row["name"]} / 人物图糊脸失败：{exc}')
+                continue
+            prompt = batch_ai.compose_image_prompt(row["kind"])
+            print('  → 人物图：已糊脸抽帧=图一，固定原型=图二，使用项目当前提示词', flush=True)
+            got = generate_with_retry([scene, IDENTITY], prompt, row["portrait"],
                                       timeout, True, retries)
             if not got:
                 failed.append(f'{row["name"]} / 人物图.png')

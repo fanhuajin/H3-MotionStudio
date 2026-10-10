@@ -66,5 +66,46 @@ class SourceFaceGuardTests(unittest.TestCase):
                     image_workbench.material_zip(folder, "person", "dance")
 
 
+    def test_motion_prompt_retains_actions_but_locks_reference_appearance(self):
+        from backend import batch_ai
+        actions = "抬右手，向左转身，随节拍点头。"
+        result = batch_ai.motion_reference_prompt(actions)
+        self.assertTrue(result.startswith(actions))
+        self.assertIn("本次人物参考图为唯一视觉依据", result)
+        self.assertEqual(batch_ai.motion_reference_prompt(result), result)
+
+    def test_material_zip_rejects_missing_reference_images(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(FileNotFoundError):
+                image_workbench.material_zip(Path(raw), "person", "dance")
+
+    def test_exif_orientation_matches_detector_coordinates(self):
+        with tempfile.TemporaryDirectory() as raw:
+            frame = Path(raw) / "rotated.jpg"
+            image = Image.new("RGB", (100,60), "white")
+            exif = image.getexif(); exif[274] = 6
+            image.save(frame, exif=exif)
+            with patch.object(batch_image, "_locate_source_faces", return_value=[{"x0": .1, "y0": .1, "x1": .6, "y1": .6}]):
+                guarded = batch_image.prepare_defocused_reference(frame, Path(raw)/"guard")
+            with Image.open(guarded) as result:
+                self.assertEqual(result.size, (60,100))
+
+    def test_legacy_candidate_uses_guarded_frame_and_current_prompt(self):
+        from backend import chatgpt_image, batch_worker
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as raw:
+            work = Path(raw)
+            frame = work / "scene-frame.jpg"; identity = work / "identity.png"
+            guarded = work / "guard.png"; output = work / "result.png"
+            for path in (frame,identity,guarded,output):
+                Image.new("RGB", (100,100)).save(path)
+            item = {"kind":"dance", "ratio":"9:16", "ai":{}}
+            with patch.object(chatgpt_image, "_work_dir", return_value=work), patch.object(chatgpt_image, "IDENTITY_IMAGE", identity), patch.object(batch_worker, "_item", return_value=item), patch.object(batch_worker.batch_store, "add_item_log"), patch.object(batch_image, "prepare_defocused_reference", return_value=guarded), patch.object(chatgpt_image, "prompt_for_kind", side_effect=AssertionError("不能读取旧提示词")), patch.object(chatgpt_image, "_out_path", return_value=output), patch.object(chatgpt_image, "write_prompt_attachment", return_value=work/"prompt.txt"), patch.object(chatgpt_image, "_upload_item_image"), patch.object(chatgpt_image, "_mark"), patch.object(chatgpt_image.cd, "generate", return_value=output) as generate:
+                chatgpt_image._generate_candidate_sync("batch","item")
+            args = generate.call_args.args
+            self.assertEqual(args[0], [guarded,identity])
+            self.assertIn("搭配合适的新发型", args[1])
+            self.assertIn("图二是唯一的面部身份参考", args[1])
+
 if __name__ == "__main__":
     unittest.main()

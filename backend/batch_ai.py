@@ -584,6 +584,20 @@ def compose_image_prompt(
     return prompt + "\n\n" + (REDESIGN_IDENTITY_BLOCK if redesign else IDENTITY_PRIORITY_BLOCK).strip()
 
 
+MOTION_REFERENCE_APPEARANCE_RULE = (
+    "人物身份、发型、服装、背景和灯光以本次人物参考图为唯一视觉依据；"
+    "驱动视频只提供动作、表情与运动节奏，不恢复源视频人物的外貌、服装或场景。"
+)
+
+
+def motion_reference_prompt(text: str) -> str:
+    """保留动作描述，在批量动作迁移中让新人物图决定外观。"""
+    text = (text or "").strip()
+    if MOTION_REFERENCE_APPEARANCE_RULE in text:
+        return text
+    return "\n".join(part for part in (text, MOTION_REFERENCE_APPEARANCE_RULE) if part)
+
+
 ACTION_RULES = """\
 时间轴格式（必须严格遵守，产出会被直接粘贴进 ComfyUI 工作流）：
 - 每行一段，形如 `0–4秒：身体随节拍轻轻左右摇摆，目光自然看向镜头`
@@ -646,6 +660,7 @@ content_prompt / video_prompt / image_prompt 返回空字符串，remove_subtitl
 - content_prompt：画面内容与人物动作要求（交给动作迁移工作流的「内容提示词」）
 - video_prompt：驱动视频里人物的运动要求
 - image_prompt：参考图人物要求
+- 人物身份、发型、服装与背景以生成后的人物参考图为准；源视频仅提供动作、表情和节奏，不把源视频造型写成必须恢复的要求。
 - remove_subtitles：固定返回 false，动作迁移直接使用源视频
 
 唯一的例外是**过度裸露**：按小红书规则原文只有三条，`image_prompt` 里要照它写 ——
