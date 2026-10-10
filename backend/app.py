@@ -1679,8 +1679,19 @@ async def batch_item_material(batch_id: str, item_id: str, key: str, download: b
     item = _batch_item_or_404(batch_id, item_id)
     ai = item.get("ai") or {}
     if key == "scene":
+        from . import batch_image
         raw = str(ai.get("sceneFramePath") or "")
-        name = "图一_源视频参考帧.jpg"
+        name = "图一_已糊脸参考帧.png"
+        if raw and Path(raw).is_file():
+            try:
+                guarded, ok = await batch_image.defocus_reference_face(
+                    Path(raw), Path(raw).parent / ".h3-reference-guard"
+                )
+                if not ok:
+                    raise ValueError("抽帧未成功糊脸")
+                raw = str(guarded)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
     elif key == "identity":
         raw = str(IDENTITY_PATH)
         name = "图二_原型身份图.png"
