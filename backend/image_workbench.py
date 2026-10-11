@@ -216,7 +216,7 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
     ratio = "4:3 横版" if stage == "bilibili" else "3:4 竖版"
     title = _copy_field(copy, "标题") or _title(copy, folder.name)
     introduction = _copy_field(copy, "简介")
-    return f"""以参考图为底图制作 {ratio} 封面。尽量完整保留原图的人物、姿态、服装、背景、光线和构图；只将下列文字自然融入画面。调整画幅时不要裁掉人物的重要部分。
+    return f"""以参考图为底图制作 {ratio} 封面。尽量完整保留原图的人物、姿态、服装、背景、光线和构图；只将下列文字自然融入画面。调整画幅时，可以适当调整人物动作；调整后的动作需合规，避免触发安全政策。
 标题：{title}
 简介：{introduction}
 画面仍只有参考图中的一人。除标题和简介外，不添加其他文字、平台 Logo、水印或角标。""".strip()
