@@ -79,7 +79,9 @@ def _meta(path: Path | None) -> dict[str, Any] | None:
     try:
         with Image.open(path) as image:
             width, height = image.size
-        return {"name": path.name, "width": width, "height": height, "bytes": path.stat().st_size}
+        stat = path.stat()
+        return {"name": path.name, "width": width, "height": height, "bytes": stat.st_size,
+                "version": f"{stat.st_mtime_ns}-{stat.st_size}"}
     except OSError:
         return None
 

@@ -4,7 +4,7 @@ import {
 } from "@phosphor-icons/react";
 import { readJson } from "./api";
 
-type Asset = { name: string; width: number; height: number; bytes: number } | null;
+type Asset = { name: string; width: number; height: number; bytes: number; version?: string } | null;
 /** 后端 image_workbench.AUTOMATIONS 里的单条状态（list_items 会带出来）。 */
 type AutomationState = { status?: string; stage?: string; message?: string; startedAt?: number } | null;
 type WorkItem = {
@@ -32,7 +32,7 @@ function firstMissingStage(item: WorkItem): Stage {
 }
 
 function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
-  return `/api/image-workbench/${item.id}/asset/${key}?v=${item.assets[key]?.bytes || 0}`;
+  return `/api/image-workbench/${item.id}/asset/${key}?v=${item.assets[key]?.version || item.assets[key]?.bytes || 0}`;
 }
 
 export function ImageWorkbenchRoute() {
@@ -46,11 +46,17 @@ export function ImageWorkbenchRoute() {
   const inputRef = useRef<HTMLInputElement>(null);
   /** 每条自动化任务的本地开始时刻（后端不给百分比，就显示「已用 N 秒」避免看着像卡死）。 */
   const autoClock = useRef<Record<string, number>>({});
+  const refreshInFlight = useRef<Promise<void> | null>(null);
 
-  const refresh = useCallback(async () => {
-    const data = await readJson<{ items: WorkItem[] }>(fetch("/api/image-workbench/items"), "读取发布目录失败");
-    setItems(data.items);
-    setSelectedId((current) => current && data.items.some((item) => item.id === current) ? current : data.items.find((row) => !(row.assets.person && row.assets.bilibili && row.assets.douyin))?.id || data.items[0]?.id || "");
+  const refresh = useCallback(() => {
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const request = (async () => {
+      const data = await readJson<{ items: WorkItem[] }>(fetch("/api/image-workbench/items", { cache: "no-store" }), "读取发布目录失败");
+      setItems(data.items);
+      setSelectedId((current) => current && data.items.some((item) => item.id === current) ? current : data.items.find((row) => !(row.assets.person && row.assets.bilibili && row.assets.douyin))?.id || data.items[0]?.id || "");
+    })();
+    refreshInFlight.current = request.finally(() => { refreshInFlight.current = null; });
+    return refreshInFlight.current;
   }, []);
 
   useEffect(() => { refresh().catch((error) => setNotice(String(error.message || error))); }, [refresh]);
@@ -59,15 +65,22 @@ export function ImageWorkbenchRoute() {
   const complete = (row: WorkItem) => Boolean(row.assets.person && row.assets.bilibili && row.assets.douyin);
   const visible = useMemo(() => filter === "pending" ? items.filter((row) => !complete(row)) : items, [filter, items]);
   const finished = items.filter(complete).length;
-  /** 有自动化任务在跑就持续刷新，直到全部落定 —— 页面上的进度就靠这个更新。 */
+  /** 活跃任务用于显示耗时；目录同步不依赖页面事先知道有任务。 */
   const autoLive = items.some((row) => AUTO_LIVE.includes(row.automation?.status || ""));
 
   useEffect(() => {
-    if (!autoLive) return;
-    const timer = window.setInterval(() => {
+    const sync = () => {
+      if (document.visibilityState === "hidden") return;
       refresh().catch(() => { /* 下一轮再试，瞬时失败不该中断轮询 */ });
-    }, 2000);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(sync, autoLive ? 2000 : 3500);
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", sync);
+    };
   }, [autoLive, refresh]);
 
   // 记录/清除每条任务的开始时刻（每次刷新 items 都会重跑，正好跟着轮询走）。
