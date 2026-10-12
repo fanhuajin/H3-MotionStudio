@@ -566,7 +566,16 @@ def compose_image_prompt(
         ratio or ("4:3" if kind == "singing" else "9:16")
     ) or ""
     redesign = kind == "singing" and style_source == "redesign"
-    prompt = (REDESIGN_IMAGE_PROMPT if redesign else COMPACT_IMAGE_PROMPT).format(
+    template = REDESIGN_IMAGE_PROMPT if redesign else COMPACT_IMAGE_PROMPT
+    if kind == "dance":
+        template = template.replace(
+            "姿态和人物位置可自然调整，不必完全复制抽帧。",
+            "【跳舞姿态】默认保持自然站立，身体直立、重心稳定，髋部与双腿呈站姿，"
+            "不坐、不蹲、不跪，不倚坐家具，不添加椅子或凳子。"
+            "参考图一的身体朝向及主要手臂动作，只作小幅自然调整，便于后续动作迁移；"
+            "不能因裁切或更换背景改成坐姿。只有用户明确要求坐姿时才例外。",
+        )
+    prompt = template.format(
         compliance=(REDESIGN_SAFE_BLOCK if redesign else PLATFORM_SAFE_BLOCK).strip(),
         sharpness=SHARPNESS_BLOCK.strip(),
         background=BACKGROUND_CLEAN_BLOCK.strip(),
