@@ -977,7 +977,7 @@ async def set_batch_auto_render(batch_id: str, request: BatchAutoRenderRequest):
 @app.post("/api/batches/{batch_id}/render")
 async def start_batch_render(batch_id: str):
     state = _batch_or_404(batch_id)
-    if state.get("status") in {"cancelled", "paused", "failed"}:
+    if state.get("status") in {"cancelled", "failed"}:
         raise HTTPException(409, "批次已停止，请先继续或处理失败条目")
     if batch_worker._prep_remaining(state):
         raise HTTPException(409, "备料区还有待处理任务；完成后即可开始出片，异常条目可稍后补跑")

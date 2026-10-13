@@ -1837,7 +1837,7 @@ export function BatchRoute() {
                   title={prepBlocked ? "备料区全部完成后才能开始出片" : "逐条开始出片"}
                   onClick={() => void call("render")}
                 >
-                  <Play weight="fill" />{batch.renderRequested ? "已安排出片" : "开始出片"}
+                  <Play weight="fill" />{batch.status === "paused" ? "继续并开始出片" : batch.renderRequested ? "已安排出片" : "开始出片"}
                 </button>
               )}
             </div>
