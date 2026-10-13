@@ -677,7 +677,7 @@ export function MigrateRoute() {
                     <button className="empty-upload" onClick={() => videoInputRef.current?.click()}>
                       <span className="upload-icon"><UploadSimple /></span>
                       <strong>点击选择动作视频</strong>
-                      <span>支持 MP4 / MOV / MKV，长短视频均可</span>
+                      <span>支持 MP4 / MOV / MKV，最长 40 秒</span>
                     </button>
                   )}
                 </div>

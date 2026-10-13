@@ -1724,7 +1724,7 @@ export function BatchRoute() {
             {danceOn ? (
               <>
                 <textarea value={dance} onChange={(event) => setDance(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-                <small>{splitUrls(dance).length} 条 · 默认 9:16 竖版（审核时每条都能改）· 动作迁移成片</small>
+                <small>{splitUrls(dance).length} 条 · 最长 40 秒 · 默认 9:16 竖版（审核时每条都能改）· 动作迁移成片</small>
               </>
             ) : (
               <small>已关闭：这类链接不会展示，也不会加入批次。</small>

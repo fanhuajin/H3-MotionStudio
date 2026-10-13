@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 import websockets
+from .duration_policy import validate_dance_duration
 
 from .settings import (
     CLEAN_WORKFLOW,
@@ -1812,6 +1813,8 @@ async def run_migrate_pipeline(job_id: str) -> None:
             return
         try:
             await _guard_source_video(job_id, state)
+            metadata = await media_metadata(COMFY_INPUT / state["sourceInputName"])
+            validate_dance_duration(metadata.get("duration"))
             await resources.ensure_comfy(job_id)
             # 刚把 ComfyUI 拉起来就发现被取消：**绝不提交工作流**（否则又会白烧一次显存）。
             raise_if_cancelled(job_id)
