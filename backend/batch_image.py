@@ -21,6 +21,7 @@ import mimetypes
 import shutil
 import time
 from pathlib import Path
+from urllib.parse import quote, urlparse
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -85,7 +86,18 @@ def api_key() -> str:
 
 
 def model() -> str:
-    return env_value("H3_BATCH_IMAGE_MODEL") or "gpt-image-2.5-sunburst"
+    return env_value("H3_BATCH_IMAGE_MODEL") or "gpt-image-2.5"
+
+
+def _yeelo() -> bool:
+    return urlparse(base_url()).hostname == "img.yeelo.fun"
+
+
+def _request_options(data: dict[str, str]) -> dict[str, str]:
+    if _yeelo():
+        data.pop("input_fidelity", None)
+        data.update({"async": "true", "response_format": "url"})
+    return data
 
 
 def configured() -> bool:
@@ -250,7 +262,7 @@ def _build_request(
     fidelity = env_value("H3_BATCH_IMAGE_FIDELITY", "high")
     if fidelity:
         data["input_fidelity"] = fidelity
-    return data, files, text
+    return _request_options(data), files, text
 
 
 def _blur_region(image: Image.Image, box: dict[str, float]) -> Image.Image:
@@ -553,6 +565,43 @@ async def _post_with_route_fallback(
         return response
 
 
+async def _await_image_task(response: httpx.Response, output_path: Path) -> httpx.Response:
+    """Only query an accepted task; never submit a second billed request."""
+    if response.is_error or not _yeelo():
+        return response
+    payload = response.json()
+    task_id = payload.get("task_id")
+    if not task_id:
+        return response
+    checkpoint = output_path.with_name(output_path.name + ".relay-task.json")
+    checkpoint.write_text(json.dumps({"task_id": task_id, "base_url": base_url()}), encoding="utf-8")
+    deadline = time.monotonic() + REQUEST_TIMEOUT
+    url = f"{base_url()}/images/tasks/{quote(str(task_id), safe='')}"
+    async with httpx.AsyncClient(timeout=60.0, proxy=_route()) as client:
+        while time.monotonic() < deadline:
+            await asyncio.sleep(5)
+            try:
+                result = await client.get(url, headers={"Authorization": f"Bearer {api_key()}"})
+            except httpx.TransportError:
+                continue  # GET is safe to repeat; the task remains checkpointed.
+            if result.status_code == 429 or result.status_code >= 500:
+                continue
+            result.raise_for_status()
+            body = result.json()
+            status = str(body.get("status", "")).lower()
+            if status in {"failed", "error", "cancelled", "canceled"}:
+                raise RuntimeError(f"图片任务 {task_id} 失败：{str(body.get('error') or status)[:300]}（未重新提交）")
+            images = body.get("data")
+            if not isinstance(images, list):
+                nested = body.get("result") or body.get("response") or {}
+                images = nested.get("data") if isinstance(nested, dict) else None
+            if isinstance(images, list) and images and isinstance(images[0], dict) and (images[0].get("url") or images[0].get("b64_json")):
+                return httpx.Response(200, json={"data": images})
+            if status in {"completed", "succeeded", "success"}:
+                raise RuntimeError(f"图片任务 {task_id} 已完成但没有返回图像数据；任务记录已保留，请核对服务后台")
+    raise RuntimeError(f"图片任务 {task_id} 查询超时；任务记录已保留，未重新提交，请核对服务后台")
+
+
 def _store(response: httpx.Response, output_path: Path) -> Path:
     payload = response.json()
     entry = (payload.get("data") or [{}])[0]
@@ -824,6 +873,7 @@ async def _generate_candidate_image_once(
                 policy_attempt = 0
                 while (
                     response.is_error
+                    and not _yeelo()
                     and policy_attempt < POLICY_RETRIES
                     and _is_policy_rejection(response)
                 ):
@@ -841,6 +891,7 @@ async def _generate_candidate_image_once(
                     if _is_policy_rejection(response):
                         policy_rejected = True
                     continue
+                response = await _await_image_task(response, output_path)
                 _store(response, output_path)
             except httpx.HTTPError as error:
                 # 请求可能已被中转站接收并计费，只是响应返回途中超时/断线。
@@ -880,7 +931,9 @@ async def _generate_candidate_image_once(
     detail = "；".join(failures) or "未知错误"
     hint = ""
     if failures:
-        if policy_rejected:
+        if policy_rejected and _yeelo():
+            hint = "。新服务明确拒绝了请求；本次没有自动重发，请核对服务后台后再手动重做"
+        elif policy_rejected:
             hint = (
                 f"。内容政策这类拒绝已自动重发过 {POLICY_RETRIES} 次（实测这种 400 不计费），"
                 "仍未通过；请核对中转站后台后再手动重做"
@@ -1032,6 +1085,7 @@ async def generate_single_edit(
         "quality": env_value("H3_BATCH_IMAGE_QUALITY", "high"),
         "input_fidelity": env_value("H3_BATCH_IMAGE_FIDELITY", "high"),
     }
+    data = _request_options(data)
     image_bytes = source_image.read_bytes()
     field = env_value("H3_BATCH_IMAGE_FIELD") or "image"
     files = [(field, (source_image.name, image_bytes, mime))]
@@ -1045,4 +1099,5 @@ async def generate_single_edit(
         ) from exc
     if response.is_error:
         raise RuntimeError(f"封面生成失败：{_api_error(response)}（未自动改格式重试）")
+    response = await _await_image_task(response, output_path)
     return _store(response, output_path)
