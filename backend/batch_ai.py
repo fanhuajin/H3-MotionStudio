@@ -642,6 +642,10 @@ ACTION_RULES = """\
 # 出图后的 `copy_prompt` 更写着「**不要照抄原作品描述**」、而且连原标签都没传进去 ——
 # 结果每条都被换成一个与原作者说法不相干的新标题。
 COPY_SOURCE_FIRST_RULE = (
+    "- **正向合规优先于沿用原文**：标题、简介、标签均采用健康、友善、积极的表达。"
+    "禁止暴力威胁、自伤自杀、仇恨辱骂、低俗性暗示及危险挑战；"
+    "包括「来杀我」「杀了我」「要命」「想死」「弄死」等夸张玩梗也不使用。"
+    "原文或原标签含此类表达时，改写为与音乐、舞蹈、快乐、成长有关的正向文案，不能照抄；\n"
     "- **原视频的文案与标签是本次文案的第一来源**：先看「原作品描述」与「原标签」，"
     "**能沿用就直接沿用**（原描述的那句话、原标签的那些词都优先保留），"
     "不要为了「原创」换一个不相干的说法；\n"
@@ -1065,7 +1069,7 @@ def _clean_tags(values: Any, *, kind: str = "singing") -> list[str]:
         name = str(value or "").strip().lstrip("#").strip()
         if not name or name in cleaned or name in PLACEHOLDER_VALUES or _has_platform_word(name):
             continue
-        if any(marker in name for marker in INTERACTION_MARKERS):
+        if has_disallowed_copy(name) or any(marker in name for marker in INTERACTION_MARKERS):
             continue
         if kind == "dance" and has_singing_wording(name):
             continue
@@ -1079,6 +1083,18 @@ def _has_platform_word(name: str) -> bool:
 
 # 「没识别出来」的占位值：模型认不出歌名时可能回这些，绝不能当成标签发出去
 PLACEHOLDER_VALUES = {"未识别", "未知", "无", "暂无", "没有", "none", "null", "n/a", "-", "—"}
+
+# 发布文案不使用暴力、自伤、辱骂或低俗的夸张梗；源文案与兜底同样过滤。
+DISALLOWED_COPY_MARKERS = (
+    "杀", "自残", "自伤", "自尽", "自刎", "想死", "去死", "找死", "弄死", "死吧",
+    "要命", "索命", "毙", "砍", "血腥", "血洗", "虐待", "跳楼", "割腕", "轻生",
+    "滚蛋", "傻逼", "傻b", "煞笔", "贱人", "废物", "色情", "淫", "约炮", "裸聊",
+)
+
+
+def has_disallowed_copy(text: Any) -> bool:
+    normalized = re.sub(r"[\W_]+", "", str(text or "").casefold())
+    return any(marker in normalized for marker in DISALLOWED_COPY_MARKERS)
 
 
 # 互动喊话 / 向观众提问：**用户明确不要**（2026-09-13 用户指着自动生成的简介说
@@ -1175,6 +1191,8 @@ def _dance_title(description: str = "") -> str:
     headline = ""
     if description:
         headline = str(description).strip().splitlines()[0].split("#")[0].strip()
+    if has_disallowed_copy(headline):
+        return "把快乐跳进节拍里"
     return _strip_singing_wording(headline)[:40] or DANCE_FALLBACK_TITLE
 
 
@@ -1189,6 +1207,9 @@ def compose_introduction(
     headline = (description or "").strip().splitlines()[0].split("#")[0].strip() if description else ""
     song = str(song_name or "").strip()
     mood = str(song_mood or "").strip()
+    headline = "" if has_disallowed_copy(headline) else headline
+    song = "" if has_disallowed_copy(song) else song
+    mood = "" if has_disallowed_copy(mood) else mood
     if kind == "dance":
         if song:
             return f"《{song}》这支舞，跳给懂的人看🤍"
@@ -1219,7 +1240,7 @@ def sanitize_introduction(
     那句向观众提问（「你会先牵哪只手？」）整句去掉，剩下的不够一句就用 `compose_introduction`。
     """
     cleaned = str(text or "").strip()
-    if not cleaned:
+    if not cleaned or has_disallowed_copy(cleaned):
         return compose_introduction(
             kind, song_name=song_name, song_mood=song_mood, description=description
         )
@@ -1265,6 +1286,9 @@ def ensure_copy_fields(
     多了截断——先保留模型/源作品给的，再补通用的。
     """
     filled: list[str] = []
+    if has_disallowed_copy(result.get("title")):
+        result["title"] = "把快乐跳进节拍里" if kind == "dance" else "把美好唱进旋律里"
+        filled.append("标题")
     # 跳舞条目的标题里混了唱歌用词（模型把「《X》翻唱」写进舞蹈条目的标题）：清掉；
     # 清完不成句就退回源作品文案 / 跳舞兜底标题（用户 2026-09-15：「跳舞都会写上翻唱 这是不对的」）。
     if kind == "dance":
@@ -1296,7 +1320,7 @@ def ensure_copy_fields(
             *TAG_POOL.get(kind, TAG_POOL["singing"]),
         ]:
             name = str(candidate or "").strip().lstrip("#").strip()
-            if not name or name in tags or name in PLACEHOLDER_VALUES or _has_platform_word(name):
+            if not name or name in tags or name in PLACEHOLDER_VALUES or _has_platform_word(name) or has_disallowed_copy(name):
                 continue
             if kind == "dance" and has_singing_wording(name):
                 continue
