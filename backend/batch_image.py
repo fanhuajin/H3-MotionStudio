@@ -48,6 +48,7 @@ REQUEST_TIMEOUT = 900.0
 IMAGE_SIZES_1K = {"4:3": "1024x768", "9:16": "720x1280", "3:4": "768x1024"}
 # 改造前的 2k 档尺寸：`H3_IMAGE_UPSCALE=off` 时整体退回这一套（那时不做本地放大）。
 IMAGE_SIZES_2K = {"4:3": "1536x1152", "9:16": "1152x2048", "3:4": "1152x1536"}
+IMAGE_SIZES_4K = {"4:3": "3264x2448", "9:16": "2160x3840", "3:4": "2448x3264"}
 # 与 image_workbench.save_upload() 的短边下限保持一致。
 MIN_IMAGE_SIDE = 640
 # 本地放大**一律等 VOSR2**（用户 2026-09-23：「跑完当前视频后优先把所有的放大做完再开始
@@ -63,6 +64,8 @@ POLICY_RETRY_DELAY = 5.0
 
 def image_sizes() -> dict[str, str]:
     """当前生效的出图尺寸表。关掉本地放大时**整体**退回 2k 档尺寸（真回滚，不是半套）。"""
+    if _yeelo() and env_value("H3_BATCH_IMAGE_RESOLUTION", "4k").lower() == "4k":
+        return IMAGE_SIZES_4K
     return IMAGE_SIZES_2K if image_upscale_engine() == "off" else IMAGE_SIZES_1K
 ProgressCallback = Callable[[float, str], Awaitable[None]]
 _BILLED_INFLIGHT: dict[str, asyncio.Future[tuple[bytes | None, str]]] = {}

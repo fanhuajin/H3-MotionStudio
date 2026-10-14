@@ -35,6 +35,12 @@ class YeeloTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['async'],'true')
         self.assertEqual(data['quality'],'auto')
         self.assertEqual(data['n'],'1')
+    def test_4k_sizes_skip_local_upscale(self):
+        with patch.object(b, '_yeelo', return_value=True), patch.object(b, 'env_value', side_effect=lambda name, default='': '4k' if name == 'H3_BATCH_IMAGE_RESOLUTION' else default):
+            self.assertEqual(b.image_sizes(), {'4:3': '3264x2448', '9:16': '2160x3840', '3:4': '2448x3264'})
+            for ratio in b.image_sizes():
+                self.assertFalse(b.needs_local_upscale(ratio))
+
     async def test_sync_legacy_response(self):
         response=httpx.Response(200,json={'data':[{'b64_json':'eA=='}]})
         with patch.object(b,'_yeelo',return_value=False):
