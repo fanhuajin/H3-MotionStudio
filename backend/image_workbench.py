@@ -189,6 +189,31 @@ def list_items() -> list[dict[str, Any]]:
                 "bilibili": _meta(bili), "douyin": _meta(douyin),
             },
         })
+    # Batch records exist before review materials reach the publishing folder.
+    # Expose them without creating placeholder files or changing batch state.
+    latest = batch_store.latest()
+    by_id = {row["id"]: row for row in items}
+    for row in (latest or {}).get("items") or []:
+        if row.get("status") in {"deleted", "skipped"} or row.get("deleteRequested"):
+            continue
+        folder = (batch_worker._existing_publish_folder(row)
+                  or batch_worker._recorded_publish_folder(row)
+                  or batch_worker._ideal_publish_folder(row))
+        key = _folder_id(folder)
+        live = row.get("status") not in {"completed", "failed"}
+        if key in by_id:
+            by_id[key]["batchLive"] = live
+            continue
+        ai = row.get("ai") or {}
+        entry = {
+            "id": key, "folderName": folder.name,
+            "title": str(ai.get("title") or row.get("title") or f"第 {row.get('index')} 条"),
+            "copy": "", "kind": row.get("kind"),
+            "automation": None, "awaitingMaterials": True, "batchLive": live,
+            "assets": {name: None for name in ("frame", "identity", "person", "bilibili", "douyin")},
+        }
+        items.append(entry)
+        by_id[key] = entry
     return items
 
 

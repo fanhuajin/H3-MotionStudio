@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRememberedTab } from "./useRememberedTab";
 import {
   ArrowsClockwise,
   CaretDown,
@@ -129,7 +130,7 @@ export function UpScaleRoute() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
-  const [mode, setMode] = useState<"upload" | "recent">("upload");
+  const [mode, setMode] = useRememberedTab("h3-motionstudio:upscale-source-tab:v1", ["upload", "recent"] as const, "upload");
   const [file, setFile] = useState<File | null>(null);
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [recentPick, setRecentPick] = useState<{ jobId: string; key: string; label: string } | null>(null);

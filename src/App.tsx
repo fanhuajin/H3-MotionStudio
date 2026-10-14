@@ -901,8 +901,28 @@ function MotionStudioRoute() {
   );
 }
 
+const WORKSPACE_PAGE_KEY = "h3-motionstudio:workspace-page:v1";
+const WORKSPACE_PAGES = new Set(["/batch", "/images", "/singing", "/migrate", "/upscale", "/rvc", "/subtitle", "/rvc-training"]);
+
+function restoreWorkspacePage(): string {
+  let path = window.location.pathname.replace(/\/+$/, "");
+  try {
+    if (path === "") {
+      const saved = localStorage.getItem(WORKSPACE_PAGE_KEY);
+      if (saved && WORKSPACE_PAGES.has(saved)) {
+        path = saved;
+        window.history.replaceState(window.history.state, "", `${path}${window.location.search}${window.location.hash}`);
+      }
+    }
+    if (WORKSPACE_PAGES.has(path)) localStorage.setItem(WORKSPACE_PAGE_KEY, path);
+  } catch {
+    // 浏览器存储不可用时仍按当前网址打开页面。
+  }
+  return path;
+}
+
 export function App() {
-  const path = window.location.pathname.replace(/\/+$/, "");
+  const [path] = useState(restoreWorkspacePage);
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
   const isRvcRoute = path === "/rvc";

@@ -506,7 +506,7 @@ export function MigrateRoute() {
       if (source) {
         if (latest) {
           setRatio((latest.canvas as CanvasRatio) || "9:16");
-          setMode((latest.migrateMode as MigrateMode) || "animation");
+          setMode(draft?.mode || (latest.migrateMode as MigrateMode) || "animation");
           setContentPrompt(latest.contentPrompt ?? "a person singing");
           setVideoPrompt(latest.videoPrompt ?? "person");
           setImagePrompt(latest.imagePrompt ?? "person");

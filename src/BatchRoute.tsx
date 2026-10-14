@@ -403,6 +403,20 @@ function responseMessage(response: Response, fallback: string): Promise<string> 
 
 /** 备料、待出片、异常、已跳过和已完成各自分区。 */
 type TabId = "prep" | "render" | "exception" | "archive" | "completed";
+
+const TAB_KEY = "h3-motionstudio:batch-tab:v1";
+
+function readActiveTab(): TabId {
+  try {
+    const saved = localStorage.getItem(TAB_KEY);
+    if (saved === "prep" || saved === "render" || saved === "exception" || saved === "archive" || saved === "completed") {
+      return saved;
+    }
+  } catch {
+    // 浏览器禁用存储时仍可正常切换分区。
+  }
+  return "prep";
+}
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "prep", label: "备料区" },
   { id: "render", label: "出片区" },
@@ -472,8 +486,13 @@ export function BatchRoute() {
   const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
   const [batch, setBatch] = useState<BatchState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // 状态筛选标签只要两档：**默认「未完成」**（2026-09-15 用户：「除了已经完成的其他的都算未完成的」）
-  const [activeTab, setActiveTab] = useState<TabId>("prep");
+  // 刷新或重新进入页面时恢复上次选择的分区。
+  const [activeTab, setActiveTab] = useState<TabId>(readActiveTab);
+  const [videoPreview, setVideoPreview] = useState<{ id: string; title: string; url: string } | null>(null);
+  const videoDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    if (videoPreview) videoDialog.current?.showModal();
+  }, [videoPreview]);
   // 批量操作勾选：后台表格交互（2026-09-15 用户要求批量确认/跳过/删除）。
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busyAction, setBusyAction] = useState("");
@@ -546,6 +565,36 @@ export function BatchRoute() {
   }, [batch]);
   // 当前标签下显示的条目；展开的详情行也只在当前标签里渲染。
   const filteredItems = useMemo(() => visibleItems.filter(TAB_MATCH[activeTab]), [visibleItems, activeTab]);
+  const previewItems = useMemo(
+    () => visibleItems.filter((item) => item.status === "completed" && item.outputs?.videoFinal),
+    [visibleItems],
+  );
+  const previewIndex = previewItems.findIndex((item) => item.id === videoPreview?.id);
+  const switchPreview = useCallback((direction: number) => {
+    if (!batch || !videoPreview) return;
+    const index = previewItems.findIndex((item) => item.id === videoPreview.id);
+    if (index < 0) return;
+    const item = previewItems[index + direction];
+    if (!item) return;
+    setVideoPreview({
+      id: item.id,
+      title: itemTitle(item),
+      url: `/api/batches/${encodeURIComponent(batch.id)}/items/${encodeURIComponent(item.id)}/output/videoFinal`,
+    });
+  }, [batch, videoPreview, previewItems]);
+  useEffect(() => {
+    if (!videoPreview) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        event.stopPropagation();
+        switchPreview(event.key === "ArrowUp" ? -1 : 1);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [videoPreview, switchPreview]);
   const selected = useMemo(
     () => visibleItems.find((item) => item.id === selectedId) || null,
     [visibleItems, selectedId],
@@ -635,6 +684,11 @@ export function BatchRoute() {
 
   const switchTab = (id: TabId) => {
     setActiveTab(id);
+    try {
+      localStorage.setItem(TAB_KEY, id);
+    } catch {
+      // 存储不可用不影响当前页面切换。
+    }
   };
 
   // 「准备任务」：把填好的链接交给后端，并立即开始准备
@@ -667,7 +721,7 @@ export function BatchRoute() {
       });
       if (!response.ok) throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
       const state = await readJson<BatchState>(response, append ? "加入队列失败" : "创建队列失败");
-      setBatch(state);
+      acceptBatchState(state);
       // 链接已经进队列了，输入框清空，直接粘下一批就行
       // （2026-09-15 用户：「准备任务点击之后清空现有的歌曲视频链接和跳舞视频链接」）。
       // 只清**这次真的提交了**的那一类：开关关着的那一类不参与入队，原样留着不动。
@@ -702,7 +756,7 @@ export function BatchRoute() {
         body: body ? JSON.stringify(body) : undefined,
       });
       if (!response.ok) throw new Error(await responseMessage(response, "操作失败"));
-      setBatch(await readJson<BatchState>(response, "操作失败"));
+      acceptBatchState(await readJson<BatchState>(response, "操作失败"));
     } catch (reason) {
       // 报错要把**所有能给的定位信息**都带上：后端 detail + HTTP 状态 + 具体端点，
       // 否则用户只能看到一句「操作失败」，没法反馈也没法自己排查。
@@ -765,7 +819,7 @@ export function BatchRoute() {
         body: JSON.stringify({ itemIds: [...selectedIds], allowUncertainRetry: uncertainRetry }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, "批量操作失败"));
-      setBatch(await readJson<BatchState>(response, "批量操作失败"));
+      acceptBatchState(await readJson<BatchState>(response, "批量操作失败"));
       setSelectedIds(new Set());
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
@@ -790,7 +844,7 @@ export function BatchRoute() {
         if (!response.ok) return responseMessage(response, "调整顺序失败").then((message) => { throw new Error(message); });
         return readJson<BatchState>(response, "调整顺序失败");
       })
-      .then(setBatch)
+      .then(acceptBatchState)
       .catch((reason) => setError(`${reason instanceof Error ? reason.message : String(reason)}　〔POST ${endpoint}〕`))
       .finally(() => setBusyAction(""));
   };
@@ -1031,7 +1085,7 @@ export function BatchRoute() {
         body,
       });
       if (!response.ok) throw new Error(await responseMessage(response, "图片上传失败"));
-      setBatch(await readJson<BatchState>(response, "图片上传失败"));
+      acceptBatchState(await readJson<BatchState>(response, "图片上传失败"));
       setImageToken(Date.now());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -1068,7 +1122,7 @@ export function BatchRoute() {
       body.append("file", file);
       const response = await fetch(endpoint, { method: "POST", body });
       if (!response.ok) throw new Error(await responseMessage(response, "替换源视频失败"));
-      setBatch(await readJson<BatchState>(response, "替换源视频失败"));
+      acceptBatchState(await readJson<BatchState>(response, "替换源视频失败"));
       setReplacingSource(false);
       setNotice(`已把这一条的源视频换成本机文件「${file.name}」，标题、文案、候选图保持原样。`);
     } catch (reason) {
@@ -2023,7 +2077,7 @@ export function BatchRoute() {
                               && item.id === batch.currentItemId
                               && item.childJob?.currentNodeTitle && (
                                 <small className="batch-elapsed">
-                                  <Timer weight="fill" />恢复中 · {item.childJob.currentNodeTitle}
+                                  <Timer weight="fill" />{item.childJob.currentNodeTitle}
                                 </small>
                               )}
                             {batch?.status === "running"
@@ -2053,7 +2107,39 @@ export function BatchRoute() {
                           <td className="batch-ratio-cell">{itemRatio(item)}</td>
                           <td className="batch-ops-cell" onClick={(event) => event.stopPropagation()}>
                             <div className="batch-row-ops">
+                              {item.status === "completed" && item.outputs?.videoFinal && (
+                                <button
+                                  className="batch-primary small"
+                                  onClick={() => setVideoPreview({
+                                    id: item.id,
+                                    title: itemTitle(item),
+                                    url: `/api/batches/${encodeURIComponent(batch.id)}/items/${encodeURIComponent(item.id)}/output/videoFinal`,
+                                  })}
+                                  aria-label={`查看成片：${itemTitle(item)}`}
+                                >
+                                  <Play weight="fill" />查看成片
+                                </button>
+                              )}
                               {statusAction(item)}
+                              {item.status === "completed" && (
+                                <button
+                                  className="danger"
+                                  disabled={Boolean(busyAction)}
+                                  onClick={() => void (async () => {
+                                    if (!(await askConfirm({
+                                      title: "删除这条已完成记录？",
+                                      detail: "仅从列表移除，最终成片及其他已生成文件保留。",
+                                      items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                                      confirmLabel: "删除记录",
+                                      danger: true,
+                                    }))) return;
+                                    await itemCallFor(item, "", "DELETE");
+                                  })()}
+                                  aria-label={`删除记录：${itemTitle(item)}`}
+                                >
+                                  <Trash />删除
+                                </button>
+                              )}
                               {!["running", "revising", "completed", "deleted"].includes(item.status) && (
                                 <span className="batch-move">
                                   <button
@@ -2096,6 +2182,32 @@ export function BatchRoute() {
 
       {/* 页内确认框（不用 window.confirm）：深色壳子里的同风格弹框，把「影响哪几条」摊开，
           危险操作用红色确认键、Esc / 点遮罩 = 取消（2026-09-15 用户：「弹出框的效果样式改下」）。 */}
+      {videoPreview && (
+        <dialog
+          ref={videoDialog}
+          className="batch-video-dialog"
+          aria-labelledby="batch-video-title"
+          onCancel={() => setVideoPreview(null)}
+          onClose={() => setVideoPreview(null)}
+          onClick={(event) => {
+            if (event.target !== event.currentTarget) return;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            if (event.clientX < bounds.left || event.clientX > bounds.right
+              || event.clientY < bounds.top || event.clientY > bounds.bottom) setVideoPreview(null);
+          }}
+        >
+          <div className="batch-video-header">
+            <h2 id="batch-video-title">{videoPreview.title}</h2>
+            <button autoFocus aria-label="关闭成片预览" onClick={() => setVideoPreview(null)}><X /></button>
+          </div>
+          <video key={videoPreview.url} src={videoPreview.url} controls autoPlay playsInline preload="metadata" />
+          <div className="batch-video-navigation">
+            <button disabled={previewIndex <= 0} onClick={() => switchPreview(-1)}>↑ 上一条</button>
+            <span>{previewIndex >= 0 ? `${previewIndex + 1} / ${previewItems.length}` : "成片预览"}</span>
+            <button disabled={previewIndex < 0 || previewIndex >= previewItems.length - 1} onClick={() => switchPreview(1)}>↓ 下一条</button>
+          </div>
+        </dialog>
+      )}
       {confirmAsk && (
         <div
           className="batch-modal-backdrop"

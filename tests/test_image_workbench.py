@@ -42,6 +42,33 @@ async def fake_defocus(frame: Path, work: Path) -> tuple[Path, bool]:
 
 
 class ImageWorkbenchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        latest = patch.object(workbench.batch_store, "latest", return_value=None)
+        latest.start()
+        self.addCleanup(latest.stop)
+
+    def test_batch_record_visible_before_materials_and_merges_after_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            folder = root / "dance" / "001_跳舞_测试_123"
+            item = {"id": "item", "status": "pending", "kind": "dance", "title": "测试", "index": 1}
+            with patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \
+                 patch.object(workbench.batch_store, "latest", return_value={"items": [item, {**item, "status": "deleted"}]}), \
+                 patch.object(batch_worker, "_existing_publish_folder", return_value=None), \
+                 patch.object(batch_worker, "_recorded_publish_folder", return_value=None), \
+                 patch.object(batch_worker, "_ideal_publish_folder", return_value=folder):
+                rows = workbench.list_items()
+                self.assertEqual(len(rows), 1)
+                self.assertTrue(rows[0]["awaitingMaterials"])
+                self.assertTrue(rows[0]["batchLive"])
+                self.assertFalse(folder.exists())
+                folder.mkdir(parents=True)
+                (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+                rows = workbench.list_items()
+                self.assertEqual(len(rows), 1)
+                self.assertFalse(rows[0].get("awaitingMaterials", False))
+                self.assertTrue(rows[0]["batchLive"])
+
     def test_failed_prepare_creates_uploadable_workbench_entry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

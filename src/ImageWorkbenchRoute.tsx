@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRememberedTab } from "./useRememberedTab";
 import {
   Check, ClipboardText, ImageSquare, SpinnerGap, UploadSimple, WarningCircle,
 } from "@phosphor-icons/react";
@@ -12,6 +13,8 @@ type WorkItem = {
   kind: "singing" | "dance" | null;
   assets: { frame: Asset; identity: Asset; person: Asset; bilibili: Asset; douyin: Asset };
   automation?: AutomationState;
+  awaitingMaterials?: boolean;
+  batchLive?: boolean;
 };
 type Stage = "person" | "bilibili" | "douyin";
 
@@ -24,13 +27,6 @@ const STAGES: Array<{ id: Stage; label: string; spec: string }> = [
   { id: "douyin", label: "抖音封面", spec: "3:4 · 1086×1448" },
 ];
 
-function firstMissingStage(item: WorkItem): Stage {
-  if (!item.assets.person) return "person";
-  if (!item.assets.bilibili) return "bilibili";
-  if (!item.assets.douyin) return "douyin";
-  return "person";
-}
-
 function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
   return `/api/image-workbench/${item.id}/asset/${key}?v=${item.assets[key]?.version || item.assets[key]?.bytes || 0}`;
 }
@@ -38,9 +34,9 @@ function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
 export function ImageWorkbenchRoute() {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [stage, setStage] = useState<Stage>("person");
+  const [stage, setStage] = useRememberedTab<Stage>("h3-motionstudio:image-stage-tab:v1", ["person", "bilibili", "douyin"], "person");
   const [kind, setKind] = useState<"singing" | "dance" | null>(null);
-  const [filter, setFilter] = useState<"pending" | "all">("pending");
+  const [filter, setFilter] = useRememberedTab("h3-motionstudio:image-filter-tab:v1", ["pending", "all"] as const, "pending");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -66,7 +62,7 @@ export function ImageWorkbenchRoute() {
   const visible = useMemo(() => filter === "pending" ? items.filter((row) => !complete(row)) : items, [filter, items]);
   const finished = items.filter(complete).length;
   /** 活跃任务用于显示耗时；目录同步不依赖页面事先知道有任务。 */
-  const autoLive = items.some((row) => AUTO_LIVE.includes(row.automation?.status || ""));
+  const autoLive = items.some((row) => row.batchLive || AUTO_LIVE.includes(row.automation?.status || ""));
 
   useEffect(() => {
     const sync = () => {
@@ -188,11 +184,6 @@ export function ImageWorkbenchRoute() {
     }
   }, [busy, refresh]);
 
-  useEffect(() => {
-    const selected = items.find((row) => row.id === selectedId);
-    if (selected) setStage(firstMissingStage(selected));
-  }, [selectedId]);
-
   const copyImage = async (key: keyof WorkItem["assets"], label: string) => {
     if (!item?.assets[key]) { setNotice(`还没有${label}。`); return; }
     setBusy(true); setNotice("");
@@ -261,7 +252,10 @@ export function ImageWorkbenchRoute() {
         </aside>
 
         <div className="image-workbench-main">
-          {!item ? <div className="image-workbench-blank"><ImageSquare /><p>发布目录里暂时没有可处理的作品。</p></div> : <>
+          {!item ? <div className="image-workbench-blank"><ImageSquare /><p>发布目录里暂时没有可处理的作品。</p></div> : item.awaitingMaterials ? <>
+            <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div></div>
+            <div className="image-workbench-blank"><ImageSquare /><p>已同步批量制作记录，等待抽帧、人物图与文案就绪。</p><small>素材就绪后自动更新，可继续生成或查看封面。</small></div>
+          </> : <>
             <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span><button onClick={() => startAuto(item.id)} disabled={busy}>本条三张一次跑完</button></div></div>
             {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><SpinnerGap className="spin" />{item.automation.message || "正在自动生成…"}{elapsedOf(item) ? `（已用 ${elapsedOf(item)} 秒）` : ""}</p>}
             {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><Check weight="bold" />{item.automation.message}</p>}
