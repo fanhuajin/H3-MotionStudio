@@ -32,6 +32,7 @@ from . import rvc_batch
 from . import rvc_training
 from . import rvc_training_shutdown
 from . import batch_worker
+from .duration_policy import validate_dance_duration
 from .rvc_batch import (
     BATCH_MILESTONES as RVC_BATCH_MILESTONES,
     request_publish_batch_pause as request_rvc_publish_batch_pause,
@@ -976,7 +977,7 @@ async def set_batch_auto_render(batch_id: str, request: BatchAutoRenderRequest):
 @app.post("/api/batches/{batch_id}/render")
 async def start_batch_render(batch_id: str):
     state = _batch_or_404(batch_id)
-    if state.get("status") in {"cancelled", "paused", "failed"}:
+    if state.get("status") in {"cancelled", "failed"}:
         raise HTTPException(409, "批次已停止，请先继续或处理失败条目")
     if batch_worker._prep_remaining(state):
         raise HTTPException(409, "备料区还有待处理任务；完成后即可开始出片，异常条目可稍后补跑")
@@ -2036,6 +2037,13 @@ async def create_migrate_job(
             await reference_image.close()
 
     metadata = await media_metadata(input_path)
+    try:
+        validate_dance_duration(metadata.get("duration"))
+    except ValueError as error:
+        input_path.unlink(missing_ok=True)
+        if reference_image is not None and reference_image.filename and reference_path:
+            reference_path.unlink(missing_ok=True)
+        raise HTTPException(400, str(error)) from error
     created_at = now_iso()
     driver_input_name = input_name
     driver_path = input_path

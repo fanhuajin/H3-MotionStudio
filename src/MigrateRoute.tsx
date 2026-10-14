@@ -506,7 +506,7 @@ export function MigrateRoute() {
       if (source) {
         if (latest) {
           setRatio((latest.canvas as CanvasRatio) || "9:16");
-          setMode((latest.migrateMode as MigrateMode) || "animation");
+          setMode(draft?.mode || (latest.migrateMode as MigrateMode) || "animation");
           setContentPrompt(latest.contentPrompt ?? "a person singing");
           setVideoPrompt(latest.videoPrompt ?? "person");
           setImagePrompt(latest.imagePrompt ?? "person");
@@ -677,7 +677,7 @@ export function MigrateRoute() {
                     <button className="empty-upload" onClick={() => videoInputRef.current?.click()}>
                       <span className="upload-icon"><UploadSimple /></span>
                       <strong>点击选择动作视频</strong>
-                      <span>支持 MP4 / MOV / MKV，长短视频均可</span>
+                      <span>支持 MP4 / MOV / MKV，最长 40 秒</span>
                     </button>
                   )}
                 </div>

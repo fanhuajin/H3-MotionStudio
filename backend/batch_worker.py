@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 
 from . import batch_ai, batch_image, batch_portrait
 from .batch_store import batch_store
+from .duration_policy import validate_dance_duration
 from .douyin_mirror import upsert_jobs as mirror_upsert
 from .douyin_preview import ensure_download_playable
 from .douyin_service import (
@@ -1223,6 +1224,8 @@ async def _download(batch_id: str, item_id: str) -> Path:
         # ⚠️ 登记过的 sourcePath 也要验一遍：半截文件留在这里，「重新开始」只会原地复现。
         reason = await asyncio.to_thread(_park_truncated_source, existing)
         if reason is None:
+            if item.get("kind") == "dance":
+                validate_dance_duration(await asyncio.to_thread(_video_duration_seconds, existing))
             return existing
         batch_store.add_item_log(
             batch_id, item_id, f"上次登记的源视频不完整（{reason}），已搁置坏文件，重新下载本条。"
@@ -1238,6 +1241,8 @@ async def _download(batch_id: str, item_id: str) -> Path:
             )
             cached = None
     if cached is not None:
+        if item.get("kind") == "dance":
+            validate_dance_duration(await asyncio.to_thread(_video_duration_seconds, cached))
         batch_store.set_item_milestone(batch_id, item_id, "download", status="running", progress=5)
         _set_item(batch_id, item_id, stage="download", status="running", error=None)
         return await _adopt_existing_source(batch_id, item_id, cached)
@@ -1288,6 +1293,8 @@ async def _download(batch_id: str, item_id: str) -> Path:
         final_reason = await asyncio.to_thread(_park_truncated_source, source)
         if final_reason is not None:
             raise RuntimeError(f"{final_reason}。坏文件已移走，请点「重新开始」重新下载本条。")
+        if item.get("kind") == "dance":
+            validate_dance_duration(await asyncio.to_thread(_video_duration_seconds, source))
 
         # 链接写法不同的同一条作品只有下载后才知道，这里再兜一次重复过滤
         duplicate = duplicate_item_by_aweme(
@@ -1713,14 +1720,15 @@ async def _prepare_review_work(
     )
     # 这条作品之前已经备过料（源视频/提示词/成图/文案都在）→ 直接沿用，不再下载/抽帧/调模型。
     # 用户在要求调整（feedback/mode）时不走这条路，老实按意见重做。
+    source = Path(item["sourcePath"])
+    duration = await asyncio.to_thread(_video_duration_seconds, source)
+    if item.get("kind") == "dance":
+        validate_dance_duration(duration)
     if not feedback and mode == "both":
         if await asyncio.to_thread(_adopt_previous_work, batch_id, item_id):
             return
     work = DATA_DIR / "batches" / batch_id / item_id
     work.mkdir(parents=True, exist_ok=True)
-    source = Path(item["sourcePath"])
-    duration = await asyncio.to_thread(_video_duration_seconds, source)
-
     contact_sheet = work / "source-contact-sheet.jpg"
     if not contact_sheet.is_file():
         batch_store.set_item_milestone(
@@ -3997,6 +4005,9 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
         await _download(batch_id, item_id)          # `_download` 自己会把状态标成「下载中」
         _set_item(batch_id, item_id, status="confirmed", stage="confirmed")
     # 出片前**只体检、不出图**（2026-09-16 用户：「去除图片生成的自动化流程吧 只保留生成字幕的流程」）：
+    if item.get("kind") == "dance":
+        source = Path(str(_item(batch_id, item_id).get("sourcePath") or ""))
+        validate_dance_duration(await asyncio.to_thread(_video_duration_seconds, source))
     # 缺人物图/封面只写日志标出来，交给用户自己出图/自己上传，链路不再自动触碰图片。
     try:
         await ensure_publish_images(batch_id, item_id, reason="出片前检查发布成品：", allow_spawn=False)
@@ -4739,6 +4750,8 @@ def replace_item_source_file(batch_id: str, item_id: str, source: Path) -> dict[
     target = Path(source)
     if not target.is_file():
         raise ValueError("没有收到可用的视频文件")
+    if item.get("kind") == "dance":
+        validate_dance_duration(_video_duration_seconds(target))
 
     def apply(row: dict[str, Any]) -> None:
         # **不动任何生成结果**：`ai`（标题/简介/标签/候选图/提示词）、里程碑、outputs、比例、

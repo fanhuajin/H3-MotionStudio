@@ -226,9 +226,9 @@ def compose(
     width, height = canvas.size
 
     if block is None:
-        # 4:3 文字在右半，3:4 文字在上半；两块都留出安全边距
-        block = (0.44 * width, 0.05 * height, 0.97 * width, 0.62 * height) if kind == "bilibili" \
-            else (0.06 * width, 0.04 * height, 0.94 * width, 0.42 * height)
+        # 4:3 文字在右半（人物右侧留出干净栏），3:4 文字小一号放左上；两块都留安全边距
+        block = (0.48 * width, 0.05 * height, 0.97 * width, 0.62 * height) if kind == "bilibili" \
+            else (0.03 * width, 0.05 * height, 0.34 * width, 0.34 * height)
     block_w = block[2] - block[0]
 
     lines = split_title(title, title_lines)
@@ -282,13 +282,17 @@ def compose(
             pen.text((text_x, py + pad_y + i * line_h), line, font=small, fill=style.intro_color + (255,))
 
     if style.doodles:
+        # 小装饰只允许落在文字栏里（含 10px 溢出），避免压到人物
+        left_limit = int(block[0]) - 10
+        right_limit = width - 6
+
         def place(layer: Image.Image, dx: int, dy: int) -> None:
-            canvas.alpha_composite(layer, (min(max(0, dx), width - layer.width),
+            canvas.alpha_composite(layer, (min(max(left_limit, dx), right_limit - layer.width),
                                            min(max(0, dy), height - layer.height)))
 
         place(heart(int(size * 0.42), (*DEEP_PINK, 240), max(4, size // 26)),
               x + title_w + int(size * 0.05), y - int(size * 0.10))
-        place(sparkle(int(size * 0.34), (*YELLOW, 235)), x - int(size * 0.30), y + int(size * 0.18))
+        place(sparkle(int(size * 0.34), (*YELLOW, 235)), x - int(size * 0.16), y + int(size * 0.18))
         place(sparkle(int(size * 0.26), (*WHITE, 225)), x + title_w + int(size * 0.02),
               y + title_h - int(size * 0.30))
     return canvas.convert("RGB")
@@ -305,14 +309,22 @@ def main() -> None:
     parser.add_argument("--lines", type=int, default=2, help="标题行数")
     parser.add_argument("--size", type=int, default=126, help="标题字号（4:3 基准）")
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--block", default="", help="文字区域，相对画布的比例 x0,y0,x1,y1（默认按平台给）")
     args = parser.parse_args()
 
     font = Path(FONT_CANDIDATES.get(args.font, args.font))
     if not font.is_file():
         raise SystemExit(f"字体不存在：{font}")
     style = Style(font=font, title_size=args.size if args.kind == "bilibili" else int(args.size * 0.88))
+    block = None
+    if args.block:
+        values = [float(v) for v in args.block.replace("，", ",").split(",")]
+        if len(values) != 4:
+            raise SystemExit("--block 需要 4 个 0~1 的比例值：x0,y0,x1,y1")
+        width, height = TARGETS[args.kind]
+        block = (values[0] * width, values[1] * height, values[2] * width, values[3] * height)
     cover = compose(Image.open(args.base), args.title, args.intro, args.kind, style,
-                    seed=args.seed, title_lines=args.lines)
+                    seed=args.seed, title_lines=args.lines, block=block)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     cover.save(args.out, optimize=True)
     print(f"{args.out}  {cover.size}")

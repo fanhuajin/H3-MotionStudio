@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRememberedTab } from "./useRememberedTab";
 import {
   Check, ClipboardText, ImageSquare, SpinnerGap, UploadSimple, WarningCircle,
 } from "@phosphor-icons/react";
 import { readJson } from "./api";
 
-type Asset = { name: string; width: number; height: number; bytes: number } | null;
+type Asset = { name: string; width: number; height: number; bytes: number; version?: string } | null;
 /** 后端 image_workbench.AUTOMATIONS 里的单条状态（list_items 会带出来）。 */
 type AutomationState = { status?: string; stage?: string; message?: string; startedAt?: number } | null;
 type WorkItem = {
@@ -12,6 +13,8 @@ type WorkItem = {
   kind: "singing" | "dance" | null;
   assets: { frame: Asset; identity: Asset; person: Asset; bilibili: Asset; douyin: Asset };
   automation?: AutomationState;
+  awaitingMaterials?: boolean;
+  batchLive?: boolean;
 };
 type Stage = "person" | "bilibili" | "douyin";
 
@@ -24,33 +27,32 @@ const STAGES: Array<{ id: Stage; label: string; spec: string }> = [
   { id: "douyin", label: "抖音封面", spec: "3:4 · 1086×1448" },
 ];
 
-function firstMissingStage(item: WorkItem): Stage {
-  if (!item.assets.person) return "person";
-  if (!item.assets.bilibili) return "bilibili";
-  if (!item.assets.douyin) return "douyin";
-  return "person";
-}
-
 function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
-  return `/api/image-workbench/${item.id}/asset/${key}?v=${item.assets[key]?.bytes || 0}`;
+  return `/api/image-workbench/${item.id}/asset/${key}?v=${item.assets[key]?.version || item.assets[key]?.bytes || 0}`;
 }
 
 export function ImageWorkbenchRoute() {
   const [items, setItems] = useState<WorkItem[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [stage, setStage] = useState<Stage>("person");
+  const [stage, setStage] = useRememberedTab<Stage>("h3-motionstudio:image-stage-tab:v1", ["person", "bilibili", "douyin"], "person");
   const [kind, setKind] = useState<"singing" | "dance" | null>(null);
-  const [filter, setFilter] = useState<"pending" | "all">("pending");
+  const [filter, setFilter] = useRememberedTab("h3-motionstudio:image-filter-tab:v1", ["pending", "all"] as const, "pending");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   /** 每条自动化任务的本地开始时刻（后端不给百分比，就显示「已用 N 秒」避免看着像卡死）。 */
   const autoClock = useRef<Record<string, number>>({});
+  const refreshInFlight = useRef<Promise<void> | null>(null);
 
-  const refresh = useCallback(async () => {
-    const data = await readJson<{ items: WorkItem[] }>(fetch("/api/image-workbench/items"), "读取发布目录失败");
-    setItems(data.items);
-    setSelectedId((current) => current && data.items.some((item) => item.id === current) ? current : data.items.find((row) => !(row.assets.person && row.assets.bilibili && row.assets.douyin))?.id || data.items[0]?.id || "");
+  const refresh = useCallback(() => {
+    if (refreshInFlight.current) return refreshInFlight.current;
+    const request = (async () => {
+      const data = await readJson<{ items: WorkItem[] }>(fetch("/api/image-workbench/items", { cache: "no-store" }), "读取发布目录失败");
+      setItems(data.items);
+      setSelectedId((current) => current && data.items.some((item) => item.id === current) ? current : data.items.find((row) => !(row.assets.person && row.assets.bilibili && row.assets.douyin))?.id || data.items[0]?.id || "");
+    })();
+    refreshInFlight.current = request.finally(() => { refreshInFlight.current = null; });
+    return refreshInFlight.current;
   }, []);
 
   useEffect(() => { refresh().catch((error) => setNotice(String(error.message || error))); }, [refresh]);
@@ -59,15 +61,22 @@ export function ImageWorkbenchRoute() {
   const complete = (row: WorkItem) => Boolean(row.assets.person && row.assets.bilibili && row.assets.douyin);
   const visible = useMemo(() => filter === "pending" ? items.filter((row) => !complete(row)) : items, [filter, items]);
   const finished = items.filter(complete).length;
-  /** 有自动化任务在跑就持续刷新，直到全部落定 —— 页面上的进度就靠这个更新。 */
-  const autoLive = items.some((row) => AUTO_LIVE.includes(row.automation?.status || ""));
+  /** 活跃任务用于显示耗时；目录同步不依赖页面事先知道有任务。 */
+  const autoLive = items.some((row) => row.batchLive || AUTO_LIVE.includes(row.automation?.status || ""));
 
   useEffect(() => {
-    if (!autoLive) return;
-    const timer = window.setInterval(() => {
+    const sync = () => {
+      if (document.visibilityState === "hidden") return;
       refresh().catch(() => { /* 下一轮再试，瞬时失败不该中断轮询 */ });
-    }, 2000);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(sync, autoLive ? 2000 : 3500);
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", sync);
+    };
   }, [autoLive, refresh]);
 
   // 记录/清除每条任务的开始时刻（每次刷新 items 都会重跑，正好跟着轮询走）。
@@ -175,11 +184,6 @@ export function ImageWorkbenchRoute() {
     }
   }, [busy, refresh]);
 
-  useEffect(() => {
-    const selected = items.find((row) => row.id === selectedId);
-    if (selected) setStage(firstMissingStage(selected));
-  }, [selectedId]);
-
   const copyImage = async (key: keyof WorkItem["assets"], label: string) => {
     if (!item?.assets[key]) { setNotice(`还没有${label}。`); return; }
     setBusy(true); setNotice("");
@@ -248,7 +252,10 @@ export function ImageWorkbenchRoute() {
         </aside>
 
         <div className="image-workbench-main">
-          {!item ? <div className="image-workbench-blank"><ImageSquare /><p>发布目录里暂时没有可处理的作品。</p></div> : <>
+          {!item ? <div className="image-workbench-blank"><ImageSquare /><p>发布目录里暂时没有可处理的作品。</p></div> : item.awaitingMaterials ? <>
+            <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div></div>
+            <div className="image-workbench-blank"><ImageSquare /><p>已同步批量制作记录，等待抽帧、人物图与文案就绪。</p><small>素材就绪后自动更新，可继续生成或查看封面。</small></div>
+          </> : <>
             <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span><button onClick={() => startAuto(item.id)} disabled={busy}>本条三张一次跑完</button></div></div>
             {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><SpinnerGap className="spin" />{item.automation.message || "正在自动生成…"}{elapsedOf(item) ? `（已用 ${elapsedOf(item)} 秒）` : ""}</p>}
             {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><Check weight="bold" />{item.automation.message}</p>}

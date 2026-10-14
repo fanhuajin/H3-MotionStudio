@@ -1715,6 +1715,16 @@ body {
    青色强调，危险操作换成红系（2026-09-15 用户：「弹出框的效果样式改下 现在的不好看」）。 */
 .batch-modal-backdrop { position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 22px; background: rgba(5, 4, 14, .72); backdrop-filter: blur(5px); animation: batchFade .14s ease; }
 .batch-modal { position: relative; width: min(430px, 100%); display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 12px; padding: 18px; border: 1px solid rgba(55, 216, 230, .38); border-radius: 12px; background: linear-gradient(155deg, #141230 0%, #0a0820 100%); box-shadow: 0 24px 60px rgba(2, 2, 12, .72), 0 0 0 1px rgba(9, 7, 24, .9); animation: batchModalIn .16s cubic-bezier(.2, .9, .3, 1.2); }
+.batch-video-dialog { width: min(960px, calc(100vw - 40px)); max-height: calc(100dvh - 40px); padding: 16px; overflow: auto; border: 1px solid rgba(55, 216, 230, .38); border-radius: 12px; color: #f3f0fb; background: #0a0820; box-shadow: 0 24px 60px rgba(2, 2, 12, .72); }
+.batch-video-dialog::backdrop { background: rgba(5, 4, 14, .8); backdrop-filter: blur(5px); }
+.batch-video-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.batch-video-header h2 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.batch-video-header button { display: grid; place-items: center; flex-shrink: 0; width: 36px; height: 36px; border: 1px solid #44385f; border-radius: 7px; background: #17112f; color: #f3f0fb; cursor: pointer; }
+.batch-video-dialog video { display: block; width: 100%; max-height: calc(100dvh - 180px); background: #000; object-fit: contain; border-radius: 8px; }
+.batch-video-navigation { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.batch-video-navigation span { color: #a79fbe; font-size: 13px; }
+.batch-video-navigation button { padding: 8px 14px; border: 1px solid rgba(55, 216, 230, .38); border-radius: 7px; color: #f3f0fb; background: #17112f; cursor: pointer; }
+.batch-video-navigation button:disabled { opacity: .4; cursor: default; }
 .batch-modal.danger { border-color: rgba(255, 108, 137, .4); }
 .batch-modal-icon { width: 40px; height: 40px; display: grid; place-items: center; border: 1px solid rgba(55, 216, 230, .4); border-radius: 50%; color: var(--shell-accent); background: rgba(55, 216, 230, .09); }
 .batch-modal-icon svg { width: 20px; height: 20px; }

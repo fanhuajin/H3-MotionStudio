@@ -79,7 +79,9 @@ def _meta(path: Path | None) -> dict[str, Any] | None:
     try:
         with Image.open(path) as image:
             width, height = image.size
-        return {"name": path.name, "width": width, "height": height, "bytes": path.stat().st_size}
+        stat = path.stat()
+        return {"name": path.name, "width": width, "height": height, "bytes": stat.st_size,
+                "version": f"{stat.st_mtime_ns}-{stat.st_size}"}
     except OSError:
         return None
 
@@ -187,6 +189,31 @@ def list_items() -> list[dict[str, Any]]:
                 "bilibili": _meta(bili), "douyin": _meta(douyin),
             },
         })
+    # Batch records exist before review materials reach the publishing folder.
+    # Expose them without creating placeholder files or changing batch state.
+    latest = batch_store.latest()
+    by_id = {row["id"]: row for row in items}
+    for row in (latest or {}).get("items") or []:
+        if row.get("status") in {"deleted", "skipped"} or row.get("deleteRequested"):
+            continue
+        folder = (batch_worker._existing_publish_folder(row)
+                  or batch_worker._recorded_publish_folder(row)
+                  or batch_worker._ideal_publish_folder(row))
+        key = _folder_id(folder)
+        live = row.get("status") not in {"completed", "failed"}
+        if key in by_id:
+            by_id[key]["batchLive"] = live
+            continue
+        ai = row.get("ai") or {}
+        entry = {
+            "id": key, "folderName": folder.name,
+            "title": str(ai.get("title") or row.get("title") or f"第 {row.get('index')} 条"),
+            "copy": "", "kind": row.get("kind"),
+            "automation": None, "awaitingMaterials": True, "batchLive": live,
+            "assets": {name: None for name in ("frame", "identity", "person", "bilibili", "douyin")},
+        }
+        items.append(entry)
+        by_id[key] = entry
     return items
 
 
@@ -216,7 +243,7 @@ def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
     ratio = "4:3 横版" if stage == "bilibili" else "3:4 竖版"
     title = _copy_field(copy, "标题") or _title(copy, folder.name)
     introduction = _copy_field(copy, "简介")
-    return f"""以参考图为底图制作 {ratio} 封面。尽量完整保留原图的人物、姿态、服装、背景、光线和构图；只将下列文字自然融入画面。调整画幅时不要裁掉人物的重要部分。
+    return f"""以参考图为底图制作 {ratio} 封面。尽量完整保留原图的人物、姿态、服装、背景、光线和构图；只将下列文字自然融入画面。调整画幅时，可以适当调整人物动作；调整后的动作需合规，避免触发安全政策。
 标题：{title}
 简介：{introduction}
 画面仍只有参考图中的一人。除标题和简介外，不添加其他文字、平台 Logo、水印或角标。""".strip()

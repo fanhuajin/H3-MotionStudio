@@ -38,6 +38,10 @@ SONG_PLACEHOLDER = "《歌曲名》"
 #   ② 图一（抽帧）里手正在运动、本身就是糊的，模型会把这层模糊**原样抄进成图**
 #      （跳舞抽帧几乎必有一只手在动），所以要显式写明"不要照搬参考图的模糊"。
 SHARPNESS_BLOCK = (
+    "\n【发型与发饰】根据本次服装的风格、领口、配色和整体气质，搭配协调自然的发型，不限定披发、束发或盘发。"
+    "头发蓬松度适当，发际线、分缝、发束连接和垂落方向真实合理，与肩颈、衣领及手部的遮挡关系自然，"
+    "不出现突兀拼接、悬空或穿透。发饰可有可无；使用时款式、材质、颜色和大小与服装协调，数量适度，"
+    "佩戴位置与固定方式可信，不堆叠装饰，不遮挡五官和嘴部。"
     "\n【清晰度】脸、头发和双手清晰，双手、指尖、手腕与袖口处于同一清晰焦平面，"
     "无拖影或涂抹。五指结构完整，露出的手指清楚分离，遮住的自然隐藏，不强行露出五指；拇指位置、"
     "指节弯曲和指甲朝向符合真实结构，不多指、不缺指、不粘连。"
@@ -70,6 +74,8 @@ BACKGROUND_CLEAN_BLOCK = (
     "重新设计与本次服装、发型和整体气质协调的背景，不照搬抽帧环境；"
     "人物与背景的光线、色调和空间关系自然协调。"
     "空间简洁、有纵深、结构清楚，不用强虚化或密集装饰。"
+    "使用适合演唱或舞蹈的摄影空间、舞台或自然场景；不出现床、床垫、床头、枕头、被褥或卧室布置，"
+    "即使参考图有床也要移除并重新设计背景，不让人物坐在或倚靠床上。"
 )
 
 # 出片可用性：这张图不是给人看的成品海报，而是喂给 ComfyUI 做动作迁移/图生视频的
@@ -495,7 +501,7 @@ def compose_prompt(kind: str, style_source: str = "video", song_name: str = "") 
 # 根因：六千字里大量「图像-1 决定服装/造型/妆容/发型」把末尾那 300 字合规要求稀释掉了；
 # 模型按图一原样保留了低胸镂空蕾丝。缩短之后立刻照做，而且身份相似度更高。
 # 2026-09-24 起批量备料、/images 自动出图和复制提示词统一走这份精简模板。
-COMPACT_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一是抽帧，参考其整体造型与画面气质；图二只提供面部身份。根据本次服装搭配合适的新发型，不固定沿用图一或图二的发型。姿态和人物位置可自然调整，不必完全复制抽帧。自然精致淡妆，眉眼与唇色有轻微妆感；柔和提亮面部，保留真实皮肤纹理，脸和颈部明暗一致。
+COMPACT_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一是抽帧，参考其整体造型与画面气质；图二只提供面部身份。不固定沿用图一或图二的发型。姿态和人物位置可自然调整，不必完全复制抽帧。自然精致淡妆，眉眼与唇色有轻微妆感；柔和提亮面部，保留真实皮肤纹理，脸和颈部明暗一致。
 {compliance}
 {sharpness}
 {background}
@@ -562,7 +568,16 @@ def compose_image_prompt(
         ratio or ("4:3" if kind == "singing" else "9:16")
     ) or ""
     redesign = kind == "singing" and style_source == "redesign"
-    prompt = (REDESIGN_IMAGE_PROMPT if redesign else COMPACT_IMAGE_PROMPT).format(
+    template = REDESIGN_IMAGE_PROMPT if redesign else COMPACT_IMAGE_PROMPT
+    if kind == "dance":
+        template = template.replace(
+            "姿态和人物位置可自然调整，不必完全复制抽帧。",
+            "【跳舞姿态】默认保持自然站立，身体直立、重心稳定，髋部与双腿呈站姿，"
+            "不坐、不蹲、不跪，不倚坐家具，不添加椅子或凳子。"
+            "参考图一的身体朝向及主要手臂动作，只作小幅自然调整，便于后续动作迁移；"
+            "不能因裁切或更换背景改成坐姿。只有用户明确要求坐姿时才例外。",
+        )
+    prompt = template.format(
         compliance=(REDESIGN_SAFE_BLOCK if redesign else PLATFORM_SAFE_BLOCK).strip(),
         sharpness=SHARPNESS_BLOCK.strip(),
         background=BACKGROUND_CLEAN_BLOCK.strip(),
