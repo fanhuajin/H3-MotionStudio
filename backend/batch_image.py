@@ -96,7 +96,7 @@ def _yeelo() -> bool:
 def _request_options(data: dict[str, str]) -> dict[str, str]:
     if _yeelo():
         data.pop("input_fidelity", None)
-        data.update({"async": "true", "response_format": "url"})
+        data.update({"async": "true", "response_format": "url", "quality": "auto"})
     return data
 
 

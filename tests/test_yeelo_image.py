@@ -30,9 +30,10 @@ class YeeloTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(target.with_name('image.png.relay-task.json').exists())
     def test_provider_options(self):
         with patch.object(b,'_yeelo',return_value=True):
-            data=b._request_options({'input_fidelity':'high','n':'1','size':'1024x768'})
+            data=b._request_options({'input_fidelity':'high','quality':'high','n':'1','size':'1024x768'})
         self.assertNotIn('input_fidelity',data)
         self.assertEqual(data['async'],'true')
+        self.assertEqual(data['quality'],'auto')
         self.assertEqual(data['n'],'1')
     async def test_sync_legacy_response(self):
         response=httpx.Response(200,json={'data':[{'b64_json':'eA=='}]})
