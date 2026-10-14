@@ -57,6 +57,7 @@ _USER_ENV_CACHE: dict[str, str] = {}
 #  `os.environ` 里还是 1，把用户刚改的 0 盖掉了）。
 # 这几个开关的语义是「用户现在要不要图片自动化」，所以**以注册表为准**。
 _REGISTRY_FIRST_KEYS = {
+    "H3_BATCH_IMAGE_MODEL",
     "H3_AUTO_CHATGPT_IMAGE",
     "H3_AUTO_CHATGPT_COVER",
     "H3_AUTO_CONFIRM",
