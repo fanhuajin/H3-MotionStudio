@@ -1722,7 +1722,7 @@ async def _prepare_review_work(
     duration = await asyncio.to_thread(_video_duration_seconds, source)
     if item.get("kind") == "dance":
         validate_dance_duration(duration)
-    if not feedback and mode == "both":
+    if not feedback and mode == "both" and not item.get("refreshSceneFrame"):
         if await asyncio.to_thread(_adopt_previous_work, batch_id, item_id):
             _auto_confirm_prepared_item(batch_id, item_id)
             return
@@ -1736,9 +1736,16 @@ async def _prepare_review_work(
         await asyncio.to_thread(build_contact_sheet, source, contact_sheet)
 
     scene_frame = work / "scene-frame.jpg"
+    if item.get("refreshSceneFrame") and scene_frame.is_file():
+        backup = work / "scene-frame.before-refresh.jpg"
+        if not backup.exists():
+            shutil.copy2(scene_frame, backup)
+        scene_frame.unlink()
     if not scene_frame.is_file():
         # 挑图这一道会多调一次视觉模型（只比"手清不清楚"），失败自动退回整幅最清晰的那张。
         scene_frame = await extract_scene_frame_with_hands(source, scene_frame)
+        _set_item(batch_id, item_id, refreshSceneFrame=False)
+        batch_store.add_item_log(batch_id, item_id, "已重新抽帧：最多12张候选，按本地双侧区域清晰度挑选；未调用付费视觉接口。")
 
     meta = item.get("sourceMetadata") or {}
     meta_desc = str(meta.get("desc") or "")
