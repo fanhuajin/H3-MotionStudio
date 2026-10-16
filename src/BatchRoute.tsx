@@ -1740,28 +1740,6 @@ export function BatchRoute() {
           <small>下载抖音视频 → 抽帧分析 → 人物图与发布文案 → B站和抖音封面；已有文件直接沿用</small>
         </div>
         <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
-          <label className={singingOn ? "" : "off"}>
-            <span className="batch-input-head">
-              <b><MusicNotes weight="fill" /> 歌曲视频链接</b>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={singingOn}
-                className={`batch-switch ${singingOn ? "on" : ""}`}
-                onClick={(event) => { event.preventDefault(); setSingingOn((value) => !value); }}
-              >
-                <i />{singingOn ? "已开启" : "已关闭"}
-              </button>
-            </span>
-            {singingOn ? (
-              <>
-                <textarea value={singing} onChange={(event) => setSinging(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-                <small>{splitUrls(singing).length} 条 · 默认 4:3 横版（审核时每条都能改）· 交付最终成片（无字幕）+ 人物图 + 发布文案</small>
-              </>
-            ) : (
-              <small>已关闭：这类链接不会展示，也不会加入批次。</small>
-            )}
-          </label>
           <label className={danceOn ? "" : "off"}>
             <span className="batch-input-head">
               <b><PersonSimpleRun weight="fill" /> 跳舞视频链接</b>
@@ -1784,8 +1762,34 @@ export function BatchRoute() {
               <small>已关闭：这类链接不会展示，也不会加入批次。</small>
             )}
           </label>
+          <label className={singingOn ? "" : "off"}>
+            <span className="batch-input-head">
+              <b><MusicNotes weight="fill" /> 歌曲视频链接</b>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={singingOn}
+                className={`batch-switch ${singingOn ? "on" : ""}`}
+                onClick={(event) => { event.preventDefault(); setSingingOn((value) => !value); }}
+              >
+                <i />{singingOn ? "已开启" : "已关闭"}
+              </button>
+            </span>
+            {singingOn ? (
+              <>
+                <textarea value={singing} onChange={(event) => setSinging(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
+                <small>{splitUrls(singing).length} 条 · 默认 4:3 横版（审核时每条都能改）· 交付最终成片（无字幕）+ 人物图 + 发布文案</small>
+              </>
+            ) : (
+              <small>已关闭：这类链接不会展示，也不会加入批次。</small>
+            )}
+          </label>
         </div>
         {!batch && <div className="batch-shutdown-row">
+          <span>
+            <b>备料完成后自动出片</b>
+            <small>默认开启。关闭后，待处理备料完成即可在出片区手动启动；异常条目可稍后补跑。</small>
+          </span>
           <button
             type="button"
             role="switch"
@@ -1795,21 +1799,24 @@ export function BatchRoute() {
           >
             <i />{autoRenderOn ? "已开启" : "已关闭"}
           </button>
-          <span>
-            <b>备料完成后自动出片</b>
-            <small>默认开启。关闭后，待处理备料完成即可在出片区手动启动；异常条目可稍后补跑。</small>
-          </span>
         </div>}
         <div className="batch-shutdown-row">
+          <span><b><Power weight="fill" /> 备料完成后关机</b>
+            <small>默认关闭。整批备料齐全后关机，并关闭自动出片；关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
           <button type="button" role="switch" aria-checked={prepShutdownSwitchOn}
             className={`batch-switch ${prepShutdownSwitchOn ? "on" : ""}`}
             disabled={Boolean(busyAction)} onClick={toggleShutdownAfterPrep}>
             <i />{prepShutdownSwitchOn ? "已开启" : "已关闭"}
           </button>
-          <span><b><Power weight="fill" /> 备料完成后关机</b>
-            <small>默认关闭。整批备料齐全后关机，并关闭自动出片；关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
         </div>
         <div className="batch-shutdown-row">
+          <span>
+            <b><Power weight="fill" /> 全部完成后自动关机</b>
+            <small>
+              所有条目都做完（没有排队、等你确认、待出片或出片中的）才会关机；关机前留 {shutdownDelaySeconds} 秒倒计时，
+              随时可以点「取消关机」撤销。默认关闭。
+            </small>
+          </span>
           <button
             type="button"
             role="switch"
@@ -1820,13 +1827,6 @@ export function BatchRoute() {
           >
             <i />{shutdownSwitchOn ? "已开启" : "已关闭"}
           </button>
-          <span>
-            <b><Power weight="fill" /> 全部完成后自动关机</b>
-            <small>
-              所有条目都做完（没有排队、等你确认、待出片或出片中的）才会关机；关机前留 {shutdownDelaySeconds} 秒倒计时，
-              随时可以点「取消关机」撤销。默认关闭。
-            </small>
-          </span>
         </div>
         <div className="batch-input-actions">
           <p><ListChecks /> 重复链接会自动跳过；出片由下方开关控制，默认自动开始。</p>

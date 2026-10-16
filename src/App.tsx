@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent } from "react";
 import {
   ArrowsClockwise,
   CaretDown,
@@ -922,7 +923,29 @@ function restoreWorkspacePage(): string {
 }
 
 export function App() {
-  const [path] = useState(restoreWorkspacePage);
+  const [path, setPath] = useState(restoreWorkspacePage);
+  useEffect(() => {
+    const onPopState = () => setPath(restoreWorkspacePage());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const navigateWorkspace = (event: MouseEvent<HTMLElement>) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const target = event.target;
+    const link = target instanceof Element ? target.closest<HTMLAnchorElement>("a[href]") : null;
+    if (!link || link.hasAttribute("download") || (link.target && link.target !== "_self")) return;
+    const url = new URL(link.href, window.location.href);
+    const nextPath = url.pathname.replace(/\/+$/, "");
+    if (url.origin !== window.location.origin || (nextPath !== "" && !WORKSPACE_PAGES.has(nextPath))) return;
+    event.preventDefault();
+    // 只换工作区，不重新下载网页；图片页的上次列表与成图缓存因此能跨页复用。
+    // 首页仍按既有规则恢复上次访问的工作区。
+    if (`${url.pathname}${url.search}${url.hash}` !== `${location.pathname}${location.search}${location.hash}`) {
+      window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    setPath(restoreWorkspacePage());
+  };
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
   const isRvcRoute = path === "/rvc";
@@ -938,9 +961,9 @@ export function App() {
   return (
     <div className="desktop-app-shell">
       <TaskTabStatus />
-      <aside className="app-sidebar">
+      <aside className="app-sidebar" onClick={navigateWorkspace}>
         <div className="sidebar-top">
-          <p className="sidebar-kicker">DESKTOP</p>
+          <p className="sidebar-kicker">创作工作台</p>
           <a className="sidebar-brand" href="/" aria-label="H3 MotionStudio 首页">
             <span className="brand-mark">H3</span>
             <strong>MotionStudio</strong>
@@ -948,16 +971,7 @@ export function App() {
         </div>
 
         <nav className="sidebar-navigation" aria-label="工作台导航">
-          <p className="sidebar-section-label">工作台</p>
-          <div className="route-switcher">
-            <a className="active" href="/">
-              <FilmSlate weight="fill" />
-              <span>影动生成</span>
-            </a>
-          </div>
-          <p className="route-caption">批量 · 生成 · 迁移 · 放大 · 音色 · 字幕</p>
-
-          <p className="sidebar-section-label">创作与管理</p>
+          <p className="sidebar-section-label">创作工具</p>
           <a className={isBatchRoute || isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
             <ListChecks />
             <span>批量制作</span>
@@ -1012,6 +1026,7 @@ export function App() {
       </aside>
 
       <div className="route-stage">
+        {/* 路由只负责切换工作区；各业务组件继续独立管理请求、表单和任务状态。 */}
         {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isRvcTrainingRoute ? <RvcTrainingRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
       </div>
     </div>

@@ -31,9 +31,13 @@ function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
   return `/api/image-workbench/${item.id}/asset/${key}?v=${item.assets[key]?.version || item.assets[key]?.bytes || 0}`;
 }
 
+// 切换主页面时先恢复上次列表，再后台校对文件版本，避免等待目录扫描。
+let cachedItems: WorkItem[] = [];
+let cachedSelectedId = "";
+
 export function ImageWorkbenchRoute() {
-  const [items, setItems] = useState<WorkItem[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const [items, setItems] = useState<WorkItem[]>(() => cachedItems);
+  const [selectedId, setSelectedId] = useState(() => cachedSelectedId);
   const [stage, setStage] = useRememberedTab<Stage>("h3-motionstudio:image-stage-tab:v1", ["person", "bilibili", "douyin"], "person");
   const [kind, setKind] = useState<"singing" | "dance" | null>(null);
   const [filter, setFilter] = useRememberedTab("h3-motionstudio:image-filter-tab:v1", ["pending", "all"] as const, "pending");
@@ -48,6 +52,7 @@ export function ImageWorkbenchRoute() {
     if (refreshInFlight.current) return refreshInFlight.current;
     const request = (async () => {
       const data = await readJson<{ items: WorkItem[] }>(fetch("/api/image-workbench/items", { cache: "no-store" }), "读取发布目录失败");
+      cachedItems = data.items;
       setItems(data.items);
       setSelectedId((current) => current && data.items.some((item) => item.id === current) ? current : data.items.find((row) => !(row.assets.person && row.assets.bilibili && row.assets.douyin))?.id || data.items[0]?.id || "");
     })();
@@ -57,6 +62,21 @@ export function ImageWorkbenchRoute() {
 
   useEffect(() => { refresh().catch((error) => setNotice(String(error.message || error))); }, [refresh]);
   const item = items.find((row) => row.id === selectedId) || null;
+  useEffect(() => { cachedSelectedId = selectedId; }, [selectedId]);
+  const previewVersions = item ? STAGES.map(({ id }) => item.assets[id]?.version || item.assets[id]?.bytes || "").join(":") : "";
+  useEffect(() => {
+    if (!item) return;
+    // 当前图先加载，随后预取同一作品的另外两张；不预取整批4K图片。
+    const timer = window.setTimeout(() => {
+      for (const { id } of STAGES) {
+        if (id === stage || !item.assets[id]) continue;
+        const image = new Image();
+        image.decoding = "async";
+        image.src = assetUrl(item, id);
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [selectedId, previewVersions, stage]);
   const chosenKind = kind || item?.kind || null;
   const complete = (row: WorkItem) => Boolean(row.assets.person && row.assets.bilibili && row.assets.douyin);
   const visible = useMemo(() => filter === "pending" ? items.filter((row) => !complete(row)) : items, [filter, items]);
@@ -234,7 +254,7 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>人物图先生成一张，放大前用 DS 检查双手；手部不合格时最多定向修改一次并复检。身份低分不会自动重做，封面使用最终人物图。</p></div>
+        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>人物图生成后直接采用并按设置放大，封面使用最终人物图排入标题与简介；已有图片直接沿用。</p></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
           {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}

@@ -1,0 +1,485 @@
+/* 视觉层集中管理密度和层级；业务状态色、媒体比例及表单行为由原组件保留。
+ * 布局参考 shadcn/ui 的轻边框与 InvokeAI 的工具侧栏，不引入新的组件依赖。
+ * https://github.com/shadcn-ui/ui · https://github.com/invoke-ai/InvokeAI
+ */
+:root {
+  font-size: 14px;
+}
+
+body {
+  line-height: 1.6;
+}
+
+button, input, textarea, select {
+  font: inherit;
+}
+
+button, a, input, textarea, select {
+  transition-duration: 150ms;
+}
+
+::selection {
+  color: var(--shell-copy);
+  background: #405b49;
+}
+
+:is(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--shell-accent);
+  outline-offset: 3px;
+}
+
+input, textarea, select {
+  accent-color: var(--shell-accent);
+}
+
+textarea::placeholder, input::placeholder {
+  color: var(--shell-faint);
+  opacity: 1;
+}
+
+.desktop-app-shell {
+  grid-template-columns: 216px minmax(0, 1fr);
+}
+
+.app-sidebar {
+  min-height: 0;
+  padding: 30px 16px 18px;
+  overflow-y: auto;
+  border-color: var(--shell-line);
+  background: #191a1c;
+}
+
+.sidebar-top {
+  padding: 0 10px 32px;
+}
+
+.sidebar-kicker {
+  color: var(--shell-muted);
+  font-size: 11px;
+  letter-spacing: .12em;
+}
+
+.sidebar-brand {
+  margin-top: 10px;
+  gap: 10px;
+}
+
+.sidebar-brand .brand-mark {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #48584c;
+  border-radius: 9px;
+  color: var(--shell-accent);
+  background: #28352c;
+  background-clip: border-box;
+  font-size: 16px;
+  font-style: normal;
+  letter-spacing: -.05em;
+}
+
+.sidebar-brand strong {
+  color: var(--shell-copy);
+  font-size: 15px;
+}
+
+.sidebar-section-label {
+  margin-bottom: 12px;
+  color: var(--shell-faint);
+  font-size: 11px;
+  letter-spacing: .08em;
+}
+
+.sidebar-nav-item {
+  min-height: 42px;
+  margin-block: 4px;
+  padding-inline: 12px;
+  gap: 10px;
+  color: var(--shell-muted);
+  border-radius: 7px;
+}
+
+.sidebar-nav-item:hover:not(.muted) {
+  color: var(--shell-copy);
+  background: #242628;
+}
+
+.sidebar-nav-item.active {
+  color: var(--shell-accent);
+  background: var(--shell-accent-soft);
+}
+
+.sidebar-nav-item i {
+  width: 4px;
+  height: 4px;
+  box-shadow: none;
+}
+
+.sidebar-system {
+  margin-top: auto;
+  padding-top: 22px;
+  border-color: var(--shell-line);
+}
+
+.monitor-card, .sidebar-runtime {
+  padding: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.monitor-title, .sidebar-runtime strong {
+  color: var(--shell-muted);
+  font-size: 11px;
+}
+
+.sidebar-system footer {
+  color: var(--shell-faint);
+  font-size: 9px;
+  letter-spacing: .06em;
+}
+
+.batch-page, .image-workbench-page, .training-page,
+.motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route {
+  max-width: 1440px;
+  padding: 40px clamp(24px, 3.2vw, 52px) 56px;
+}
+
+.batch-header, .image-workbench-head {
+  margin-bottom: 30px;
+}
+
+.batch-kicker, .route-eyebrow, .image-workbench-kicker {
+  margin-bottom: 8px;
+  color: var(--shell-faint);
+  font-size: 10px;
+  letter-spacing: .12em;
+}
+
+.batch-header h1, .route-hero h1, .image-workbench-head h1 {
+  color: var(--shell-copy);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: -.035em;
+}
+
+.route-hero h1 em {
+  color: inherit;
+}
+
+.route-hero {
+  min-height: 118px;
+  gap: 24px;
+}
+
+.hero-icon {
+  width: 48px;
+  height: 48px;
+  margin: 8px 0 0;
+  border-color: var(--shell-line);
+  border-radius: 12px;
+  color: var(--shell-muted);
+  background: var(--shell-panel);
+}
+
+.hero-icon svg {
+  width: 23px;
+  height: 23px;
+}
+
+.route-description, .batch-header h1 + p, .image-workbench-head p {
+  color: var(--shell-muted);
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.batch-input-card, .batch-table-card, .batch-detail,
+.image-workbench-shell {
+  border-color: var(--shell-line);
+  border-radius: 10px;
+  background: var(--shell-panel);
+  box-shadow: none;
+}
+
+.batch-input-card {
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.batch-prepare-head {
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+}
+
+.batch-prepare-head span {
+  font-weight: 600;
+}
+
+.batch-input-grid {
+  gap: 24px;
+}
+
+.batch-input-grid textarea {
+  min-height: 140px;
+  padding: 14px;
+  border-color: var(--shell-line-strong);
+  border-radius: 7px;
+  background: #161719;
+  color: var(--shell-copy);
+  font-size: 13px;
+  line-height: 1.85;
+}
+
+.batch-input-grid label > span svg {
+  color: var(--shell-muted);
+}
+
+.batch-input-grid small, .batch-prepare-head small {
+  color: var(--shell-muted);
+  font-size: 11px;
+  line-height: 1.8;
+}
+
+/* 与视频输入共用左右对齐线：左侧说明，右侧开关，长文案只在说明列换行。 */
+.batch-shutdown-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px;
+  margin-top: 0;
+  padding: 15px 0;
+  border: 0;
+  border-bottom: 1px solid var(--shell-line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.batch-shutdown-row > span {
+  min-width: 0;
+}
+
+.batch-shutdown-row > .batch-switch {
+  align-self: start;
+}
+
+.batch-input-grid + .batch-shutdown-row {
+  margin-top: 20px;
+  border-top: 1px solid var(--shell-line);
+}
+
+.batch-shutdown-row b {
+  min-height: 28px;
+  color: var(--shell-copy);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.batch-input-actions {
+  padding-top: 18px;
+  margin-top: 0;
+  border-top: 0;
+}
+
+.batch-switch {
+  min-height: 28px;
+  padding-inline: 7px 9px;
+  border-color: var(--shell-line);
+  background: var(--shell-panel-soft);
+  color: var(--shell-muted);
+}
+
+.batch-switch.on {
+  border-color: #405747;
+  color: var(--shell-accent);
+  background: var(--shell-accent-soft);
+}
+
+.batch-switch.on i {
+  background: #405747;
+}
+
+.batch-primary, .download-action,
+.image-workbench-head-actions button.primary {
+  border-color: var(--shell-accent);
+  background: var(--shell-accent);
+  color: #17231b;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.primary-action {
+  min-height: 46px;
+  border-radius: 7px;
+  font-size: 14px;
+  box-shadow: none;
+}
+
+.primary-action svg {
+  width: 19px;
+  height: 19px;
+}
+
+.batch-primary:hover:not(:disabled) {
+  transform: none;
+  filter: brightness(1.06);
+}
+
+.batch-secondary, .batch-table-controls button:not(.danger) {
+  border-color: var(--shell-line-strong);
+  background: var(--shell-panel-soft);
+  color: var(--shell-copy);
+}
+
+.batch-table-head {
+  padding: 16px 18px;
+}
+
+.batch-tab {
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.batch-tab.active {
+  border-color: transparent;
+  background: #303532;
+  color: var(--shell-accent);
+}
+
+.batch-tab.active i {
+  color: var(--shell-accent);
+  background: #3e4941;
+}
+
+.batch-table th {
+  padding: 12px 16px;
+  color: var(--shell-muted);
+  background: #191a1c;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.batch-table td {
+  padding: 14px 16px;
+  border-bottom-color: var(--shell-line);
+}
+
+.batch-empty {
+  padding: 40px 20px;
+  color: var(--shell-muted);
+}
+
+.batch-status-pill {
+  background: var(--shell-panel-soft);
+}
+
+.pipeline {
+  padding: 10px 10px 10px 0;
+  background: #17181a;
+}
+
+.pipeline-card {
+  box-shadow: none;
+}
+
+.panel-heading h2, .field-heading h2 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.connection, .route-hero .connection {
+  border-color: var(--shell-line);
+  background: var(--shell-panel);
+  color: var(--shell-muted);
+  font-size: 11px;
+}
+
+/* 页面级响应式规则置于主题末尾，避免桌面密度覆盖原有窄屏布局。 */
+@media (max-width: 1180px) {
+  .desktop-app-shell {
+    grid-template-columns: 192px minmax(0, 1fr);
+  }
+
+  .batch-page, .image-workbench-page, .training-page,
+  .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route {
+    padding-inline: 24px;
+  }
+}
+
+@media (max-width: 760px) {
+  .desktop-app-shell {
+    display: block;
+  }
+
+  .app-sidebar {
+    height: auto;
+    padding: 16px;
+  }
+
+  .sidebar-top {
+    padding: 0 4px 12px;
+  }
+
+  .sidebar-brand {
+    margin: 0;
+  }
+
+  /* 保留全部业务入口，横向滚动替代旧版窄屏隐藏导航。 */
+  .sidebar-navigation {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .sidebar-nav-item {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 6px;
+    min-height: 36px;
+    margin: 0;
+    padding-inline: 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .sidebar-nav-item i {
+    display: none;
+  }
+
+  .batch-page, .image-workbench-page, .training-page,
+  .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route {
+    padding: 26px 16px 40px;
+  }
+
+  .batch-header, .image-workbench-head {
+    margin-bottom: 22px;
+  }
+
+  .batch-header h1, .route-hero h1, .image-workbench-head h1 {
+    font-size: 25px;
+  }
+
+  .batch-input-card {
+    padding: 18px;
+  }
+
+  .batch-input-grid {
+    gap: 18px;
+  }
+
+  .batch-input-actions {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

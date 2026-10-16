@@ -3217,12 +3217,17 @@ async def image_workbench_items():
 
 
 @app.get("/api/image-workbench/{folder_id}/asset/{key}")
-async def image_workbench_asset(folder_id: str, key: str):
+async def image_workbench_asset(folder_id: str, key: str, v: str = ""):
     try:
         path = image_workbench.asset_path(image_workbench.resolve_folder(folder_id), key)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(404, str(exc)) from exc
-    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png")
+    stat = path.stat()
+    version = f"{stat.st_mtime_ns}-{stat.st_size}"
+    # 版本匹配时切回同一图片直接使用浏览器缓存；替换图片后版本变化立即更新。
+    cache = "private, max-age=31536000, immutable" if v == version else "no-cache"
+    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png",
+                        headers={"Cache-Control": cache})
 
 
 @app.get("/api/image-workbench/{folder_id}/prompt/{stage}")
