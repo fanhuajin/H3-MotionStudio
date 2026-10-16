@@ -2,6 +2,8 @@ node_modules/
 dist/
 .vite/
 .venv/
+# IDE 配置目录（本机生成，不入库）
+.idea/
 __pycache__/
 *.py[cod]
 data/
