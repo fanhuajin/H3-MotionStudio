@@ -1115,6 +1115,9 @@ export function BatchRoute() {
   };
   const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
   const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
+  const renderedCount = batch?.items.filter(item => item.status === "completed").length || 0;
+  const skippedCount = batch?.items.filter(item => item.status === "skipped").length || 0;
+  const batchFinishedWithSkips = batch?.status === "completed" && skippedCount > 0;
 
   // —— 批量操作（勾选） ——
   const allChecked = filteredItems.length > 0 && filteredItems.every((item) => selectedIds.has(item.id));
@@ -1709,8 +1712,8 @@ export function BatchRoute() {
         </div>
         {batch && (
           <div className={`batch-status-pill ${batch.status}`}>
-            <StudioBot mood={statusMood(batch.status)} variant={batch.status === "paused" ? "sleep" : undefined} size={38} />
-            {batchStatusLabel(batch.status)} · {batch.completedCount}/{effectiveTotal}
+            <StudioBot mood={batchFinishedWithSkips ? "waiting" : statusMood(batch.status)} variant={batch.status === "paused" ? "sleep" : undefined} size={38} />
+            {batchFinishedWithSkips ? "本轮已结束" : batchStatusLabel(batch.status)} · 已完成 {renderedCount}/{effectiveTotal}{skippedCount > 0 ? ` · 已跳过 ${skippedCount}` : ""}
           </div>
         )}
       </header>
