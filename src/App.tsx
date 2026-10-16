@@ -32,7 +32,6 @@ import { MigrateRoute } from "./MigrateRoute";
 import { ImageWorkbenchRoute } from "./ImageWorkbenchRoute";
 import { QueuePanel } from "./QueuePanel";
 import { RvcRoute } from "./RvcRoute";
-import { RvcTrainingRoute } from "./RvcTrainingRoute";
 import { SubtitleRoute } from "./SubtitleRoute";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
@@ -904,7 +903,7 @@ function MotionStudioRoute() {
 }
 
 const WORKSPACE_PAGE_KEY = "h3-motionstudio:workspace-page:v1";
-const WORKSPACE_PAGES = new Set(["/batch", "/images", "/singing", "/migrate", "/upscale", "/rvc", "/subtitle", "/rvc-training"]);
+const WORKSPACE_PAGES = new Set(["/batch", "/images", "/singing", "/migrate", "/upscale", "/rvc", "/subtitle"]);
 
 function restoreWorkspacePage(): string {
   let path = window.location.pathname.replace(/\/+$/, "");
@@ -950,7 +949,6 @@ export function App() {
   const isMigrateRoute = path === "/migrate";
   const isUpscaleRoute = path === "/upscale";
   const isRvcRoute = path === "/rvc";
-  const isRvcTrainingRoute = path === "/rvc-training";
   const isSubtitleRoute = path === "/subtitle";
   const isBatchRoute = path === "/batch";
   const isSingingRoute = path === "/singing";
@@ -966,7 +964,7 @@ export function App() {
         <div className="sidebar-top">
           <p className="sidebar-kicker">创作工作台</p>
           <a className="sidebar-brand" href="/" aria-label="H3 MotionStudio 首页">
-            <StudioBot size={40} interactive shape={path === "/migrate" ? "squircle" : undefined} variant={path === "/images" ? "play" : path === "/batch" || path === "" ? "wide" : path === "/singing" ? "idle" : path === "/migrate" ? "idle" : path === "/upscale" ? "swirl" : path === "/rvc" ? "comet" : path === "/subtitle" ? "notify" : path === "/rvc-training" ? "hexagon" : "idle"} />
+            <StudioBot size={40} interactive shape={path === "/migrate" ? "squircle" : undefined} variant={path === "/images" ? "play" : path === "/batch" || path === "" ? "wide" : path === "/singing" ? "idle" : path === "/migrate" ? "idle" : path === "/upscale" ? "swirl" : path === "/rvc" ? "comet" : path === "/subtitle" ? "notify" : "idle"} />
             <strong>MotionStudio</strong>
           </a>
         </div>
@@ -1008,11 +1006,6 @@ export function App() {
             <span>生成字幕</span>
             {isSubtitleRoute && <i />}
           </a>
-          <a className={isRvcTrainingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/rvc-training">
-            <Graph />
-            <span>音色训练</span>
-            {isRvcTrainingRoute && <i />}
-          </a>
         </nav>
 
         <div className="sidebar-system">
@@ -1028,7 +1021,7 @@ export function App() {
 
       <div className="route-stage" key={path}>
         {/* 路由只负责切换工作区；各业务组件继续独立管理请求、表单和任务状态。 */}
-        {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isRvcTrainingRoute ? <RvcTrainingRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
+        {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
       </div>
     </div>
   );

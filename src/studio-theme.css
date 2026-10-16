@@ -36,7 +36,7 @@
 .image-stage-tabs button.active i { animation: studio-icon-in 260ms var(--studio-ease); }
 .batch-row { transition: background-color 200ms, box-shadow 200ms; }
 .batch-row.selected { box-shadow: inset 2px 0 0 var(--shell-accent); }
-:is(.node-progress, .training-progress, .queue-job-bar, .batch-progress-bar) > :is(span, i), progress { transition: width 600ms var(--studio-ease); }
+:is(.node-progress, .queue-job-bar, .batch-progress-bar) > :is(span, i), progress { transition: width 600ms var(--studio-ease); }
 .batch-step.completed .batch-step-icon { animation: studio-icon-in 260ms var(--studio-ease); }
 :is(.image-auto-progress, .image-auto-done, .image-auto-failed) { align-items: center; --bot-paper: #191a1c; }
 .image-auto-progress > .studio-bot, .image-auto-done > .studio-bot, .image-auto-failed > .studio-bot { margin-block: -8px; }
@@ -180,7 +180,7 @@ textarea::placeholder, input::placeholder {
   letter-spacing: .06em;
 }
 
-.batch-page, .image-workbench-page, .training-page,
+.batch-page, .image-workbench-page,
 .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route {
   max-width: 1440px;
   padding: 40px clamp(24px, 3.2vw, 52px) 56px;
@@ -441,7 +441,7 @@ textarea::placeholder, input::placeholder {
     grid-template-columns: 192px minmax(0, 1fr);
   }
 
-  .batch-page, .image-workbench-page, .training-page,
+  .batch-page, .image-workbench-page,
   .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route {
     padding-inline: 24px;
   }
@@ -488,7 +488,7 @@ textarea::placeholder, input::placeholder {
     display: none;
   }
 
-  .batch-page, .image-workbench-page, .training-page,
+  .batch-page, .image-workbench-page,
   .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route {
     padding: 26px 16px 40px;
   }
