@@ -4970,12 +4970,12 @@ def batch_ready_for_shutdown(state: dict[str, Any]) -> bool:
         return False
     items = state.get("items") or []
     if state.get("shutdownAfterPrep"):
-        if not items or state.get("autoRender") or state.get("renderRequested") or state.get("pauseRequested"):
+        active_items = [item for item in items if item.get("status") != "deleted"]
+        if not active_items or state.get("autoRender") or state.get("renderRequested") or state.get("pauseRequested"):
             return False
-        if any(item.get("status") in {"running", "completed"} or item.get("videoJobId") for item in items):
-            return False
-        # 异常条目已从备料区移走，不再阻止其余备料完成后的关机。
-        return not any(item.get("status") in {"pending", "revising", "awaiting_review"} for item in items) and any(item.get("status") == "confirmed" for item in items)
+        # 失败/跳过同样表示本轮已结束；历史出片编号不等于任务仍在运行。
+        # 真正的活动任务由 shutdown_tick 的 work_in_flight() 全局把关。
+        return all(item.get("status") in {"confirmed", "completed", "failed", "skipped"} for item in active_items)
     if not items or shutdown_unfinished_items(state):
         return False
     # 至少有一条真的出完片：全是「失败 / 跳过」时更像是出了故障，不关机器（用户回来还要处理）。

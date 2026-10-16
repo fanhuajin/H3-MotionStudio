@@ -1822,7 +1822,7 @@ export function BatchRoute() {
         </div>}
         <div className="batch-shutdown-row">
           <span><b><Power weight="fill" /> 备料完成后关机</b>
-            <small>默认关闭。整批备料齐全后关机，并关闭自动出片；关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
+            <small>默认关闭。其余条目备料完成后关机，异常条目留待之后处理，不阻止关机；开启后关闭自动出片，关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
           <button type="button" role="switch" aria-checked={prepShutdownSwitchOn}
             className={`batch-switch ${prepShutdownSwitchOn ? "on" : ""}`}
             disabled={Boolean(busyAction)} onClick={toggleShutdownAfterPrep}>

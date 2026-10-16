@@ -6608,6 +6608,40 @@ class BatchShutdownTests(unittest.TestCase):
         state["items"][1]["status"] = "pending"
         self.assertFalse(batch_worker.batch_ready_for_shutdown(state))
 
+    def test_shutdown_after_prep_counts_failed_and_historical_items_as_finished(self) -> None:
+        from backend import batch_worker
+
+        for first, second in (("confirmed", "failed"), ("completed", "failed"), ("failed", "failed"), ("failed", "skipped")):
+            with self.subTest(statuses=(first, second)):
+                state = new_batch_state(["https://v.douyin.com/a", "https://v.douyin.com/b"], [], shutdown_after_prep=True)
+                state["items"][0].update(status=first, videoJobId="old-job")
+                state["items"][1].update(status=second, videoJobId="old-failed-job")
+                state["items"].append({"id": "deleted-history", "status": "deleted", "videoJobId": "old-deleted-job"})
+                self.assertTrue(batch_worker.batch_ready_for_shutdown(state))
+        for status in ("pending", "revising", "awaiting_review", "running", "unknown"):
+            with self.subTest(blocking=status):
+                state["items"][0]["status"] = status
+                self.assertFalse(batch_worker.batch_ready_for_shutdown(state))
+        for item in state["items"]:
+            item["status"] = "deleted"
+        self.assertFalse(batch_worker.batch_ready_for_shutdown(state))
+
+    def test_shutdown_after_prep_with_failures_still_waits_for_active_work(self) -> None:
+        from backend import batch_worker
+
+        store = self._store()
+        state = new_batch_state(["https://v.douyin.com/a", "https://v.douyin.com/b"], [], shutdown_after_prep=True)
+        state["items"][0].update(status="confirmed", videoJobId="historical-job")
+        state["items"][1].update(status="failed", videoJobId="historical-failed-job")
+        store.create(state)
+        with patch.object(batch_worker, "batch_store", store):
+            with patch.object(batch_worker, "work_in_flight", return_value=True):
+                self.assertEqual(batch_worker.shutdown_tick(), "waiting")
+                self.assertEqual(_SHUTDOWN_CALLS, [])
+            with patch.object(batch_worker, "work_in_flight", return_value=False):
+                self.assertEqual(batch_worker.shutdown_tick(), "scheduled")
+                self.assertEqual(_SHUTDOWN_CALLS, [batch_worker.shutdown_delay_seconds()])
+
     def test_batch_shutdown_waits_until_every_item_is_done(self) -> None:
         """只要有条目还在排队 / 等你确认 / 待出片 / 出片，就不许关机。"""
         from backend import batch_worker
