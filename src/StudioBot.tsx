@@ -2,21 +2,24 @@ import { useEffect, useId, useRef, useState } from "react";
 import { BotEngine, type BotFrame } from "./vendor/bloub/engine";
 import { DEMI_VIEWBOX as VB, RAYON } from "./vendor/bloub/repere";
 import type { StateId } from "./vendor/bloub/states";
+import { SHAPE_BY_ID, type ShapeId } from "./vendor/bloub/skins";
 
 export type StudioMood = "idle" | "working" | "waiting" | "success" | "error" | "offline";
 const STATES: Record<StudioMood, StateId> = { idle: "idle", working: "orbit", waiting: "thinking", success: "burst", error: "alert", offline: "sleep" };
 const COLORS: Record<StudioMood, string> = { idle: "#a9c6af", working: "#a9c6af", waiting: "#d6bd86", success: "#97d6b3", error: "#df9c99", offline: "#89918b" };
 
 /** React renderer for the unmodified MIT Bloub engine; no Vue runtime required. */
-export function StudioBot({ mood = "idle", size = 72, variant, interactive = false }: { mood?: StudioMood; size?: number; variant?: StateId; interactive?: boolean }) {
+export function StudioBot({ mood = "idle", size = 72, variant, interactive = false, shape }: { mood?: StudioMood; size?: number; variant?: StateId; interactive?: boolean; shape?: ShapeId }) {
   const state = variant ?? STATES[mood];
+  const radii = shape ? SHAPE_BY_ID.get(shape)?.radii ?? null : null;
   const uid = `bloub-${useId().replace(/:/g, "")}`;
   const engine = useRef<BotEngine | null>(null);
-  if (!engine.current) engine.current = new BotEngine(RAYON, state);
+  if (!engine.current) engine.current = new BotEngine(RAYON, state, radii);
   const clock = useRef(0);
   const [frame, setFrame] = useState<BotFrame>(() => engine.current!.sample(0));
   const host = useRef<SVGSVGElement>(null);
   useEffect(() => { engine.current!.setState(state, clock.current); }, [state]);
+  useEffect(() => { engine.current!.setShape(radii, clock.current); }, [radii]);
   useEffect(() => {
     let raf = 0, last = 0, visible = true;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)");
@@ -37,7 +40,7 @@ export function StudioBot({ mood = "idle", size = 72, variant, interactive = fal
     reduced.addEventListener("change", resume);
     resume();
     return () => { cancelAnimationFrame(raf); observer.disconnect(); document.removeEventListener("visibilitychange", resume); reduced.removeEventListener("change", resume); };
-  }, [state]);
+  }, [state, shape]);
   const dots = frame.dots.map((dot, i) => dot.d
     ? <path key={i} d={dot.d} transform={`translate(${dot.x} ${dot.y}) rotate(${dot.rot ?? 0}) scale(${RAYON})`} opacity={dot.opacity} />
     : <circle key={i} cx={dot.x} cy={dot.y} r={dot.r} opacity={dot.opacity} />);
