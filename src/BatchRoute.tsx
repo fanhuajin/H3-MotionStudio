@@ -474,6 +474,22 @@ interface ConfirmAsk {
   danger?: boolean;
 }
 
+// Memory-only: navigation can reuse the last view, while a full reload still
+// verifies the latest batch before displaying any queue or empty form.
+let lastBatchView: { batch: BatchState | null; selectedId: string | null } | undefined;
+
+function BatchLoading({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return <main className="batch-page batch-loading-page" aria-busy={!error}>
+    <header className="batch-header"><div><p className="batch-kicker">SERIAL PRODUCTION</p><h1>批量视频制作</h1><p>先完成整批备料，再逐条出片。</p></div></header>
+    <div className="batch-sync-notice" role="status"><SpinnerGap className={error ? undefined : "spin"} />{error ? "暂时无法读取批次" : "正在读取最新批次…"}{error && <button onClick={onRetry}>重新读取</button>}</div>
+    {error && <p className="batch-alert">{error}</p>}
+    <div className="batch-loading-layout" aria-hidden="true">
+      <section className="batch-input-card"><div className="batch-prepare-head">准备任务</div><div className="batch-loading-inputs"><div className="batch-skeleton batch-skeleton-input" /><div className="batch-skeleton batch-skeleton-input" /></div><div className="batch-skeleton batch-skeleton-setting" /><div className="batch-skeleton batch-skeleton-setting" /></section>
+      <section className="batch-table-card"><div className="batch-loading-tabs"><div className="batch-skeleton" /><div className="batch-skeleton" /><div className="batch-skeleton" /></div>{[0, 1, 2, 3].map(row => <div className="batch-loading-row" key={row}><div className="batch-skeleton" /><div className="batch-skeleton" /><div className="batch-skeleton" /></div>)}</section>
+    </div>
+  </main>;
+}
+
 export function BatchRoute() {
   const initial = useMemo(readInputDraft, []);
   const [singing, setSinging] = useState(initial.singing);
@@ -485,8 +501,9 @@ export function BatchRoute() {
   const [shutdownAfterPrepOn, setShutdownAfterPrepOn] = useState(initial.shutdownAfterPrepOn);
   const [autoRenderOn, setAutoRenderOn] = useState(initial.autoRenderOn);
   const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
-  const [batch, setBatch] = useState<BatchState | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [batch, setBatch] = useState<BatchState | null>(() => lastBatchView?.batch ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => lastBatchView?.selectedId ?? null);
+  const [hasSnapshot, setHasSnapshot] = useState(lastBatchView !== undefined);
   // 刷新或重新进入页面时恢复上次选择的分区。
   const [activeTab, setActiveTab] = useState<TabId>(readActiveTab);
   const [videoPreview, setVideoPreview] = useState<{ id: string; title: string; url: string } | null>(null);
@@ -509,6 +526,10 @@ export function BatchRoute() {
   // 先把上次的队列读回来再允许提交：否则刚打开页面就点「加入队列」会新开一个批次，
   // 看到的现象就是「我排好的队列不见了」。
   const [loaded, setLoaded] = useState(false);
+  const [syncError, setSyncError] = useState("");
+  useEffect(() => {
+    if (hasSnapshot) lastBatchView = { batch, selectedId };
+  }, [batch, selectedId, hasSnapshot]);
   const acceptBatchState = useCallback((incoming: BatchState) => {
     setBatch((current) => {
       if (current?.id === incoming.id && current.updatedAt && incoming.updatedAt
@@ -607,20 +628,31 @@ export function BatchRoute() {
     || (item.status === "confirmed" && !item.prepReady),
   );
 
-  const loadLatest = useCallback(async () => {
-    try {
-      const response = await fetch("/api/batches/latest", { cache: "no-store" });
-      if (response.status === 204) return;
+  const loadLatest = useCallback(async (signal?: AbortSignal) => {
+    setSyncError("");
+    const response = await fetch("/api/batches/latest", { cache: "no-store", signal });
+    if (response.status === 204) {
+      if (signal?.aborted) return;
+      setBatch(null);
+      setSelectedId(null);
+    } else {
       if (!response.ok) throw new Error(await responseMessage(response, "无法读取上次批次"));
-      acceptBatchState(await readJson<BatchState>(response, "无法读取上次批次"));
-    } finally {
-      setLoaded(true);
+      const incoming = await readJson<BatchState>(response, "无法读取上次批次");
+      if (signal?.aborted) return;
+      acceptBatchState(incoming);
     }
+    setHasSnapshot(true);
+    setLoaded(true);
   }, [acceptBatchState]);
 
   useEffect(() => {
-    loadLatest().catch((reason) => setError(String(reason.message || reason)));
+    const controller = new AbortController();
+    loadLatest(controller.signal).catch((reason) => {
+      if (!controller.signal.aborted) setSyncError(String(reason.message || reason));
+    });
+    return () => controller.abort();
   }, [loadLatest]);
+  const retryLatest = () => { void loadLatest().catch(reason => setSyncError(String(reason.message || reason))); };
 
   useEffect(() => {
     localStorage.setItem(INPUT_KEY, JSON.stringify({ singing, dance, singingOn, danceOn, shutdownOn, shutdownAfterPrepOn, autoRenderOn }));
@@ -652,22 +684,24 @@ export function BatchRoute() {
   // 全自动链路里它看不到任何新东西，留着只是每 10 秒白打一次接口。
 
   useEffect(() => {
-    if (!batch?.id) return;
+    if (!loaded || !batch?.id) return;
+    let alive = true;
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${protocol}://${location.host}/api/batches/${batch.id}/ws`);
-    socket.onmessage = (event) => acceptBatchState(JSON.parse(event.data));
+    socket.onmessage = (event) => { if (alive) acceptBatchState(JSON.parse(event.data)); };
     socket.onerror = () => undefined;
     const poll = window.setInterval(() => {
       fetch(`/api/batches/${batch.id}`, { cache: "no-store" })
         .then((response) => response.ok ? response.json() : null)
-        .then((state) => state && acceptBatchState(state))
+        .then((state) => alive && state && acceptBatchState(state))
         .catch(() => undefined);
     }, 3500);
     return () => {
+      alive = false;
       socket.close();
       window.clearInterval(poll);
     };
-  }, [batch?.id, acceptBatchState]);
+  }, [loaded, batch?.id, acceptBatchState]);
 
   // 详情**完全由用户自己点开**（2026-09-15 用户：「我希望启动页面的时候 列表默认都是收起来的
   // 由我自己点击要查看哪个」）：不再自动跟随「当前条目」、也不再在状态变化时抢着切换标签 ——
@@ -1695,12 +1729,14 @@ export function BatchRoute() {
     );
   };
 
-  if (!loaded) {
-    return <main className="batch-page studio-loading" role="status" aria-live="polite"><StudioBot mood="waiting" size={88} /><span>正在读取批次…</span></main>;
+  if (!hasSnapshot) {
+    return <BatchLoading error={syncError} onRetry={retryLatest} />;
   }
 
   return (
-    <main className="batch-page">
+    <main className="batch-page" aria-busy={!loaded}>
+      {!loaded && <div className="batch-sync-notice" role="status"><SpinnerGap className={syncError ? undefined : "spin"} />{syncError ? "同步失败，当前显示上次内容" : "正在同步最新批次…"}{syncError && <button onClick={retryLatest}>重新同步</button>}</div>}
+      <div className="batch-content" inert={!loaded}>
       <header className="batch-header">
         <div>
           <p className="batch-kicker">SERIAL PRODUCTION</p>
@@ -2234,6 +2270,7 @@ export function BatchRoute() {
           </div>
         </div>
       )}
+      </div>
     </main>
   );
 }
