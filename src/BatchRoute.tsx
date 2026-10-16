@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readJson } from "./api";
+import { StudioBot, statusMood } from "./StudioBot";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
   ArrowClockwise,
@@ -473,7 +474,7 @@ interface ConfirmAsk {
   danger?: boolean;
 }
 
-export function BatchRoute() {
+export function BatchRoute({ onStatus }: { onStatus?: (status: string | undefined) => void } = {}) {
   const initial = useMemo(readInputDraft, []);
   const [singing, setSinging] = useState(initial.singing);
   const [dance, setDance] = useState(initial.dance);
@@ -485,6 +486,7 @@ export function BatchRoute() {
   const [autoRenderOn, setAutoRenderOn] = useState(initial.autoRenderOn);
   const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
   const [batch, setBatch] = useState<BatchState | null>(null);
+  useEffect(() => { onStatus?.(batch?.status); }, [batch?.status, onStatus]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 刷新或重新进入页面时恢复上次选择的分区。
   const [activeTab, setActiveTab] = useState<TabId>(readActiveTab);
@@ -1692,7 +1694,7 @@ export function BatchRoute() {
   };
 
   if (!loaded) {
-    return <main className="batch-page" role="status" aria-live="polite">正在读取批次…</main>;
+    return <main className="batch-page studio-loading" role="status" aria-live="polite"><StudioBot mood="waiting" size={88} /><span>正在读取批次…</span></main>;
   }
 
   return (
@@ -1708,7 +1710,7 @@ export function BatchRoute() {
         </div>
         {batch && (
           <div className={`batch-status-pill ${batch.status}`}>
-            {batch.status === "running" && <SpinnerGap className="spin" />}
+            <StudioBot mood={statusMood(batch.status)} variant={batch.status === "paused" ? "sleep" : undefined} size={38} />
             {batchStatusLabel(batch.status)} · {batch.completedCount}/{effectiveTotal}
           </div>
         )}

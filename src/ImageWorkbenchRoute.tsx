@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRememberedTab } from "./useRememberedTab";
+import { StudioBot } from "./StudioBot";
 import {
   Check, ClipboardText, ImageSquare, MagnifyingGlassPlus, Minus, Plus, SpinnerGap, UploadSimple, WarningCircle, X,
 } from "@phosphor-icons/react";
@@ -360,17 +361,17 @@ export function ImageWorkbenchRoute() {
             <div className="image-workbench-blank"><ImageSquare /><p>已同步批量制作记录，等待抽帧、人物图与文案就绪。</p><small>素材就绪后自动更新，可继续生成或查看封面。</small></div>
           </> : <>
             <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span><button onClick={() => startAuto(item.id)} disabled={busy}>本条三张一次跑完</button></div></div>
-            {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><SpinnerGap className="spin" />{item.automation.message || "正在自动生成…"}{elapsedOf(item) ? `（已用 ${elapsedOf(item)} 秒）` : ""}</p>}
-            {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><Check weight="bold" />{item.automation.message}</p>}
-            {item.automation?.status === "failed" && <p className="image-auto-failed"><WarningCircle />{item.automation.message || "自动生成失败"}</p>}
+            {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><StudioBot mood="working" variant="swirl" size={42} />{item.automation.message || "正在自动生成…"}{elapsedOf(item) ? `（已用 ${elapsedOf(item)} 秒）` : ""}</p>}
+            {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><StudioBot mood="success" size={42} />{item.automation.message}</p>}
+            {item.automation?.status === "failed" && <p className="image-auto-failed"><StudioBot mood="error" variant="exclaim" size={42} />{item.automation.message || "自动生成失败"}</p>}
             <div className="image-stage-tabs">{STAGES.map((entry, index) => { const ready = Boolean(item.assets[entry.id]); return <button key={entry.id} className={stage === entry.id ? "active" : ""} onClick={() => setStage(entry.id)}><i>{ready ? <Check weight="bold" /> : index + 1}</i><span><strong>{entry.label}</strong><small>{entry.spec}</small></span></button>; })}</div>
 
             <div className="image-workbench-content">
-              <div className={`image-workbench-preview image-copy-surface ${stage === "douyin" ? "portrait" : ""}`}>
+              <div key={`${item.id}-${stage}`} className={`image-workbench-preview image-copy-surface ${stage === "douyin" ? "portrait" : ""}`}>
                 {stageAsset ? <AssetPreview src={assetUrl(item, stage)} label={STAGES.find((row) => row.id === stage)?.label || "图片"} busy={busy}
                   onView={() => setViewer({ src: assetUrl(item, stage), label: STAGES.find((row) => row.id === stage)?.label || "图片" })}
                   onCopy={() => void copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} />
-                  : <div><ImageSquare /><strong>还没有这张图</strong><small>自己出好后拖到右侧上传</small></div>}
+                  : <div><StudioBot mood={autoLive ? "working" : "idle"} variant={autoLive ? "thinking" : "egg"} size={104} /><strong>还没有这张图</strong><small>自己出好后拖到右侧上传</small></div>}
                 <span>{stageAsset ? `${stageAsset.width} × ${stageAsset.height}` : "等待生成"}</span>
               </div>
               <div className="image-workbench-actions">
