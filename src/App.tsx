@@ -966,7 +966,7 @@ export function App() {
         <div className="sidebar-top">
           <p className="sidebar-kicker">创作工作台</p>
           <a className="sidebar-brand" href="/" aria-label="H3 MotionStudio 首页">
-            <StudioBot size={40} interactive variant={path === "/images" ? "play" : path === "/batch" || path === "" ? "wide" : path === "/singing" ? "idle" : path === "/migrate" ? "egg" : path === "/upscale" ? "swirl" : path === "/rvc" ? "comet" : path === "/subtitle" ? "notify" : path === "/rvc-training" ? "hexagon" : "idle"} />
+            <StudioBot size={40} interactive shape={path === "/migrate" ? "squircle" : undefined} variant={path === "/images" ? "play" : path === "/batch" || path === "" ? "wide" : path === "/singing" ? "idle" : path === "/migrate" ? "idle" : path === "/upscale" ? "swirl" : path === "/rvc" ? "comet" : path === "/subtitle" ? "notify" : path === "/rvc-training" ? "hexagon" : "idle"} />
             <strong>MotionStudio</strong>
           </a>
         </div>
