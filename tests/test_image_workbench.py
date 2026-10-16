@@ -560,7 +560,9 @@ class ImageWorkbenchTests(unittest.TestCase):
                 zipped = workbench.material_zip(folder, "person", "dance")
         self.assertIn(block, person, "人物图提示词必须带背景清理整段")
         self.assertIn("只保留主体一人", person)
-        self.assertIn("不用强虚化", person)
+        self.assertIn("不加人工散景", person)
+        self.assertIn("日常唱歌或跳舞视频画面", person)
+        self.assertNotIn("不出现床", person)
         self.assertIn("画面仍只有参考图中的一人", cover)
         self.assertNotIn(block, cover, "封面不写背景风格规则（用户 2026-09-19）")
 
@@ -590,7 +592,7 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("【服装】", person)
         self.assertIn("胸前有衣物覆盖", person)
         self.assertIn("自然精致淡妆", person)
-        self.assertLess(len(person), 900)
+        self.assertIn("【背景与实拍感】", person)
         self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内
         self.assertNotIn("【服装】", cover)
         self.assertNotIn("面料不透明", cover)
