@@ -2635,8 +2635,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("脸、头发和双手清晰", block)
         self.assertIn("若图一的手有拖影", block)
         self.assertIn("保留手臂大致位置和朝向", block)
-        self.assertIn("抬起的手轻松半握，放下的手自然垂落", block)
-        self.assertIn("可见手指结构与遮挡关系合理", block)
+        self.assertIn("不限定握拳或垂手", block)
+        self.assertNotIn("抬起的手轻松半握", block)
+        self.assertIn("可见手指结构与遮挡合理", block)
         self.assertIn("肤色、亮度和皮肤纹理与脸及手臂一致", block)
         self.assertIn("袖口纹理及衣肤交界清楚", block)
         for kind in ("dance", "singing"):
@@ -2646,7 +2647,7 @@ class WorkflowPreparationTests(unittest.TestCase):
             # 仍然必须是精简模板（长提示词会把硬要求淹掉，别借这次改动把它拼回去）
             self.assertLess(len(prompt), 1800)
             self.assertIn("【手部姿态】", prompt)
-            self.assertIn("不交叉手指或手腕", prompt)
+            self.assertIn("避免复杂指法、手指交叉和指尖相触", prompt)
             self.assertNotIn("身体朝向及主要手臂动作", prompt)
             # 清晰度块在身份块之前（脸仍然排在最后）
             self.assertLess(
