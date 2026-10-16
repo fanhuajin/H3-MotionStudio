@@ -815,7 +815,7 @@ def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: b
 
     # 点「重试」明确授权补发缺失的封面。授权只供本轮备料消费一次；
     # 自动恢复和其它触发点仍遵守“结果未知不重发”的成本闸。
-    retry_missing_covers = str((pending_item or {}).get("status") or "") == "failed"
+    retry_missing_covers = allow_uncertain_retry
 
     def reset(row: dict[str, Any]) -> None:
         ai = row.get("ai") or {}
@@ -873,7 +873,7 @@ def restart_item_log(direct: bool) -> str:
     （`confirmed`）根本不碰图片，回备料那条路也只会收编/沿用已有的图、只补缺的那些。
     """
     if direct:
-        return "已重新开始这一条：人物图、B站封面、抖音封面全部沿用现有的，只重跑出片（不会重新出图）。"
+        return "已重新开始这一条：已有的人物图和封面直接沿用，缺失图片会重新请求补齐；备料齐全后再出片。"
     return (
         "已重新开始这一条，将从下载与备料重做；已经出好的人物图与封面会直接沿用，"
         "三张都在时不会重新出图（只补缺的那几张）。"

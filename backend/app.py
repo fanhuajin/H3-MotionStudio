@@ -1350,11 +1350,12 @@ async def retry_batch_item(batch_id: str, item_id: str, allowUncertainRetry: boo
     # 重置逻辑与批量「重新开始」共用同一份（batch_worker.restart_item_to_run），
     # 免得单条与批量两边的行为慢慢跑偏。
     try:
-        direct = restart_item_to_run(batch_id, item_id, allow_uncertain_retry=allowUncertainRetry)
+        # 用户主动点击重试即授权本轮补缺图；不依赖条目错误文字或旧客户端参数。
+        direct = restart_item_to_run(batch_id, item_id, allow_uncertain_retry=True)
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     batch_store.add_item_log(batch_id, item_id, restart_item_log(direct))
-    return _resume_batch(batch_id, "已重新开始跳过的条目。")
+    return _resume_batch(batch_id, "已重试：沿用已有图片，重新请求补齐缺图后继续出片。")
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/skip")
 async def skip_batch_item(batch_id: str, item_id: str):
@@ -1462,7 +1463,7 @@ async def retry_batch_items_endpoint(batch_id: str, request: BatchItemIdsRequest
     _batch_or_404(batch_id)
     if not request.itemIds:
         raise HTTPException(400, "请先勾选要重新开始的条目")
-    result = restart_batch_items(batch_id, request.itemIds, allow_uncertain_retry=request.allowUncertainRetry)
+    result = restart_batch_items(batch_id, request.itemIds, allow_uncertain_retry=True)
     restarted = result.get("restarted") or []
     rejected = result.get("rejected") or []
     if not restarted:

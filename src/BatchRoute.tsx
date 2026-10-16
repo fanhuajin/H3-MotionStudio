@@ -779,21 +779,7 @@ export function BatchRoute() {
   };
 
   const retryFailedItem = async (item: BatchItem) => {
-    const error = item.error || "";
-    if (!error.includes("结果未确认") && !error.includes("未重复调用 DS")) {
-      await itemCallFor(item, "retry");
-      return;
-    }
-    const imageUnknown = error.includes("人物图请求已经提交") || error.includes("人物图请求结果未确认");
-    if (!(await askConfirm({
-      title: imageUnknown ? "重新请求人物图？" : "重新检查修手图？",
-      detail: imageUnknown
-        ? "上次人物图请求结果未知。确认后会再次请求中转站，可能产生新费用；请先核对中转站账单。"
-        : "修手图已保留。确认后只重新调用 DS 检查这张图，可能产生一次检查费用，不会重新生成图片。",
-      items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
-      confirmLabel: imageUnknown ? "确认重新出图" : "确认重新检查",
-    }))) return;
-    await itemCallFor(item, "retry?allowUncertainRetry=true");
+    await itemCallFor(item, "retry");
   };
 
   /** 批量操作：勾选后一次确认 / 跳过 / 删除（后端逐个校验，出片仍一条一条来）。 */
@@ -802,13 +788,7 @@ export function BatchRoute() {
     ask?: ConfirmAsk,
   ) => {
     if (!batch || selectedIds.size === 0) return;
-    const uncertainRetry = action === "retry-many" && selectedItems.some((item) =>
-      item.status === "failed" && ((item.error || "").includes("结果未确认") || (item.error || "").includes("未重复调用 DS")));
-    const retryAsk = uncertainRetry && ask ? {
-      ...ask,
-      detail: `${ask.detail || ""} 其中有结果未知的计费请求：确认后会逐条重试，可能产生新的图片或 DS 检查费用；请先核对账单。`,
-    } : ask;
-    if (retryAsk && !(await askConfirm(retryAsk))) return;
+    if (ask && !(await askConfirm(ask))) return;
     const endpoint = `/api/batches/${batch.id}/items/${action}`;
     setBusyAction(action);
     setError("");
@@ -816,7 +796,7 @@ export function BatchRoute() {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemIds: [...selectedIds], allowUncertainRetry: uncertainRetry }),
+        body: JSON.stringify({ itemIds: [...selectedIds] }),
       });
       if (!response.ok) throw new Error(await responseMessage(response, "批量操作失败"));
       acceptBatchState(await readJson<BatchState>(response, "批量操作失败"));
@@ -1216,7 +1196,7 @@ export function BatchRoute() {
       );
     }
     if (item.status === "failed") {
-      return <button onClick={() => void retryFailedItem(item)}><ArrowClockwise />重试</button>;
+      return <button title="重新请求补齐缺失图片（可能产生费用），已有图片直接沿用" onClick={() => void retryFailedItem(item)}><ArrowClockwise />重试</button>;
     }
     if (["skipped", "completed"].includes(item.status)) {
       return (
@@ -1948,7 +1928,7 @@ export function BatchRoute() {
                     void batchOp("retry-many", {
                       title: `重新开始选中的 ${selectedIds.size} 条？`,
                       detail: "已经出过片的会重跑一遍生成链路，新成片会覆盖发布目录里的同名文件；"
-                        + "已备过料且源视频还在的只重跑出片，其余的从下载与备料重做。正在出片的不会被重开。",
+                        + "已有图片直接沿用，缺失图片会重新请求补齐，可能产生新的图片费用；备料齐全后再出片。正在出片的不会被重开。",
                       items: selectedItems.map((item) => `第 ${item.index} 条 · ${batchStatusLabel(item.status, item.stage)} · ${itemTitle(item)}`),
                       confirmLabel: "重新开始这 " + selectedIds.size + " 条",
                       danger: true,
