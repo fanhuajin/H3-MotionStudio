@@ -1327,17 +1327,30 @@ async def _download(batch_id: str, item_id: str) -> Path:
 
 
 def _frame_detail_score(data: bytes) -> float:
-    """Return a lightweight sharpness score without adding a CV-model dependency.
+    """Local proxy for reference quality, not a hand detector/anatomy judge.
 
-    The scene frame becomes the image-generation reference. A frame with
-    motion-smeared hands can carry that defect into the generated portrait, so
-    favour the frame with the clearest local edges.
+    Downweight background detail and compare both likely arm regions separately.
+    The weaker side dominates so one sharp sleeve cannot hide a smeared other arm.
+    Fixed regions cannot guarantee visible fingers; no external API is called.
     """
     with Image.open(io.BytesIO(data)) as opened:
         image = opened.convert("L")
-    image.thumbnail((480, 480), Image.Resampling.LANCZOS)
-    edges = image.filter(ImageFilter.FIND_EDGES)
-    return float(ImageStat.Stat(edges).var[0])
+    image.thumbnail((640, 640), Image.Resampling.LANCZOS)
+
+    def detail(box: tuple[float, float, float, float]) -> float:
+        width, height = image.size
+        region = image.crop(tuple(round(v * (width if i % 2 == 0 else height))
+                                  for i, v in enumerate(box)))
+        # Discard the artificial FIND_EDGES boundary and use a shared image scale.
+        edges = region.filter(ImageFilter.FIND_EDGES)
+        if min(edges.size) > 4:
+            edges = edges.crop((2, 2, edges.width - 2, edges.height - 2))
+        return float(ImageStat.Stat(edges).var[0]) ** 0.5
+
+    left = detail((0.08, 0.28, 0.48, 0.82))
+    right = detail((0.52, 0.28, 0.92, 0.82))
+    body = detail((0.18, 0.18, 0.82, 0.88))
+    return 0.70 * min(left, right) + 0.20 * (left + right) / 2 + 0.10 * body
 
 
 def _extract_frame_bytes(source: Path, timestamp: float, *, flags: int) -> bytes | None:
@@ -1354,14 +1367,14 @@ def _extract_frame_bytes(source: Path, timestamp: float, *, flags: int) -> bytes
 
 
 def _scene_frame_candidates(source: Path, ratio: float) -> list[tuple[float, bytes]]:
-    """在目标时刻附近抽 5 帧，逐张按**整幅**清晰度打分（`_frame_detail_score`）。
-
-    顺序 = 抽帧顺序（目标时刻、前 0.12、后 0.12、前 0.06、后 0.06，去重后夹在 4%~96%），
-    `batch_ai.choose_sharp_hands_frame()` 返回的序号就是这个顺序（拼图从左到右一致）。
-    """
+    """Sample nearby gestures and wider moments, preserving stable candidate order."""
     duration = _video_duration_seconds(source)
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    ratios = (ratio, ratio - 0.12, ratio + 0.12, ratio - 0.06, ratio + 0.06)
+    # Retain original candidates first for the optional visual picker, then broaden
+    # coverage and add actual neighbouring moments (old offsets were duration ratios).
+    nearby = min(0.01, 0.15 / max(duration, 0.001))
+    ratios = (ratio, ratio - 0.12, ratio + 0.12, ratio - 0.06, ratio + 0.06,
+              ratio - nearby, ratio + nearby, 0.08, 0.18, 0.62, 0.76, 0.90)
     candidates: list[tuple[float, bytes]] = []
     for candidate_ratio in dict.fromkeys(max(0.04, min(0.96, value)) for value in ratios):
         frame = _extract_frame_bytes(source, duration * candidate_ratio, flags=flags)
@@ -1373,15 +1386,7 @@ def _scene_frame_candidates(source: Path, ratio: float) -> list[tuple[float, byt
 
 
 def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path:
-    """Choose a clear scene frame and reject a hand-motion-blurred timestamp.
-
-    A single fixed timestamp frequently lands on a gesture. Sampling nearby
-    moments and retaining the sharpest frame prevents such frames becoming an
-    image-generation reference.
-
-    只按整幅清晰度挑（同步、不调模型）；备料实际走的是
-    `extract_scene_frame_with_hands()` —— 它在这份候选之上再让视觉模型挑「手最清楚」的一张。
-    """
+    """Choose by bilateral regional detail; no API or anatomy validation."""
     target.parent.mkdir(parents=True, exist_ok=True)
     target.unlink(missing_ok=True)
     candidates = _scene_frame_candidates(source, ratio)
@@ -1392,17 +1397,10 @@ def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path
 async def extract_scene_frame_with_hands(
     source: Path, target: Path, ratio: float = 0.38
 ) -> Path:
-    """抽帧挑图：先按整幅清晰度抽 5 张候选，再让视觉模型挑「双手最清楚」的那张。
-
-    用户 2026-09-20 在「要不要再加一道」上选了要。为什么需要：`_frame_detail_score` 只看
-    整幅清晰度，跳舞时整幅清楚、两只手却糊成一片的帧照样会赢，模型再把那份运动模糊照抄进
-    人物图（013 实测：抽帧里两只手都在挥，生成图那两只手同样糊）。这一道是**挑图**，
-    不是出图后的判据。模型挑不出来 / 判据失败 → 退回分数最高的那张，绝不卡住备料。
-    """
+    """Select locally by bilateral detail; optional legacy AI picker stays opt-in."""
     candidates = await asyncio.to_thread(_scene_frame_candidates, source, ratio)
     chosen: bytes | None = None
-    # 挑手部帧只是加分项，却会让每条作品固定多一次 DS 视觉费用。默认采用本地清晰度评分；
-    # 确实需要旧行为时可显式设置 H3_BATCH_AI_FRAME_PICK=1。
+    # Default remains entirely local, with no extra paid visual request.
     ai_pick = env_value("H3_BATCH_AI_FRAME_PICK", "0").strip().lower() in {"1", "true", "yes", "on"}
     if ai_pick and len(candidates) > 1:
         try:
@@ -1410,7 +1408,7 @@ async def extract_scene_frame_with_hands(
 
             index = await batch_ai.choose_sharp_hands_frame([frame for _, frame in candidates])
         except Exception:  # noqa: BLE001 - 挑图失败只该退回打分，不该让整条备料失败
-            logger.warning("候选抽帧挑选失败，退回整幅最清晰的那张", exc_info=True)
+            logger.warning("候选抽帧挑选失败，退回本地双侧区域评分最高的那张", exc_info=True)
             index = None
         if isinstance(index, int) and 1 <= index <= len(candidates):
             chosen = candidates[index - 1][1]
