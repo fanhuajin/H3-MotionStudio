@@ -474,7 +474,7 @@ interface ConfirmAsk {
   danger?: boolean;
 }
 
-export function BatchRoute({ onStatus }: { onStatus?: (status: string | undefined) => void } = {}) {
+export function BatchRoute() {
   const initial = useMemo(readInputDraft, []);
   const [singing, setSinging] = useState(initial.singing);
   const [dance, setDance] = useState(initial.dance);
@@ -486,7 +486,6 @@ export function BatchRoute({ onStatus }: { onStatus?: (status: string | undefine
   const [autoRenderOn, setAutoRenderOn] = useState(initial.autoRenderOn);
   const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
   const [batch, setBatch] = useState<BatchState | null>(null);
-  useEffect(() => { onStatus?.(batch?.status); }, [batch?.status, onStatus]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // 刷新或重新进入页面时恢复上次选择的分区。
   const [activeTab, setActiveTab] = useState<TabId>(readActiveTab);

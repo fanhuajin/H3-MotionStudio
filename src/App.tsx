@@ -36,7 +36,7 @@ import { RvcTrainingRoute } from "./RvcTrainingRoute";
 import { SubtitleRoute } from "./SubtitleRoute";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
-import { StudioBot, statusMood } from "./StudioBot";
+import { StudioBot } from "./StudioBot";
 import { UpScaleRoute } from "./UpScaleRoute";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
@@ -925,12 +925,6 @@ function restoreWorkspacePage(): string {
 
 export function App() {
   const [path, setPath] = useState(restoreWorkspacePage);
-  const [latestJob, setLatestJob] = useState<JobState | null>(null);
-  const receiveJob = useCallback((job: JobState | null) => {
-    setLatestJob(current => current?.id === job?.id && current?.status === job?.status ? current : job);
-  }, []);
-  const [batchStatus, setBatchStatus] = useState<string | undefined>();
-  const activityStatus = latestJob?.status === "running" ? "running" : batchStatus || latestJob?.status;
   useEffect(() => {
     const onPopState = () => setPath(restoreWorkspacePage());
     window.addEventListener("popstate", onPopState);
@@ -967,7 +961,7 @@ export function App() {
 
   return (
     <div className="desktop-app-shell">
-      <TaskTabStatus onJob={receiveJob} />
+      <TaskTabStatus />
       <aside className="app-sidebar" onClick={navigateWorkspace}>
         <div className="sidebar-top">
           <p className="sidebar-kicker">创作工作台</p>
@@ -1023,10 +1017,6 @@ export function App() {
 
         <div className="sidebar-system">
           <p className="sidebar-section-label">系统</p>
-          <div className={`studio-companion ${statusMood(activityStatus)}`} role="status" aria-live="polite">
-            <StudioBot mood={statusMood(activityStatus)} variant={activityStatus === "paused" ? "sleep" : undefined} size={64} />
-            <div><strong>{activityStatus === "running" ? "正在制作" : activityStatus === "completed" ? "作品已完成" : ["failed", "interrupted"].includes(activityStatus || "") ? "有任务需要处理" : activityStatus === "paused" ? "制作已暂停" : ["queued", "waiting"].includes(activityStatus || "") ? "等待制作" : "准备好创作了"}</strong><small>{activityStatus === "running" ? "进度在工作区实时更新" : "H3 创作伙伴"}</small></div>
-          </div>
           <SystemMonitor />
           <div className="sidebar-runtime">
             <span className="runtime-icon"><Circle weight="fill" /></span>
@@ -1038,7 +1028,7 @@ export function App() {
 
       <div className="route-stage" key={path}>
         {/* 路由只负责切换工作区；各业务组件继续独立管理请求、表单和任务状态。 */}
-        {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isRvcTrainingRoute ? <RvcTrainingRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute onStatus={setBatchStatus} />}
+        {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isRvcTrainingRoute ? <RvcTrainingRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
       </div>
     </div>
   );

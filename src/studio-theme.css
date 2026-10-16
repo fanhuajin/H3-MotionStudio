@@ -10,13 +10,6 @@
 .studio-bot { flex: 0 0 auto; overflow: visible; transition: color 420ms ease; }
 .studio-bot * { vector-effect: none; }
 .sidebar-brand > .studio-bot { margin: -4px; }
-.studio-companion { display: flex; align-items: center; gap: 2px; margin: 0 0 12px; padding: 4px; border: 1px solid #354339; border-radius: 12px; background: #202723; --bot-paper: #202723; }
-.studio-companion strong { display: block; color: #c1d6c6; font-size: 12px; font-weight: 550; }
-.studio-companion small { display: block; color: var(--shell-muted); font-size: 10px; }
-.studio-companion.waiting { border-color: #4c4434; background: #29261f; --bot-paper: #29261f; }
-.studio-companion.waiting strong { color: #d6bd86; }
-.studio-companion.error { border-color: #533b3b; background: #2d2323; --bot-paper: #2d2323; }
-.studio-companion.error strong { color: #df9c99; }
 .studio-loading { display: flex; align-items: center; gap: 12px; color: var(--shell-muted); --bot-paper: #141516; }
 .batch-status-pill > .studio-bot { margin: -8px -2px -8px -8px; }
 .route-stage { animation: studio-enter 260ms var(--studio-ease) both; }
@@ -48,7 +41,6 @@
 :is(.image-auto-progress, .image-auto-done, .image-auto-failed) { align-items: center; --bot-paper: #191a1c; }
 .image-auto-progress > .studio-bot, .image-auto-done > .studio-bot, .image-auto-failed > .studio-bot { margin-block: -8px; }
 .batch-switch i::after { transition: left 240ms var(--studio-ease), background-color 200ms; }
-@media (max-width: 900px) { .studio-companion { display: none; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
   .sidebar-nav-item:hover { transform: none; }

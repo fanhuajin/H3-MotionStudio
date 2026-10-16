@@ -48,7 +48,7 @@ function applyTabState(title: string | null, iconHref: string | null) {
 }
 
 /** 由 App 外壳挂载：把最近任务进度同步到浏览器标签页标题与 favicon。 */
-export function TaskTabStatus({ onJob }: { onJob?: (job: JobState | null) => void }) {
+export function TaskTabStatus() {
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -62,7 +62,6 @@ export function TaskTabStatus({ onJob }: { onJob?: (job: JobState | null) => voi
         return; // 服务未就绪时保持现状
       }
       if (cancelled) return;
-      onJob?.(job);
 
       if (!job) {
         applyTabState(DEFAULT_TITLE, DEFAULT_ICON);
@@ -104,7 +103,7 @@ export function TaskTabStatus({ onJob }: { onJob?: (job: JobState | null) => voi
       window.clearInterval(timer);
       applyTabState(DEFAULT_TITLE, DEFAULT_ICON);
     };
-  }, [onJob]);
+  }, []);
 
   return null;
 }
