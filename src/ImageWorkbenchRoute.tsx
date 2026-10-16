@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRememberedTab } from "./useRememberedTab";
 import {
-  Check, ClipboardText, ImageSquare, SpinnerGap, UploadSimple, WarningCircle,
+  Check, ClipboardText, ImageSquare, MagnifyingGlassPlus, Minus, Plus, SpinnerGap, UploadSimple, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { readJson } from "./api";
 
@@ -35,6 +36,87 @@ function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
 let cachedItems: WorkItem[] = [];
 let cachedSelectedId = "";
 
+function AssetPreview({ src, label, busy, onView, onCopy }: {
+  src: string; label: string; busy: boolean; onView: () => void; onCopy: () => void;
+}) {
+  return <>
+    <button type="button" className="image-view-trigger" aria-label={`放大查看${label}`} title="点击放大查看" onClick={onView}>
+      <img src={src} alt={label} draggable={false} />
+    </button>
+    <button type="button" className="image-hover-copy" aria-label={`复制${label}`} disabled={busy} onClick={onCopy}>
+      <ClipboardText />复制图片
+    </button>
+  </>;
+}
+
+function ImageViewer({ src, label, onClose }: { src: string; label: string; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
+  const changeZoom = useCallback((factor: number) => {
+    setZoom((current) => Math.min(8, Math.max(0.25, current * factor)));
+  }, []);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialog?.showModal();
+    return () => {
+      dialog?.close();
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1);
+      changeZoom(Math.exp(-Math.max(-100, Math.min(100, delta)) * 0.003));
+    };
+    viewport.addEventListener("wheel", wheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", wheel);
+  }, [changeZoom]);
+
+  return createPortal(<dialog ref={dialogRef} className="workbench-image-viewer" aria-label={`${label}大图预览`}
+    onCancel={(event) => { event.preventDefault(); onClose(); }}>
+    <header className="workbench-viewer-toolbar">
+      <strong>{label}</strong>
+      <div>
+        <button type="button" aria-label="缩小" disabled={zoom <= 0.25} onClick={() => changeZoom(1 / 1.2)}><Minus /></button>
+        <output aria-label="缩放比例">{Math.round(zoom * 100)}%</output>
+        <button type="button" aria-label="放大" disabled={zoom >= 8} onClick={() => changeZoom(1.2)}><Plus /></button>
+        <button type="button" onClick={() => { setZoom(1); setOffset({ x: 0, y: 0 }); }}>适应窗口</button>
+        <button type="button" aria-label="关闭大图" autoFocus onClick={onClose}><X /></button>
+      </div>
+    </header>
+    <div ref={viewportRef} className={`workbench-viewer-viewport ${dragging ? "dragging" : ""}`}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragRef.current = { x: event.clientX, y: event.clientY, left: offset.x, top: offset.y };
+        setDragging(true);
+      }}
+      onPointerMove={(event) => {
+        const drag = dragRef.current;
+        if (drag) setOffset({ x: drag.left + event.clientX - drag.x, y: drag.top + event.clientY - drag.y });
+      }}
+      onLostPointerCapture={() => { dragRef.current = null; setDragging(false); }}
+      onPointerUp={(event) => {
+        dragRef.current = null; setDragging(false);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      }}>
+      <img src={src} alt={label} draggable={false} style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }} />
+    </div>
+    <p className="workbench-viewer-hint">滚轮放大缩小 · 拖动查看细节 · Esc 关闭</p>
+  </dialog>, document.body);
+}
+
 export function ImageWorkbenchRoute() {
   const [items, setItems] = useState<WorkItem[]>(() => cachedItems);
   const [selectedId, setSelectedId] = useState(() => cachedSelectedId);
@@ -43,6 +125,7 @@ export function ImageWorkbenchRoute() {
   const [filter, setFilter] = useRememberedTab("h3-motionstudio:image-filter-tab:v1", ["pending", "all"] as const, "pending");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [viewer, setViewer] = useState<{ src: string; label: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   /** 每条自动化任务的本地开始时刻（后端不给百分比，就显示「已用 N 秒」避免看着像卡死）。 */
   const autoClock = useRef<Record<string, number>>({});
@@ -283,14 +366,28 @@ export function ImageWorkbenchRoute() {
             <div className="image-stage-tabs">{STAGES.map((entry, index) => { const ready = Boolean(item.assets[entry.id]); return <button key={entry.id} className={stage === entry.id ? "active" : ""} onClick={() => setStage(entry.id)}><i>{ready ? <Check weight="bold" /> : index + 1}</i><span><strong>{entry.label}</strong><small>{entry.spec}</small></span></button>; })}</div>
 
             <div className="image-workbench-content">
-              <div className={`image-workbench-preview ${stage === "douyin" ? "portrait" : ""}`} onClick={() => stageAsset && copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} role={stageAsset ? "button" : undefined} tabIndex={stageAsset ? 0 : undefined} title={stageAsset ? "点击复制图片" : undefined}>
-                {stageAsset ? <><img src={assetUrl(item, stage)} alt={STAGES.find((row) => row.id === stage)?.label} /><em><ClipboardText />点击复制</em></> : <div><ImageSquare /><strong>还没有这张图</strong><small>自己出好后拖到右侧上传</small></div>}
+              <div className={`image-workbench-preview image-copy-surface ${stage === "douyin" ? "portrait" : ""}`}>
+                {stageAsset ? <AssetPreview src={assetUrl(item, stage)} label={STAGES.find((row) => row.id === stage)?.label || "图片"} busy={busy}
+                  onView={() => setViewer({ src: assetUrl(item, stage), label: STAGES.find((row) => row.id === stage)?.label || "图片" })}
+                  onCopy={() => void copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} />
+                  : <div><ImageSquare /><strong>还没有这张图</strong><small>自己出好后拖到右侧上传</small></div>}
                 <span>{stageAsset ? `${stageAsset.width} × ${stageAsset.height}` : "等待生成"}</span>
               </div>
               <div className="image-workbench-actions">
-                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点上方按钮用第三方接口自动出这张图</li><li>也可以点下方参考图复制，到别处自己出图</li><li>出好的图直接粘贴、拖入或选择上传，会自动保存并登记</li></ol></div>
-                {stage === "person" && <div className="image-reference-pair"><figure onClick={() => copyImage("frame", "图一场景造型")} role="button" tabIndex={0} title="点击复制图一">{item.assets.frame ? <img src={assetUrl(item, "frame")} alt="图一抽帧" /> : <div>缺少抽帧</div>}<figcaption><ClipboardText />图一 · 点击复制</figcaption></figure><figure onClick={() => copyImage("identity", "图二固定五官")} role="button" tabIndex={0} title="点击复制图二">{item.assets.identity ? <img src={assetUrl(item, "identity")} alt="图二固定五官" /> : <div>缺少参考</div>}<figcaption><ClipboardText />图二 · 点击复制</figcaption></figure></div>}
-                {stage !== "person" && <div className="image-cover-reference"><strong>生成这张封面使用的人物图</strong><figure onClick={() => copyImage("person", "人物图")} role="button" tabIndex={0} title="点击复制人物图">{item.assets.person ? <img src={assetUrl(item, "person")} alt="人物图" /> : <div><ImageSquare />缺少人物图</div>}<figcaption><ClipboardText />人物图 · 点击复制</figcaption></figure></div>}
+                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点上方按钮用第三方接口自动出这张图</li><li>图片点击可放大；悬浮后点复制按钮，到别处自己出图</li><li>出好的图直接粘贴、拖入或选择上传，会自动保存并登记</li></ol></div>
+                {stage === "person" && <div className="image-reference-pair">{([
+                  { key: "frame", label: "图一抽帧", caption: "图一", missing: "缺少抽帧" },
+                  { key: "identity", label: "图二固定五官", caption: "图二", missing: "缺少参考" },
+                ] as const).map(({ key, label, caption, missing }) => <figure key={key} className="image-copy-surface">
+                  {item.assets[key] ? <AssetPreview src={assetUrl(item, key)} label={label} busy={busy}
+                    onView={() => setViewer({ src: assetUrl(item, key), label })} onCopy={() => void copyImage(key, label)} /> : <div>{missing}</div>}
+                  <figcaption><MagnifyingGlassPlus />{caption} · 点击查看</figcaption>
+                </figure>)}</div>}
+                {stage !== "person" && <div className="image-cover-reference"><strong>生成这张封面使用的人物图</strong><figure className="image-copy-surface">
+                  {item.assets.person ? <AssetPreview src={assetUrl(item, "person")} label="人物图" busy={busy}
+                    onView={() => setViewer({ src: assetUrl(item, "person"), label: "人物图" })} onCopy={() => void copyImage("person", "人物图")} />
+                    : <div><ImageSquare />缺少人物图</div>}
+                  <figcaption><MagnifyingGlassPlus />人物图 · 点击查看</figcaption></figure></div>}
                 <div className="image-action-grid">
                   <button
                     className="primary"
@@ -309,6 +406,7 @@ export function ImageWorkbenchRoute() {
           </>}
         </div>
       </section>
+      {viewer && <ImageViewer key={viewer.src} {...viewer} onClose={() => setViewer(null)} />}
     </main>
   );
 }

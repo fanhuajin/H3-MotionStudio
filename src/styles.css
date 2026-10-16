@@ -1829,10 +1829,6 @@ body {
 .image-stage-tabs small { margin-top: 3px; color: #7b7c7d; font-size: 9px; }
 .image-workbench-content { display: grid; grid-template-columns: minmax(360px,.95fr) minmax(380px,1.05fr); gap: 14px; }
 .image-workbench-preview { position: relative; min-height: 520px; overflow: hidden; display: grid; place-items: center; border: 1px solid #363738; border-radius: 10px; background: #0e0f10; }
-.image-workbench-preview[role="button"] { cursor: copy; }
-.image-workbench-preview > em { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 5px; padding: 7px 10px; border: 1px solid rgba(106, 179, 149,.45); border-radius: 7px; color: #eaf4f0; background: rgba(14, 15, 16,.88); font-size: 10px; font-style: normal; opacity: 0; transition: opacity .16s ease; }
-.image-workbench-preview[role="button"]:hover > em { opacity: 1; }
-.image-workbench-preview > em svg { width: 14px; height: 14px; }
 .image-workbench-preview img { width: 100%; height: 100%; max-height: 600px; object-fit: contain; }
 .image-workbench-preview > div { display: grid; place-items: center; gap: 8px; color: #767778; text-align: center; }
 .image-workbench-preview > div svg { width: 38px; height: 38px; }
@@ -1854,13 +1850,13 @@ body {
 .image-workflow-note > strong { color: #d6eae2; font-size: 11px; }
 .image-workflow-note ol { margin: 8px 0 0; padding-left: 18px; color: #8f9da8; font-size: 10px; line-height: 1.9; }
 .image-reference-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.image-reference-pair figure { min-width: 0; margin: 0; overflow: hidden; border: 1px solid #363738; border-radius: 8px; background: #101112; cursor: copy; }
+.image-reference-pair figure { min-width: 0; margin: 0; overflow: hidden; border: 1px solid #363738; border-radius: 8px; background: #101112; }
 .image-reference-pair figure:hover { border-color: rgba(106, 179, 149,.55); }
 .image-reference-pair img,.image-reference-pair figure > div { width: 100%; height: 130px; display: grid; place-items: center; object-fit: contain; color: #7b7c7d; font-size: 10px; }
 .image-reference-pair figcaption { display: flex; align-items: center; gap: 5px; padding: 7px 9px; border-top: 1px solid #363738; color: #8c8d8e; font-size: 9px; }
 .image-reference-pair figcaption svg { width: 12px; height: 12px; }
 .image-cover-reference > strong { display: block; margin-bottom: 7px; color: #aeafb0; font-size: 10px; }
-.image-cover-reference figure { margin: 0; overflow: hidden; border: 1px solid rgba(106, 179, 149,.3); border-radius: 8px; background: #101112; cursor: copy; }
+.image-cover-reference figure { margin: 0; overflow: hidden; border: 1px solid rgba(106, 179, 149,.3); border-radius: 8px; background: #101112; }
 .image-cover-reference figure:hover { border-color: rgba(106, 179, 149,.68); }
 .image-cover-reference img,.image-cover-reference figure > div { width: 100%; height: 190px; display: grid; place-items: center; object-fit: contain; color: #7b7c7d; font-size: 10px; }
 .image-cover-reference figure > div svg { width: 28px; height: 28px; margin-bottom: 6px; }
@@ -1939,3 +1935,28 @@ body {
 .training-switch.on span { background: #e4fff8; }
 .training-switch:disabled { opacity: .6; cursor: wait; }
 @media (max-width: 700px) { .training-page { padding: 25px 18px; } .training-header { flex-wrap: wrap; } .training-header button { margin-left: 0; } .training-metrics { grid-template-columns: 1fr; } }
+
+/* 图片只负责打开大图；复制使用独立的悬浮按钮。 */
+.image-copy-surface { position: relative; }
+.image-view-trigger { display: grid; place-items: center; width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; overflow: hidden; }
+.image-workbench-preview > .image-view-trigger { height: 100%; min-height: inherit; }
+.image-copy-surface > .image-hover-copy { position: absolute; z-index: 2; top: 10px; right: 10px; display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 7px 10px; border: 1px solid rgba(106,179,149,.6); border-radius: 7px; background: rgba(14,15,16,.94); color: #eaf4f0; font-size: 11px; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .15s; }
+.image-copy-surface > .image-hover-copy svg { width: 15px; height: 15px; }
+.image-copy-surface:hover > .image-hover-copy, .image-copy-surface:focus-within > .image-hover-copy { opacity: 1; pointer-events: auto; }
+.image-hover-copy:disabled { cursor: wait; }
+.workbench-image-viewer { position: fixed; inset: 0; width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 0; border: 0; background: #101112; color: #eceeed; overflow: hidden; }
+.workbench-image-viewer[open] { display: flex; flex-direction: column; }
+.workbench-image-viewer::backdrop { background: rgba(0,0,0,.9); }
+.workbench-viewer-toolbar { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #363738; background: #191b1a; }
+.workbench-viewer-toolbar strong { min-width: 0; font-size: 13px; }
+.workbench-viewer-toolbar > div { display: flex; align-items: center; gap: 8px; }
+.workbench-viewer-toolbar button { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; min-height: 34px; padding: 6px 9px; border: 1px solid #454947; border-radius: 6px; background: #242826; color: #eaf4f0; font-size: 12px; cursor: pointer; }
+.workbench-viewer-toolbar button:disabled { opacity: .4; cursor: default; }
+.workbench-viewer-toolbar button svg { width: 18px; height: 18px; }
+.workbench-viewer-toolbar output { min-width: 48px; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.workbench-viewer-viewport { display: grid; flex: 1; min-height: 0; place-items: center; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
+.workbench-viewer-viewport.dragging { cursor: grabbing; }
+.workbench-viewer-viewport img { display: block; max-width: calc(100vw - 40px); max-height: calc(100dvh - 124px); object-fit: contain; transform-origin: center; pointer-events: none; }
+.workbench-viewer-hint { flex-shrink: 0; margin: 0; padding: 10px 16px 14px; color: #a6b2ab; font-size: 12px; text-align: center; }
+@media (hover: none) { .image-copy-surface > .image-hover-copy { opacity: 1; pointer-events: auto; } }
+@media (max-width: 600px) { .workbench-viewer-toolbar { padding: 10px; gap: 6px; } .workbench-viewer-toolbar > div { gap: 4px; } .workbench-viewer-toolbar strong { font-size: 11px; } }
