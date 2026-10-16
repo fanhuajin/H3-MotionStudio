@@ -2644,7 +2644,10 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertIn("【清晰度】", prompt)
             self.assertIn("若图一的手有拖影", prompt)
             # 仍然必须是精简模板（长提示词会把硬要求淹掉，别借这次改动把它拼回去）
-            self.assertLess(len(prompt), 900)
+            self.assertLess(len(prompt), 1800)
+            self.assertIn("【手势】双手默认简单、放松、自然", prompt)
+            self.assertIn("不交叉手指或手腕", prompt)
+            self.assertNotIn("身体朝向及主要手臂动作", prompt)
             # 清晰度块在身份块之前（脸仍然排在最后）
             self.assertLess(
                 prompt.index("【清晰度】"),
