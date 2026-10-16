@@ -1724,6 +1724,7 @@ async def _prepare_review_work(
         validate_dance_duration(duration)
     if not feedback and mode == "both":
         if await asyncio.to_thread(_adopt_previous_work, batch_id, item_id):
+            _auto_confirm_prepared_item(batch_id, item_id)
             return
     work = DATA_DIR / "batches" / batch_id / item_id
     work.mkdir(parents=True, exist_ok=True)
@@ -2195,11 +2196,22 @@ async def _prepare_review_work(
     # **自动放行出片**：默认也已关闭（图片自动化的一部分）——上传人物图后停在
     # 「等待你的确认」，点「确认并出片」才走视频链路。想恢复自动放行：`H3_AUTO_CONFIRM=1`。
     # （人物图失败时备料会直接抛错标黄这条，走不到这里 —— 所以这里不需要再判别废图。）
-    if _cgi_auto_confirm():
-        fresh = _item(batch_id, item_id)
-        if str((fresh.get("ai") or {}).get("reference_image_path") or "").strip():
-            confirm_batch_items(batch_id, [item_id])
-            batch_store.add_item_log(batch_id, item_id, "已自动放行出片（无需人工确认）。")
+    _auto_confirm_prepared_item(batch_id, item_id)
+
+
+def _auto_confirm_prepared_item(batch_id: str, item_id: str) -> None:
+    """新备料和复用素材共用自动确认；封面齐备仍由出片前检查保证。"""
+    if not _cgi_auto_confirm():
+        return
+    fresh = _item(batch_id, item_id)
+    if fresh.get("status") != "awaiting_review":
+        return
+    reference = str((fresh.get("ai") or {}).get("reference_image_path") or "").strip()
+    if not reference or not Path(reference).is_file():
+        return
+    result = confirm_batch_items(batch_id, [item_id])
+    if item_id in result["confirmed"]:
+        batch_store.add_item_log(batch_id, item_id, "已自动放行出片（无需人工确认）。")
 
 
 def _cgi_auto_cover() -> bool:
