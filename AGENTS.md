@@ -1,5 +1,7 @@
 # Prototype Instructions
 
+- **【2026-10-18 Qwen2.1修手候选与其他作品试修】** 已实际核对本机独立 `D:\Comfyui\ComfyUI-Qwen21` v0.37.0、`qwen-image-2.1-UC-Q4_K_M.gguf`（内部架构qwen_image21）、Qwen3-VL 8B INT8编码器及2.1专用VAE，均已本地跑通；这是第三方UC量化版，不是旧2511或Turbo。第040条保留原交叉手势的首版预览，用户表示效果可以接受，但觉得手形不够女性化；仅为候选，未授权覆盖原人物图或封面。后续轻调纤细柔和的试验增加褶皱与斑驳感，不采用。用户现要求停止继续调整第040条，转为尝试修复其他作品的人物图并查看效果；仅另存局部修手预览，不覆盖原作品、不处理封面、不调用收费接口。首版及失败微调位于 `data/qwen21_hand_trial_20261018/`。
+
 - **【2026-10-18 修手暂停，明天验证 Qwen 局部编辑】** 用户要求今天停止试修，明天尝试最后确定的方案：优先复用本机 `qwen-image-edit-2511-Q4_K_M.gguf` 和 `data/local_cover_preview/qwen_image_edit_2511_gguf.json`，对 dance/040 的手部裁剪做局部编辑，仅贴回必要区域。最终标准是手指清晰、连接及遮挡正确、肤色纹理贴合人物自然；尽量保持原姿势，不再擅自大改成分开的拳头，也不限定必须沿用某张试修图。现有 AnyPaint、SDXL/Fooocus 与局部校色预览均未获接受；HandRefiner 的 MeshGraphormer 已修复 CPU/CUDA 运行错误并产出深度，但手指拉长变形，不能继续把错误结构用于生成。没有任何合格结果，没有替换原人物图或封面，没有调用收费接口。当前源图位于发布成品 `dance/040_跳舞_love~e~e~e_7697224578850207674/人物图.png`，试修与结构检查在 `data/*hand*20261018*`；手部裁剪为 `(480,1536,1248,2304)`。Qwen 修手尚未运行，不得声称已验证或修好；明天先检查现有工作流、做一张另存预览，合格后再讨论应用，不让用户选择技术步骤。已下载 Juggernaut、Fooocus、手部检测及 Graphormer 权重，勿重复下载。备选研究来源：QwenLM/Qwen-Image、Wangbenzhi/RealisHuman（仍依赖 HaMeR）、Acly/krita-ai-diffusion；RHanDS 论文所链仓库当前 404，不能当作可部署方案。
 
 
