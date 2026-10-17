@@ -1925,3 +1925,15 @@ body {
 .workbench-viewer-hint { flex-shrink: 0; margin: 0; padding: 10px 16px 14px; color: #a6b2ab; font-size: 12px; text-align: center; }
 @media (hover: none) { .image-copy-surface > .image-hover-copy { opacity: 1; pointer-events: auto; } }
 @media (max-width: 600px) { .workbench-viewer-toolbar { padding: 10px; gap: 6px; } .workbench-viewer-toolbar > div { gap: 4px; } .workbench-viewer-toolbar strong { font-size: 11px; } }
+
+/* Reserve red for deletion; amber indicates interrupted work. */
+.batch-modal.restart { border-color: rgba(106, 179, 149, .4); }
+.batch-modal.warning { border-color: rgba(218, 176, 103, .45); }
+.batch-modal.warning .batch-modal-icon { border-color: rgba(218, 176, 103, .5); color: #e5bf83; background: rgba(218, 176, 103, .1); }
+:is(.batch-page, .batch-modal) button.batch-warning { border-color: rgba(218, 176, 103, .45); color: #e5bf83; background: #302b22; }
+:is(.batch-page, .batch-modal) button.batch-warning:hover:not(:disabled) { border-color: #e5bf83; color: #f7dfb7; background: #3c3325; }
+
+.batch-modal-backdrop { box-sizing: border-box; height: 100dvh; }
+.batch-modal { box-sizing: border-box; max-height: calc(100dvh - 44px); grid-template-rows: minmax(0, 1fr) auto; }
+.batch-modal-body { min-height: 0; overflow-y: auto; }
+.batch-modal-actions { flex-wrap: wrap; }

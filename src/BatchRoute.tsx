@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readJson } from "./api";
 import { StudioBot, statusMood } from "./StudioBot";
@@ -462,7 +463,7 @@ function prepPhase(item: BatchItem): string {
 /**
  * 页内确认框的内容。**不用 `window.confirm`**：系统原生的灰白弹框跟这套深色壳子完全不是
  * 一个东西，而且没法把「影响哪几条」摊开说清楚（2026-09-15 用户：「弹出框的效果样式改下
- * 现在的不好看」）。危险操作（取消出片 / 删除 / 覆盖成片）用红色确认键。
+ * 现在的不好看」）。重新开始用灰绿，跳过/停止用琥珀色提醒，仅删除用红色。
  */
 interface ConfirmAsk {
   title: string;
@@ -471,7 +472,7 @@ interface ConfirmAsk {
   items?: string[];
   confirmLabel: string;
   cancelLabel?: string;
-  danger?: boolean;
+  tone: "restart" | "warning" | "danger";
 }
 
 // Memory-only: navigation can reuse the last view, while a full reload still
@@ -1197,17 +1198,17 @@ export function BatchRoute() {
           >
             <Check weight="bold" />确认并出片
           </button>
-          <button onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>
+          <button className="batch-warning" onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>
         </>
       );
     }
     if (item.status === "pending") {
-      return <button onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>;
+      return <button className="batch-warning" onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>;
     }
     if (["confirmed", "running", "revising"].includes(item.status)) {
       return (
         <button
-          className="danger"
+          className="batch-warning"
           onClick={() =>
             void (async () => {
               // 只有真的在出片时才需要确认（会作废一半进度）；只是放行了还没轮到出片的，
@@ -1219,7 +1220,7 @@ export function BatchRoute() {
                   detail: "已经生成到一半的进度会作废。取消后可以点「重新开始」再出片。",
                   items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
                   confirmLabel: "停止出片",
-                  danger: true,
+                  tone: "warning",
                 }))
               ) {
                 return;
@@ -1249,7 +1250,7 @@ export function BatchRoute() {
                   detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
                   items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
                   confirmLabel: "再出一版",
-                  danger: true,
+                  tone: "restart",
                 }))
               ) {
                 return;
@@ -1301,7 +1302,7 @@ export function BatchRoute() {
                         detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
                         items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
                         confirmLabel: "再出一版",
-                        danger: true,
+                        tone: "restart",
                       }))
                     ) {
                       return;
@@ -1329,7 +1330,7 @@ export function BatchRoute() {
                         detail: "这一条正在出片，会先安全取消当前出片，已生成到一半的进度作废。旧成片与发布目录不会被删。",
                         items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
                         confirmLabel: "回到确认",
-                        danger: true,
+                        tone: "warning",
                       }))
                     ) {
                       return;
@@ -1355,7 +1356,7 @@ export function BatchRoute() {
                     detail: "正在跑的步骤会被安全取消，已经生成的文件会保留。这一条不再占队列位置。",
                     items: [`${item.kind === "singing" ? "歌曲" : "跳舞"} · ${itemTitle(item)}`],
                     confirmLabel: "删除这一条",
-                    danger: true,
+                    tone: "danger",
                   });
                   if (ok) await itemCall("", "DELETE");
                 })()
@@ -1971,7 +1972,7 @@ export function BatchRoute() {
                         + "已有图片直接沿用，缺失图片会重新请求补齐，可能产生新的图片费用；备料齐全后再出片。正在出片的不会被重开。",
                       items: selectedItems.map((item) => `第 ${item.index} 条 · ${batchStatusLabel(item.status, item.stage)} · ${itemTitle(item)}`),
                       confirmLabel: "重新开始这 " + selectedIds.size + " 条",
-                      danger: true,
+                      tone: "restart",
                     })
                   }
                   title={
@@ -1983,6 +1984,7 @@ export function BatchRoute() {
                   <ArrowClockwise />重新开始
                 </button>
                 <button
+                  className="batch-warning"
                   disabled={!anySkippable || Boolean(busyAction)}
                   onClick={() =>
                     void batchOp(
@@ -1994,7 +1996,7 @@ export function BatchRoute() {
                           detail: "正在出片的会先安全取消（已生成到一半的进度作废），成片已生成的会保留。",
                           items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`),
                           confirmLabel: "跳过这 " + selectedIds.size + " 条",
-                          danger: true,
+                          tone: "warning",
                         }
                         : undefined,
                     )
@@ -2011,7 +2013,7 @@ export function BatchRoute() {
                       detail: "正在跑的步骤会被安全取消，已经生成的文件会保留。",
                       items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`),
                       confirmLabel: "删除这 " + selectedIds.size + " 条",
-                      danger: true,
+                      tone: "danger",
                     })
                   }
                 >
@@ -2151,7 +2153,7 @@ export function BatchRoute() {
                                       detail: "仅从列表移除，最终成片及其他已生成文件保留。",
                                       items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
                                       confirmLabel: "删除记录",
-                                      danger: true,
+                                      tone: "danger",
                                     }))) return;
                                     await itemCallFor(item, "", "DELETE");
                                   })()}
@@ -2228,7 +2230,7 @@ export function BatchRoute() {
           </div>
         </dialog>
       )}
-      {confirmAsk && (
+      {confirmAsk && createPortal(
         <div
           className="batch-modal-backdrop"
           role="presentation"
@@ -2237,13 +2239,13 @@ export function BatchRoute() {
           }}
         >
           <div
-            className={`batch-modal ${confirmAsk.danger ? "danger" : ""}`}
+            className={`batch-modal ${confirmAsk.tone}`}
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="batch-modal-title"
             aria-describedby={confirmAsk.detail ? "batch-modal-detail" : undefined}
           >
-            <span className="batch-modal-icon"><WarningCircle weight="fill" /></span>
+            <span className="batch-modal-icon" aria-hidden="true">{confirmAsk.tone === "restart" ? <ArrowClockwise weight="bold" /> : confirmAsk.tone === "danger" ? <Trash weight="fill" /> : <WarningCircle weight="fill" />}</span>
             <div className="batch-modal-body">
               <h2 id="batch-modal-title">{confirmAsk.title}</h2>
               {confirmAsk.detail && <p id="batch-modal-detail">{confirmAsk.detail}</p>}
@@ -2255,20 +2257,20 @@ export function BatchRoute() {
               )}
             </div>
             <div className="batch-modal-actions">
-              {/* 破坏性操作默认把焦点放在「取消」上：回车不会误删/误停 */}
-              <button className="ghost" autoFocus={confirmAsk.danger} onClick={() => answerConfirm(false)}>
+              {/* 确认前默认聚焦「取消」，保留原有防误操作行为 */}
+              <button className="ghost" autoFocus onClick={() => answerConfirm(false)}>
                 {confirmAsk.cancelLabel || "取消"}
               </button>
               <button
-                className={confirmAsk.danger ? "danger" : "batch-primary"}
-                autoFocus={!confirmAsk.danger}
+                className={confirmAsk.tone === "restart" ? "batch-primary" : confirmAsk.tone === "warning" ? "batch-warning" : "danger"}
                 onClick={() => answerConfirm(true)}
               >
                 {confirmAsk.confirmLabel}
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
       </div>
     </main>
