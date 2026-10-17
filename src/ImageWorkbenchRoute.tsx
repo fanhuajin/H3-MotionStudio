@@ -29,8 +29,17 @@ const STAGES: Array<{ id: Stage; label: string; spec: string }> = [
   { id: "douyin", label: "抖音封面", spec: "3:4 · 1086×1448" },
 ];
 
+const identitySources = new Map<string, string>();
+
 function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
-  return `/api/image-workbench/${item.id}/asset/${key}?v=${item.assets[key]?.version || item.assets[key]?.bytes || 0}`;
+  const version = String(item.assets[key]?.version || item.assets[key]?.bytes || 0);
+  const url = `/api/image-workbench/${item.id}/asset/${key}?v=${version}`;
+  if (key !== "identity") return url;
+  if (!identitySources.has(version)) {
+    identitySources.clear();
+    identitySources.set(version, url);
+  }
+  return identitySources.get(version)!;
 }
 
 // 切换主页面时先恢复上次列表，再后台校对文件版本，避免等待目录扫描。
@@ -42,7 +51,7 @@ function AssetPreview({ src, label, busy, onView, onCopy }: {
 }) {
   return <>
     <button type="button" className="image-view-trigger" aria-label={`放大查看${label}`} title="点击放大查看" onClick={onView}>
-      <img src={src} alt={label} draggable={false} />
+      <img src={`${src}&preview=true`} alt={label} draggable={false} decoding="async" />
     </button>
     <button type="button" className="image-hover-copy" aria-label={`复制${label}`} disabled={busy} onClick={onCopy}>
       <ClipboardText />复制图片
@@ -150,17 +159,26 @@ export function ImageWorkbenchRoute() {
   const previewVersions = item ? STAGES.map(({ id }) => item.assets[id]?.version || item.assets[id]?.bytes || "").join(":") : "";
   useEffect(() => {
     if (!item) return;
-    // 当前图先加载，随后预取同一作品的另外两张；不预取整批4K图片。
-    const timer = window.setTimeout(() => {
-      for (const { id } of STAGES) {
-        if (id === stage || !item.assets[id]) continue;
-        const image = new Image();
-        image.decoding = "async";
-        image.src = assetUrl(item, id);
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const index = items.findIndex((row) => row.id === selectedId);
+      const candidates = [items[index + 1], items[index - 1]].filter(Boolean);
+      const urls = candidates.filter((row) => row.assets[stage]).map((row) => assetUrl(row, stage));
+      urls.push(...STAGES.filter(({ id }) => id !== stage && item.assets[id]).map(({ id }) => assetUrl(item, id)));
+      // Sequential, bounded lightweight prefetch; never fetch whole batches or originals.
+      for (const url of urls) {
+        if (cancelled) break;
+        await new Promise<void>((resolve) => {
+          const image = new Image();
+          image.decoding = "async";
+          image.fetchPriority = "low";
+          image.onload = image.onerror = () => resolve();
+          image.src = `${url}&preview=true`;
+        });
       }
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [selectedId, previewVersions, stage]);
+    }, 700);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [selectedId, previewVersions, stage, items]);
   const chosenKind = kind || item?.kind || null;
   const complete = (row: WorkItem) => Boolean(row.assets.person && row.assets.bilibili && row.assets.douyin);
   const visible = useMemo(() => filter === "pending" ? items.filter((row) => !complete(row)) : items, [filter, items]);
@@ -367,7 +385,7 @@ export function ImageWorkbenchRoute() {
             <div className="image-stage-tabs">{STAGES.map((entry, index) => { const ready = Boolean(item.assets[entry.id]); return <button key={entry.id} className={stage === entry.id ? "active" : ""} onClick={() => setStage(entry.id)}><i>{ready ? <Check weight="bold" /> : index + 1}</i><span><strong>{entry.label}</strong><small>{entry.spec}</small></span></button>; })}</div>
 
             <div className="image-workbench-content">
-              <div key={`${item.id}-${stage}`} className={`image-workbench-preview image-copy-surface ${stage === "douyin" ? "portrait" : ""}`}>
+              <div className={`image-workbench-preview image-copy-surface ${stage === "douyin" ? "portrait" : ""}`}>
                 {stageAsset ? <AssetPreview src={assetUrl(item, stage)} label={STAGES.find((row) => row.id === stage)?.label || "图片"} busy={busy}
                   onView={() => setViewer({ src: assetUrl(item, stage), label: STAGES.find((row) => row.id === stage)?.label || "图片" })}
                   onCopy={() => void copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} />

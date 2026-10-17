@@ -3191,13 +3191,13 @@ async def get_upload_preview_media(upload_id: str):
 
 
 @app.get("/api/image-workbench/items")
-async def image_workbench_items():
+def image_workbench_items():
     image_workbench.expose_failed_items()
     return {"items": image_workbench.list_items()}
 
 
 @app.get("/api/image-workbench/{folder_id}/asset/{key}")
-async def image_workbench_asset(folder_id: str, key: str, v: str = ""):
+def image_workbench_asset(folder_id: str, key: str, v: str = "", preview: bool = False):
     try:
         path = image_workbench.asset_path(image_workbench.resolve_folder(folder_id), key)
     except (ValueError, FileNotFoundError) as exc:
@@ -3206,6 +3206,8 @@ async def image_workbench_asset(folder_id: str, key: str, v: str = ""):
     version = f"{stat.st_mtime_ns}-{stat.st_size}"
     # 版本匹配时切回同一图片直接使用浏览器缓存；替换图片后版本变化立即更新。
     cache = "private, max-age=31536000, immutable" if v == version else "no-cache"
+    if preview:
+        path = image_workbench.preview_path(path)
     return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png",
                         headers={"Cache-Control": cache})
 

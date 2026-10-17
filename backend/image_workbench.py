@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -21,7 +22,7 @@ from . import batch_ai, batch_image
 from . import batch_worker as batch_worker
 from .batch_store import batch_store
 from .batch_worker import IDENTITY_PATH
-from .settings import BATCH_OUTPUT_ROOT, PUBLISH_KIND_DIRS
+from .settings import BATCH_OUTPUT_ROOT, PUBLISH_KIND_DIRS, DATA_DIR
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -231,6 +232,28 @@ def asset_path(folder: Path, key: str) -> Path:
     if key == "frame":
         return batch_image.prepare_defocused_reference(path, folder / ".h3-reference-guard")
     return path
+
+
+def preview_path(path: Path) -> Path:
+    """Small, versioned display copy. Originals remain the source for viewing/copying."""
+    stat = path.stat()
+    token = hashlib.sha256(f"{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}".encode()).hexdigest()
+    target = DATA_DIR / "image-workbench-previews" / f"{token}.webp"
+    if target.is_file():
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(path) as opened:
+        image = ImageOps.exif_transpose(opened)
+        image.thumbnail((960, 960), Image.Resampling.LANCZOS)
+        image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+        with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".webp", delete=False) as temporary:
+            staging = Path(temporary.name)
+        try:
+            image.save(staging, "WEBP", quality=82, method=4)
+            os.replace(staging, target)
+        finally:
+            staging.unlink(missing_ok=True)
+    return target
 
 
 def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
