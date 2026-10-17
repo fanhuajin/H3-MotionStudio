@@ -3208,8 +3208,8 @@ def image_workbench_asset(folder_id: str, key: str, v: str = "", preview: bool =
     cache = "private, max-age=31536000, immutable" if v == version else "no-cache"
     if preview:
         path = image_workbench.preview_path(path)
-    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png",
-                        headers={"Cache-Control": cache})
+    media_type = "image/webp" if preview else (mimetypes.guess_type(path.name)[0] or "image/png")
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": cache})
 
 
 @app.get("/api/image-workbench/{folder_id}/prompt/{stage}")
