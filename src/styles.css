@@ -1425,6 +1425,31 @@ body {
 .batch-prepare-head span { color: #f3f4f5; font-size: 14px; font-weight: 700; }
 .batch-prepare-head small { color: var(--shell-muted); font-size: 11px; }
 .batch-input-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.batch-add-body[hidden] { display: none; }
+.batch-input-card.collapsed { padding: 12px 16px; }
+.batch-input-card.collapsed .batch-prepare-head { margin: 0; padding: 0; border: 0; }
+.batch-prepare-head .batch-add-toggle { margin-left: auto; }
+.batch-add-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 5px 11px; border: 1px solid var(--shell-line-strong); border-radius: 7px; background: rgba(106, 179, 149, .07); color: #add5c4; font-size: 12px; cursor: pointer; }
+.batch-add-toggle:hover { border-color: var(--shell-accent); background: rgba(106, 179, 149, .13); }
+.batch-add-toggle:focus-visible, .batch-render-context button:focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 3px; }
+.batch-settings { margin-bottom: 16px; }
+.batch-settings .batch-shutdown-row { justify-content: space-between; }
+.batch-settings .batch-switch { flex-shrink: 0; }
+.batch-settings.compact { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.batch-settings.compact .batch-shutdown-row { margin-top: 0; padding: 9px 12px; }
+.batch-settings.compact small { font-size: 10px; }
+.batch-workspace { scroll-margin-top: 16px; }
+.batch-workspace:focus { outline: none; }
+.batch-render-context { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--shell-line); background: rgba(106, 179, 149, .06); color: #c1d9ce; font-size: 12px; line-height: 1.6; }
+.batch-render-context span { display: flex; align-items: center; gap: 7px; }
+.batch-render-context svg { flex-shrink: 0; }
+.batch-render-context button { flex-shrink: 0; min-height: 30px; border: 0; background: transparent; color: #add5c4; font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.batch-empty .batch-add-toggle { margin: 0 4px 10px; }
+@media (max-width: 720px) {
+  .batch-settings.compact { grid-template-columns: minmax(0, 1fr); }
+  .batch-prepare-head small { flex-basis: 100%; order: 1; }
+  .batch-render-context { align-items: flex-start; flex-direction: column; gap: 4px; }
+}
 /* 画布比例：分组默认值（歌曲 4:3 / 跳舞 9:16）+ 每条视频可单独改 */
 .batch-ratio-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .batch-ratio-pick em { margin-right: 2px; color: #a5a6a7; font-size: 10px; font-style: normal; letter-spacing: .04em; }

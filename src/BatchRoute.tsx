@@ -429,7 +429,7 @@ function readActiveTab(): TabId {
   } catch {
     // 浏览器禁用存储时仍可正常切换分区。
   }
-  return "prep";
+  return "render";
 }
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "prep", label: "备料区" },
@@ -520,6 +520,12 @@ export function BatchRoute() {
   const [autoRenderOn, setAutoRenderOn] = useState(initial.autoRenderOn);
   const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
   const [batch, setBatch] = useState<BatchState | null>(() => lastBatchView?.batch ?? null);
+  // 每次回到已有队列先看列表；草稿独立保存，收起不会清空。
+  const [inputExpanded, setInputExpanded] = useState(false);
+  const inputShown = !batch || inputExpanded;
+  const [listFocusVersion, setListFocusVersion] = useState(0);
+  const listSection = useRef<HTMLElement>(null);
+  const inputToggle = useRef<HTMLButtonElement>(null);
   const [selectedId, setSelectedId] = useState<string | null>(() => lastBatchView?.selectedId ?? null);
   const [hasSnapshot, setHasSnapshot] = useState(lastBatchView !== undefined);
   // 刷新或重新进入页面时恢复上次选择的分区。
@@ -744,6 +750,18 @@ export function BatchRoute() {
     }
   };
 
+  useEffect(() => {
+    if (!listFocusVersion) return;
+    const frame = requestAnimationFrame(() => {
+      const list = listSection.current;
+      if (!list) return;
+      list.focus({ preventScroll: true });
+      // 只在成功提交后定位一次；轮询和页内切换不抢走用户的位置。
+      list.scrollIntoView({ block: "start", behavior: "instant" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [listFocusVersion]);
+
   // 「准备任务」：把填好的链接交给后端，并立即开始准备
   // （下载抖音视频 → 生成人物图与发布文案 → 停在等确认）。
   // 暂停中的批次尊重暂停，只入队不偷跑。
@@ -779,8 +797,10 @@ export function BatchRoute() {
       // （2026-09-15 用户：「准备任务点击之后清空现有的歌曲视频链接和跳舞视频链接」）。
       // 只清**这次真的提交了**的那一类：开关关着的那一类不参与入队，原样留着不动。
       // 失败时不清（catch 里不碰输入框），免得白粘一遍。
-      if (singingOn && singingUrls.length) setSinging("");
-      if (danceOn && danceUrls.length) setDance("");
+      if (singingOn && singingUrls.length) setSinging((current) => current === singing ? "" : current);
+      if (danceOn && danceUrls.length) setDance((current) => current === dance ? "" : current);
+      setInputExpanded(false);
+      setListFocusVersion((version) => version + 1);
       // 新建批次也不自动展开任何一条：列表默认全收起，由用户自己点开要看的那条
       // （2026-09-15 用户：「启动页面的时候 列表默认都是收起来的 由我自己点击要查看哪个」）。
       // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
@@ -1806,11 +1826,19 @@ export function BatchRoute() {
         )}
       </header>
 
-      <section className="batch-input-card">
+      <section className={`batch-input-card${inputShown ? "" : " collapsed"}`}>
         <div className="batch-prepare-head">
-          <span>准备任务</span>
-          <small>下载抖音视频 → 抽帧分析 → 人物图与发布文案（封面在成片后从视频抽帧生成）；已有文件直接沿用</small>
+          <span>{batch ? "添加任务" : "准备任务"}</span>
+          <small>{batch
+            ? (singing.trim() || dance.trim() ? `已保留 ${splitUrls(singing).length + splitUrls(dance).length} 条未提交链接` : "随时添加新链接，已有任务继续保留")
+            : "下载抖音视频 → 抽帧分析 → 人物图与发布文案；已有文件直接沿用"}</small>
+          {batch && <button type="button" className="batch-add-toggle" ref={inputToggle}
+            aria-expanded={inputShown} aria-controls="batch-add-inputs"
+            onClick={() => { setInputExpanded(!inputShown); inputToggle.current?.focus({ preventScroll: true }); }}>
+            {inputShown ? <CaretUp /> : <CaretDown />}{inputShown ? "收起录入" : "添加任务"}
+          </button>}
         </div>
+        <div id="batch-add-inputs" className="batch-add-body" hidden={!inputShown}>
         <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
           <label className={danceOn ? "" : "off"}>
             <span className="batch-input-head">
@@ -1857,6 +1885,24 @@ export function BatchRoute() {
             )}
           </label>
         </div>
+        <div className="batch-input-actions">
+          <p><ListChecks /> 重复链接会自动跳过；出片由下方开关控制，默认自动开始。</p>
+          <div className="batch-input-buttons">
+            <button
+              className="batch-primary"
+              disabled={!canStart || !loaded || busyAction === "start"}
+              onClick={prepare}
+              title="加入队列并立即开始准备：下载抖音视频 → 生成人物图与发布文案 → 等你确认"
+            >
+              {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
+              准备任务（{splitUrls(singing).length + splitUrls(dance).length} 条）
+            </button>
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <section className={`batch-settings${batch ? " compact" : ""}`} aria-label="批次运行设置">
         {!batch && <div className="batch-shutdown-row">
           <span>
             <b>备料完成后自动出片</b>
@@ -1900,20 +1946,6 @@ export function BatchRoute() {
             <i />{shutdownSwitchOn ? "已开启" : "已关闭"}
           </button>
         </div>
-        <div className="batch-input-actions">
-          <p><ListChecks /> 重复链接会自动跳过；出片由下方开关控制，默认自动开始。</p>
-          <div className="batch-input-buttons">
-            <button
-              className="batch-primary"
-              disabled={!canStart || !loaded || busyAction === "start"}
-              onClick={prepare}
-              title="加入队列并立即开始准备：下载抖音视频 → 生成人物图与发布文案 → 等你确认"
-            >
-              {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
-              准备任务（{splitUrls(singing).length + splitUrls(dance).length} 条）
-            </button>
-          </div>
-        </div>
       </section>
 
       {error && <div className="batch-alert"><WarningCircle weight="fill" />{error}</div>}
@@ -1938,7 +1970,7 @@ export function BatchRoute() {
       )}
 
       {batch && (
-        <section className="batch-workspace">
+        <section className="batch-workspace" ref={listSection} tabIndex={-1} aria-label="任务列表">
           <div className="batch-zone-control">
             <div>
               <strong>备料区 {tabCount("prep")} 条 → 出片区 {tabCount("render")} 条 · 异常 {tabCount("exception")} 条</strong>
@@ -1969,6 +2001,12 @@ export function BatchRoute() {
             </div>
           </div>
           <div className="batch-table-card">
+            {activeTab === "render" && tabCount("prep") > 0 && (
+              <div className="batch-render-context" role="status">
+                <span><ListChecks />{tabCount("prep")} 条任务正在备料区准备，备齐后会进入这里。{tabCount("render") === 0 ? "任务已在队列中，无需重复添加。" : "可先关注下方出片进度。"}</span>
+                <button type="button" onClick={() => switchTab("prep")}>查看备料区</button>
+              </div>
+            )}
             <div className="batch-table-head">
               <div className="batch-tabs" role="tablist" aria-label="按状态筛选">
                 {TABS.map((tab) => (
@@ -2097,7 +2135,13 @@ export function BatchRoute() {
                   {filteredItems.length === 0 ? (
                     <tr>
                       <td colSpan={6}>
-                        <p className="batch-empty">这个状态下还没有任务。</p>
+                        <div className="batch-empty">
+                          {activeTab === "render" ? <>
+                            <p>{tabCount("prep") > 0 ? "正在准备素材，出片任务会显示在这里。" : "当前没有待出片任务。"}</p>
+                            {tabCount("completed") > 0 && <button type="button" className="batch-add-toggle" onClick={() => switchTab("completed")}>查看已完成 {tabCount("completed")} 条</button>}
+                            {tabCount("exception") > 0 && <button type="button" className="batch-add-toggle" onClick={() => switchTab("exception")}>处理异常 {tabCount("exception")} 条</button>}
+                          </> : <p>这个状态下还没有任务。</p>}
+                        </div>
                       </td>
                     </tr>
                   ) : (
