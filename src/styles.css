@@ -1500,6 +1500,10 @@ body {
 .batch-table td { padding: 9px 12px; border-bottom: 1px solid rgba(73, 74, 75, .4); vertical-align: middle; font-size: 12px; }
 .batch-check { width: 36px; }
 .batch-check input { accent-color: var(--shell-accent); cursor: pointer; }
+/* 序号列：与发布目录名里的编号一致（`027_跳舞_…` → 027），等宽数字排得整齐 */
+.batch-index-head { width: 56px; }
+.batch-index { width: 56px; color: #9a9b9c; font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: .04em; white-space: nowrap; }
+.batch-row.completed .batch-index { color: #add5c4; }
 .batch-row { cursor: pointer; transition: background .14s ease; }
 .batch-row:hover { background: rgba(35, 36, 37, .7); }
 .batch-row.selected { background: rgba(41, 42, 43, .7); box-shadow: inset 3px 0 0 var(--shell-accent); }

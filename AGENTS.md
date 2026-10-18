@@ -1,5 +1,7 @@
 # Prototype Instructions
 
+- **【2026-10-18 批量列表每条都显示序号】** 用户要求「给每一条任务都加上对应的序号」。批量表格在勾选框后新增「序号」列（`001` 补三位），数字取**类型内编号 `kindIndex`**（与发布目录名 `027_跳舞_…` 完全一致；老条目没有该字段时退回全局 `index`）。同一套编号同时用于：完成行/异常行/已跳过行的按钮确认框、批量操作确认清单、展开详情的「第 N 条」、复选框 aria-label。实现：`BatchItem` 类型补 `kindIndex?: number`；`itemNumber()` / `itemNumberLabel()`；表格 `colSpan` 5→6；`.batch-index` 用等宽数字（`font-variant-numeric: tabular-nums`），已完成行编号用灰绿。只改前端，无需重启后端；已 `npm run build`，15111 页面刷新即生效。
+
 - **【2026-10-18 手动标记完成的条目也要能「查看成片」】** 用户问：「主动标记完成的怎么没有查看成片的按钮」。根因：`mark_item_completed()` 是按**标记那一刻**的发布目录内容登记 `outputs` 的；实测 dance#026 的 `最终成片.mp4` 是标记之后约 19 分钟才落进目录，所以条目 `outputs` 里没有 `videoFinal`，而按钮只认 `outputs.videoFinal`（`完成页` 的成片预览切换也用它）。已修：
   - 新增 `batch_worker.publish_output_path(item, key)`：按发布目录里的真实文件兜底（`videoFinal`→`最终成片.mp4`、`image`→`人物图.*`、`copy`→`发布文案.txt`）。
   - `GET /api/batches/{b}/items/{i}/output/{key}`：`outputs` 缺键、或记录的文件已被移走时用上面的兜底；仍然强制路径必须落在 `BATCH_OUTPUT_ROOT` 内。

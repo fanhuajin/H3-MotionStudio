@@ -155,6 +155,8 @@ interface ChildJob {
 interface BatchItem {
   id: string;
   index: number;
+  /** 类型内编号（唱歌/跳舞各自从 001 起，发布目录名用它）；老条目没有这个字段 */
+  kindIndex?: number;
   kind: "singing" | "dance";
   url: string;
   /** 本条视频的画布比例：歌曲默认 4:3、跳舞默认 9:16，可逐条改 */
@@ -320,8 +322,18 @@ function styleSourceLabel(value?: string): string {
  * 两个字段各自更新就会出现两个标题。后端读取时已把 `item.title` 同步成 `ai.title`，
  * 这里再兜一层，保证同一屏永远不会出现两个不同的标题。
  */
+/** 任务序号：与发布目录/发布成品里的编号一致（类型内编号，001 起）；老条目没有 kindIndex 时退回全局 index。 */
+function itemNumber(item: BatchItem): number {
+  return Number(item.kindIndex || item.index || 0);
+}
+
+/** 列表里显示的序号：补足三位，和发布目录名（`027_跳舞_…`）对得上。 */
+function itemNumberLabel(item: BatchItem): string {
+  return String(itemNumber(item)).padStart(3, "0");
+}
+
 function itemTitle(item: BatchItem): string {
-  return String(item.ai?.title || "").trim() || item.title || `第 ${item.index} 条`;
+  return String(item.ai?.title || "").trim() || item.title || `第 ${itemNumber(item)} 条`;
 }
 
 /**
@@ -830,7 +842,7 @@ export function BatchRoute() {
       detail:
         "只改状态，不会生成或删除文件。发布目录里已经有 最终成片.mp4 会自动登记；"
         + "没有的话，完成页不会显示成片预览。",
-      items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+      items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
       confirmLabel: "标记已完成",
       tone: "restart",
     });
@@ -1237,7 +1249,7 @@ export function BatchRoute() {
                 && !(await askConfirm({
                   title: "停止这一条当前的出片？",
                   detail: "已经生成到一半的进度会作废。取消后可以点「重新开始」再出片。",
-                  items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                  items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
                   confirmLabel: "停止出片",
                   tone: "warning",
                 }))
@@ -1273,7 +1285,7 @@ export function BatchRoute() {
                   && !(await askConfirm({
                     title: "再出一版？",
                     detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
-                    items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                    items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
                     confirmLabel: "再出一版",
                     tone: "restart",
                   }))
@@ -1308,7 +1320,7 @@ export function BatchRoute() {
       <div className="batch-expanded">
         <div className="batch-detail-head">
           <div>
-            <p>第 {item.index} 条 · {item.kind === "singing" ? "歌曲视频" : "跳舞视频"}</p>
+            <p>第 {itemNumber(item)} 条 · {item.kind === "singing" ? "歌曲视频" : "跳舞视频"}</p>
             <h2>{itemTitle(selected)}</h2>
             <div className="batch-detail-meta">
               <a href={item.url} target="_blank" rel="noreferrer">查看原抖音链接</a>
@@ -1331,7 +1343,7 @@ export function BatchRoute() {
                       && !(await askConfirm({
                         title: "再出一版？",
                         detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
-                        items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                        items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
                         confirmLabel: "再出一版",
                         tone: "restart",
                       }))
@@ -1367,7 +1379,7 @@ export function BatchRoute() {
                       && !(await askConfirm({
                         title: "回到确认？",
                         detail: "这一条正在出片，会先安全取消当前出片，已生成到一半的进度作废。旧成片与发布目录不会被删。",
-                        items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                        items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
                         confirmLabel: "回到确认",
                         tone: "warning",
                       }))
@@ -1391,7 +1403,7 @@ export function BatchRoute() {
               onClick={() =>
                 void (async () => {
                   const ok = await askConfirm({
-                    title: `删除第 ${item.index} 条？`,
+                    title: `删除第 ${itemNumber(item)} 条？`,
                     detail: "正在跑的步骤会被安全取消，已经生成的文件会保留。这一条不再占队列位置。",
                     items: [`${item.kind === "singing" ? "歌曲" : "跳舞"} · ${itemTitle(item)}`],
                     confirmLabel: "删除这一条",
@@ -2009,7 +2021,7 @@ export function BatchRoute() {
                       title: `重新开始选中的 ${selectedIds.size} 条？`,
                       detail: "已经出过片的会重跑一遍生成链路，新成片会覆盖发布目录里的同名文件；"
                         + "已有图片直接沿用，缺失图片会重新请求补齐，可能产生新的图片费用；备料齐全后再出片。正在出片的不会被重开。",
-                      items: selectedItems.map((item) => `第 ${item.index} 条 · ${batchStatusLabel(item.status, item.stage)} · ${itemTitle(item)}`),
+                      items: selectedItems.map((item) => `第 ${itemNumber(item)} 条 · ${batchStatusLabel(item.status, item.stage)} · ${itemTitle(item)}`),
                       confirmLabel: "重新开始这 " + selectedIds.size + " 条",
                       tone: "restart",
                     })
@@ -2033,7 +2045,7 @@ export function BatchRoute() {
                         ? {
                           title: `跳过选中的 ${selectedIds.size} 条？`,
                           detail: "正在出片的会先安全取消（已生成到一半的进度作废），成片已生成的会保留。",
-                          items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`),
+                          items: selectedItems.map((item) => `第 ${itemNumber(item)} 条 · ${itemTitle(item)}`),
                           confirmLabel: "跳过这 " + selectedIds.size + " 条",
                           tone: "warning",
                         }
@@ -2050,7 +2062,7 @@ export function BatchRoute() {
                     void batchOp("delete-many", {
                       title: `删除选中的 ${selectedIds.size} 条？`,
                       detail: "正在跑的步骤会被安全取消，已经生成的文件会保留。",
-                      items: selectedItems.map((item) => `第 ${item.index} 条 · ${itemTitle(item)}`),
+                      items: selectedItems.map((item) => `第 ${itemNumber(item)} 条 · ${itemTitle(item)}`),
                       confirmLabel: "删除这 " + selectedIds.size + " 条",
                       tone: "danger",
                     })
@@ -2074,6 +2086,7 @@ export function BatchRoute() {
                         onChange={toggleSelectAll}
                       />
                     </th>
+                    <th className="batch-index-head">序号</th>
                     <th>任务</th>
                     <th>状态</th>
                     <th>比例</th>
@@ -2083,7 +2096,7 @@ export function BatchRoute() {
                 <tbody>
                   {filteredItems.length === 0 ? (
                     <tr>
-                      <td colSpan={5}>
+                      <td colSpan={6}>
                         <p className="batch-empty">这个状态下还没有任务。</p>
                       </td>
                     </tr>
@@ -2097,11 +2110,14 @@ export function BatchRoute() {
                           <td className="batch-check">
                             <input
                               type="checkbox"
-                              aria-label={`选择第 ${item.index} 条`}
+                              aria-label={`选择第 ${itemNumber(item)} 条`}
                               checked={selectedIds.has(item.id)}
                               onChange={() => toggleSelect(item.id)}
                               onClick={(event) => event.stopPropagation()}
                             />
+                          </td>
+                          <td className="batch-index" title={`第 ${itemNumber(item)} 条（发布目录编号）`}>
+                            {itemNumberLabel(item)}
                           </td>
                           <td className="batch-task-cell">
                             <div className="batch-task-title">
@@ -2190,7 +2206,7 @@ export function BatchRoute() {
                                     if (!(await askConfirm({
                                       title: "删除这条已完成记录？",
                                       detail: "仅从列表移除，最终成片及其他已生成文件保留。",
-                                      items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                                      items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
                                       confirmLabel: "删除记录",
                                       tone: "danger",
                                     }))) return;
