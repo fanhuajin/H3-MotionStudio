@@ -340,7 +340,8 @@ def _wake_batch_soon(batch_id: str) -> None:
 
 
 def save_upload(
-    folder: Path, stage: str, payload: bytes, kind: str = "singing", *, allow_repair: bool = False
+    folder: Path, stage: str, payload: bytes, kind: str = "singing", *, allow_repair: bool = False,
+    preserve_cover: bool = False,
 ) -> dict[str, Any]:
     if stage not in {"person", "bilibili", "douyin"}:
         raise ValueError("图片类型无效")
@@ -350,14 +351,15 @@ def save_upload(
     except OSError as exc:
         raise ValueError("请选择有效的 PNG、JPG 或 WebP 图片") from exc
     width, height = image.size
-    if allow_repair and min(width, height) < 640:
+    original_cover = preserve_cover and stage in COVER_NAMES
+    if allow_repair and not original_cover and min(width, height) < 640:
         # 我们自己的出图（1k 档出图 + 本地 VOSR2 放大）：放大是内存里的任务，后端在排队
         # 期间被杀就没了 —— 这时不能把这张**已经付过钱**的图判成「分辨率太低」，本地补一刀。
         image, note = batch_image.ensure_deliverable_image(image)
         if note:
             width, height = image.size
             logger.warning("出图短边不足，已本地补到 %sx%s（%s）", width, height, stage)
-    if min(width, height) < 640:
+    if not original_cover and min(width, height) < 640:
         raise ValueError("图片分辨率太低，短边至少需要 640 像素")
     if stage == "person":
         expected = 4 / 3 if kind == "singing" else 9 / 16
@@ -368,16 +370,21 @@ def save_upload(
     else:
         tw, th = TARGETS[stage]
         expected, actual = tw / th, width / height
-        if abs(actual - expected) / expected > 0.035:
+        if not original_cover and abs(actual - expected) / expected > 0.035:
             ratio = "4:3" if stage == "bilibili" else "3:4"
             raise ValueError(f"画面比例不正确，需要 {ratio}")
-        image = ImageOps.fit(image, (tw, th), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+        if not original_cover:
+            image = ImageOps.fit(image, (tw, th), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
         destination = folder / COVER_NAMES[stage]
     handle, tmp_name = tempfile.mkstemp(prefix=".image-workbench-", suffix=".png", dir=folder)
     os.close(handle)
     tmp = Path(tmp_name)
     try:
-        image.save(tmp, "PNG", optimize=True)
+        if original_cover:
+            # 中转站封面直接采用原始字节；不放大、不裁切、不重新编码。
+            tmp.write_bytes(payload)
+        else:
+            image.save(tmp, "PNG", optimize=True)
         os.replace(tmp, destination)
     finally:
         tmp.unlink(missing_ok=True)
@@ -573,8 +580,8 @@ async def _generate_cover(
     提示词用 `prompt(folder, stage, kind)`（里面就是发布文案的标题与简介）；
     参考图优先用这条成片全帧扫描抽出的 `封面人物图.png`（2026-10-18：人物图的手可能画坏，
     成片的手是好的，图片与封面页都用这张封面人物图），没有时才用 `人物图.png`（保住人物与画面）。
-    出图比例 4:3（B站）/ 3:4（抖音），`save_upload()` 会按 `TARGETS` 精确裁到
-    1448×1086 / 1086×1448 并做比例校验。
+    请求比例 4:3（B站）/ 3:4（抖音）；中转站返回什么尺寸就原样保存，
+    不做 AI 放大或按本地目标尺寸再次缩放、裁切。
 
     历史上这里曾是「本地确定性合成」（人物图 + 模糊背景垫底），因为中转站对封面类请求
     偶有审核失败；现在改为 API 直出，失败会如实写进 automation.message 由页面显示。
@@ -619,8 +626,9 @@ async def _generate_cover(
             ratio="4:3" if stage == "bilibili" else "3:4",
             output_path=candidate,
             request_key=f"cover:{str(folder.resolve()).lower()}:{stage}",
+            upscale=False,
         )
-        save_upload(folder, stage, candidate.read_bytes(), allow_repair=True)
+        save_upload(folder, stage, candidate.read_bytes(), preserve_cover=True)
         marker.unlink(missing_ok=True)
         completion.set_result((True, ""))
     except batch_image.PolicyRejected as exc:

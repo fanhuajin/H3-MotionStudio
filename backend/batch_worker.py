@@ -2747,8 +2747,7 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
 # 【2026-10-18】封面不再挡下一条视频：中转站出封面是**纯外部等待**（实测 60~100 秒/张），
 # 把它串在出片链路上只会让整批每条都多等 2~4 分钟。现在交付完就标完成、放行下一条视频，
 # 封面丢到后台补；`H3_COVER_BLOCKING=1` 可以回到旧的「等封面做完再走下一条」语义。
-# 注意：后台封面里两张图各要一次本地 VOSR2 放大（要 GPU），会按 FIFO 排在视频之间，
-# 所以视频之间最多多等一次放大（十几~几十秒），不会再等中转站。
+# 封面采用中转站原图，不做本地放大；后台补封面不再为放大排队占用 GPU。
 _BG_COVER_TASKS: set[asyncio.Task] = set()
 _BG_COVER_KEYS: set[tuple[str, str]] = set()
 
@@ -2799,7 +2798,7 @@ async def _finish_covers_after_delivery(
 
     「从成片全帧找手、抽封面人物图」这一步仍然留在前台（GPU 正空着，6~20 秒）：
     它要占显存，等下一支视频开跑后再做容易把视频挤 OOM；真正丢到后台的只有
-    中转站请求（60~100 秒/张）和随后的本地放大。
+    中转站请求（60~100 秒/张）和原图保存，不做封面二次放大。
     """
     if not full_auto_enabled():
         return

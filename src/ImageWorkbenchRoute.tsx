@@ -27,8 +27,8 @@ const AUTO_LIVE = ["queued", "running"];
 
 const STAGES: Array<{ id: Stage; label: string; spec: string }> = [
   { id: "person", label: "人物图", spec: "图一场景 + 图二五官" },
-  { id: "bilibili", label: "B站封面", spec: "4:3 · 1448×1086" },
-  { id: "douyin", label: "抖音封面", spec: "3:4 · 1086×1448" },
+  { id: "bilibili", label: "B站封面", spec: "4:3 · 中转站原图" },
+  { id: "douyin", label: "抖音封面", spec: "3:4 · 中转站原图" },
 ];
 
 const identitySources = new Map<string, string>();

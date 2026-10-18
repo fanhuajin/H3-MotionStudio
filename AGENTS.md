@@ -1,5 +1,7 @@
 # Prototype Instructions
 
+- **【2026-10-18 封面直接使用中转站原图，不二次放大】** 用户明确要求：成片完成后全帧挑清晰帧作为封面人物参考，再由中转站生成；两张封面返回什么图就直接使用。共用 `image_workbench._generate_cover()` 显式传 `upscale=False`，保存用 `preserve_cover=True` 原始字节落盘，不按 `TARGETS` 放大、裁切或重新编码；覆盖此前封面走 VOSR2 的约定。批量后台补封面、图片页单张/补齐/一键生成均走该路径。人物图放大、最终视频放大、成片全帧选图及手动上传行为不变，不回溯现有封面。隔离测试 `tests/test_cover_original_output.py` 验证两种封面、低于本地尺寸的返回图、批量与图片页共用路径；不调用付费生成或真实 GPU。后端变更需用户自行重启，智能体不要主动重启。
+
 - **【2026-10-18 批量列表每条都显示序号】** 用户要求「给每一条任务都加上对应的序号」。批量表格在勾选框后新增「序号」列（`001` 补三位），数字取**类型内编号 `kindIndex`**（与发布目录名 `027_跳舞_…` 完全一致；老条目没有该字段时退回全局 `index`）。同一套编号同时用于：完成行/异常行/已跳过行的按钮确认框、批量操作确认清单、展开详情的「第 N 条」、复选框 aria-label。实现：`BatchItem` 类型补 `kindIndex?: number`；`itemNumber()` / `itemNumberLabel()`；表格 `colSpan` 5→6；`.batch-index` 用等宽数字（`font-variant-numeric: tabular-nums`），已完成行编号用灰绿。只改前端，无需重启后端；已 `npm run build`，15111 页面刷新即生效。
 
 - **【2026-10-18 手动标记完成的条目也要能「查看成片」】** 用户问：「主动标记完成的怎么没有查看成片的按钮」。根因：`mark_item_completed()` 是按**标记那一刻**的发布目录内容登记 `outputs` 的；实测 dance#026 的 `最终成片.mp4` 是标记之后约 19 分钟才落进目录，所以条目 `outputs` 里没有 `videoFinal`，而按钮只认 `outputs.videoFinal`（`完成页` 的成片预览切换也用它）。已修：
