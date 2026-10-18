@@ -113,9 +113,39 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             if made.returncode != 0:
                 self.skipTest("本机 ffmpeg 无法生成测试视频")
             target = folder / batch_worker.COVER_FRAME_NAME
-            batch_worker.extract_cover_frame(video, target)
+            with patch.object(batch_worker, "_pick_hand_cover_frame", return_value=False):
+                batch_worker.extract_cover_frame(video, target)
             self.assertTrue(target.is_file() and target.stat().st_size > 0)
             self.assertEqual(target.read_bytes()[:2], b"\xff\xd8")   # JPEG
+
+    def test_extract_cover_frame_prefers_the_hand_picker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            video = folder / "clip.mp4"
+            video.write_bytes(b"fake")
+            target = folder / batch_worker.COVER_FRAME_NAME
+
+            def fake_pick(video_path, target_path):
+                Path(target_path).write_bytes(b"\xff\xd8hand")
+                return True
+
+            with patch.object(batch_worker, "_pick_hand_cover_frame", side_effect=fake_pick):
+                batch_worker.extract_cover_frame(video, target)
+            self.assertEqual(target.read_bytes(), b"\xff\xd8hand")
+
+    def test_extract_cover_frame_falls_back_when_no_hand_is_found(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            video = folder / "clip.mp4"
+            video.write_bytes(b"fake")
+            target = folder / batch_worker.COVER_FRAME_NAME
+            with patch.object(batch_worker, "_pick_hand_cover_frame", return_value=False), patch.object(
+                batch_worker, "_video_duration_seconds", return_value=3.0
+            ), patch.object(
+                batch_worker, "_scan_all_frames", return_value=[(1.0, b"\xff\xd8fallback")]
+            ):
+                batch_worker.extract_cover_frame(video, target)
+            self.assertEqual(target.read_bytes(), b"\xff\xd8fallback")
 
 
 if __name__ == "__main__":

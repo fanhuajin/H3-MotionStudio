@@ -34,7 +34,10 @@ from .settings import (
     BATCH_OUTPUT_ROOT,
     BATCH_RATIO_CHOICES,
     BATCH_SELF_URL,
+    COMFY_PYTHON,
+    COMFY_ROOT,
     DATA_DIR,
+    PROJECT_ROOT,
     batch_default_ratio,
     env_value,
     full_auto_enabled,
@@ -2482,13 +2485,84 @@ async def _generate_covers_via_api(
     return errors
 
 
-def extract_cover_frame(video: Path, target: Path) -> Path:
-    """从**最终成片**抽一帧当封面参考：本地全帧扫描，取手/画面最清晰的一张。
+HAND_FRAME_SCRIPT = PROJECT_ROOT / "scripts" / "pick_hand_frame.py"
 
-    用户 2026-10-18：「从视频抽帧抽取一张图片去生成封面图」——人物图的手指可能画坏，
-    成片里的手是好的。评分复用备料那套 `_frame_detail_score`（双侧手臂区域 + 全身细节），
-    纯本地 ffmpeg + PIL，不调任何付费接口。失败抛错，由调用方退回人物图。
+
+def _hand_frame_enabled() -> bool:
+    """封面选帧要不要先走「手部检测」：默认开，`H3_HAND_FRAME=0` 可退回纯清晰度评分。"""
+    raw = (env_value("H3_HAND_FRAME", "1") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _pick_hand_cover_frame(video: Path, target: Path) -> bool:
+    """用本机手部检测模型挑「手最清楚」的一帧（ComfyUI 自带 python + Impact Pack 权重）。
+
+    在 640 宽上每 ~0.25 秒抽一帧，检测手框后按框内 Laplacian 方差评清晰度；两只手里
+    较模糊的那只主导，手贴画面边缘（手指被切）扣分。找到就写全分辨率 JPEG 并返回 True；
+    没有手/模型或 python 不在/超时都返回 False，由 `extract_cover_frame` 退回纯清晰度评分。
+    不调任何付费接口。
     """
+    if not _hand_frame_enabled():
+        return False
+    python = Path(COMFY_PYTHON)
+    model = Path(
+        env_value("H3_HAND_MODEL")
+        or (COMFY_ROOT / "models" / "ultralytics" / "bbox" / "hand_yolov8s.pt")
+    )
+    if not (python.is_file() and HAND_FRAME_SCRIPT.is_file() and model.is_file()):
+        return False
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.unlink(missing_ok=True)
+    command = [
+        str(python), str(HAND_FRAME_SCRIPT),
+        "--video", str(video), "--output", str(target), "--model", str(model),
+        "--device", env_value("H3_HAND_DEVICE", "cpu") or "cpu",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=600,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+    except Exception as error:      # noqa: BLE001 - 选帧失败只该退回评分，不该拦住封面
+        logger.warning("手部选帧子进程失败（退回清晰度评分）：%s", error)
+        return False
+    payload: dict[str, Any] = {}
+    for line in reversed((result.stdout or b"").decode("utf-8", errors="replace").splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            break
+    if result.returncode == 0 and payload.get("ok") and target.is_file() and target.stat().st_size > 0:
+        logger.info(
+            "手部选帧：t=%ss，%s 只手，得分 %s（%.1fs）",
+            payload.get("time"), len(payload.get("hands") or []),
+            payload.get("score"), payload.get("elapsed") or 0,
+        )
+        return True
+    logger.warning(
+        "手部选帧没有找到可用帧（rc=%s, %s），退回清晰度评分：%s",
+        result.returncode, payload.get("reason") or "unknown",
+        (result.stderr or b"")[-400:].decode("utf-8", errors="replace"),
+    )
+    target.unlink(missing_ok=True)
+    return False
+
+
+def extract_cover_frame(video: Path, target: Path) -> Path:
+    """从**最终成片**抽一帧当封面参考：**优先挑手部最清晰的一帧**。
+
+    用户 2026-10-18：「要选择手部清晰的」——人物图的手指可能画坏，成片里的手是好的，
+    所以先用本机 `hand_yolov8s.pt` 定位手、按手框内清晰度选帧；模型/子进程不可用或整片
+    没检测到手时，退回原来的全帧扫描 `_frame_detail_score`（双侧手臂区域 + 全身细节）。
+    两条路都是纯本地 ffmpeg/PIL/OpenCV，不调任何付费接口。
+    """
+    if _pick_hand_cover_frame(video, target):
+        return target
     duration = _video_duration_seconds(video)
     scanned = _scan_all_frames(video, duration, _frame_scan_stride(duration))
     if not scanned:
@@ -2521,7 +2595,7 @@ async def _ensure_video_cover_frame(
         return None
     batch_store.add_item_log(
         batch_id, item_id,
-        "已从最终成片抽取封面参考帧（本地评分最高的一帧），两张封面将用它作底图。",
+        "已从最终成片抽取封面参考帧（优先手部最清晰的一帧），两张封面将用它作底图。",
     )
     return target
 

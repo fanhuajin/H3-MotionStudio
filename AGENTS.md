@@ -2,7 +2,7 @@
 
 - **【2026-10-18 封面改为「出片后从成片抽帧生成」】** 用户原话：「其实现在生成的人物图手指有问题，不过生成的 comfyui 视频中的人物的手指没有问题，我想将备料中通过人物生成封面的流程改一下，生成人物图之后先不要生成封面图，只有视频生成完成之后，从视频抽帧抽取一张图片去生成封面图」。已落地：
   - **备料不再出封面**：`_run_prep()` 去掉 `_finish_prep_covers()`；`prepReady` 改用新函数 `_prep_assets_ready()`（只认「发布目录有人物图 + 发布文案」）；`_next_prep()` / `_prep_remaining()` 不再把「缺封面」当备料未完成，**出片不再等封面**（覆盖 2026-09-23 的「封面齐备才放行」）。
-  - **交付后出封面**：`_process_confirmed()` 在 `_deliver()` 之后调用 `_finish_item_covers()` → `_ensure_video_cover_frame()` 用**最终成片**（`最终成片.mp4`，含 2× 放大）做本地全帧扫描、按 `_frame_detail_score` 取评分最高的一帧写成 `封面参考.jpg`（纯本地 ffmpeg+PIL，不调接口）→ 两张封面都用它当参考图（同一帧，保证一致）。成片更新过（mtime 更新）会重新抽。
+  - **交付后出封面**：`_process_confirmed()` 在 `_deliver()` 之后调用 `_finish_item_covers()` → `_ensure_video_cover_frame()` 用**最终成片**（`最终成片.mp4`，含 2× 放大）选封面参考帧，写成 `封面参考.jpg`。选帧**优先手部清晰**（2026-10-18 用户：「要选择手部清晰的」）：`scripts/pick_hand_frame.py` 在 ComfyUI python 里用 Impact Pack 的 `hand_yolov8s.pt` 定位手（640 宽、约 4fps），按手框内 Laplacian 方差评清晰度（较模糊的那只手主导、贴边切手指扣分），写全分辨率帧；模型/子进程不可用或整片没手时才退回 `_frame_detail_score` 全帧扫描。`H3_HAND_FRAME=0` 可退回纯评分，`H3_HAND_MODEL` 可换权重。两条路都纯本地，不调付费接口（实测 10.8s 视频约 4.3s）。
   - **参考图优先级**：`image_workbench._generate_cover()` 改成 `batch_worker.cover_frame(folder) or 人物图`；老作品/抽帧失败退回人物图。`/images` 页面之后手动重出封面也会自动优先用这张帧。
   - **容错**：抽帧失败退回人物图；封面失败只记日志、**绝不把已完成的视频判失败**（缺的那张之后可在 `/images` 补）；已有两张封面则跳过，不重复计费。
   - 边界：正在跑的 026 已有旧封面、不重做；已完成的 27~40 也不回溯。测试 `tests/test_cover_after_video.py`（7 条：备料不出封面、出片后抽帧出封面、失败不抛、封面优先用帧、退回人物图、`_prep_assets_ready` 不看封面、真实 ffmpeg 抽帧）+ `test_batch_zones` 更新；`test_backend` 仍有 15 条与本改造无关的既有失败（UI 文案 / 提示词长度 / 下载 / 迁移）。**用户当时有出片任务在跑，改完由他自己重启后端，智能体不要主动重启；前端已 `npm run build`。**
