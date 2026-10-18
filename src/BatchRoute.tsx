@@ -434,6 +434,11 @@ const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
   archive: (item) => item.status === "skipped",
 };
 
+/** 这一条有没有可看的成片：优先 outputs 快照，其次发布目录里的真实文件（publishChain.clean）。 */
+function hasFinalVideo(item: BatchItem): boolean {
+  return Boolean(item.outputs?.videoFinal || item.publishChain?.clean);
+}
+
 function itemZoneStatus(item: BatchItem): string {
   if (item.coverStage && !["failed", "skipped", "completed"].includes(item.status)) return "备料中";
   if (item.status === "confirmed" && !item.prepReady) return "备料中";
@@ -589,7 +594,7 @@ export function BatchRoute() {
   // 当前标签下显示的条目；展开的详情行也只在当前标签里渲染。
   const filteredItems = useMemo(() => visibleItems.filter(TAB_MATCH[activeTab]), [visibleItems, activeTab]);
   const previewItems = useMemo(
-    () => visibleItems.filter((item) => item.status === "completed" && item.outputs?.videoFinal),
+    () => visibleItems.filter((item) => item.status === "completed" && hasFinalVideo(item)),
     [visibleItems],
   );
   const previewIndex = previewItems.findIndex((item) => item.id === videoPreview?.id);
@@ -2163,7 +2168,7 @@ export function BatchRoute() {
                           <td className="batch-ratio-cell">{itemRatio(item)}</td>
                           <td className="batch-ops-cell" onClick={(event) => event.stopPropagation()}>
                             <div className="batch-row-ops">
-                              {item.status === "completed" && item.outputs?.videoFinal && (
+                              {item.status === "completed" && hasFinalVideo(item) && (
                                 <button
                                   className="batch-primary small"
                                   onClick={() => setVideoPreview({

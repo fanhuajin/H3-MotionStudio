@@ -1711,9 +1711,16 @@ async def batch_item_output(batch_id: str, item_id: str, key: str, download: boo
     if key not in {"videoFinal", "videoNoLyrics", "videoWithLyrics", "image", "copy"}:
         raise HTTPException(404, "输出文件不存在")
     raw = (item.get("outputs") or {}).get(key)
-    if not raw:
+    path = Path(raw).resolve() if raw else None
+    if path is None or not path.is_file():
+        # `outputs` 是「交付那一刻」的快照：手动「标记为已完成」时成片可能还没落盘
+        # （之后才拷进发布目录），那时就没有 `videoFinal` 这个键。按目录里的真实文件兜底，
+        # 否则条目显示「已完成」却点不开成片（2026-10-18 用户报的）。
+        fallback = batch_worker.publish_output_path(item, key)
+        if fallback is not None:
+            path = fallback.resolve()
+    if path is None:
         raise HTTPException(404, "输出文件尚未生成")
-    path = Path(raw).resolve()
     try:
         path.relative_to(BATCH_OUTPUT_ROOT.resolve())
     except ValueError:

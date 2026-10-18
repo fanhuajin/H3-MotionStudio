@@ -793,7 +793,8 @@ def mark_item_completed(batch_id: str, item_id: str) -> dict[str, Any]:
         outputs["folder"] = str(folder.resolve())
     warning = (
         None if has_video
-        else "手动标记为已完成：发布目录里没有最终成片.mp4，完成页不会显示成片。"
+        else "手动标记为已完成：标记时发布目录里还没有最终成片.mp4；"
+             "之后把成片放进该目录，完成页会按目录里的真实文件显示「查看成片」。"
     )
 
     def apply(row: dict[str, Any]) -> None:
@@ -2443,6 +2444,27 @@ def publish_published_image(folder: Path | None) -> Path | None:
     for name in _publish_image_names():
         if _present_file(folder, name):
             return folder / name
+    return None
+
+
+def publish_output_path(item: dict[str, Any], key: str) -> Path | None:
+    """发布目录里 `key` 对应的成品文件（`outputs` 快照缺键、或文件后来才落盘时的兜底）。
+
+    手动「标记为已完成」是按**当时**的目录内容登记 `outputs` 的：那一刻成片还没拷进来，
+    就没有 `videoFinal` 这个键，完成页于是没有「查看成片」按钮（2026-10-18 用户报的）。
+    之后用户把 `最终成片.mp4` 放进发布目录，这里按真实文件把它找回来。
+    """
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    if folder is None or not folder.is_dir():
+        return None
+    if key == "videoFinal":
+        candidate = folder / "最终成片.mp4"
+        return candidate if candidate.is_file() else None
+    if key == "image":
+        return publish_published_image(folder)
+    if key == "copy":
+        candidate = folder / "发布文案.txt"
+        return candidate if candidate.is_file() else None
     return None
 
 

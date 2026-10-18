@@ -106,6 +106,41 @@ class BatchZoneTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 batch_worker.mark_item_completed("batch", "item")
 
+    def test_output_falls_back_to_publish_folder_after_manual_complete(self):
+        """手动标记完成时成片还没落盘 → outputs 没有 videoFinal，之后放进来也要能点开。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "dance" / "026_跳舞_测试"
+            folder.mkdir(parents=True)
+            video = folder / "最终成片.mp4"
+            video.write_bytes(b"video")
+            item = {
+                "id": "item", "status": "completed", "stage": "completed",
+                "kind": "dance", "outputs": {"folder": str(folder)},
+            }
+            with patch.object(app, "_batch_item_or_404", return_value=item), patch.object(
+                app, "BATCH_OUTPUT_ROOT", root
+            ), patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                response = asyncio.run(
+                    app.batch_item_output("batch", "item", "videoFinal", download=False)
+                )
+                missing = None
+                try:
+                    asyncio.run(app.batch_item_output("batch", "item", "copy", download=False))
+                except HTTPException as error:
+                    missing = error
+            self.assertEqual(Path(response.path).resolve(), video.resolve())
+            self.assertEqual(missing.status_code, 404)
+
+    def test_publish_output_path_returns_none_without_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "dance" / "027_跳舞_空"
+            folder.mkdir(parents=True)
+            item = {"outputs": {"folder": str(folder)}}
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                self.assertIsNone(batch_worker.publish_output_path(item, "videoFinal"))
+
     def test_existing_covers_make_no_api_request(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
