@@ -58,6 +58,11 @@ _USER_ENV_CACHE: dict[str, str] = {}
 # 这几个开关的语义是「用户现在要不要图片自动化」，所以**以注册表为准**。
 _REGISTRY_FIRST_KEYS = {
     "H3_BATCH_IMAGE_MODEL",
+    "H3_BATCH_IMAGE_BASE_URL",
+    "H3_BATCH_IMAGE_API_KEY",
+    "H3_BATCH_IMAGE_MODE",
+    "H3_BATCH_IMAGE_FIELD",
+    "H3_BATCH_IMAGE_QUALITY",
     "H3_AUTO_CHATGPT_IMAGE",
     "H3_AUTO_CHATGPT_COVER",
     "H3_AUTO_CONFIRM",

@@ -20,6 +20,7 @@ import logging
 import mimetypes
 import shutil
 import time
+from urllib.parse import quote, urlparse
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -80,12 +81,45 @@ def base_url() -> str:
     ).rstrip("/")
 
 
+def is_yeelo() -> bool:
+    return urlparse(base_url()).hostname == "img.yeelo.fun"
+
+
+def async_tasks() -> bool:
+    """中转站是否用「提交拿 task_id + GET 轮询」的异步接口（`H3_BATCH_IMAGE_ASYNC` 可覆盖）。
+
+    默认按站点判断（当前的 YeeMagine 就是这套接口）。**不要只靠主机名**：用户已经换过
+    一次中转站，主机名写死会让异步适配在新站点上静默失效 —— 对异步站点按同步读响应，
+    每次都是「接口没有返回图像数据」。换站点时加一个环境变量即可，不必改代码。
+    """
+    raw = (env_value("H3_BATCH_IMAGE_ASYNC") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return is_yeelo()
+
+
+def policy_retry_allowed() -> bool:
+    """内容政策 400 是否允许自动重发：只有**实测不计费**的渠道才开。
+
+    旧中转站实测这种 400 不产生记录也不扣费，所以那时自动重发是安全的；换到新站点后
+    这个前提没有验证过，默认不开（宁可让这一条失败，也不冒重复扣费的风险）。
+    """
+    raw = (env_value("H3_BATCH_IMAGE_POLICY_RETRY") or "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return not async_tasks()
+
+
 def api_key() -> str:
     return env_value("H3_BATCH_IMAGE_API_KEY") or env_value("OPENAI_API_KEY")
 
 
 def model() -> str:
-    return env_value("H3_BATCH_IMAGE_MODEL") or "gpt-image-2.5-sunburst"
+    return env_value("H3_BATCH_IMAGE_MODEL") or ("gpt-image-2" if is_yeelo() else "gpt-image-2.5-sunburst")
 
 
 def configured() -> bool:
@@ -500,6 +534,9 @@ async def _post(
     # 按设计退回"源视频取帧"，用户看到的就是「人物图 = 抽帧图」。
     url = f"{base_url()}/images/edits"
     route = _route() if proxy is _KEEP_ROUTE else proxy
+    if async_tasks():
+        data = {k: v for k, v in data.items() if k != "input_fidelity"}
+        data.update({"async": "true", "response_format": "url"})
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, proxy=route) as client:
         return await client.post(
             url,
@@ -553,6 +590,160 @@ async def _post_with_route_fallback(
         return response
 
 
+def _task_checkpoint(output_path: Path) -> Path:
+    return output_path.with_name(output_path.name + ".relay-task.json")
+
+
+def _result_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Accept OpenAI results and task wrappers without mistaking a task ID for an image."""
+    for key in ("result", "response", "output"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            result = _result_payload(nested)
+            if result:
+                return result
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return _result_payload(data)
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        if data[0].get("url") or data[0].get("b64_json"):
+            return {"data": data}
+    images = payload.get("images")
+    if isinstance(images, list) and images:
+        entries = [{"url": item} if isinstance(item, str) else item for item in images]
+        if all(isinstance(item, dict) and (item.get("url") or item.get("b64_json")) for item in entries):
+            return {"data": entries}
+    if payload.get("image_url") or payload.get("result_url") or payload.get("b64_json"):
+        return {"data": [{"url": payload.get("image_url") or payload.get("result_url"), "b64_json": payload.get("b64_json")} ]}
+    return None
+
+
+def _save_task_record(checkpoint: Path, record: dict[str, Any]) -> None:
+    temporary = checkpoint.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(checkpoint)
+
+
+def _clear_task_checkpoint(output_path: Path) -> None:
+    """图片已经落盘 → 记录完成使命，删掉。
+
+    留着有两个坏处：① 同样的输入再跑一次时会直接拿旧结果，用户明确点「重新生成」也
+    不会真的重出图；② 记录里的下载地址有时效，过期后只会一直报「图片已生成但下载失败」，
+    只能靠人工找到这个隐藏文件删掉才能恢复。
+    """
+    _task_checkpoint(output_path).unlink(missing_ok=True)
+
+
+async def _poll_task_once(task_id: str) -> dict[str, Any] | None:
+    """GET 一次任务（**不计费**）：读不到就返回 None，绝不触发新的出图请求。"""
+    try:
+        async with httpx.AsyncClient(timeout=60, proxy=_route()) as client:
+            polled = await client.get(
+                f"{base_url()}/images/tasks/{quote(str(task_id), safe='')}",
+                headers={"Authorization": f"Bearer {api_key()}"},
+            )
+    except httpx.HTTPError:
+        return None
+    if polled.is_error:
+        return None
+    try:
+        return polled.json()
+    except ValueError:
+        return None
+
+
+async def _refresh_result(record: dict[str, Any], checkpoint: Path) -> dict[str, Any] | None:
+    """存下的结果地址可能会过期（私有对象存储有时效）：重读任务换一个新地址，仍然不计费。"""
+    task_id = str(record.get("taskId") or "")
+    if not task_id:
+        return None
+    body = await _poll_task_once(task_id)
+    if not body:
+        return None
+    result = _result_payload(body)
+    if not result:
+        return None
+    record["result"] = result
+    _save_task_record(checkpoint, record)
+    return result
+
+
+async def _resolve_task(response: httpx.Response, output_path: Path, fingerprint: str = "") -> httpx.Response:
+    # 不按主机名判断：任何返回「task_id + status」的中转站都按异步任务处理，
+    # 已经是图片结果的就原样交回 `_store`。未知形态一律 fail closed（不自动重发）。
+    if response.is_error:
+        return response
+    payload = response.json()
+    result = _result_payload(payload)
+    if result:
+        return httpx.Response(200, json=result)
+    task = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    task_id = task.get("task_id") or task.get("id")
+    if not task_id:
+        raise RuntimeError("图片接口未返回图片或任务 ID；保留未知请求保护，不自动重发")
+    checkpoint = _task_checkpoint(output_path)
+    record = {"baseUrl": base_url(), "model": model(), "taskId": str(task_id), "fingerprint": fingerprint}
+    # 先落盘再轮询：中途被打断时下次只会 GET 同一条任务，绝不重新提交（不重复计费）。
+    _save_task_record(checkpoint, record)
+    label = f"（任务 {task_id}）"
+    deadline = time.monotonic() + REQUEST_TIMEOUT
+    async with httpx.AsyncClient(timeout=60, proxy=_route()) as client:
+        while time.monotonic() < deadline:
+            try:
+                polled = await client.get(
+                    f"{base_url()}/images/tasks/{quote(str(task_id), safe='')}",
+                    headers={"Authorization": f"Bearer {api_key()}"},
+                )
+            except httpx.HTTPError:
+                await asyncio.sleep(5)
+                continue
+            if polled.status_code == 429 or polled.status_code >= 500:
+                await asyncio.sleep(5)
+                continue
+            if polled.is_error:
+                raise RuntimeError(f"图片任务查询失败 HTTP {polled.status_code}{label}；已保存任务 ID，不自动重新生成")
+            body = polled.json()
+            task = body.get("data") if isinstance(body.get("data"), dict) else body
+            status = str(task.get("status", "")).lower()
+            if status in {"failed", "failure", "error", "cancelled", "canceled"}:
+                raise RuntimeError(f"图片任务失败{label}；保留任务记录，请核对渠道后台后手动处理")
+            result = _result_payload(body)
+            if result:
+                record["result"] = result
+                _save_task_record(checkpoint, record)  # 下载还能重试（GET），不必重新出图
+                return httpx.Response(200, json=result)
+            if status in {"done", "completed", "succeeded", "success"}:
+                raise RuntimeError(f"图片任务已结束但未识别到图像数据{label}；已保存任务 ID，不自动重发")
+            try:
+                delay = max(5, min(60, float(polled.headers.get("Retry-After", "5"))))
+            except ValueError:
+                delay = 5
+            await asyncio.sleep(delay)
+    raise RuntimeError(f"图片任务等待超时{label}；已保存任务 ID，不自动重新生成")
+
+
+async def _submit_or_resume(data: dict[str, str], files: list, output_path: Path) -> httpx.Response:
+    digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode())
+    for field, (name, content, mime) in files:
+        digest.update(field.encode())
+        digest.update(content)
+    fingerprint = digest.hexdigest()
+    checkpoint = _task_checkpoint(output_path)
+    if checkpoint.is_file():
+        record = json.loads(checkpoint.read_text(encoding="utf-8"))
+        if record.get("baseUrl") != base_url() or record.get("model") != model():
+            raise RuntimeError("存在其他渠道的任务记录，请先人工核对，不自动重发")
+        if record.get("fingerprint") != fingerprint:
+            raise RuntimeError("任务记录与当前输入不同，请先人工核对旧任务，不自动重发")
+        if record.get("result"):
+            fresh = await _refresh_result(record, checkpoint)
+            return httpx.Response(200, json=fresh or record["result"])
+        response = httpx.Response(200, json={"task_id": record["taskId"]})
+    else:
+        response = await _post_with_route_fallback(data, files)
+    return await _resolve_task(response, output_path, fingerprint)
+
+
 def _store(response: httpx.Response, output_path: Path) -> Path:
     payload = response.json()
     entry = (payload.get("data") or [{}])[0]
@@ -588,7 +779,7 @@ def _is_policy_rejection(response: httpx.Response) -> bool:
     实测（2026-09-23 账单）这种 400 **不产生任何计费**；而超时/断连有可能已经出图计费，
     重发就是双重扣费，所以那些一律不重发。
     """
-    if response.status_code != 400:
+    if not policy_retry_allowed() or response.status_code != 400:
         return False
     text = _api_error(response).lower()
     return "内容政策" in text or "content policy" in text
@@ -818,7 +1009,7 @@ async def _generate_candidate_image_once(
                     ratio=ratio,
                     work_dir=work_dir,
                 )
-                response = await _post_with_route_fallback(data, files)
+                response = await _submit_or_resume(data, files, output_path)
                 # 「内容政策」这种明确 400 是**随机且不计费**的（2026-09-23 账单实测），
                 # 同一条请求重发常能过；其它失败一律不重发（可能已经出图计费）。
                 policy_attempt = 0
@@ -835,13 +1026,14 @@ async def _generate_candidate_image_once(
                     if on_progress:
                         await on_progress(0.0, f"中转站以内容政策拒绝，正在重试（{policy_attempt}/{POLICY_RETRIES}）")
                     await asyncio.sleep(POLICY_RETRY_DELAY * policy_attempt)
-                    response = await _post_with_route_fallback(data, files)
+                    response = await _submit_or_resume(data, files, output_path)
                 if response.is_error:
                     failures.append(f"[{plan}/{field}] {_api_error(response)}")
                     if _is_policy_rejection(response):
                         policy_rejected = True
                     continue
                 _store(response, output_path)
+                _clear_task_checkpoint(output_path)  # 图已落盘，任务记录不再需要（见 _clear_task_checkpoint）
             except httpx.HTTPError as error:
                 # 请求可能已被中转站接收并计费，只是响应返回途中超时/断线。
                 # 不自动换线路再发一遍，避免同一张图产生第二笔费用。
@@ -964,7 +1156,9 @@ async def generate_person_image(
     pending = candidate.with_name(candidate.name + ".request-pending")
     if not output_path.is_file() or not output_path.stat().st_size:
         if not candidate.is_file() or not candidate.stat().st_size:
-            if pending.is_file():
+            # 有中转站任务记录时**允许续跑**：那条记录说明请求已经提交过，续跑只会 GET
+            # 同一条任务（或直接取已存的结果），不会产生第二笔费用 —— 比卡住等人处理安全。
+            if pending.is_file() and not _task_checkpoint(candidate).is_file():
                 raise RuntimeError(
                     "上一次人物图请求已经提交但结果未确认；为避免重复扣费，本次没有自动重发。"
                     "请先核对中转站后台，再到图片工作台明确重做"
@@ -1036,7 +1230,7 @@ async def generate_single_edit(
     field = env_value("H3_BATCH_IMAGE_FIELD") or "image"
     files = [(field, (source_image.name, image_bytes, mime))]
     try:
-        response = await _post_with_route_fallback(data, files)
+        response = await _submit_or_resume(data, files, output_path)
     except httpx.HTTPError as exc:
         netproxy.note_failure()
         raise RuntimeError(
@@ -1045,4 +1239,6 @@ async def generate_single_edit(
         ) from exc
     if response.is_error:
         raise RuntimeError(f"封面生成失败：{_api_error(response)}（未自动改格式重试）")
-    return _store(response, output_path)
+    stored = _store(response, output_path)
+    _clear_task_checkpoint(output_path)
+    return stored
