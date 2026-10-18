@@ -1430,7 +1430,9 @@ body {
 .batch-input-card.collapsed .batch-prepare-head { margin: 0; padding: 0; border: 0; }
 .batch-prepare-head .batch-add-toggle { margin-left: auto; }
 .batch-add-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 5px 11px; border: 1px solid var(--shell-line-strong); border-radius: 7px; background: rgba(106, 179, 149, .07); color: #add5c4; font-size: 12px; cursor: pointer; }
-.batch-add-toggle:hover { border-color: var(--shell-accent); background: rgba(106, 179, 149, .13); }
+.batch-add-toggle:hover:not(:disabled) { border-color: var(--shell-accent); background: rgba(106, 179, 149, .13); }
+/* 已安排出片 / 继续任务也用这组描边按钮，禁用态要有明确反馈。 */
+.batch-add-toggle:disabled { cursor: not-allowed; opacity: .45; }
 .batch-add-toggle:focus-visible, .batch-render-context button:focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 3px; }
 /* 运行策略只占一个工具按钮；设置在原生顶层 dialog 中呈现。 */
 .batch-entry-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-left: auto; }

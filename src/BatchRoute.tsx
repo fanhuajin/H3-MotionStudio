@@ -1869,8 +1869,9 @@ export function BatchRoute() {
 
   const renderQueueActions = () => (
         <div className="batch-entry-actions">
-          {/* 2026-10-18 用户：「添加任务放到运行设置前边」——录入入口在前，策略在后。 */}
-          <button type="button" className={batch ? "batch-add-toggle" : "batch-primary small"} ref={inputToggle}
+          {/* 2026-10-18 用户：「添加任务放到运行设置前边」「已安排出片样式和前边按钮样式保持一致」
+              —— 整组都是灰绿描边按钮，不再单独用实心的 .batch-primary。 */}
+          <button type="button" className="batch-add-toggle" ref={inputToggle}
             aria-haspopup="dialog" aria-expanded={addOpen} aria-controls="batch-add-dialog"
             onClick={() => { restoreInputFocus.current = true; setAddError(""); setActiveDialog("add"); }}>
             <UploadSimple />添加任务{(singing.trim() || dance.trim()) && <span className="batch-draft-badge">草稿 {splitUrls(singing).length + splitUrls(dance).length}</span>}
@@ -1881,11 +1882,11 @@ export function BatchRoute() {
             onClick={() => { setSettingsFeedback(null); setActiveDialog("settings"); }}>
             <GearSix />运行设置{(prepShutdownSwitchOn || shutdownSwitchOn) && <span className="batch-settings-badge"><Power />{prepShutdownSwitchOn ? "备料后关机" : "完成后关机"}</span>}
           </button>
-          {resumeOnly && <button type="button" className="batch-primary small" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续任务</button>}
-          {batch && batch.autoRender === false && !resumeOnly && <button type="button" className="batch-primary small"
+          {resumeOnly && <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续任务</button>}
+          {batch && batch.autoRender === false && !resumeOnly && <button type="button" className="batch-add-toggle"
             disabled={Boolean(busyAction) || prepBlocked || !visibleItems.some((item) => item.status === "confirmed")}
             title={prepBlocked ? "备料区全部完成后才能开始出片" : "逐条开始出片"} onClick={() => void call("render")}>
-            <Play weight="fill" />{batch.status === "paused" ? "继续并开始出片" : batch.renderRequested ? "已安排出片" : "开始出片"}
+            <Play />{batch.status === "paused" ? "继续并开始出片" : batch.renderRequested ? "已安排出片" : "开始出片"}
           </button>}
 
         </div>
