@@ -9742,7 +9742,7 @@ class SceneFramePickerTests(unittest.TestCase):
 
 
 class FrameCandidateBreadthTests(unittest.TestCase):
-    """抽帧改成「多抽一些、取评分最高」（2026-10-18 用户：去掉首帧规则）。"""
+    """抽帧改成「全帧扫描、取评分最高」（2026-10-18 用户：去掉首帧规则、全部帧抽出来）。"""
 
     @staticmethod
     def _frame(color: str, size: tuple[int, int] = (60, 90)) -> bytes:
@@ -9754,7 +9754,23 @@ class FrameCandidateBreadthTests(unittest.TestCase):
         Image.new("RGB", size, color).save(output, format="PNG")
         return output.getvalue()
 
-    def test_more_candidates_are_sampled_and_the_best_score_wins(self) -> None:
+    def test_full_frame_scan_picks_the_highest_score(self) -> None:
+        from backend import batch_worker
+
+        scan = [(10.0, b"low"), (31.5, b"best"), (22.0, b"mid")]
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            video = root / "source.mp4"
+            video.write_bytes(b"fake")
+            target = root / "scene-frame.jpg"
+            with patch.object(batch_worker, "_scan_all_frames", lambda _s, _d, _st: scan), patch.object(
+                batch_worker, "_video_duration_seconds", lambda _p: 10.0
+            ):
+                result = asyncio.run(batch_worker.extract_scene_frame_with_hands(video, target))
+            self.assertEqual(result.read_bytes(), b"best")
+
+    def test_a_failed_scan_falls_back_to_sampling(self) -> None:
+        """视频损坏/ffmpeg 报错时不能卡住备料，退回按时刻采样。"""
         from backend import batch_worker
 
         frames: list[bytes] = []
@@ -9764,19 +9780,28 @@ class FrameCandidateBreadthTests(unittest.TestCase):
             frames.append(frame)
             return frame
 
-        scores = [float(index) for index in range(100)]   # 后抽到的分更高
+        scores = [float(index) for index in range(200)]
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             video = root / "source.mp4"
             video.write_bytes(b"fake")
             target = root / "scene-frame.jpg"
-            with patch.object(batch_worker, "_extract_frame_bytes", extract), patch.object(
+            with patch.object(batch_worker, "_scan_all_frames", lambda _s, _d, _st: None), patch.object(
+                batch_worker, "_extract_frame_bytes", extract
+            ), patch.object(
                 batch_worker, "_video_duration_seconds", lambda _p: 10.0
             ), patch.object(batch_worker, "_frame_detail_score", lambda data: scores.pop(0)):
                 result = asyncio.run(batch_worker.extract_scene_frame_with_hands(video, target))
-            seen = result.read_bytes()
-        self.assertGreaterEqual(len(frames), 20)          # 比以前 12 张多
-        self.assertEqual(seen, frames[len(frames) - 1])   # 分最高那张被选中
+            self.assertGreaterEqual(len(frames), 20)          # 退回采样也要够多
+            self.assertEqual(result.read_bytes(), frames[-1])
+
+    def test_scan_stride_keeps_long_videos_affordable(self) -> None:
+        from backend import batch_worker
+
+        self.assertEqual(batch_worker._frame_scan_stride(10.0), 1)    # 040 这类 10 秒片全扫
+        self.assertEqual(batch_worker._frame_scan_stride(40.0), 1)    # 跳舞上限也全扫
+        self.assertEqual(batch_worker._frame_scan_stride(60.0), 2)
+        self.assertEqual(batch_worker._frame_scan_stride(180.0), 3)
 
     def test_the_first_frame_rule_is_gone(self) -> None:
         from backend import batch_worker
@@ -9797,6 +9822,8 @@ def _run_with(case: SceneFramePickerTests, pick, scores, payloads) -> bytes:
         queue = list(payloads)
         with patch.dict(os.environ, {"H3_BATCH_AI_FRAME_PICK": "1"}, clear=False), patch.object(
             batch_worker, "_video_duration_seconds", lambda _p: 10.0
+        ), patch.object(
+            batch_worker, "_scan_all_frames", lambda _s, _d, _st: None,   # 关掉全帧扫描，测候选打分/挑图
         ), patch.object(
             batch_worker, "_extract_frame_bytes",
             lambda *a, **k: queue.pop(0) if queue else None,   # 抽完就当成抽不到帧

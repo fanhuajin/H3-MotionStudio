@@ -1367,16 +1367,70 @@ def _extract_frame_bytes(source: Path, timestamp: float, *, flags: int) -> bytes
     return result.stdout if result.returncode == 0 and result.stdout else None
 
 
-def _scene_frame_candidates(source: Path, ratio: float) -> list[tuple[float, bytes]]:
-    """多抽一些帧，再按本地双侧区域清晰度取分最高的那张。
+# 全帧扫描只保留分数最高的几张（AI 挑图最多用得到这几张，内存也不会随帧数涨）。
+_SCAN_KEEP = 5
 
-    用户 2026-10-18：「抽帧多抽一些 找出评分最高的一张」。两层采样：
-      ① 目标时刻附近密采（±0.03~0.12 的时间比例 + 真正相邻的 0.15 秒），避免正好卡在
-         眨眼、转身、挥手那一下；
-      ② 全片 0.05~0.95 均匀铺 16 帧——整支舞里手部清楚的时刻常常不在目标位置。
-    抽帧是纯本地 ffmpeg，每帧几十到几百毫秒，所以多抽 20 来帧只多几秒，不产生任何费用。
+
+def _frame_scan_stride(duration: float) -> int:
+    """按视频时长决定扫描步长，把「全帧扫描」的耗时压在十几秒内。
+
+    实测（10.2s / 306 帧）：导出 0.58s、每帧评分 13.1ms。所以 45 秒以内（跳舞上限 40 秒）
+    干脆逐帧全扫；更长（唱歌）按 2~3 帧取一帧，最后仍在最优帧附近精扫一次。
+    """
+    if duration <= 45:
+        return 1
+    if duration <= 90:
+        return 2
+    return 3
+
+
+def _scan_all_frames(source: Path, duration: float, stride: int) -> list[tuple[float, bytes]] | None:
+    """一次解码把帧导到临时目录，逐帧评分，只留分数最高的几张；失败返回 None（退回采样）。"""
+    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    with tempfile.TemporaryDirectory(prefix="h3-frame-scan-") as folder:
+        target = Path(folder)
+        result = subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-i", str(source),
+                "-vf", f"select=not(mod(n\\,{stride}))",
+                # 本机 ffmpeg 9 已移除 `-vsync`（报 Unrecognized option），改用 `-fps_mode`。
+                "-fps_mode", "passthrough",
+                "-q:v", "3", str(target / "%05d.jpg"),
+            ],
+            capture_output=True,
+            timeout=600,
+            creationflags=flags,
+        )
+        files = sorted(target.glob("*.jpg"))
+        if result.returncode != 0 or not files:
+            logger.warning("全帧扫描失败（rc=%s, %s 帧），退回按时刻采样", result.returncode, len(files))
+            return None
+        kept: list[tuple[float, bytes]] = []
+        for path in files:
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            kept.append((_frame_detail_score(data), data))
+            if len(kept) > _SCAN_KEEP:
+                kept = sorted(kept, key=lambda row: row[0], reverse=True)[:_SCAN_KEEP]
+        logger.info("全帧扫描：%s 帧（步长 %s，%.1fs 视频），最高分 %.1f",
+                    len(files), stride, duration, max((row[0] for row in kept), default=0.0))
+        return sorted(kept, key=lambda row: row[0], reverse=True) or None
+
+
+def _scene_frame_candidates(source: Path, ratio: float) -> list[tuple[float, bytes]]:
+    """全帧扫描后取评分最高的那张（用户 2026-10-18：「全部帧抽出来」「要」）。
+
+    为什么是全帧：实测 10 秒视频全抽只要 0.58s、评分 4.0s，比原来逐张 seek 抽 23 张还便宜；
+    而且原来从 5% 时刻起采样会漏掉开头那些干净的帧（040 实测：全帧最高 37.2，采样最高 31.0）。
+    扫描失败（视频损坏/ffmpeg 报错）才退回「目标附近 + 全片均匀」的采样，保证备料不中断。
     """
     duration = _video_duration_seconds(source)
+    scanned = _scan_all_frames(source, duration, _frame_scan_stride(duration))
+    if scanned:
+        return scanned
+
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
     nearby = min(0.01, 0.15 / max(duration, 0.001))   # 0.15 秒换算成时间比例
     ratios: list[float] = [
@@ -1763,8 +1817,8 @@ async def _prepare_review_work(
         _set_item(batch_id, item_id, refreshSceneFrame=False)
         batch_store.add_item_log(
             batch_id, item_id,
-            "已抽帧：目标时刻附近密采 + 全片均匀铺一层（共约 25 张候选），"
-            "取本地双侧区域清晰度评分最高的一张；未调用付费视觉接口。",
+            "已抽帧：全帧扫描（长视频按步长隔帧）后取本地双侧区域清晰度评分最高的一张；"
+            "未调用付费视觉接口。",
         )
 
     meta = item.get("sourceMetadata") or {}
