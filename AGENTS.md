@@ -169,7 +169,7 @@ When implementing from a selected generated mock, treat that image as the source
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
 
-**每完成一轮改动就提交一次代码**（2026-09-17 用户：「每次完成后记得提交代码」）：改完并验证通过（跑过测试 / 构建）后**立刻 `git commit`**，别攒着 —— 未提交的改动一旦被下一轮覆盖、回滚或重写就找不回来了。约定：① 沿用本仓库的提交信息风格（`fix(batch): 中文短句` / `feat(范围): …` / `docs: …`，必要的一行 body 说明根因）；② **一次提交只装同一件事**，跨模块的顺手改动拆开提交；③ 提交前先 `git status` 看清工作区，**绝不 `git add -A` 或 `git add .`** —— `@AutomationLog.txt`（uiautomation 报错日志）、`data/` 下的临时诊断产物都不是代码；④ 这条规则本身也在仓库里，改完规则记得连同当轮改动一起提交。
+**每完成一轮改动就提交并推送到远端**（2026-09-17 用户：「每次完成后记得提交代码」；2026-10-18 用户：「每次完成后都主动提交到远端记录到规则中」）：改完并验证通过（跑过测试 / 构建）后**立刻 `git commit`**，别攒着 —— 未提交的改动一旦被下一轮覆盖、回滚或重写就找不回来了。约定：① 沿用本仓库的提交信息风格（`fix(batch): 中文短句` / `feat(范围): …` / `docs: …`，必要的一行 body 说明根因）；② **一次提交只装同一件事**，跨模块的顺手改动拆开提交；③ 提交前先 `git status` 看清工作区，**绝不 `git add -A` 或 `git add .`** —— `@AutomationLog.txt`（uiautomation 报错日志）、`data/` 下的临时诊断产物都不是代码；④ 这条规则本身也在仓库里，改完规则记得连同当轮改动一起提交；⑤ **提交后主动 `git push origin main` 到远端**（本仓库 remote 为 `https://github.com/fanhuajin/H3-MotionStudio.git`），不要等用户提醒；推送成功后在回复里说明远端已同步，推送失败（网络/凭据/冲突）要如实报告，不要静默跳过，也不要用强推覆盖远端历史。
 
 ## Product decisions
 
