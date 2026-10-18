@@ -2162,7 +2162,7 @@ export function BatchRoute() {
                             <div className="batch-row-ops">
                               {item.status === "completed" && hasFinalVideo(item) && (
                                 <button
-                                  className="batch-primary small"
+                                  className="batch-add-toggle"
                                   onClick={() => setVideoPreview({
                                     id: item.id,
                                     title: itemTitle(item),
@@ -2170,7 +2170,7 @@ export function BatchRoute() {
                                   })}
                                   aria-label={`查看成片：${itemTitle(item)}`}
                                 >
-                                  <Play weight="fill" />查看成片
+                                  <Play />查看成片
                                 </button>
                               )}
                               {statusAction(item)}

@@ -1630,8 +1630,10 @@ body {
 .batch-row-ops button:hover:not(:disabled) { border-color: #6b6c6d; color: #fff; }
 .batch-row-ops button.danger { border-color: rgba(255, 108, 137, .3); color: #ff9daf; }
 .batch-row-ops button:disabled { cursor: not-allowed; opacity: .4; }
-.batch-row-ops .batch-primary.small { min-height: 28px; padding: 0 11px; border-color: var(--shell-accent); color: #0a120f; background: var(--shell-accent); font-weight: 700; }
-.batch-row-ops .batch-primary.small:hover:not(:disabled) { filter: brightness(1.08); }
+/* 查看成片与工具栏的「添加任务 / 运行设置」同一套灰绿描边（2026-10-18 用户：「查看成片按钮样式也是」），
+   尺寸按行内按钮收小；行内基础按钮样式会覆盖底色/字色，这里显式写回。 */
+.batch-row-ops .batch-add-toggle { min-height: 28px; padding: 0 10px; border-color: var(--shell-line-strong); color: #add5c4; background: rgba(106, 179, 149, .07); font-size: 11px; }
+.batch-row-ops .batch-add-toggle:hover:not(:disabled) { border-color: var(--shell-accent); color: #cdeadd; background: rgba(106, 179, 149, .13); }
 .batch-move { display: inline-flex; align-items: center; margin-left: 2px; }
 .batch-move button { min-height: 24px; width: 24px; padding: 0; justify-content: center; border-color: transparent; background: transparent; color: #848586; }
 .batch-move button svg { width: 12px; height: 12px; }
