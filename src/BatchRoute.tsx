@@ -10,6 +10,7 @@ import {
   CaretUp,
   Check,
   Circle,
+  GearSix,
   ListChecks,
   MusicNotes,
   PersonSimpleRun,
@@ -526,6 +527,20 @@ export function BatchRoute() {
   const [listFocusVersion, setListFocusVersion] = useState(0);
   const listSection = useRef<HTMLElement>(null);
   const inputToggle = useRef<HTMLButtonElement>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsFeedback, setSettingsFeedback] = useState<{ error: boolean; text: string } | null>(null);
+  const settingsDialog = useRef<HTMLDialogElement>(null);
+  const settingsTrigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const dialog = settingsDialog.current;
+    if (!dialog) return;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      settingsTrigger.current?.focus({ preventScroll: true });
+    };
+  }, [settingsOpen]);
   const [selectedId, setSelectedId] = useState<string | null>(() => lastBatchView?.selectedId ?? null);
   const [hasSnapshot, setHasSnapshot] = useState(lastBatchView !== undefined);
   // 刷新或重新进入页面时恢复上次选择的分区。
@@ -819,6 +834,8 @@ export function BatchRoute() {
 
   const call = async (action: string, method = "POST", body?: object) => {
     if (!batch) return;
+    const settingAction = ["auto-render", "shutdown-on-complete", "shutdown-after-prep"].includes(action);
+    if (settingAction) setSettingsFeedback(null);
     const endpoint = `/api/batches/${batch.id}/${action}`;
     setBusyAction(action);
     setError("");
@@ -830,11 +847,13 @@ export function BatchRoute() {
       });
       if (!response.ok) throw new Error(await responseMessage(response, "操作失败"));
       acceptBatchState(await readJson<BatchState>(response, "操作失败"));
+      if (settingAction) setSettingsFeedback({ error: false, text: "设置已保存并生效" });
     } catch (reason) {
       // 报错要把**所有能给的定位信息**都带上：后端 detail + HTTP 状态 + 具体端点，
       // 否则用户只能看到一句「操作失败」，没法反馈也没法自己排查。
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(`${message}　〔${method} ${endpoint}〕`);
+      if (settingAction) setSettingsFeedback({ error: true, text: `保存失败：${message}。请核对当前状态后重试。` });
     } finally {
       setBusyAction("");
     }
@@ -925,7 +944,10 @@ export function BatchRoute() {
   const toggleShutdownOnComplete = () => {
     const next = !(batch ? Boolean(batch.shutdownOnComplete) : shutdownOn);
     setShutdownOn(next);
-    if (!batch) return;
+    if (!batch) {
+      setSettingsFeedback({ error: false, text: "已记住此设置，点击准备任务时应用" });
+      return;
+    }
     void call("shutdown-on-complete", "POST", { enabled: next }).then(() => {
       fetch("/api/system/shutdown", { cache: "no-store" })
         .then((response) => (response.ok ? response.json() : null))
@@ -939,6 +961,7 @@ export function BatchRoute() {
     setShutdownAfterPrepOn(next);
     if (next) { setAutoRenderOn(false); setShutdownOn(false); }
     if (batch) void call("shutdown-after-prep", "POST", { enabled: next });
+    else setSettingsFeedback({ error: false, text: "已记住此设置，点击准备任务时应用" });
   };
 
   /** 撤销已经排好的自动关机（倒计时里点「取消关机」）。 */
@@ -1833,11 +1856,19 @@ export function BatchRoute() {
           <small>{batch
             ? (singing.trim() || dance.trim() ? `已保留 ${splitUrls(singing).length + splitUrls(dance).length} 条未提交链接` : "随时添加新链接，已有任务继续保留")
             : "下载抖音视频 → 抽帧分析 → 人物图与发布文案；已有文件直接沿用"}</small>
+          <div className="batch-entry-actions">
           {batch && <button type="button" className="batch-add-toggle" ref={inputToggle}
             aria-expanded={inputShown} aria-controls="batch-add-inputs"
             onClick={() => { setInputExpanded(!inputShown); inputToggle.current?.focus({ preventScroll: true }); }}>
             {inputShown ? <CaretUp /> : <CaretDown />}{inputShown ? "收起录入" : "添加任务"}
           </button>}
+          <button type="button" className="batch-add-toggle batch-settings-trigger" ref={settingsTrigger}
+            aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls="batch-running-settings-dialog"
+            title={`自动出片：${autoRenderSwitchOn ? "开启" : "关闭"}；${prepShutdownSwitchOn ? "备料后关机" : shutdownSwitchOn ? "全部完成后关机" : "自动关机关闭"}`}
+            onClick={() => { setSettingsFeedback(null); setSettingsOpen(true); }}>
+            <GearSix />运行设置{(prepShutdownSwitchOn || shutdownSwitchOn) && <span className="batch-settings-badge"><Power />{prepShutdownSwitchOn ? "备料后关机" : "完成后关机"}</span>}
+          </button>
+          </div>
         </div>
         <div id="batch-add-inputs" className="batch-add-body" hidden={!inputShown}>
         <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
@@ -1903,64 +1934,7 @@ export function BatchRoute() {
         </div>
       </section>
 
-      <details className="batch-settings">
-        <summary>
-          <span>运行设置</span>
-          <small>自动出片：{autoRenderSwitchOn ? "开启" : "关闭"} · {prepShutdownSwitchOn ? "备料完成后关机" : shutdownSwitchOn ? "全部完成后关机" : "自动关机：关闭"}</small>
-          <CaretDown aria-hidden="true" />
-        </summary>
-        <div className="batch-settings-body">
-        <div className="batch-shutdown-row">
-          <span>
-            <b>备料完成后自动出片</b>
-            <small>默认开启。关闭后，待处理备料完成即可在出片区手动启动；异常条目可稍后补跑。</small>
-          </span>
-          <button
-            type="button"
-            role="switch"
-            aria-label="备料完成后自动出片"
-            aria-checked={autoRenderSwitchOn}
-            className={`batch-switch ${autoRenderSwitchOn ? "on" : ""}`}
-            disabled={Boolean(busyAction)}
-            onClick={() => {
-              if (batch) void call("auto-render", "POST", { enabled: batch.autoRender === false });
-              else setAutoRenderOn((value) => !value);
-            }}
-          >
-            <i />{autoRenderSwitchOn ? "已开启" : "已关闭"}
-          </button>
-        </div>
-        <div className="batch-shutdown-row">
-          <span><b><Power weight="fill" /> 备料完成后关机</b>
-            <small>默认关闭。其余条目备料完成后关机，异常条目留待之后处理，不阻止关机；开启后关闭自动出片，关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
-          <button type="button" role="switch" aria-label="备料完成后关机" aria-checked={prepShutdownSwitchOn}
-            className={`batch-switch ${prepShutdownSwitchOn ? "on" : ""}`}
-            disabled={Boolean(busyAction)} onClick={toggleShutdownAfterPrep}>
-            <i />{prepShutdownSwitchOn ? "已开启" : "已关闭"}
-          </button>
-        </div>
-        <div className="batch-shutdown-row">
-          <span>
-            <b><Power weight="fill" /> 全部完成后自动关机</b>
-            <small>
-              所有条目都做完（没有排队、等你确认、待出片或出片中的）才会关机；关机前留 {shutdownDelaySeconds} 秒倒计时，
-              随时可以点「取消关机」撤销。默认关闭。
-            </small>
-          </span>
-          <button
-            type="button"
-            role="switch"
-            aria-label="全部完成后自动关机"
-            aria-checked={shutdownSwitchOn}
-            className={`batch-switch ${shutdownSwitchOn ? "on" : ""}`}
-            disabled={Boolean(busyAction)}
-            onClick={toggleShutdownOnComplete}
-          >
-            <i />{shutdownSwitchOn ? "已开启" : "已关闭"}
-          </button>
-        </div>
-        </div>
-      </details>
+
 
       {error && <div className="batch-alert"><WarningCircle weight="fill" />{error}</div>}
       {!error && notice && <div className="batch-alert info"><ListChecks weight="fill" />{notice}</div>}
@@ -2331,6 +2305,97 @@ export function BatchRoute() {
             <button disabled={previewIndex < 0 || previewIndex >= previewItems.length - 1} onClick={() => switchPreview(1)}>↓ 下一条</button>
           </div>
         </dialog>
+      )}
+      {settingsOpen && createPortal(
+        <dialog ref={settingsDialog} id="batch-running-settings-dialog" className="batch-settings-dialog"
+          aria-labelledby="batch-settings-title" aria-describedby="batch-settings-description"
+          onCancel={(event) => { event.preventDefault(); setSettingsOpen(false); }}
+          onKeyDown={(event) => {
+            if (event.key !== "Tab") return;
+            const controls = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+            const first = controls[0], last = controls[controls.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault(); last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault(); first?.focus();
+            }
+          }}
+          onClick={(event) => {
+            if (event.target !== event.currentTarget) return;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) setSettingsOpen(false);
+          }}>
+          <header className="batch-settings-header">
+            <span className="batch-modal-icon" aria-hidden="true"><GearSix weight="duotone" /></span>
+            <div><p>批量制作 · 运行策略</p><h2 id="batch-settings-title">运行设置</h2></div>
+            <button type="button" className="batch-settings-close" autoFocus aria-label="关闭运行设置" onClick={() => setSettingsOpen(false)}><X /></button>
+          </header>
+          <div className="batch-settings-scroll">
+            <p id="batch-settings-description" className="batch-settings-description">{batch ? "开关修改后立即保存并生效，无需再次确认。关闭此窗口不会撤销已保存的设置。" : "设置会记在当前浏览器，点击「准备任务」时随新批次一起应用。"}</p>
+        <div className="batch-settings-body">
+        <div className="batch-shutdown-row">
+          <span>
+            <b>备料完成后自动出片</b>
+            <small>默认开启。关闭后，待处理备料完成即可在出片区手动启动；异常条目可稍后补跑。</small>
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-label="备料完成后自动出片"
+            aria-checked={autoRenderSwitchOn}
+            className={`batch-switch ${autoRenderSwitchOn ? "on" : ""}`}
+            disabled={!loaded || Boolean(busyAction)}
+            onClick={() => {
+              if (batch) void call("auto-render", "POST", { enabled: batch.autoRender === false });
+              else {
+                setAutoRenderOn((value) => !value);
+                setSettingsFeedback({ error: false, text: "已记住此设置，点击准备任务时应用" });
+              }
+            }}
+          >
+            <i />{autoRenderSwitchOn ? "已开启" : "已关闭"}
+          </button>
+        </div>
+        <div className="batch-shutdown-row">
+          <span><b><Power weight="fill" /> 备料完成后关机</b>
+            <small>默认关闭。其余条目备料完成后关机，异常条目留待之后处理，不阻止关机；开启后关闭自动出片，关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
+          <button type="button" role="switch" aria-label="备料完成后关机" aria-checked={prepShutdownSwitchOn}
+            className={`batch-switch ${prepShutdownSwitchOn ? "on" : ""}`}
+            disabled={!loaded || Boolean(busyAction)} onClick={toggleShutdownAfterPrep}>
+            <i />{prepShutdownSwitchOn ? "已开启" : "已关闭"}
+          </button>
+        </div>
+        <div className="batch-shutdown-row">
+          <span>
+            <b><Power weight="fill" /> 全部完成后自动关机</b>
+            <small>
+              所有条目都做完（没有排队、等你确认、待出片或出片中的）才会关机；关机前留 {shutdownDelaySeconds} 秒倒计时，
+              随时可以点「取消关机」撤销。默认关闭。
+            </small>
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-label="全部完成后自动关机"
+            aria-checked={shutdownSwitchOn}
+            className={`batch-switch ${shutdownSwitchOn ? "on" : ""}`}
+            disabled={!loaded || Boolean(busyAction)}
+            onClick={toggleShutdownOnComplete}
+          >
+            <i />{shutdownSwitchOn ? "已开启" : "已关闭"}
+          </button>
+        </div>
+        </div>
+            <p className="batch-settings-rule"><ListChecks aria-hidden="true" />备料完成后关机开启时，会关闭自动出片及全部完成后关机。关机前有 {shutdownDelaySeconds} 秒倒计时，可在页面取消。</p>
+            {shutdown.pending && <div className="batch-alert shutdown"><Power /><span>关机倒计时进行中：剩余 <b>{shutdownSecondsLeft}</b> 秒</span><button type="button" className="batch-primary small" disabled={Boolean(busyAction)} onClick={() => void cancelShutdown()}>取消关机</button></div>}
+          </div>
+          <footer className="batch-settings-footer">
+            <div className={settingsFeedback?.error ? "batch-settings-feedback error" : "batch-settings-feedback"} role={settingsFeedback?.error ? "alert" : "status"}>
+              {["auto-render", "shutdown-on-complete", "shutdown-after-prep"].includes(busyAction) ? <><SpinnerGap className="spin" />正在保存设置…</> : settingsFeedback?.text || (batch ? "当前显示已保存的设置" : "当前显示新批次的预设")}
+            </div>
+            <button type="button" className="batch-primary small" onClick={() => setSettingsOpen(false)}>关闭</button>
+          </footer>
+        </dialog>, document.body
       )}
       {confirmAsk && createPortal(
         <div
