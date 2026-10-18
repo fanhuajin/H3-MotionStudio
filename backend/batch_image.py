@@ -296,11 +296,10 @@ def _blur_region(image: Image.Image, box: dict[str, float]) -> Image.Image:
     if x1 - x0 < 8 or y1 - y0 < 8:
         return image
     region = image.crop((x0, y0, x1, y1))
-    # 强度按**原来的糊法**来（用户 2026-10-18：「你糊的一点效果都没有 还是原来的好，只是原来
-    # 的效果范围太大了」）：半径直接给到区域宽度，整块压成一片，五官一点都不留。
-    blurred = region.filter(ImageFilter.GaussianBlur(radius=max(20.0, region.width)))
-    # 只留一点羽化防止边缘像贴上去的色块；边缘仍然是清楚的边界。
-    feather = max(2, int(min(region.width, region.height) * 0.04))
+    blurred = region.filter(ImageFilter.GaussianBlur(radius=max(10.0, (x1 - x0) / 2.5)))
+    # 羽化边缘：糊整张脸时硬边落在头发/背景上不明显，收成五官后硬边会压在脸颊和鼻梁上，
+    # 那道边会被模型当成真实轮廓画出来。所以用一张软化过的矩形蒙版贴回去。
+    feather = max(3, int(min(region.width, region.height) * 0.12))
     mask = Image.new("L", region.size, 0)
     ImageDraw.Draw(mask).rectangle(
         (feather, feather, max(feather + 1, region.width - feather), max(feather + 1, region.height - feather)),
@@ -311,22 +310,22 @@ def _blur_region(image: Image.Image, box: dict[str, float]) -> Image.Image:
     return image
 
 
-# 只糊五官（2026-10-18 用户：「只要糊住五官就可以 不要特别大」＋「你糊的一点效果都没有」）。
-# 范围：横向按整张脸框（左右各多留 5% 把两只眼睛的外眼角包住），纵向只取脸框的 25%~86%，
-# 也就是**双眉到嘴**——额头、发际线以上的头发、下巴和脖子都保持原像素。
-# 强度：高斯半径 = 区域宽度，整块糊成一片，保证五官完全不残留。
-_FEATURE_PAD_X = 0.05            # 横向：脸框左右各多留 5% 脸宽（包住外眼角）
-_FEATURE_ROWS = (0.25, 0.86)     # 纵向：双眉 → 嘴下方
+# 只糊五官（2026-10-18 用户：「只要糊住五官就可以 不要特别大」）。
+# 为什么不再糊整张脸：整脸糊掉会把头型、发际线、下颌一起抹平；首帧是特写时半个画面变成
+# 一团，人物图的造型/背景信息也跟着丢了。挡住眼鼻嘴就足以阻断身份抄袭 —— 图二才是身份来源。
+_FEATURE_HALF_WIDTH = 0.27        # 横向：以脸中线为准，左右各 27% 脸宽
+_FEATURE_ROWS = (0.30, 0.84)      # 纵向：双眉 → 下唇（不含额头、发际线、下颌）
 
 
 def _features_box(box: dict[str, float]) -> dict[str, float]:
-    """把「整张脸」的检测框收成「五官」框（横向几乎不缩，纵向去掉额头与下巴）。"""
+    """把「整张脸」的检测框收成「五官」框。"""
     width = box["x1"] - box["x0"]
     height = box["y1"] - box["y0"]
+    centre = (box["x0"] + box["x1"]) / 2
     return {
-        "x0": max(0.0, box["x0"] - width * _FEATURE_PAD_X),
+        "x0": max(0.0, centre - width * _FEATURE_HALF_WIDTH),
         "y0": max(0.0, box["y0"] + height * _FEATURE_ROWS[0]),
-        "x1": min(1.0, box["x1"] + width * _FEATURE_PAD_X),
+        "x1": min(1.0, centre + width * _FEATURE_HALF_WIDTH),
         "y1": min(1.0, box["y0"] + height * _FEATURE_ROWS[1]),
     }
 
