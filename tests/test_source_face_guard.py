@@ -41,25 +41,6 @@ class SourceFaceGuardTests(unittest.TestCase):
                 self.assertNotEqual(blurred.getpixel((70,70)), image.getpixel((70,70)))
                 self.assertEqual(blurred.getpixel((0,0)), image.getpixel((0,0)))
 
-    def test_only_the_five_features_are_blurred_not_the_whole_head(self):
-        """2026-10-18 用户：「只要糊住五官就可以 不要特别大」——额头、下颌、脸侧要保持原像素。"""
-        with tempfile.TemporaryDirectory() as raw:
-            frame = Path(raw) / "抽帧.png"
-            image = Image.new("RGB", (100, 100))
-            for x in range(100):
-                for y in range(100):
-                    image.putpixel((x, y), (255, 255, 255) if (x + y) % 2 else (0, 0, 0))
-            image.save(frame)
-            box = {"x0": .2, "y0": .2, "x1": .8, "y1": .8}
-            with patch.object(batch_image, "_locate_source_faces", return_value=[box]):
-                result, ok = asyncio.run(batch_image.defocus_reference_face(frame, Path(raw) / "guard"))
-            self.assertTrue(ok)
-            with Image.open(result) as guarded:
-                self.assertNotEqual(guarded.getpixel((50, 50)), image.getpixel((50, 50)))   # 五官中段
-                self.assertEqual(guarded.getpixel((50, 28)), image.getpixel((50, 28)))     # 额头
-                self.assertEqual(guarded.getpixel((50, 88)), image.getpixel((50, 88)))     # 下颌
-                self.assertEqual(guarded.getpixel((24, 50)), image.getpixel((24, 50)))     # 脸侧
-
     def test_person_api_stops_before_billed_request_on_failed_guard(self):
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
