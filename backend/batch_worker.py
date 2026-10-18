@@ -2722,6 +2722,73 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
             pass
 
 
+# 【2026-10-18】封面不再挡下一条视频：中转站出封面是**纯外部等待**（实测 60~100 秒/张），
+# 把它串在出片链路上只会让整批每条都多等 2~4 分钟。现在交付完就标完成、放行下一条视频，
+# 封面丢到后台补；`H3_COVER_BLOCKING=1` 可以回到旧的「等封面做完再走下一条」语义。
+# 注意：后台封面里两张图各要一次本地 VOSR2 放大（要 GPU），会按 FIFO 排在视频之间，
+# 所以视频之间最多多等一次放大（十几~几十秒），不会再等中转站。
+_BG_COVER_TASKS: set[asyncio.Task] = set()
+_BG_COVER_KEYS: set[tuple[str, str]] = set()
+
+
+def cover_blocking() -> bool:
+    """封面要不要在出片链路上等出完（默认 **0 = 后台补**，别让中转站拖住下一条视频）。"""
+    raw = (env_value("H3_COVER_BLOCKING", "0") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def covers_in_flight() -> bool:
+    """还有没有正在后台补的封面（批次收尾与自动关机都要等它）。"""
+    return any(not task.done() for task in _BG_COVER_TASKS)
+
+
+def spawn_item_covers(batch_id: str, item_id: str, folder: Path | None) -> bool:
+    """把这一条的封面丢到后台补（同一条只排一次）。返回是否真的排上了任务。"""
+    if folder is None or not Path(folder).is_dir():
+        return False
+    key = (batch_id, item_id)
+    if key in _BG_COVER_KEYS:
+        return False
+    try:
+        task = asyncio.create_task(_finish_item_covers(batch_id, item_id, Path(folder)))
+    except RuntimeError:
+        return False                      # 没有事件循环（同步调用/测试）→ 只当没排上
+    _BG_COVER_KEYS.add(key)
+    _BG_COVER_TASKS.add(task)
+
+    def finished(done: asyncio.Task) -> None:
+        _BG_COVER_TASKS.discard(done)
+        _BG_COVER_KEYS.discard(key)
+        if not done.cancelled():
+            done.exception()              # 消费掉异常（_finish_item_covers 自己已记日志）
+
+    task.add_done_callback(finished)
+    try:
+        batch_store.add_item_log(batch_id, item_id, "视频已交付，封面转到后台补（不挡下一条视频）。")
+    except Exception:  # noqa: BLE001 - 批次/条目刚被删掉时只当没日志，别再抛回去
+        pass
+    return True
+
+
+async def _finish_covers_after_delivery(
+    batch_id: str, item_id: str, folder: Path | None
+) -> None:
+    """交付完成之后补封面：默认**后台**，`H3_COVER_BLOCKING=1` 时才等它做完。
+
+    「从成片全帧找手、抽封面人物图」这一步仍然留在前台（GPU 正空着，6~20 秒）：
+    它要占显存，等下一支视频开跑后再做容易把视频挤 OOM；真正丢到后台的只有
+    中转站请求（60~100 秒/张）和随后的本地放大。
+    """
+    if not full_auto_enabled():
+        return
+    if cover_blocking():
+        await _finish_item_covers(batch_id, item_id, folder)
+        return
+    if folder is not None and Path(folder).is_dir():
+        await _ensure_video_cover_person(batch_id, item_id, Path(folder))
+    spawn_item_covers(batch_id, item_id, folder)
+
+
 def _maybe_spawn_covers(batch_id: str, item_id: str, *, only_missing: bool = False) -> bool:
     """若已开启封面自动化且该条的人物图+发布文案都齐了，就后台触发封面生成（ChatGPT 桌面端）。
 
@@ -4371,12 +4438,11 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
             existing = folder / "最终成片.mp4"
         if existing.is_file() and existing.stat().st_size > 0:
             outputs["videoFinal"] = str(existing)
-            # 已经有成片：封面缺了就按新规则从成片抽帧补（已有两张封面则直接跳过）。
-            if folder is not None:
-                await _finish_item_covers(batch_id, item_id, folder)
             _set_item(batch_id, item_id, status="completed", stage="completed",
                       outputs=outputs, finishedAt=now_iso(), error=None)
             batch_store.add_item_log(batch_id, item_id, "已有最终成片，直接沿用；未重复提交出片任务。")
+            # 封面缺了就按成片抽帧补（已有两张则直接跳过）；默认后台，不挡下一条视频。
+            await _finish_covers_after_delivery(batch_id, item_id, folder)
             return
     # 源视频可能已经被清理掉（用户重新开始一条老任务时很常见）：先补下载，
     # 否则提交视频任务时会直接抛「文件不存在」，看起来像系统坏了。
@@ -4440,12 +4506,13 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
         batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
         _set_item(batch_id, item_id, stage="deliver", childJob=None)
         outputs = await _deliver(batch_id, item_id, video_job)
-        # 交付之后才出封面：参考帧从这支成片里抽（手部正常），失败不影响已完成视频。
-        await _finish_item_covers(
+        # 先标完成、放行下一条视频；封面（参考帧从这支成片里抽，手部正常）随后补：
+        # 默认后台补（中转站 60~100 秒/张，没必要把下一条视频卡在后面），失败不影响已完成视频。
+        await _mark_delivered(batch_id, item_id, outputs, note="发布文件已整理：")
+        await _finish_covers_after_delivery(
             batch_id, item_id,
             Path(str(outputs["folder"])) if outputs.get("folder") else None,
         )
-        await _mark_delivered(batch_id, item_id, outputs, note="发布文件已整理：")
     # 唱歌条目出片后**不再自动加字幕**（2026-09-16 用户：「现在的生成完成唱歌视频之后自动运行的
     # 字幕生成有问你不要自动生成了」）：字幕只在独立路由 /subtitle 上手动跑，用户自己挑要加字幕的成片。
     # `_add_subtitles_if_singing` 与 `subtitle_step.add_for_item` 保留（便于以后恢复），只是没人再调用。
@@ -4963,6 +5030,13 @@ async def run_batch(batch_id: str) -> None:
                     notice=f"{len(waiting)} 条素材已备齐，等你确认出片。",
                 )
                 return
+            # ⑤ 视频都出完了，但封面还在**后台补**：收尾必须等它，否则批次显示「全部完成」
+            #    而发布目录里还缺两张封面。默认不再让封面挡视频，只挡最后的完成判定。
+            pending_covers = {task for task in _BG_COVER_TASKS if not task.done()}
+            if pending_covers:
+                batch_store.update(batch_id, notice="视频已全部出完，正在后台补齐封面……")
+                await asyncio.wait(pending_covers, timeout=3)
+                continue
             warnings = any(row.get("warning") for row in items)
             failed = [row for row in items if row.get("status") == "failed"]
             batch_store.update(
@@ -5360,6 +5434,8 @@ def work_in_flight() -> bool:
     """
     return bool(
         _RUNNING_BATCHES or _VIDEO_TASKS or _ITEM_TASKS or _SALVAGE_TASKS or _STALE_VIDEO_TASKS
+        # 后台补封面也算「还有活」：它还在写发布目录，这时候关机会留下缺封面的成品。
+        or covers_in_flight()
     )
 
 

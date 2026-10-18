@@ -204,5 +204,95 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(target.read_bytes(), b"\xff\xd8fallback")
 
 
+    async def test_covers_go_to_background_after_delivery(self):
+        """默认不挡下一条视频：抽完封面人物图就把两张封面丢到后台。"""
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            with patch.object(batch_worker, "full_auto_enabled", return_value=True), patch.object(
+                batch_worker, "cover_blocking", return_value=False
+            ), patch.object(
+                batch_worker, "_ensure_video_cover_person", new_callable=AsyncMock
+            ) as ensure, patch.object(
+                batch_worker, "spawn_item_covers", return_value=True
+            ) as spawn:
+                await batch_worker._finish_covers_after_delivery("batch", "item", folder)
+        ensure.assert_awaited()
+        spawn.assert_called_once()
+
+    async def test_cover_blocking_switch_still_awaits_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            with patch.object(batch_worker, "full_auto_enabled", return_value=True), patch.object(
+                batch_worker, "cover_blocking", return_value=True
+            ), patch.object(
+                batch_worker, "_finish_item_covers", new_callable=AsyncMock
+            ) as covers, patch.object(batch_worker, "spawn_item_covers") as spawn:
+                await batch_worker._finish_covers_after_delivery("batch", "item", folder)
+        covers.assert_awaited_once()
+        spawn.assert_not_called()
+
+    async def test_background_covers_are_tracked_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            async def slow(*_args, **_kwargs):
+                started.set()
+                await release.wait()
+
+            with patch.object(batch_worker, "_finish_item_covers", side_effect=slow), patch.object(
+                batch_worker.batch_store, "add_item_log"
+            ):
+                try:
+                    self.assertTrue(batch_worker.spawn_item_covers("b", "i", folder))
+                    self.assertFalse(
+                        batch_worker.spawn_item_covers("b", "i", folder), "同一条只排一次"
+                    )
+                    self.assertTrue(batch_worker.covers_in_flight())
+                    await asyncio.wait_for(started.wait(), timeout=2)
+                finally:
+                    release.set()
+                    tasks = list(batch_worker._BG_COVER_TASKS)
+                    if tasks:
+                        await asyncio.wait_for(asyncio.gather(*tasks), timeout=2)
+                    batch_worker._BG_COVER_TASKS.clear()
+                    batch_worker._BG_COVER_KEYS.clear()
+        self.assertFalse(batch_worker.covers_in_flight())
+
+    async def test_background_covers_count_as_work_in_flight(self):
+        """后台补封面时不许自动关机：它还在写发布目录。"""
+        blocker = asyncio.Event()
+
+        async def pending():
+            await blocker.wait()
+
+        task = asyncio.create_task(pending())
+        batch_worker._BG_COVER_TASKS.add(task)
+        try:
+            self.assertTrue(batch_worker.work_in_flight())
+        finally:
+            blocker.set()
+            await task
+            batch_worker._BG_COVER_TASKS.discard(task)
+        self.assertFalse(batch_worker.work_in_flight())
+
+    def test_process_confirmed_marks_delivered_before_covers(self):
+        """源码级顺序：先标完成放行下一条，再去补封面（别把顺序改回去）。"""
+        import inspect
+
+        source = inspect.getsource(batch_worker._process_confirmed)
+        mark_at = source.index("await _mark_delivered")
+        covers_at = source.index("_finish_covers_after_delivery", mark_at)
+        self.assertLess(mark_at, covers_at, "必须先交付完成，再补封面")
+
+    def test_batch_runner_waits_for_background_covers(self):
+        import inspect
+
+        source = inspect.getsource(batch_worker.run_batch)
+        self.assertIn("pending_covers", source)
+        self.assertIn("_BG_COVER_TASKS", source)
+
+
 if __name__ == "__main__":
     unittest.main()

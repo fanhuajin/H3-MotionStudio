@@ -1,5 +1,12 @@
 # Prototype Instructions
 
+- **【2026-10-18 封面改成后台补，不再挡下一条视频】** 用户问：「封面现在调用的是中转站的接口 还有必要阻塞整个流程吗」。结论：不必。已落地：
+  - `_process_confirmed()` 改为 `_deliver()` → `_mark_delivered()`（条目立即 completed、放开视频锁）→ `_finish_covers_after_delivery()`；默认把两张封面丢进后台任务（`spawn_item_covers()` / `_BG_COVER_TASKS` / `_BG_COVER_KEYS` 去重），下一条视频立刻开跑。`H3_COVER_BLOCKING=1` 回到旧的「等封面做完再走下一条」语义。
+  - **只把中转站等待放后台**：从成片全帧找手、抽 `封面人物图.png`（6~20 秒、要显存）仍在交付当下做完，避免和下一支视频抢 VRAM；后台只剩中转站请求（实测 60~100 秒/张）+ 本地 VOSR2 放大。放大要 GPU，按 `pipeline_lock` FIFO 排在视频之间（每条最多多等一次放大），不再等 2~4 分钟接口。
+  - 收尾与关机仍等封面：`run_batch` 末尾（⑤）发现 `_BG_COVER_TASKS` 未完成就每 3 秒等一轮再落 `completed`；`work_in_flight()` 把后台封面算作「还有活」，自动关机不会在封面写到一半时触发。
+  - 容错不变：封面失败仍只记日志、绝不把已完成视频判失败；已有两张封面跳过；`.h3-*-request-pending` 成本闸照旧（后台窗口更长，重启时若正卡在放大阶段仍按「结果未确认」处理）。
+  - 测试 `tests/test_cover_after_video.py` 19 条全过（新增：默认后台 / `H3_COVER_BLOCKING=1` 仍等待 / 后台任务去重与跟踪 / 后台封面算 `work_in_flight` / 源码顺序「先标完成再补封面」/ `run_batch` 收尾等封面）；`BatchSingleVideoQueueTests`、`BatchShutdownTests`、`BatchRunnerTakeoverTests`、`CoverSingleReferenceFallbackTests` 共 29 条全过。**改完由用户自己重启后端。**
+
 - **【2026-10-18 封面改为「出片后从成片抽帧生成」】** 用户原话：「其实现在生成的人物图手指有问题，不过生成的 comfyui 视频中的人物的手指没有问题，我想将备料中通过人物生成封面的流程改一下，生成人物图之后先不要生成封面图，只有视频生成完成之后，从视频抽帧抽取一张图片去生成封面图」。已落地：
   - **备料不再出封面**：`_run_prep()` 去掉 `_finish_prep_covers()`；`prepReady` 改用新函数 `_prep_assets_ready()`（只认「发布目录有人物图 + 发布文案」）；`_next_prep()` / `_prep_remaining()` 不再把「缺封面」当备料未完成，**出片不再等封面**（覆盖 2026-09-23 的「封面齐备才放行」）。
   - **交付后出封面**：`_process_confirmed()` 在 `_deliver()` 之后调用 `_finish_item_covers()` → `_ensure_video_cover_person()` 用**最终成片**（`最终成片.mp4`，含 2× 放大）**全片逐帧**选「手部最清晰」的一帧，存成 **`封面人物图.png`**（和 `人物图.png` 同目录）。选帧由 `scripts/pick_hand_frame.py` 在 ComfyUI python 里用 Impact Pack 的 `hand_yolov8s.pt` 逐帧定位手（640 宽、batch 16），按手框内 Laplacian 方差评清晰度（较模糊的那只手主导、贴边切手指扣分）；`H3_HAND_DEVICE=auto` 在显存够时走 GPU、否则 CPU，GPU OOM 自动退回 CPU；模型/子进程不可用或整片没手时才退回 `_frame_detail_score` 全帧扫描。`H3_HAND_FRAME=0` 关手部选帧，`H3_HAND_MODEL` 换权重。两条路都纯本地，不调付费接口（实测 025：325 帧全扫 GPU 5.9s；CPU 约 18s）。
