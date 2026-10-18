@@ -58,7 +58,7 @@ class SourceFaceGuardTests(unittest.TestCase):
                 self.assertNotEqual(guarded.getpixel((50, 50)), image.getpixel((50, 50)))   # 五官中段
                 self.assertEqual(guarded.getpixel((50, 28)), image.getpixel((50, 28)))     # 额头
                 self.assertEqual(guarded.getpixel((50, 88)), image.getpixel((50, 88)))     # 下颌
-                self.assertEqual(guarded.getpixel((24, 50)), image.getpixel((24, 50)))     # 脸侧
+                self.assertEqual(guarded.getpixel((14, 50)), image.getpixel((14, 50)))     # 脸外/头发
 
     def test_person_api_stops_before_billed_request_on_failed_guard(self):
         with tempfile.TemporaryDirectory() as raw:
