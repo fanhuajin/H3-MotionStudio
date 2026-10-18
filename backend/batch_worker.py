@@ -755,6 +755,78 @@ def mark_items_deleted(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
     return {"marked": marked, "busy": busy, "rejected": rejected}
 
 
+def mark_item_completed(batch_id: str, item_id: str) -> dict[str, Any]:
+    """**手动把一条任务标记为已完成**（2026-10-18 用户：「我想将一条视频状态修改为已完成」）。
+
+    只改状态、不重新生成任何东西；发布目录里如果已经有 `最终成片.mp4` 就顺手登记进 outputs，
+    没有则写一条 warning（完成页不会有成片预览）。正在出片/处理的条目拒绝（先取消），
+    已删除的拒绝；已经完成的直接返回。
+
+    允许的状态：`failed` / `skipped` / `confirmed`——这三种都说明流程已经停下来了，
+    用户自己确认结果已可用（比如在别处出好了片，或决定不再跑）。
+    """
+    item = _item(batch_id, item_id)
+    status = str(item.get("status") or "")
+    if status == "completed":
+        return batch_store.get(batch_id) or {}
+    if status in {"running", "revising"}:
+        raise ValueError("这一条正在出片/处理，请先取消，再标记为已完成")
+    if status == "deleted":
+        raise ValueError("已删除的条目不能标记为已完成")
+    if status not in {"failed", "skipped", "confirmed"}:
+        raise ValueError(f"当前状态（{status or '未知'}）不能手动标记为已完成")
+
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    outputs = dict(item.get("outputs") or {})
+    has_video = False
+    if folder is not None and folder.is_dir():
+        video = folder / "最终成片.mp4"
+        if video.is_file() and video.stat().st_size > 0:
+            outputs["videoFinal"] = str(video)
+            has_video = True
+        image = publish_published_image(folder)
+        if image is not None:
+            outputs["image"] = str(image)
+        copy = folder / "发布文案.txt"
+        if copy.is_file():
+            outputs["copy"] = str(copy)
+        outputs["folder"] = str(folder.resolve())
+    warning = (
+        None if has_video
+        else "手动标记为已完成：发布目录里没有最终成片.mp4，完成页不会显示成片。"
+    )
+
+    def apply(row: dict[str, Any]) -> None:
+        row.update(
+            status="completed",
+            stage="completed",
+            finishedAt=now_iso(),
+            error=None,
+            warning=warning,
+            childJob=None,
+            videoJobId=None,
+            skipRequested=False,
+            deleteRequested=False,
+            forceRender=False,
+        )
+        row["outputs"] = outputs
+        for milestone in row.get("milestones") or []:
+            if milestone.get("status") in {"pending", "running", "error"}:
+                milestone.update(
+                    status="completed",
+                    currentNode=None,
+                    finishedAt=now_iso(),
+                    progress=100 if milestone.get("progress") is not None else milestone.get("progress"),
+                )
+
+    batch_store.mutate_item(batch_id, item_id, apply)
+    batch_store.add_item_log(
+        batch_id, item_id,
+        "已手动标记为已完成（未重新生成任何文件；发布目录里已有的成片已登记）。",
+    )
+    return batch_store.get(batch_id) or {}
+
+
 def _adopt_published_image_for_restart(
     batch_id: str, item_id: str, item: dict[str, Any]
 ) -> Path | None:

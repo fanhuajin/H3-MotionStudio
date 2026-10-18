@@ -1366,6 +1366,17 @@ async def skip_batch_item(batch_id: str, item_id: str):
     return _wake_batch(batch_id, "当前条目已跳过。")
 
 
+@app.post("/api/batches/{batch_id}/items/{item_id}/complete")
+async def complete_batch_item(batch_id: str, item_id: str):
+    """手动把一条任务标记为已完成（不重新生成，只改状态并登记已有成片）。"""
+    _batch_item_or_404(batch_id, item_id)
+    try:
+        state = batch_worker.mark_item_completed(batch_id, item_id)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+    return _with_publish_chain(state)
+
+
 @app.delete("/api/batches/{batch_id}/items/{item_id}")
 async def delete_batch_item(batch_id: str, item_id: str):
     item = _batch_item_or_404(batch_id, item_id)

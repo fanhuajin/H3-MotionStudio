@@ -818,6 +818,20 @@ export function BatchRoute() {
     await itemCallFor(item, "retry");
   };
 
+  /** 手动把一条停下来的任务标记为已完成（只改状态，不重新生成）。 */
+  const completeItem = async (item: BatchItem) => {
+    const ok = await askConfirm({
+      title: "标记为已完成？",
+      detail:
+        "只改状态，不会生成或删除文件。发布目录里已经有 最终成片.mp4 会自动登记；"
+        + "没有的话，完成页不会显示成片预览。",
+      items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+      confirmLabel: "标记已完成",
+      tone: "restart",
+    });
+    if (ok) await itemCallFor(item, "complete");
+  };
+
   /** 批量操作：勾选后一次确认 / 跳过 / 删除（后端逐个校验，出片仍一条一条来）。 */
   const batchOp = async (
     action: "confirm-many" | "retry-many" | "skip-many" | "delete-many",
@@ -1235,33 +1249,45 @@ export function BatchRoute() {
       );
     }
     if (item.status === "failed") {
-      return <button title="重新请求补齐缺失图片（可能产生费用），已有图片直接沿用" onClick={() => void retryFailedItem(item)}><ArrowClockwise />重试</button>;
+      return (
+        <>
+          <button title="重新请求补齐缺失图片（可能产生费用），已有图片直接沿用" onClick={() => void retryFailedItem(item)}><ArrowClockwise />重试</button>
+          <button title="只把状态改成已完成，不重新生成" onClick={() => void completeItem(item)}><Check weight="bold" />标记已完成</button>
+        </>
+      );
     }
     if (["skipped", "completed"].includes(item.status)) {
       return (
-        <button
-          onClick={() =>
-            void (async () => {
-              // 已出片的「重新开始」会覆盖发布目录里的成片，先问一句；失败 / 已跳过没有成片可覆盖
-              if (
-                item.status === "completed"
-                && !(await askConfirm({
-                  title: "再出一版？",
-                  detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
-                  items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
-                  confirmLabel: "再出一版",
-                  tone: "restart",
-                }))
-              ) {
-                return;
-              }
-              await itemCallFor(item, "retry");
-            })()
-          }
-          title={item.ai?.reference_image_path ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
-        >
-          <ArrowClockwise />重新开始
-        </button>
+        <>
+          <button
+            onClick={() =>
+              void (async () => {
+                // 已出片的「重新开始」会覆盖发布目录里的成片，先问一句；失败 / 已跳过没有成片可覆盖
+                if (
+                  item.status === "completed"
+                  && !(await askConfirm({
+                    title: "再出一版？",
+                    detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
+                    items: [`第 ${item.index} 条 · ${itemTitle(item)}`],
+                    confirmLabel: "再出一版",
+                    tone: "restart",
+                  }))
+                ) {
+                  return;
+                }
+                await itemCallFor(item, "retry");
+              })()
+            }
+            title={item.ai?.reference_image_path ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
+          >
+            <ArrowClockwise />重新开始
+          </button>
+          {item.status === "skipped" && (
+            <button title="只把状态改成已完成，不重新生成" onClick={() => void completeItem(item)}>
+              <Check weight="bold" />标记已完成
+            </button>
+          )}
+        </>
       );
     }
     return null;
@@ -1315,6 +1341,14 @@ export function BatchRoute() {
               >
                 <ArrowClockwise />
                 {item.status === "failed" ? "重试" : "重新开始"}
+              </button>
+            )}
+            {["failed", "skipped", "confirmed"].includes(item.status) && (
+              <button
+                onClick={() => void completeItem(item)}
+                title="只把状态改成已完成，不重新生成；发布目录里已有的最终成片会自动登记"
+              >
+                <Check weight="bold" />标记已完成
               </button>
             )}
             {canReopen && (

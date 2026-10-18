@@ -71,6 +71,41 @@ class BatchZoneTests(unittest.TestCase):
                 asyncio.run(app.start_batch_render("batch"))
         self.assertEqual(caught.exception.status_code, 409)
 
+    def test_manual_complete_registers_existing_final_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            (folder / "最终成片.mp4").write_bytes(b"video")
+            (folder / "人物图.png").write_bytes(b"person")
+            (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+            row = {
+                "id": "item", "status": "skipped", "stage": "skipped",
+                "milestones": [{"id": "video", "status": "skipped", "progress": 0}],
+            }
+
+            class Store:
+                def get(self, _batch_id):
+                    return {"id": "batch", "items": [row]}
+
+                def mutate_item(self, _batch_id, _item_id, change):
+                    change(row)
+
+                def add_item_log(self, *_args, **_kwargs):
+                    return None
+
+            with patch.object(batch_worker, "_item", return_value=row), patch.object(
+                batch_worker, "_recorded_publish_folder", return_value=folder
+            ), patch.object(batch_worker, "batch_store", Store()):
+                batch_worker.mark_item_completed("batch", "item")
+            self.assertEqual(row["status"], "completed")
+            self.assertEqual(row["outputs"]["videoFinal"], str(folder / "最终成片.mp4"))
+            self.assertIsNone(row["warning"])
+
+    def test_manual_complete_rejects_running_item(self):
+        row = {"id": "item", "status": "running"}
+        with patch.object(batch_worker, "_item", return_value=row):
+            with self.assertRaises(ValueError):
+                batch_worker.mark_item_completed("batch", "item")
+
     def test_existing_covers_make_no_api_request(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

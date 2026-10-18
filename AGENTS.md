@@ -8,6 +8,12 @@
   - **容错**：抽帧失败退回人物图；封面失败只记日志、**绝不把已完成的视频判失败**（缺的那张之后可在 `/images` 补）；已有两张封面则跳过，不重复计费。
   - 边界：026 与已完成的 27~40 不回溯。测试 `tests/test_cover_after_video.py`（13 条：备料不出封面、出片后抽帧出封面、手部选帧优先/失败退回、封面优先用封面人物图、页面无成片拒绝/整条跳过/一键等待、真实 ffmpeg 抽帧）+ `tests/test_image_workbench.py`（38 条）全过；`test_backend` 仍有 15 条与本改造无关的既有失败（UI 文案 / 提示词长度 / 下载 / 迁移）。**用户当时有出片任务在跑，改完由他自己重启后端，智能体不要主动重启；前端已 `npm run build`。**
 
+- **【2026-10-18 批量页可手动把一条任务标记为已完成】** 用户原话：「在现有的tabs中可以让我修改任务状态吗 我想将一条视频状态修改为已完成 我没有地方可以操作」。已新增：
+  - 后端 `batch_worker.mark_item_completed()` + `POST /api/batches/{b}/items/{i}/complete`：**只改状态、不重新生成**；发布目录里已有 `最终成片.mp4` / `人物图.*` / `发布文案.txt` 就登记进 `outputs`，没有成片则写 `warning`（完成页不会显示成片预览）。
+  - 允许 `failed` / `skipped` / `confirmed`；`running` / `revising` 必须先取消，`deleted` 拒绝，`completed` 幂等返回。
+  - UI：异常与已跳过 Tab 的行、以及展开详情里加「标记已完成」按钮，确认框明确「只改状态，不生成/不删除文件」；完成后条目自然进入「已完成」Tab。
+  - 测试 `test_manual_complete_registers_existing_final_video` / `test_manual_complete_rejects_running_item`。后端需重启生效。
+
 - **【2026-10-18 抽帧改成「全帧扫描取分最高」】** 用户问「全部帧抽出来要多久」，实测后回「要」，于是 `_scene_frame_candidates()` 从「采样 23 张」升级为**全帧扫描**：`_scan_all_frames()` 一次 ffmpeg 解码把帧导到临时目录（`select=not(mod(n,stride))` + **`-fps_mode passthrough`**——本机 ffmpeg 9 已删掉 `-vsync`，写 `-vsync 0` 会直接报 Unrecognized option、rc 非 0 并静默退回采样），逐帧 `_frame_detail_score` 评分，**内存只留前 5 张**（`_SCAN_KEEP`），临时目录用完即删；扫描失败才退回原来的「目标附近 + 全片均匀」采样，保证备料不中断。步长 `_frame_scan_stride()`：≤45 秒（含跳舞 40 秒上限）**逐帧全扫**，≤90 秒每 2 帧，更长每 3 帧。实测（040，10.2s / 306 帧）：导出 0.58s、评分 4.0s（13.1ms/帧），整条流程 5.2s；选中第 5 帧（37.2 分）——比原来 23 张采样的最高 31.0 更好，因为老采样从 5% 时刻起把开头漏了。仍是纯本地 ffmpeg，不产生任何图片接口费用。测试 `FrameCandidateBreadthTests`（全帧扫描选最高分 / 扫描失败退回采样 / 步长分级 / 首帧规则已删）。**用户明确要求：改完他自己重启（当时有任务在跑），不要主动重启后端。**
 
 - **【2026-10-18 去掉首帧规则：抽帧多抽、取评分最高】** 用户原话：「去掉首帧规则 抽帧多抽一些 找出评分最高的一张」，**覆盖并删除**了上一条里的「首帧有人物就用首帧」规则（`first_frame_preferred` / `_first_frame_with_person` / `_use_first_frame` 全部移除，`H3_BATCH_FRAME_FIRST` 不再是配置项）。现在 `_scene_frame_candidates()` 两层采样、共约 **23~25 张候选**：① 目标时刻附近密采（±0.03/0.06/0.09/0.12 时间比例 + 真正相邻的 0.15 秒）；② 全片 0.05~0.95 均匀铺 16 帧；然后按本地「双侧手臂区域清晰度」评分**取分最高的一张**（`_frame_detail_score`，纯本地 ffmpeg + PIL，不调付费接口）。040 实测：23 张候选、4.4 秒、选中 31.0 分那张（正好是 040 原来用的抽帧）。模型挑图仍只在 `H3_BATCH_AI_FRAME_PICK=1` 时启用。测试 `FrameCandidateBreadthTests`（候选数 ≥20 且最高分被选中；首帧函数确实已删）+ 原有 `SceneFramePickerTests`（4 条）全过。**用户明确要求：改完由他自己重启（当时有任务在跑），智能体不要主动重启后端。**
