@@ -560,7 +560,8 @@ async def _generate_cover(
     """封面走**第三方 API** 出带标题文字的成图（用户 2026-09-19：「封面也用api生成 不需要本地」）。
 
     提示词用 `prompt(folder, stage, kind)`（里面就是发布文案的标题与简介）；
-    参考图 = 这条自己的 `人物图.png`（保住人物与画面）。
+    参考图优先用这条成片抽出的 `封面参考.jpg`（2026-10-18：人物图的手可能画坏，成片的手是好的），
+    没有时才用 `人物图.png`（保住人物与画面）。
     出图比例 4:3（B站）/ 3:4（抖音），`save_upload()` 会按 `TARGETS` 精确裁到
     1448×1086 / 1086×1448 并做比例校验。
 
@@ -596,10 +597,12 @@ async def _generate_cover(
             marker.unlink(missing_ok=True)
         marker.write_text(json.dumps({"submittedAt": time.time(), "stage": stage}), encoding="utf-8")
         candidate = work / f"{stage}.png"
+        # 参考图：**成片抽出的封面参考帧优先**（2026-10-18：人物图手指可能画坏，成片的手正常）；
+        # 没有参考帧（老作品/抽帧失败）才退回人物图。封面只发这一张参考（identity_image=None）：
+        # 再给一张「本人固定参考」的话，两张图是同一人的不同服装/场景，模型会把两个人一起画进封面。
+        reference = batch_worker.cover_frame(folder) or asset_path(folder, "person")
         await batch_image.generate_candidate_image(
-            scene_image=asset_path(folder, "person"),
-            # **封面只发这一张参考**（identity_image=None）：再给一张「本人固定参考」的话，
-            # 两张图是同一人的不同服装/场景，模型会把**两个人一起画进封面**（实测踩过）。
+            scene_image=reference,
             identity_image=None,
             prompt=prompt(folder, stage, kind),
             ratio="4:3" if stage == "bilibili" else "3:4",

@@ -390,6 +390,11 @@ PUBLISH_COVER_ALIASES = {
 }
 # 源视频抽帧（图一）也复制一份进发布目录，方便直接拿去出图（用户 2026-09-16 要求）
 PUBLISH_FRAME_NAME = "抽帧.jpg"
+# 【2026-10-18】封面参考帧：从**最终成片**里抽的一帧，封面改用它当参考图。
+# 用户原话：「人物图手指有问题，不过生成的 comfyui 视频中人物的手指没有问题……
+# 只有视频生成完成之后，从视频抽帧抽取一张图片去生成封面图」。
+# 放在发布目录里，`/images` 页面之后重出封面也会自动优先用它。
+COVER_FRAME_NAME = "封面参考.jpg"
 
 
 def new_item(
@@ -870,11 +875,14 @@ def restart_item_log(direct: bool) -> str:
     """「重新开始」写进条目日志的那句话（单条与批量共用，免得两边跑偏）。
 
     用户 2026-09-20：「如果人物图 B站图片 抖音图片都有的话点击重新开始不要重新生成」——
-    所以这句话必须写清「三张图沿用现有的」，这也是链路真实行为：直接续跑那条路
-    （`confirmed`）根本不碰图片，回备料那条路也只会收编/沿用已有的图、只补缺的那些。
+    所以这句话必须写清「已有的图沿用、不会重新出图」。2026-10-18 起封面改到出片后从
+    成片抽帧生成，所以「缺失封面」不再在备料里补。
     """
     if direct:
-        return "已重新开始这一条：已有的人物图和封面直接沿用，缺失图片会重新请求补齐；备料齐全后再出片。"
+        return (
+            "已重新开始这一条：已有的人物图直接沿用，不会重新出图；"
+            "封面改为出片后从成片抽帧生成，不再在备料里补；随后继续出片。"
+        )
     return (
         "已重新开始这一条，将从下载与备料重做；已经出好的人物图与封面会直接沿用，"
         "三张都在时不会重新出图（只补缺的那几张）。"
@@ -1591,7 +1599,12 @@ async def _prepare_review(
 
 
 async def _run_prep(batch_id: str, item_id: str) -> None:
-    """单链路备料：下载、预审、人物图、文案和两张封面全部落盘。"""
+    """单链路备料：下载、预审、人物图与文案落盘。
+
+    **封面不在这里出**（2026-10-18 用户：「生成人物图之后先不要生成封面图，只有视频生成
+    完成之后，从视频抽帧抽取一张图片去生成封面图」）——人物图的手指可能有问题，而成片里
+    的手指是好的，所以封面参考帧改从最终成片里抽。备料齐了就自动放行出片，不等封面。
+    """
     _set_item(batch_id, item_id, prepAttemptStartedAt=now_iso())
     existing = _item(batch_id, item_id)
     if existing.get("status") == "confirmed":
@@ -1610,7 +1623,7 @@ async def _run_prep(batch_id: str, item_id: str) -> None:
     feedback = str(refreshed.get("revisionFeedback") or "")
     mode = str(refreshed.get("revisionMode") or "both")
     await _prepare_review(batch_id, item_id, feedback=feedback, mode=mode)
-    await _finish_prep_covers(batch_id, item_id)
+    # 不再调用 `_finish_prep_covers()`：封面改到出片交付之后（见 `_finish_item_covers`）。
 
 
 def _covers_ready(item: dict[str, Any]) -> bool:
@@ -1619,6 +1632,17 @@ def _covers_ready(item: dict[str, Any]) -> bool:
                 and (folder / "发布文案.txt").is_file()
                 and all(any(_present_file(folder, name) for name in names)
                         for names in PUBLISH_COVER_ALIASES.values()))
+
+
+def _prep_assets_ready(item: dict[str, Any]) -> bool:
+    """备料是否已齐：人物图 + 发布文案落进发布目录。
+
+    **封面不算备料条件**（2026-10-18 用户要求：人物图之后先不出封面，等成片出来再从
+    视频抽帧出）——所以这里不再看两张封面，出片可以立即放行。
+    """
+    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    return bool(folder and folder.is_dir() and publish_published_image(folder)
+                and (folder / "发布文案.txt").is_file())
 
 
 def resume_failed_item_with_complete_images(folder: Path) -> dict[str, str] | None:
@@ -1643,7 +1667,11 @@ def resume_failed_item_with_complete_images(folder: Path) -> dict[str, str] | No
 
 
 async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
-    """补齐封面并确认文件落盘；未完成的条目留在备料区。"""
+    """补齐封面并确认文件落盘（**老流程/手动补封面用**）。
+
+    2026-10-18 起正常备料不再调用它：封面改到出片交付后由 `_finish_item_covers()` 从成片
+    抽帧生成。这里保留给持久化的 `coverOnlyPrep` 条目和显式补封面场景，参考图仍是人物图。
+    """
     item = _item(batch_id, item_id)
     if not full_auto_enabled():
         return
@@ -2265,15 +2293,10 @@ async def _prepare_review_work(
                 f"图二（身份参考）{IDENTITY_PATH}。",
             )
 
-    # 封面自动化同样**默认关闭**（理由同上）：只有 `H3_AUTO_CHATGPT_COVER=1` 才自动出封面。
-    if _cgi_auto_cover():
-        _maybe_spawn_covers(batch_id, item_id)
-
-    # 【全自动】封面**已改到「出片完成之后」再出**（2026-09-23）：
-    # 见 `_mark_delivered()` 末尾的 `spawn_api_covers()`。原时机是这里（备料完成后立刻发，
-    # 与出片并行）——但封面拿到图后的本地 VOSR2 放大要和视频抢 GPU，且进队时机不确定，
-    # 出现过「钱付了、封面卡住」的情况。封面在发布前才用得上，晚十几分钟没有任何影响。
-
+    # 封面自动化（ChatGPT 桌面端那条老路）也**不在备料阶段触发**：2026-10-18 起封面统一
+    # 改到出片交付之后、从成片抽帧再出（见 `_finish_item_covers`）。`_maybe_spawn_covers`
+    # 保留给显式调用，不再在备料里自动发。
+    #
     # **自动放行出片**：默认也已关闭（图片自动化的一部分）——上传人物图后停在
     # 「等待你的确认」，点「确认并出片」才走视频链路。想恢复自动放行：`H3_AUTO_CONFIRM=1`。
     # （人物图失败时备料会直接抛错标黄这条，走不到这里 —— 所以这里不需要再判别废图。）
@@ -2281,7 +2304,7 @@ async def _prepare_review_work(
 
 
 def _auto_confirm_prepared_item(batch_id: str, item_id: str) -> None:
-    """新备料和复用素材共用自动确认；封面齐备仍由出片前检查保证。"""
+    """新备料和复用素材共用自动确认；封面不再拦出片（出片后才从成片抽帧出封面）。"""
     if not _cgi_auto_confirm():
         return
     fresh = _item(batch_id, item_id)
@@ -2317,13 +2340,15 @@ def _cgi_auto_confirm() -> bool:
 
 
 def cover_reference_image(item: dict[str, Any], folder: Path | None = None) -> Path | None:
-    """封面要以哪张人物图为基准：**发布目录里那张 `人物图.*` 优先**。
+    """封面要以哪张图为基准：**成片抽出的封面参考帧优先**，其次发布目录里的 `人物图.*`。
 
-    用户 2026-09-16：「生成的封面图背景要和人物图背景相同」——封面必须跟着发布目录里
-    那张人物图（用户最终采用、屏幕上看到的那张）的背景走。实测 006 的 `人物图.png` 与
-    `ai.reference_image_path` 指向的 ChatGPT 原图**不是同一张**，拿后者去生成封面，
-    背景就跟发布目录里的人物图对不上了。
+    2026-10-18 起封面在出片之后生成，参考帧来自最终成片（人物图的手指可能画坏，成片的
+    手是好的）；没有参考帧（老作品 / 抽帧失败）时退回人物图 —— 封面背景仍跟发布目录里
+    那张人物图走（用户 2026-09-16：「生成的封面图背景要和人物图背景相同」）。
     """
+    frame = cover_frame(folder)
+    if frame is not None:
+        return frame
     published = publish_published_image(folder)
     if published is not None:
         return published
@@ -2345,6 +2370,21 @@ def publish_published_image(folder: Path | None) -> Path | None:
     return None
 
 
+def cover_frame(folder: Path | None) -> Path | None:
+    """发布目录里的「封面参考帧」（从最终成片抽的那一张），没有就返回 None。
+
+    封面优先用它当参考图：人物图的手指可能画坏，而成片里的手是好的（2026-10-18 用户）。
+    文件不存在时调用方退回人物图，保证 `/images` 页面在老作品上仍能出封面。
+    """
+    if folder is None:
+        return None
+    target = folder / COVER_FRAME_NAME
+    try:
+        return target if target.is_file() and target.stat().st_size > 0 else None
+    except OSError:
+        return None
+
+
 # 全自动链路里封面出图要**严格串行**（一条一条跑，避免同时打十几个中转站请求被限流）。
 _COVER_LOCK = asyncio.Lock()
 
@@ -2354,11 +2394,9 @@ def spawn_api_covers(
 ) -> bool:
     """【全自动】用**中转站**出这条的两张封面（后台任务，与出片并行）。
 
-    时机（2026-09-23 调整）：**成片交付之后**才出封面 —— 见 `_mark_delivered()`。
-    原来在备料完成后立刻发（与出片并行），但封面拿到图后的本地 VOSR2 放大要和视频抢 GPU，
-    且进队时机取决于中转站何时返回，出现过「钱付了、封面卡住」。封面发布前才用得上，
-    晚十几分钟没有影响；而且此时 `发布文案.txt` 是 `_deliver()` 写过的最终版，图上的字更准。
-
+    时机（2026-10-18 调整）：**成片交付之后**才出封面 —— 由 `_finish_item_covers()` 在
+    `_deliver()` 之后调用，先从成片抽 `封面参考.jpg` 再出图。此前封面在备料阶段生成，
+    参考图是人物图，人物图手指画坏时封面也跟着坏（用户 2026-10-18 反馈）。
     `only_missing=True`：两张封面都在就直接返回，不白跑（重新开始时避免重复出图）。
     `force=True`：**已存在的封面也要重出**（人物图被换掉时必须这样，见 `adopt_published_portrait`）。
     返回是否真的排上了任务。**不是** ChatGPT 桌面端那条路（那条仍归 `H3_AUTO_CHATGPT_COVER`）。
@@ -2444,6 +2482,95 @@ async def _generate_covers_via_api(
     return errors
 
 
+def extract_cover_frame(video: Path, target: Path) -> Path:
+    """从**最终成片**抽一帧当封面参考：本地全帧扫描，取手/画面最清晰的一张。
+
+    用户 2026-10-18：「从视频抽帧抽取一张图片去生成封面图」——人物图的手指可能画坏，
+    成片里的手是好的。评分复用备料那套 `_frame_detail_score`（双侧手臂区域 + 全身细节），
+    纯本地 ffmpeg + PIL，不调任何付费接口。失败抛错，由调用方退回人物图。
+    """
+    duration = _video_duration_seconds(video)
+    scanned = _scan_all_frames(video, duration, _frame_scan_stride(duration))
+    if not scanned:
+        raise RuntimeError("成片全帧扫描失败，无法抽取封面参考帧")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.unlink(missing_ok=True)
+    target.write_bytes(max(scanned, key=lambda row: row[0])[1])
+    return target
+
+
+async def _ensure_video_cover_frame(
+    batch_id: str, item_id: str, folder: Path
+) -> Path | None:
+    """确保发布目录里有这张成片的 `封面参考.jpg`；成片更新过（重出片）就重新抽。"""
+    video = folder / "最终成片.mp4"
+    if not video.is_file():
+        return None
+    target = folder / COVER_FRAME_NAME
+    try:
+        if target.is_file() and target.stat().st_mtime >= video.stat().st_mtime:
+            return target
+    except OSError:
+        pass
+    try:
+        await asyncio.to_thread(extract_cover_frame, video, target)
+    except Exception as error:      # noqa: BLE001 - 抽帧失败只退回人物图，不拦封面/出片
+        batch_store.add_item_log(
+            batch_id, item_id, f"从成片抽封面参考帧失败（将退回人物图出封面）：{error}"
+        )
+        return None
+    batch_store.add_item_log(
+        batch_id, item_id,
+        "已从最终成片抽取封面参考帧（本地评分最高的一帧），两张封面将用它作底图。",
+    )
+    return target
+
+
+async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) -> None:
+    """出片交付之后：**先从成片抽帧，再出两张封面**（2026-10-18 用户要求）。
+
+    封面失败只写日志，不把已经完成的视频判失败；缺的那张之后可在 `/images` 页面补。
+    除取消外**不向上抛错**，避免 runner 把已完成的条目误判成失败。
+    """
+    if not full_auto_enabled():
+        return
+    try:
+        item = _item(batch_id, item_id)
+        folder = folder or _recorded_publish_folder(item) or _existing_publish_folder(item)
+        if folder is None or not folder.is_dir():
+            return
+        if _covers_ready(item):
+            return
+        frame = await _ensure_video_cover_frame(batch_id, item_id, folder)
+        if frame is None:
+            batch_store.add_item_log(
+                batch_id, item_id, "没有可用的封面参考帧（成片缺失或抽帧失败），本次用人物图出封面。"
+            )
+        retry_authorized = bool(item.get("retryMissingCovers"))
+        if retry_authorized:
+            _set_item(batch_id, item_id, retryMissingCovers=False)
+        errors = await _generate_covers_via_api(
+            batch_id, item_id, folder, allow_uncertain_retry=retry_authorized
+        )
+        if _covers_ready(_item(batch_id, item_id)):
+            return
+        detail = f"：{errors[0]}" if errors else ""
+        batch_store.add_item_log(
+            batch_id, item_id,
+            f"封面未全部生成{detail}；视频已完成，可稍后在图片页（/images）补齐封面。",
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:      # noqa: BLE001 - 封面步骤异常绝不能把已完成视频拉成失败
+        logger.warning("出片后的封面步骤异常（忽略）：%s", error, exc_info=True)
+        try:
+            batch_store.add_item_log(
+                batch_id, item_id, f"出片后的封面步骤异常（视频不受影响）：{error}"
+            )
+        except Exception:           # noqa: BLE001
+            pass
+
+
 def _maybe_spawn_covers(batch_id: str, item_id: str, *, only_missing: bool = False) -> bool:
     """若已开启封面自动化且该条的人物图+发布文案都齐了，就后台触发封面生成（ChatGPT 桌面端）。
 
@@ -2475,7 +2602,8 @@ def _maybe_spawn_covers(batch_id: str, item_id: str, *, only_missing: bool = Fal
 
 
 async def ensure_publish_images(
-    batch_id: str, item_id: str, *, reason: str = "", allow_spawn: bool = True
+    batch_id: str, item_id: str, *, reason: str = "", allow_spawn: bool = True,
+    expect_covers: bool = True,
 ) -> dict[str, Any]:
     """检查发布目录里的**人物图与两张封面**，缺了什么就报出来。
 
@@ -2495,12 +2623,19 @@ async def ensure_publish_images(
     """
     state = await asyncio.to_thread(_sync_publish_images, batch_id, item_id)
     missing = list(state.get("missing") or [])
+    # 2026-10-18 起封面在出片之后才生成：出片前的体检不能再把「缺封面」当成异常提示。
+    if not expect_covers and full_auto_enabled():
+        cover_names = {name for names in PUBLISH_COVER_ALIASES.values() for name in names}
+        missing = [name for name in missing if name not in cover_names]
+        tail = "（封面会在出片后从成片抽帧生成）"
+    else:
+        tail = "（图片由你自己出/自己上传）"
     if reason and missing:
         batch_store.add_item_log(
-            batch_id, item_id, f"{reason}发布目录缺：{'、'.join(missing)}（图片由你自己出/自己上传）。"
+            batch_id, item_id, f"{reason}发布目录缺：{'、'.join(missing)}{tail}。"
         )
     spawned = False
-    if allow_spawn and state.get("needs_covers"):
+    if expect_covers and allow_spawn and state.get("needs_covers"):
         if full_auto_enabled():
             # 全自动：封面走中转站（与备料后那次是同一实现，`only_missing` 保证已有的不重出）
             spawned = spawn_api_covers(batch_id, item_id)
@@ -3715,7 +3850,7 @@ async def _mark_delivered(batch_id: str, item_id: str, outputs: dict[str, str], 
         error=None,
     )
     batch_store.add_item_log(batch_id, item_id, f"{note}{outputs['folder']}")
-    # 封面已是备料完成条件，交付视频后不再发起任何图片请求。
+    # 封面已在 `_finish_item_covers()` 里按成片抽帧生成；这里只收尾，不再发图片请求。
 
 
 async def _salvage_deliver(batch_id: str, item_id: str) -> bool:
@@ -4085,6 +4220,9 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
             existing = folder / "最终成片.mp4"
         if existing.is_file() and existing.stat().st_size > 0:
             outputs["videoFinal"] = str(existing)
+            # 已经有成片：封面缺了就按新规则从成片抽帧补（已有两张封面则直接跳过）。
+            if folder is not None:
+                await _finish_item_covers(batch_id, item_id, folder)
             _set_item(batch_id, item_id, status="completed", stage="completed",
                       outputs=outputs, finishedAt=now_iso(), error=None)
             batch_store.add_item_log(batch_id, item_id, "已有最终成片，直接沿用；未重复提交出片任务。")
@@ -4101,7 +4239,10 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
         validate_dance_duration(await asyncio.to_thread(_video_duration_seconds, source))
     # 缺人物图/封面只写日志标出来，交给用户自己出图/自己上传，链路不再自动触碰图片。
     try:
-        await ensure_publish_images(batch_id, item_id, reason="出片前检查发布成品：", allow_spawn=False)
+        await ensure_publish_images(
+            batch_id, item_id, reason="出片前检查发布成品：", allow_spawn=False,
+            expect_covers=False,
+        )
     except Exception:  # noqa: BLE001 - 检查本身不能拖累出片
         logger.exception("出片前检查发布成品失败（忽略）")
 
@@ -4148,6 +4289,11 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
         batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
         _set_item(batch_id, item_id, stage="deliver", childJob=None)
         outputs = await _deliver(batch_id, item_id, video_job)
+        # 交付之后才出封面：参考帧从这支成片里抽（手部正常），失败不影响已完成视频。
+        await _finish_item_covers(
+            batch_id, item_id,
+            Path(str(outputs["folder"])) if outputs.get("folder") else None,
+        )
         await _mark_delivered(batch_id, item_id, outputs, note="发布文件已整理：")
     # 唱歌条目出片后**不再自动加字幕**（2026-09-16 用户：「现在的生成完成唱歌视频之后自动运行的
     # 字幕生成有问你不要自动生成了」）：字幕只在独立路由 /subtitle 上手动跑，用户自己挑要加字幕的成片。
@@ -4249,10 +4395,11 @@ def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _next_prep(state: dict[str, Any]) -> dict[str, Any] | None:
-    """已有封面缺口的旧条目先补料，再处理新链接。"""
-    for item in _priority_sorted(state.get("items") or []):
-        if item.get("status") == "confirmed" and full_auto_enabled() and not _covers_ready(item):
-            return item
+    """下一个要备料的条目（pending / revising）。
+
+    2026-10-18 起**不再**把「已确认但缺封面」的条目拉回备料：封面改到出片之后从成片抽帧
+    生成，出片闸门不再等封面，所以这里只看还没备料的条目。
+    """
     return _next_work(state, allow_confirmed=False)
 
 
@@ -4260,8 +4407,6 @@ def _prep_remaining(state: dict[str, Any]) -> bool:
     return any(
         item.get("status") in {"pending", "revising", "awaiting_review"}
         or (item.get("status") == "running" and item.get("stage") in {"download", "prepare"})
-        or (item.get("status") == "confirmed"
-            and full_auto_enabled() and not _covers_ready(item))
         for item in state.get("items") or []
     )
 

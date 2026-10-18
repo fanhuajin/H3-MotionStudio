@@ -3381,13 +3381,13 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertFalse(chatgpt_image.auto_confirm_enabled())  # 不自动放行出片
 
         source = inspect.getsource(batch_worker._prepare_review_work)
-        # 自动放行的代码还在，但必须**有开关守着**（否则等于又自动化了）
-        self.assertIn("已自动放行出片", source)
-        self.assertIn("_cgi_auto_confirm()", source)
-        self.assertLess(source.index("_cgi_auto_confirm()"), source.index("已自动放行出片"))
-        # 封面同样必须有开关守着
-        self.assertIn("_cgi_auto_cover()", source)
-        self.assertLess(source.index("_cgi_auto_cover()"), source.index("_maybe_spawn_covers"))
+        # 自动放行的代码还在（在 `_auto_confirm_prepared_item` 里），但必须**有开关守着**
+        auto = inspect.getsource(batch_worker._auto_confirm_prepared_item)
+        self.assertIn("已自动放行出片", auto)
+        self.assertIn("_cgi_auto_confirm()", auto)
+        # 2026-10-18：封面改到出片后从成片抽帧生成，备料里**不再**触发任何封面生成
+        self.assertNotIn("_maybe_spawn_covers(", source)
+        self.assertNotIn("_finish_prep_covers(", source)
         # 关掉时也要给用户一句明确提示（素材已就绪，等你自己出图上传）
         self.assertIn("自动出图已关闭", source)
 

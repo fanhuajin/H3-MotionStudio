@@ -802,7 +802,8 @@ def _with_publish_chain(state: dict[str, Any] | None) -> dict[str, Any] | None:
     if not state:
         return state
     for item in state.get("items") or []:
-        item["prepReady"] = batch_worker._covers_ready(item) if batch_worker.full_auto_enabled() else bool(
+        # 2026-10-18：备料齐不再看封面 —— 封面改到出片后从成片抽帧生成。
+        item["prepReady"] = batch_worker._prep_assets_ready(item) if batch_worker.full_auto_enabled() else bool(
             (item.get("ai") or {}).get("reference_image_path")
         )
         if str(item.get("status")) in {"deleted", "pending", "revising"}:

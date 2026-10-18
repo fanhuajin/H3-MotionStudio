@@ -1742,7 +1742,7 @@ export function BatchRoute() {
         <div>
           <p className="batch-kicker">SERIAL PRODUCTION</p>
           <h1>批量视频制作</h1>
-          <p>先完成整批备料，再逐条出片。每条人物图、文案和两张封面齐备后自动进入出片区。</p>
+          <p>先完成整批备料，再逐条出片。人物图与文案备齐后立即进入出片区；两张封面在成片完成后从视频抽帧生成。</p>
           <p className="batch-priority-hint">
             两区内均按<strong>跳舞优先</strong>，再唱歌；备料区有待处理任务时，不启动下一条出片。
           </p>
@@ -1758,7 +1758,7 @@ export function BatchRoute() {
       <section className="batch-input-card">
         <div className="batch-prepare-head">
           <span>准备任务</span>
-          <small>下载抖音视频 → 抽帧分析 → 人物图与发布文案 → B站和抖音封面；已有文件直接沿用</small>
+          <small>下载抖音视频 → 抽帧分析 → 人物图与发布文案（封面在成片后从视频抽帧生成）；已有文件直接沿用</small>
         </div>
         <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
           <label className={danceOn ? "" : "off"}>

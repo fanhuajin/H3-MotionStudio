@@ -1,5 +1,12 @@
 # Prototype Instructions
 
+- **【2026-10-18 封面改为「出片后从成片抽帧生成」】** 用户原话：「其实现在生成的人物图手指有问题，不过生成的 comfyui 视频中的人物的手指没有问题，我想将备料中通过人物生成封面的流程改一下，生成人物图之后先不要生成封面图，只有视频生成完成之后，从视频抽帧抽取一张图片去生成封面图」。已落地：
+  - **备料不再出封面**：`_run_prep()` 去掉 `_finish_prep_covers()`；`prepReady` 改用新函数 `_prep_assets_ready()`（只认「发布目录有人物图 + 发布文案」）；`_next_prep()` / `_prep_remaining()` 不再把「缺封面」当备料未完成，**出片不再等封面**（覆盖 2026-09-23 的「封面齐备才放行」）。
+  - **交付后出封面**：`_process_confirmed()` 在 `_deliver()` 之后调用 `_finish_item_covers()` → `_ensure_video_cover_frame()` 用**最终成片**（`最终成片.mp4`，含 2× 放大）做本地全帧扫描、按 `_frame_detail_score` 取评分最高的一帧写成 `封面参考.jpg`（纯本地 ffmpeg+PIL，不调接口）→ 两张封面都用它当参考图（同一帧，保证一致）。成片更新过（mtime 更新）会重新抽。
+  - **参考图优先级**：`image_workbench._generate_cover()` 改成 `batch_worker.cover_frame(folder) or 人物图`；老作品/抽帧失败退回人物图。`/images` 页面之后手动重出封面也会自动优先用这张帧。
+  - **容错**：抽帧失败退回人物图；封面失败只记日志、**绝不把已完成的视频判失败**（缺的那张之后可在 `/images` 补）；已有两张封面则跳过，不重复计费。
+  - 边界：正在跑的 026 已有旧封面、不重做；已完成的 27~40 也不回溯。测试 `tests/test_cover_after_video.py`（7 条：备料不出封面、出片后抽帧出封面、失败不抛、封面优先用帧、退回人物图、`_prep_assets_ready` 不看封面、真实 ffmpeg 抽帧）+ `test_batch_zones` 更新；`test_backend` 仍有 15 条与本改造无关的既有失败（UI 文案 / 提示词长度 / 下载 / 迁移）。**用户当时有出片任务在跑，改完由他自己重启后端，智能体不要主动重启；前端已 `npm run build`。**
+
 - **【2026-10-18 抽帧改成「全帧扫描取分最高」】** 用户问「全部帧抽出来要多久」，实测后回「要」，于是 `_scene_frame_candidates()` 从「采样 23 张」升级为**全帧扫描**：`_scan_all_frames()` 一次 ffmpeg 解码把帧导到临时目录（`select=not(mod(n,stride))` + **`-fps_mode passthrough`**——本机 ffmpeg 9 已删掉 `-vsync`，写 `-vsync 0` 会直接报 Unrecognized option、rc 非 0 并静默退回采样），逐帧 `_frame_detail_score` 评分，**内存只留前 5 张**（`_SCAN_KEEP`），临时目录用完即删；扫描失败才退回原来的「目标附近 + 全片均匀」采样，保证备料不中断。步长 `_frame_scan_stride()`：≤45 秒（含跳舞 40 秒上限）**逐帧全扫**，≤90 秒每 2 帧，更长每 3 帧。实测（040，10.2s / 306 帧）：导出 0.58s、评分 4.0s（13.1ms/帧），整条流程 5.2s；选中第 5 帧（37.2 分）——比原来 23 张采样的最高 31.0 更好，因为老采样从 5% 时刻起把开头漏了。仍是纯本地 ffmpeg，不产生任何图片接口费用。测试 `FrameCandidateBreadthTests`（全帧扫描选最高分 / 扫描失败退回采样 / 步长分级 / 首帧规则已删）。**用户明确要求：改完他自己重启（当时有任务在跑），不要主动重启后端。**
 
 - **【2026-10-18 去掉首帧规则：抽帧多抽、取评分最高】** 用户原话：「去掉首帧规则 抽帧多抽一些 找出评分最高的一张」，**覆盖并删除**了上一条里的「首帧有人物就用首帧」规则（`first_frame_preferred` / `_first_frame_with_person` / `_use_first_frame` 全部移除，`H3_BATCH_FRAME_FIRST` 不再是配置项）。现在 `_scene_frame_candidates()` 两层采样、共约 **23~25 张候选**：① 目标时刻附近密采（±0.03/0.06/0.09/0.12 时间比例 + 真正相邻的 0.15 秒）；② 全片 0.05~0.95 均匀铺 16 帧；然后按本地「双侧手臂区域清晰度」评分**取分最高的一张**（`_frame_detail_score`，纯本地 ffmpeg + PIL，不调付费接口）。040 实测：23 张候选、4.4 秒、选中 31.0 分那张（正好是 040 原来用的抽帧）。模型挑图仍只在 `H3_BATCH_AI_FRAME_PICK=1` 时启用。测试 `FrameCandidateBreadthTests`（候选数 ≥20 且最高分被选中；首帧函数确实已删）+ 原有 `SceneFramePickerTests`（4 条）全过。**用户明确要求：改完由他自己重启（当时有任务在跑），智能体不要主动重启后端。**

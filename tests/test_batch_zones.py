@@ -52,16 +52,17 @@ class BatchZoneTests(unittest.TestCase):
         self.assertTrue(batch_worker.new_batch_state(["https://v.douyin.com/a"], [])["autoRender"])
         self.assertFalse(batch_worker.new_batch_state(["https://v.douyin.com/a"], [], auto_render=False)["autoRender"])
 
-    def test_prep_blockers_include_failed_and_unfinished_covers(self):
-        row = {"status": "failed"}
+    def test_prep_blockers_ignore_covers_and_failed_items(self):
+        """2026-10-18：封面不再拦出片（出片后才从成片抽帧出封面），失败条目也不挡备料。"""
+        row = {"status": "confirmed"}
         with patch.object(batch_worker, "full_auto_enabled", return_value=True), patch.object(
             batch_worker, "_covers_ready", return_value=False
         ):
-            self.assertTrue(batch_worker._prep_remaining({"items": [row]}))
-            row["status"] = "confirmed"
-            self.assertTrue(batch_worker._prep_remaining({"items": [row]}))
-            row["status"] = "skipped"
             self.assertFalse(batch_worker._prep_remaining({"items": [row]}))
+        row["status"] = "failed"
+        self.assertFalse(batch_worker._prep_remaining({"items": [row]}))
+        row["status"] = "awaiting_review"
+        self.assertTrue(batch_worker._prep_remaining({"items": [row]}))
 
     def test_manual_render_refuses_unfinished_prep(self):
         state = {"status": "awaiting_review", "items": [{"status": "pending"}, {"status": "confirmed"}]}
