@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { readJson } from "./api";
 import { StudioBot, statusMood } from "./StudioBot";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
@@ -497,13 +497,58 @@ interface ConfirmAsk {
 // verifies the latest batch before displaying any queue or empty form.
 let lastBatchView: { batch: BatchState | null; selectedId: string | null } | undefined;
 
+function BatchDialog({ id, title, subtitle, description, icon, trigger, restoreFocus, onClose, children, footer, className = "" }: {
+  id: string; title: string; subtitle: string; description: string; icon: ReactNode;
+  trigger: RefObject<HTMLButtonElement | null>; restoreFocus?: RefObject<boolean>;
+  onClose: () => void; children: ReactNode; footer: ReactNode; className?: string;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (restoreFocus?.current !== false) trigger.current?.focus({ preventScroll: true });
+    };
+  }, [trigger, restoreFocus]);
+  return createPortal(<dialog ref={dialogRef} id={id} className={`batch-settings-dialog ${className}`}
+    aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}
+    onCancel={(event) => { event.preventDefault(); onClose(); }}
+    onKeyDown={(event) => {
+      if (event.key !== "Tab") return;
+      const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]',
+      )).filter((control) => control.getClientRects().length > 0);
+      const first = controls[0], last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    }}
+    onClick={(event) => {
+      if (event.target !== event.currentTarget) return;
+      const bounds = event.currentTarget.getBoundingClientRect();
+      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
+    }}>
+    <header className="batch-settings-header">
+      <span className="batch-modal-icon" aria-hidden="true">{icon}</span>
+      <div><p>{subtitle}</p><h2 id={`${id}-title`}>{title}</h2></div>
+      <button type="button" className="batch-settings-close" autoFocus aria-label={`关闭${title}`} onClick={onClose}><X /></button>
+    </header>
+    <div className="batch-settings-scroll">
+      <p id={`${id}-description`} className="batch-settings-description">{description}</p>
+      {children}
+    </div>
+    <footer className="batch-settings-footer">{footer}</footer>
+  </dialog>, document.body);
+}
+
 function BatchLoading({ error, onRetry }: { error: string; onRetry: () => void }) {
   return <main className="batch-page batch-loading-page" aria-busy={!error}>
     <header className="batch-header"><div><p className="batch-kicker">SERIAL PRODUCTION</p><h1>批量视频制作</h1><p>先完成整批备料，再逐条出片。</p></div></header>
     <div className="batch-sync-notice" role="status"><SpinnerGap className={error ? undefined : "spin"} />{error ? "暂时无法读取批次" : "正在读取最新批次…"}{error && <button onClick={onRetry}>重新读取</button>}</div>
     {error && <p className="batch-alert">{error}</p>}
     <div className="batch-loading-layout" aria-hidden="true">
-      <section className="batch-input-card"><div className="batch-prepare-head">准备任务</div><div className="batch-loading-inputs"><div className="batch-skeleton batch-skeleton-input" /><div className="batch-skeleton batch-skeleton-input" /></div><div className="batch-skeleton batch-skeleton-setting" /><div className="batch-skeleton batch-skeleton-setting" /></section>
+      <section className="batch-monitor-toolbar"><div className="batch-skeleton batch-skeleton-setting" /><div className="batch-loading-tabs"><div className="batch-skeleton" /><div className="batch-skeleton" /></div></section>
       <section className="batch-table-card"><div className="batch-loading-tabs"><div className="batch-skeleton" /><div className="batch-skeleton" /><div className="batch-skeleton" /></div>{[0, 1, 2, 3].map(row => <div className="batch-loading-row" key={row}><div className="batch-skeleton" /><div className="batch-skeleton" /><div className="batch-skeleton" /></div>)}</section>
     </div>
   </main>;
@@ -521,26 +566,17 @@ export function BatchRoute() {
   const [autoRenderOn, setAutoRenderOn] = useState(initial.autoRenderOn);
   const [shutdown, setShutdown] = useState<ShutdownStatus>({ pending: false });
   const [batch, setBatch] = useState<BatchState | null>(() => lastBatchView?.batch ?? null);
-  // 每次回到已有队列先看列表；草稿独立保存，收起不会清空。
-  const [inputExpanded, setInputExpanded] = useState(false);
-  const inputShown = !batch || inputExpanded;
+  // 两个弹窗互斥；草稿独立保存在组件和本地存储，关闭不清空。
+  const [activeDialog, setActiveDialog] = useState<"add" | "settings" | null>(null);
+  const settingsOpen = activeDialog === "settings";
+  const addOpen = activeDialog === "add";
+  const [addError, setAddError] = useState("");
+  const restoreInputFocus = useRef(true);
   const [listFocusVersion, setListFocusVersion] = useState(0);
   const listSection = useRef<HTMLElement>(null);
   const inputToggle = useRef<HTMLButtonElement>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsFeedback, setSettingsFeedback] = useState<{ error: boolean; text: string } | null>(null);
-  const settingsDialog = useRef<HTMLDialogElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!settingsOpen) return;
-    const dialog = settingsDialog.current;
-    if (!dialog) return;
-    dialog.showModal();
-    return () => {
-      dialog.close();
-      settingsTrigger.current?.focus({ preventScroll: true });
-    };
-  }, [settingsOpen]);
   const [selectedId, setSelectedId] = useState<string | null>(() => lastBatchView?.selectedId ?? null);
   const [hasSnapshot, setHasSnapshot] = useState(lastBatchView !== undefined);
   // 刷新或重新进入页面时恢复上次选择的分区。
@@ -783,6 +819,7 @@ export function BatchRoute() {
   const prepare = async () => {
     setBusyAction("start");
     setError("");
+    setAddError("");
     // 报错信息要带上具体端点，所以在外层先声明（catch 里还要用）
     let target = "/api/batches";
     try {
@@ -814,7 +851,8 @@ export function BatchRoute() {
       // 失败时不清（catch 里不碰输入框），免得白粘一遍。
       if (singingOn && singingUrls.length) setSinging((current) => current === singing ? "" : current);
       if (danceOn && danceUrls.length) setDance((current) => current === dance ? "" : current);
-      setInputExpanded(false);
+      restoreInputFocus.current = false;
+      setActiveDialog(null);
       setListFocusVersion((version) => version + 1);
       // 新建批次也不自动展开任何一条：列表默认全收起，由用户自己点开要看的那条
       // （2026-09-15 用户：「启动页面的时候 列表默认都是收起来的 由我自己点击要查看哪个」）。
@@ -827,6 +865,7 @@ export function BatchRoute() {
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       setError(`${message}　〔POST ${target}〕`);
+      setAddError(message);
     } finally {
       setBusyAction("");
     }
@@ -1825,6 +1864,32 @@ export function BatchRoute() {
     );
   };
 
+  const resumeOnly = Boolean(batch && batch.status === "paused" && !batch.recoveryActive
+    && (batch.autoRender !== false || prepBlocked || !visibleItems.some((item) => item.status === "confirmed")));
+
+  const renderQueueActions = () => (
+        <div className="batch-entry-actions">
+          <button type="button" className="batch-add-toggle batch-settings-trigger" ref={settingsTrigger}
+            aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls="batch-running-settings-dialog"
+            title={`自动出片：${autoRenderSwitchOn ? "开启" : "关闭"}；${prepShutdownSwitchOn ? "备料后关机" : shutdownSwitchOn ? "全部完成后关机" : "自动关机关闭"}`}
+            onClick={() => { setSettingsFeedback(null); setActiveDialog("settings"); }}>
+            <GearSix />运行设置{(prepShutdownSwitchOn || shutdownSwitchOn) && <span className="batch-settings-badge"><Power />{prepShutdownSwitchOn ? "备料后关机" : "完成后关机"}</span>}
+          </button>
+          <button type="button" className={batch ? "batch-add-toggle" : "batch-primary small"} ref={inputToggle}
+            aria-haspopup="dialog" aria-expanded={addOpen} aria-controls="batch-add-dialog"
+            onClick={() => { restoreInputFocus.current = true; setAddError(""); setActiveDialog("add"); }}>
+            <UploadSimple />添加任务{(singing.trim() || dance.trim()) && <span className="batch-draft-badge">草稿 {splitUrls(singing).length + splitUrls(dance).length}</span>}
+          </button>
+          {resumeOnly && <button type="button" className="batch-primary small" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续任务</button>}
+          {batch && batch.autoRender === false && !resumeOnly && <button type="button" className="batch-primary small"
+            disabled={Boolean(busyAction) || prepBlocked || !visibleItems.some((item) => item.status === "confirmed")}
+            title={prepBlocked ? "备料区全部完成后才能开始出片" : "逐条开始出片"} onClick={() => void call("render")}>
+            <Play weight="fill" />{batch.status === "paused" ? "继续并开始出片" : batch.renderRequested ? "已安排出片" : "开始出片"}
+          </button>}
+
+        </div>
+  );
+
   if (!hasSnapshot) {
     return <BatchLoading error={syncError} onRetry={retryLatest} />;
   }
@@ -1837,10 +1902,7 @@ export function BatchRoute() {
         <div>
           <p className="batch-kicker">SERIAL PRODUCTION</p>
           <h1>批量视频制作</h1>
-          <p>先完成整批备料，再逐条出片。人物图与文案备齐后立即进入出片区；两张封面在成片完成后从视频抽帧生成。</p>
-          <p className="batch-priority-hint">
-            两区内均按<strong>跳舞优先</strong>，再唱歌；备料区有待处理任务时，不启动下一条出片。
-          </p>
+          <p>先备料，再逐条出片；已有文件直接沿用，封面在成片后补齐。</p>
         </div>
         {batch && (
           <div className={`batch-status-pill ${batch.status}`}>
@@ -1850,89 +1912,7 @@ export function BatchRoute() {
         )}
       </header>
 
-      <section className={`batch-input-card${inputShown ? "" : " collapsed"}`}>
-        <div className="batch-prepare-head">
-          <span>{batch ? "添加任务" : "准备任务"}</span>
-          <small>{batch
-            ? (singing.trim() || dance.trim() ? `已保留 ${splitUrls(singing).length + splitUrls(dance).length} 条未提交链接` : "随时添加新链接，已有任务继续保留")
-            : "下载抖音视频 → 抽帧分析 → 人物图与发布文案；已有文件直接沿用"}</small>
-          <div className="batch-entry-actions">
-          {batch && <button type="button" className="batch-add-toggle" ref={inputToggle}
-            aria-expanded={inputShown} aria-controls="batch-add-inputs"
-            onClick={() => { setInputExpanded(!inputShown); inputToggle.current?.focus({ preventScroll: true }); }}>
-            {inputShown ? <CaretUp /> : <CaretDown />}{inputShown ? "收起录入" : "添加任务"}
-          </button>}
-          <button type="button" className="batch-add-toggle batch-settings-trigger" ref={settingsTrigger}
-            aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls="batch-running-settings-dialog"
-            title={`自动出片：${autoRenderSwitchOn ? "开启" : "关闭"}；${prepShutdownSwitchOn ? "备料后关机" : shutdownSwitchOn ? "全部完成后关机" : "自动关机关闭"}`}
-            onClick={() => { setSettingsFeedback(null); setSettingsOpen(true); }}>
-            <GearSix />运行设置{(prepShutdownSwitchOn || shutdownSwitchOn) && <span className="batch-settings-badge"><Power />{prepShutdownSwitchOn ? "备料后关机" : "完成后关机"}</span>}
-          </button>
-          </div>
-        </div>
-        <div id="batch-add-inputs" className="batch-add-body" hidden={!inputShown}>
-        <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
-          <label className={danceOn ? "" : "off"}>
-            <span className="batch-input-head">
-              <b><PersonSimpleRun weight="fill" /> 跳舞视频链接</b>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={danceOn}
-                className={`batch-switch ${danceOn ? "on" : ""}`}
-                onClick={(event) => { event.preventDefault(); setDanceOn((value) => !value); }}
-              >
-                <i />{danceOn ? "已开启" : "已关闭"}
-              </button>
-            </span>
-            {danceOn ? (
-              <>
-                <textarea value={dance} onChange={(event) => setDance(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-                <small>{splitUrls(dance).length} 条 · 最长 40 秒 · 默认 9:16 竖版（审核时每条都能改）· 动作迁移成片</small>
-              </>
-            ) : (
-              <small>已关闭：这类链接不会展示，也不会加入批次。</small>
-            )}
-          </label>
-          <label className={singingOn ? "" : "off"}>
-            <span className="batch-input-head">
-              <b><MusicNotes weight="fill" /> 歌曲视频链接</b>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={singingOn}
-                className={`batch-switch ${singingOn ? "on" : ""}`}
-                onClick={(event) => { event.preventDefault(); setSingingOn((value) => !value); }}
-              >
-                <i />{singingOn ? "已开启" : "已关闭"}
-              </button>
-            </span>
-            {singingOn ? (
-              <>
-                <textarea value={singing} onChange={(event) => setSinging(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
-                <small>{splitUrls(singing).length} 条 · 默认 4:3 横版（审核时每条都能改）· 交付最终成片（无字幕）+ 人物图 + 发布文案</small>
-              </>
-            ) : (
-              <small>已关闭：这类链接不会展示，也不会加入批次。</small>
-            )}
-          </label>
-        </div>
-        <div className="batch-input-actions">
-          <p><ListChecks /> 重复链接会自动跳过；出片由下方开关控制，默认自动开始。</p>
-          <div className="batch-input-buttons">
-            <button
-              className="batch-primary"
-              disabled={!canStart || !loaded || busyAction === "start"}
-              onClick={prepare}
-              title="加入队列并立即开始准备：下载抖音视频 → 生成人物图与发布文案 → 等你确认"
-            >
-              {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}
-              准备任务（{splitUrls(singing).length + splitUrls(dance).length} 条）
-            </button>
-          </div>
-        </div>
-        </div>
-      </section>
+      {!batch && <section className="batch-monitor-toolbar" aria-label="任务操作"><div className="batch-toolbar-summary"><strong>开始第一批制作</strong><small>添加视频链接，准备素材后逐条出片</small></div>{renderQueueActions()}</section>}
 
 
 
@@ -1957,34 +1937,14 @@ export function BatchRoute() {
         </div>
       )}
 
+      {!batch && <section className="batch-first-task"><ListChecks /><h2>从添加第一条视频开始</h2><p>点击上方「添加任务」，粘贴跳舞或歌曲视频链接。准备好的任务会显示在这里。</p></section>}
+
       {batch && (
         <section className="batch-workspace" ref={listSection} tabIndex={-1} aria-label="任务列表">
-          <div className="batch-zone-control">
-            <div>
-              <strong>备料区 {tabCount("prep")} 条 → 出片区 {tabCount("render")} 条 · 异常 {tabCount("exception")} 条</strong>
-              <small>整批备料优先。失败条目进入异常区，不阻塞其余条目出片。</small>
-            </div>
-            <div className="batch-zone-actions">
-              {batch.autoRender === false && (
-                <button
-                  className="batch-primary small"
-                  disabled={Boolean(busyAction) || prepBlocked || !visibleItems.some((item) => item.status === "confirmed")}
-                  title={prepBlocked ? "备料区全部完成后才能开始出片" : "逐条开始出片"}
-                  onClick={() => void call("render")}
-                >
-                  <Play weight="fill" />{batch.status === "paused" ? "继续并开始出片" : batch.renderRequested ? "已安排出片" : "开始出片"}
-                </button>
-              )}
-            </div>
-          </div>
           <div className="batch-table-card">
-            {activeTab === "render" && tabCount("prep") > 0 && (
-              <div className="batch-render-context" role="status">
-                <span><ListChecks />{tabCount("prep")} 条任务正在备料区准备，备齐后会进入这里。{tabCount("render") === 0 ? "任务已在队列中，无需重复添加。" : "可先关注下方出片进度。"}</span>
-                <button type="button" onClick={() => switchTab("prep")}>查看备料区</button>
-              </div>
-            )}
-            <div className="batch-table-head">
+
+            <div className="batch-table-head batch-list-toolbar">
+              {/* 2026-10-18 用户：「这个不要」——列表只留 Tab 与操作按钮，不再单独放「任务队列」标题块。 */}
               <div className="batch-tabs" role="tablist" aria-label="按状态筛选">
                 {TABS.map((tab) => (
                   <button
@@ -2000,22 +1960,15 @@ export function BatchRoute() {
                   </button>
                 ))}
               </div>
-              {/* 「暂停 / 取消整批」两个按钮已去掉（2026-09-15 用户：「不需要暂停和取消整批
-                  这两个按钮」）：整批控制改由**单条操作**承担（跳过 / 取消 / 删除，以及
-                  批量操作栏），后端 `/pause`、`/resume`、`/cancel` 接口保留（API 能力）。
-                  只留一个**恢复用**的「继续」，且只在批次已经处于暂停状态时出现 —— 这个状态页面
-                  自己造不出来（唯一来源是本地服务在备料中途重启时的安全暂停），不留就会卡死。 */}
-              <div className="batch-table-controls">
-                {batch.status === "paused" && !batch.recoveryActive && (
-                  <button onClick={() => call("resume")} disabled={Boolean(busyAction)}><Play />继续</button>
-                )}
-                {/* 「监听发布目录人物图」的勾选框已按用户要求去掉（2026-09-19：「去掉」）；
-                    2026-09-20 用户又选了「谁写图谁登记」，于是**后端那份监听也删了**
-                    （`backend/publish_watcher.py` 与 `/api/watch/publish-portrait` 三个接口一起下线）：
-                    `/images` 出图或上传成功后当场把人物图登记成条目候选图并按需放行，
-                    不再每 5 秒扫一遍发布目录。代价：手动往发布目录丢一张人物图不再被认领。 */}
-              </div>
+              {renderQueueActions()}
             </div>
+
+            {activeTab === "render" && tabCount("prep") > 0 && (
+              <div className="batch-render-context" role="status">
+                <span><ListChecks />{tabCount("prep")} 条任务正在备料区准备，备齐后会进入这里。{tabCount("render") === 0 ? "任务已在队列中，无需重复添加。" : "可先关注下方出片进度。"}</span>
+                <button type="button" onClick={() => switchTab("prep")}>查看备料区</button>
+              </div>
+            )}
 
             {/* 批量操作栏：勾选任意一条后出现 */}
             {selectedIds.size > 0 && (
@@ -2306,32 +2259,77 @@ export function BatchRoute() {
           </div>
         </dialog>
       )}
-      {settingsOpen && createPortal(
-        <dialog ref={settingsDialog} id="batch-running-settings-dialog" className="batch-settings-dialog"
-          aria-labelledby="batch-settings-title" aria-describedby="batch-settings-description"
-          onCancel={(event) => { event.preventDefault(); setSettingsOpen(false); }}
-          onKeyDown={(event) => {
-            if (event.key !== "Tab") return;
-            const controls = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
-            const first = controls[0], last = controls[controls.length - 1];
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault(); last?.focus();
-            } else if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault(); first?.focus();
-            }
-          }}
-          onClick={(event) => {
-            if (event.target !== event.currentTarget) return;
-            const bounds = event.currentTarget.getBoundingClientRect();
-            if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) setSettingsOpen(false);
-          }}>
-          <header className="batch-settings-header">
-            <span className="batch-modal-icon" aria-hidden="true"><GearSix weight="duotone" /></span>
-            <div><p>批量制作 · 运行策略</p><h2 id="batch-settings-title">运行设置</h2></div>
-            <button type="button" className="batch-settings-close" autoFocus aria-label="关闭运行设置" onClick={() => setSettingsOpen(false)}><X /></button>
-          </header>
-          <div className="batch-settings-scroll">
-            <p id="batch-settings-description" className="batch-settings-description">{batch ? "开关修改后立即保存并生效，无需再次确认。关闭此窗口不会撤销已保存的设置。" : "设置会记在当前浏览器，点击「准备任务」时随新批次一起应用。"}</p>
+      {addOpen && <BatchDialog id="batch-add-dialog" title="添加任务" subtitle="批量制作 · 视频链接"
+        icon={<UploadSimple weight="duotone" />} trigger={inputToggle} restoreFocus={restoreInputFocus}
+        onClose={() => setActiveDialog(null)} className="batch-add-dialog"
+        description={batch && batch.status !== "cancelled" ? "链接将追加到当前队列，重复链接自动跳过；关闭窗口会保留尚未提交的输入。" : "选择视频类型并粘贴链接，提交后开始准备人物图与发布文案；关闭窗口会保留输入。"}
+        footer={<>
+          <p className="batch-settings-feedback">{busyAction === "start" ? "正在加入队列…" : "关闭保留草稿 · 提交成功后返回任务列表"}</p>
+          <button type="button" className="batch-primary small" disabled={!canStart || !loaded || busyAction === "start"} onClick={prepare}>
+            {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}准备任务（{splitUrls(singing).length + splitUrls(dance).length} 条）
+          </button>
+        </>}>
+        <div className={`batch-input-grid ${singingOn && danceOn ? "" : "single"}`}>
+          <label className={danceOn ? "" : "off"}>
+            <span className="batch-input-head">
+              <b><PersonSimpleRun weight="fill" /> 跳舞视频链接</b>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={danceOn}
+                className={`batch-switch ${danceOn ? "on" : ""}`}
+                onClick={(event) => { event.preventDefault(); setDanceOn((value) => !value); }}
+              >
+                <i />{danceOn ? "已开启" : "已关闭"}
+              </button>
+            </span>
+            {danceOn ? (
+              <>
+                <textarea value={dance} onChange={(event) => setDance(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
+                <small>{splitUrls(dance).length} 条 · 最长 40 秒 · 默认 9:16 竖版（审核时每条都能改）· 动作迁移成片</small>
+              </>
+            ) : (
+              <small>已关闭：这类链接不会展示，也不会加入批次。</small>
+            )}
+          </label>
+          <label className={singingOn ? "" : "off"}>
+            <span className="batch-input-head">
+              <b><MusicNotes weight="fill" /> 歌曲视频链接</b>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={singingOn}
+                className={`batch-switch ${singingOn ? "on" : ""}`}
+                onClick={(event) => { event.preventDefault(); setSingingOn((value) => !value); }}
+              >
+                <i />{singingOn ? "已开启" : "已关闭"}
+              </button>
+            </span>
+            {singingOn ? (
+              <>
+                <textarea value={singing} onChange={(event) => setSinging(event.target.value)} placeholder="每行粘贴一条抖音链接&#10;https://v.douyin.com/……" />
+                <small>{splitUrls(singing).length} 条 · 默认 4:3 横版（审核时每条都能改）· 交付最终成片（无字幕）+ 人物图 + 发布文案</small>
+              </>
+            ) : (
+              <small>已关闭：这类链接不会展示，也不会加入批次。</small>
+            )}
+          </label>
+        </div>
+
+        {addError && <div className="batch-alert" role="alert"><WarningCircle />{addError}</div>}
+        <p className="batch-settings-rule"><ListChecks />先备料，再逐条出片；出片与关机策略可在工具栏的「运行设置」中调整。</p>
+      </BatchDialog>}
+      {settingsOpen && <BatchDialog id="batch-running-settings-dialog" title="运行设置" subtitle="批量制作 · 运行策略"
+        icon={<GearSix weight="duotone" />} trigger={settingsTrigger} onClose={() => setActiveDialog(null)}
+        description={batch ? "开关修改后立即保存并生效，无需再次确认。关闭此窗口不会撤销已保存的设置。" : "设置会记在当前浏览器，点击「准备任务」时随新批次一起应用。"}
+        footer={<>
+
+            <div className={settingsFeedback?.error ? "batch-settings-feedback error" : "batch-settings-feedback"} role={settingsFeedback?.error ? "alert" : "status"}>
+              {["auto-render", "shutdown-on-complete", "shutdown-after-prep"].includes(busyAction) ? <><SpinnerGap className="spin" />正在保存设置…</> : settingsFeedback?.text || (batch ? "当前显示已保存的设置" : "当前显示新批次的预设")}
+            </div>
+            <button type="button" className="batch-primary small" onClick={() => setActiveDialog(null)}>关闭</button>
+
+        </>}>
         <div className="batch-settings-body">
         <div className="batch-shutdown-row">
           <span>
@@ -2388,15 +2386,8 @@ export function BatchRoute() {
         </div>
             <p className="batch-settings-rule"><ListChecks aria-hidden="true" />备料完成后关机开启时，会关闭自动出片及全部完成后关机。关机前有 {shutdownDelaySeconds} 秒倒计时，可在页面取消。</p>
             {shutdown.pending && <div className="batch-alert shutdown"><Power /><span>关机倒计时进行中：剩余 <b>{shutdownSecondsLeft}</b> 秒</span><button type="button" className="batch-primary small" disabled={Boolean(busyAction)} onClick={() => void cancelShutdown()}>取消关机</button></div>}
-          </div>
-          <footer className="batch-settings-footer">
-            <div className={settingsFeedback?.error ? "batch-settings-feedback error" : "batch-settings-feedback"} role={settingsFeedback?.error ? "alert" : "status"}>
-              {["auto-render", "shutdown-on-complete", "shutdown-after-prep"].includes(busyAction) ? <><SpinnerGap className="spin" />正在保存设置…</> : settingsFeedback?.text || (batch ? "当前显示已保存的设置" : "当前显示新批次的预设")}
-            </div>
-            <button type="button" className="batch-primary small" onClick={() => setSettingsOpen(false)}>关闭</button>
-          </footer>
-        </dialog>, document.body
-      )}
+
+      </BatchDialog>}
       {confirmAsk && createPortal(
         <div
           className="batch-modal-backdrop"
