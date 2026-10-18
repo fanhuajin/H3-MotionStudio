@@ -961,6 +961,7 @@ export function BatchRoute() {
   // 开关显示的永远是**当前批次**的值（没批次才用本地草稿）
   const shutdownSwitchOn = batch ? Boolean(batch.shutdownOnComplete) : shutdownOn;
   const prepShutdownSwitchOn = batch ? Boolean(batch.shutdownAfterPrep) : shutdownAfterPrepOn;
+  const autoRenderSwitchOn = batch ? batch.autoRender !== false : autoRenderOn;
   // 倒计时每秒跳：后端只给时间戳，剩几秒在本地算
   const shutdownTick = useNowTick(Boolean(shutdown.pending));
   const shutdownSecondsLeft = shutdown.pending
@@ -1902,8 +1903,14 @@ export function BatchRoute() {
         </div>
       </section>
 
-      <section className={`batch-settings${batch ? " compact" : ""}`} aria-label="批次运行设置">
-        {!batch && <div className="batch-shutdown-row">
+      <details className="batch-settings">
+        <summary>
+          <span>运行设置</span>
+          <small>自动出片：{autoRenderSwitchOn ? "开启" : "关闭"} · {prepShutdownSwitchOn ? "备料完成后关机" : shutdownSwitchOn ? "全部完成后关机" : "自动关机：关闭"}</small>
+          <CaretDown aria-hidden="true" />
+        </summary>
+        <div className="batch-settings-body">
+        <div className="batch-shutdown-row">
           <span>
             <b>备料完成后自动出片</b>
             <small>默认开启。关闭后，待处理备料完成即可在出片区手动启动；异常条目可稍后补跑。</small>
@@ -1911,17 +1918,22 @@ export function BatchRoute() {
           <button
             type="button"
             role="switch"
-            aria-checked={autoRenderOn}
-            className={`batch-switch ${autoRenderOn ? "on" : ""}`}
-            onClick={() => setAutoRenderOn((value) => !value)}
+            aria-label="备料完成后自动出片"
+            aria-checked={autoRenderSwitchOn}
+            className={`batch-switch ${autoRenderSwitchOn ? "on" : ""}`}
+            disabled={Boolean(busyAction)}
+            onClick={() => {
+              if (batch) void call("auto-render", "POST", { enabled: batch.autoRender === false });
+              else setAutoRenderOn((value) => !value);
+            }}
           >
-            <i />{autoRenderOn ? "已开启" : "已关闭"}
+            <i />{autoRenderSwitchOn ? "已开启" : "已关闭"}
           </button>
-        </div>}
+        </div>
         <div className="batch-shutdown-row">
           <span><b><Power weight="fill" /> 备料完成后关机</b>
             <small>默认关闭。其余条目备料完成后关机，异常条目留待之后处理，不阻止关机；开启后关闭自动出片，关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
-          <button type="button" role="switch" aria-checked={prepShutdownSwitchOn}
+          <button type="button" role="switch" aria-label="备料完成后关机" aria-checked={prepShutdownSwitchOn}
             className={`batch-switch ${prepShutdownSwitchOn ? "on" : ""}`}
             disabled={Boolean(busyAction)} onClick={toggleShutdownAfterPrep}>
             <i />{prepShutdownSwitchOn ? "已开启" : "已关闭"}
@@ -1938,6 +1950,7 @@ export function BatchRoute() {
           <button
             type="button"
             role="switch"
+            aria-label="全部完成后自动关机"
             aria-checked={shutdownSwitchOn}
             className={`batch-switch ${shutdownSwitchOn ? "on" : ""}`}
             disabled={Boolean(busyAction)}
@@ -1946,7 +1959,8 @@ export function BatchRoute() {
             <i />{shutdownSwitchOn ? "已开启" : "已关闭"}
           </button>
         </div>
-      </section>
+        </div>
+      </details>
 
       {error && <div className="batch-alert"><WarningCircle weight="fill" />{error}</div>}
       {!error && notice && <div className="batch-alert info"><ListChecks weight="fill" />{notice}</div>}
@@ -1977,17 +1991,6 @@ export function BatchRoute() {
               <small>整批备料优先。失败条目进入异常区，不阻塞其余条目出片。</small>
             </div>
             <div className="batch-zone-actions">
-              <span>备料完成后自动出片</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={batch.autoRender !== false}
-                className={`batch-switch ${batch.autoRender !== false ? "on" : ""}`}
-                disabled={Boolean(busyAction)}
-                onClick={() => void call("auto-render", "POST", { enabled: batch.autoRender === false })}
-              >
-                <i />{batch.autoRender !== false ? "已开启" : "已关闭"}
-              </button>
               {batch.autoRender === false && (
                 <button
                   className="batch-primary small"
