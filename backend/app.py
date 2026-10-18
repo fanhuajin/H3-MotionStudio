@@ -3297,7 +3297,7 @@ async def image_workbench_automatic(
 async def image_workbench_automatic_all():
     if not image_workbench.batch_image.configured():
         raise HTTPException(400, "第三方图片接口尚未配置")
-    return {"queued": image_workbench.start_all_missing()}
+    return image_workbench.start_all_missing()
 
 
 @app.post("/api/image-workbench/automatic-stop")

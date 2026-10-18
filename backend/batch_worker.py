@@ -393,11 +393,13 @@ PUBLISH_COVER_ALIASES = {
 }
 # 源视频抽帧（图一）也复制一份进发布目录，方便直接拿去出图（用户 2026-09-16 要求）
 PUBLISH_FRAME_NAME = "抽帧.jpg"
-# 【2026-10-18】封面参考帧：从**最终成片**里抽的一帧，封面改用它当参考图。
-# 用户原话：「人物图手指有问题，不过生成的 comfyui 视频中人物的手指没有问题……
-# 只有视频生成完成之后，从视频抽帧抽取一张图片去生成封面图」。
-# 放在发布目录里，`/images` 页面之后重出封面也会自动优先用它。
-COVER_FRAME_NAME = "封面参考.jpg"
+# 【2026-10-18】封面人物图：从**最终成片**全帧扫描挑「手部最清晰」的一帧，存进发布目录，
+# 和 `人物图.png` 放在同一层；封面与 `/images` 页面都用它当参考图，不再用可能画坏手的人物图。
+# 用户原话：「这张做为封面人物图放到发布目录的对应文件夹下就像现有的人物图一样的目录，
+# 用这张封面人物图去生成对应的封面，图片与封面也是用这张封面人物图」。
+COVER_PERSON_NAME = "封面人物图.png"
+# 读取兼容：早期实现叫 `封面参考.jpg`（本次改名前的产物），老目录仍能认。
+COVER_PERSON_ALIASES = ("封面人物图.png", "封面人物图.jpg", "封面参考.jpg")
 
 
 def new_item(
@@ -2343,13 +2345,12 @@ def _cgi_auto_confirm() -> bool:
 
 
 def cover_reference_image(item: dict[str, Any], folder: Path | None = None) -> Path | None:
-    """封面要以哪张图为基准：**成片抽出的封面参考帧优先**，其次发布目录里的 `人物图.*`。
+    """封面要以哪张图为基准：**发布目录里的 `封面人物图.*` 优先**，其次 `人物图.*`。
 
-    2026-10-18 起封面在出片之后生成，参考帧来自最终成片（人物图的手指可能画坏，成片的
-    手是好的）；没有参考帧（老作品 / 抽帧失败）时退回人物图 —— 封面背景仍跟发布目录里
-    那张人物图走（用户 2026-09-16：「生成的封面图背景要和人物图背景相同」）。
+    2026-10-18 起封面在出片之后生成：`封面人物图` 是从最终成片全帧扫描挑出的手部最清晰
+    的一帧（人物图的手指可能画坏，成片的手是好的）。老作品 / 还没抽出封面人物图时才退回人物图。
     """
-    frame = cover_frame(folder)
+    frame = cover_person_image(folder)
     if frame is not None:
         return frame
     published = publish_published_image(folder)
@@ -2373,19 +2374,22 @@ def publish_published_image(folder: Path | None) -> Path | None:
     return None
 
 
-def cover_frame(folder: Path | None) -> Path | None:
-    """发布目录里的「封面参考帧」（从最终成片抽的那一张），没有就返回 None。
+def cover_person_image(folder: Path | None) -> Path | None:
+    """发布目录里的「封面人物图」（成片全帧扫描挑出的手部最清晰一帧），没有返回 None。
 
-    封面优先用它当参考图：人物图的手指可能画坏，而成片里的手是好的（2026-10-18 用户）。
-    文件不存在时调用方退回人物图，保证 `/images` 页面在老作品上仍能出封面。
+    封面与 `/images` 页面都用它当参考图：人物图的手指可能画坏，成片的手是好的（2026-10-18）。
+    读取兼容旧名 `封面参考.jpg`，保证本次改名之前已经抽过帧的目录仍能用。
     """
-    if folder is None:
+    if folder is None or not folder.is_dir():
         return None
-    target = folder / COVER_FRAME_NAME
-    try:
-        return target if target.is_file() and target.stat().st_size > 0 else None
-    except OSError:
-        return None
+    for name in COVER_PERSON_ALIASES:
+        target = folder / name
+        try:
+            if target.is_file() and target.stat().st_size > 0:
+                return target
+        except OSError:
+            continue
+    return None
 
 
 # 全自动链路里封面出图要**严格串行**（一条一条跑，避免同时打十几个中转站请求被限流）。
@@ -2398,7 +2402,7 @@ def spawn_api_covers(
     """【全自动】用**中转站**出这条的两张封面（后台任务，与出片并行）。
 
     时机（2026-10-18 调整）：**成片交付之后**才出封面 —— 由 `_finish_item_covers()` 在
-    `_deliver()` 之后调用，先从成片抽 `封面参考.jpg` 再出图。此前封面在备料阶段生成，
+    `_deliver()` 之后调用，先抽 `封面人物图.png` 再出图。此前封面在备料阶段生成，
     参考图是人物图，人物图手指画坏时封面也跟着坏（用户 2026-10-18 反馈）。
     `only_missing=True`：两张封面都在就直接返回，不白跑（重新开始时避免重复出图）。
     `force=True`：**已存在的封面也要重出**（人物图被换掉时必须这样，见 `adopt_published_portrait`）。
@@ -2494,13 +2498,13 @@ def _hand_frame_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-def _pick_hand_cover_frame(video: Path, target: Path) -> bool:
-    """用本机手部检测模型挑「手最清楚」的一帧（ComfyUI 自带 python + Impact Pack 权重）。
+def _pick_hand_cover_person(video: Path, target: Path) -> bool:
+    """用本机手部检测模型从**整支成片每一帧**挑「手最清楚」的一帧，存成封面人物图。
 
-    在 640 宽上每 ~0.25 秒抽一帧，检测手框后按框内 Laplacian 方差评清晰度；两只手里
-    较模糊的那只主导，手贴画面边缘（手指被切）扣分。找到就写全分辨率 JPEG 并返回 True；
-    没有手/模型或 python 不在/超时都返回 False，由 `extract_cover_frame` 退回纯清晰度评分。
-    不调任何付费接口。
+    在 640 宽上逐帧检测（ComfyUI 自带 python + Impact Pack 权重），按手框内 Laplacian
+    方差评清晰度；两只手里较模糊的那只主导，手贴画面边缘（手指被切）扣分。找到就写
+    全分辨率图并返回 True；没有手/模型或 python 不在/超时都返回 False，由
+    `extract_cover_person` 退回纯清晰度评分。不调任何付费接口。
     """
     if not _hand_frame_enabled():
         return False
@@ -2516,13 +2520,13 @@ def _pick_hand_cover_frame(video: Path, target: Path) -> bool:
     command = [
         str(python), str(HAND_FRAME_SCRIPT),
         "--video", str(video), "--output", str(target), "--model", str(model),
-        "--device", env_value("H3_HAND_DEVICE", "cpu") or "cpu",
+        "--device", env_value("H3_HAND_DEVICE", "auto") or "auto",
     ]
     try:
         result = subprocess.run(
             command,
             capture_output=True,
-            timeout=600,
+            timeout=900,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )
     except Exception as error:      # noqa: BLE001 - 选帧失败只该退回评分，不该拦住封面
@@ -2539,8 +2543,8 @@ def _pick_hand_cover_frame(video: Path, target: Path) -> bool:
             break
     if result.returncode == 0 and payload.get("ok") and target.is_file() and target.stat().st_size > 0:
         logger.info(
-            "手部选帧：t=%ss，%s 只手，得分 %s（%.1fs）",
-            payload.get("time"), len(payload.get("hands") or []),
+            "封面人物图：全片 %s 帧，选中 t=%ss，%s 只手，得分 %s（%.1fs）",
+            payload.get("frames"), payload.get("time"), len(payload.get("hands") or []),
             payload.get("score"), payload.get("elapsed") or 0,
         )
         return True
@@ -2553,55 +2557,56 @@ def _pick_hand_cover_frame(video: Path, target: Path) -> bool:
     return False
 
 
-def extract_cover_frame(video: Path, target: Path) -> Path:
-    """从**最终成片**抽一帧当封面参考：**优先挑手部最清晰的一帧**。
+def extract_cover_person(video: Path, target: Path) -> Path:
+    """从**最终成片**抽出封面人物图：**全视频逐帧、优先手部最清晰**。
 
-    用户 2026-10-18：「要选择手部清晰的」——人物图的手指可能画坏，成片里的手是好的，
-    所以先用本机 `hand_yolov8s.pt` 定位手、按手框内清晰度选帧；模型/子进程不可用或整片
-    没检测到手时，退回原来的全帧扫描 `_frame_detail_score`（双侧手臂区域 + 全身细节）。
-    两条路都是纯本地 ffmpeg/PIL/OpenCV，不调任何付费接口。
+    用户 2026-10-18：「最终成片也是全视频抽帧 找出手部最清晰的一张，这张做为封面人物图
+    放到发布目录……用这张封面人物图去生成对应的封面」。先用本机 `hand_yolov8s.pt` 定位手、
+    按手框内清晰度逐帧选；模型/子进程不可用或整片没检测到手时，退回全帧扫描
+    `_frame_detail_score`（双侧手臂区域 + 全身细节）。两条路都纯本地，不调付费接口。
     """
-    if _pick_hand_cover_frame(video, target):
+    if _pick_hand_cover_person(video, target):
         return target
     duration = _video_duration_seconds(video)
     scanned = _scan_all_frames(video, duration, _frame_scan_stride(duration))
     if not scanned:
-        raise RuntimeError("成片全帧扫描失败，无法抽取封面参考帧")
+        raise RuntimeError("成片全帧扫描失败，无法抽取封面人物图")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.unlink(missing_ok=True)
     target.write_bytes(max(scanned, key=lambda row: row[0])[1])
     return target
 
 
-async def _ensure_video_cover_frame(
+async def _ensure_video_cover_person(
     batch_id: str, item_id: str, folder: Path
 ) -> Path | None:
-    """确保发布目录里有这张成片的 `封面参考.jpg`；成片更新过（重出片）就重新抽。"""
+    """确保发布目录里有这张成片的 `封面人物图.png`；成片更新过（重出片）就重新抽。"""
     video = folder / "最终成片.mp4"
     if not video.is_file():
         return None
-    target = folder / COVER_FRAME_NAME
+    target = folder / COVER_PERSON_NAME
     try:
         if target.is_file() and target.stat().st_mtime >= video.stat().st_mtime:
             return target
     except OSError:
         pass
     try:
-        await asyncio.to_thread(extract_cover_frame, video, target)
+        await asyncio.to_thread(extract_cover_person, video, target)
     except Exception as error:      # noqa: BLE001 - 抽帧失败只退回人物图，不拦封面/出片
         batch_store.add_item_log(
-            batch_id, item_id, f"从成片抽封面参考帧失败（将退回人物图出封面）：{error}"
+            batch_id, item_id, f"从成片抽封面人物图失败（将退回人物图出封面）：{error}"
         )
         return None
     batch_store.add_item_log(
         batch_id, item_id,
-        "已从最终成片抽取封面参考帧（优先手部最清晰的一帧），两张封面将用它作底图。",
+        "已从最终成片逐帧扫描抽出封面人物图（挑手部最清晰的一帧，存为封面人物图.png），"
+        "两张封面与图片页都会用它作参考。",
     )
     return target
 
 
 async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) -> None:
-    """出片交付之后：**先从成片抽帧，再出两张封面**（2026-10-18 用户要求）。
+    """出片交付之后：**先抽封面人物图，再出两张封面**（2026-10-18 用户要求）。
 
     封面失败只写日志，不把已经完成的视频判失败；缺的那张之后可在 `/images` 页面补。
     除取消外**不向上抛错**，避免 runner 把已完成的条目误判成失败。
@@ -2615,10 +2620,10 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
             return
         if _covers_ready(item):
             return
-        frame = await _ensure_video_cover_frame(batch_id, item_id, folder)
+        frame = await _ensure_video_cover_person(batch_id, item_id, folder)
         if frame is None:
             batch_store.add_item_log(
-                batch_id, item_id, "没有可用的封面参考帧（成片缺失或抽帧失败），本次用人物图出封面。"
+                batch_id, item_id, "没有可用的封面人物图（成片缺失或抽帧失败），本次用人物图出封面。"
             )
         retry_authorized = bool(item.get("retryMissingCovers"))
         if retry_authorized:

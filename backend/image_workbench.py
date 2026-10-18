@@ -178,6 +178,8 @@ def list_items() -> list[dict[str, Any]]:
         douyin = _first(folder, COVER_NAMES["douyin"])
         if not any((copy, frame, person, bili, douyin)):
             continue
+        cover_person = batch_worker.cover_person_image(folder)
+        has_video = (folder / "最终成片.mp4").is_file()
         items.append({
             "id": _folder_id(folder),
             "folderName": folder.name,
@@ -185,8 +187,11 @@ def list_items() -> list[dict[str, Any]]:
             "copy": copy,
             "kind": infer_kind(folder),
             "automation": AUTOMATIONS.get(_folder_id(folder)),
+            "hasVideo": has_video,
+            "canCover": bool(cover_person or has_video),
             "assets": {
                 "frame": _meta(frame), "identity": _meta(IDENTITY_PATH), "person": _meta(person),
+                "coverPerson": _meta(cover_person),
                 "bilibili": _meta(bili), "douyin": _meta(douyin),
             },
         })
@@ -211,7 +216,8 @@ def list_items() -> list[dict[str, Any]]:
             "title": str(ai.get("title") or row.get("title") or f"第 {row.get('index')} 条"),
             "copy": "", "kind": row.get("kind"),
             "automation": None, "awaitingMaterials": True, "batchLive": live,
-            "assets": {name: None for name in ("frame", "identity", "person", "bilibili", "douyin")},
+            "hasVideo": False, "canCover": False,
+            "assets": {name: None for name in ("frame", "identity", "person", "coverPerson", "bilibili", "douyin")},
         }
         items.append(entry)
         by_id[key] = entry
@@ -223,6 +229,7 @@ def asset_path(folder: Path, key: str) -> Path:
         "frame": _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg"),
         "identity": IDENTITY_PATH if IDENTITY_PATH.is_file() else None,
         "person": _first(folder, PERSON_NAME),
+        "coverPerson": batch_worker.cover_person_image(folder),
         "bilibili": _first(folder, COVER_NAMES["bilibili"], LEGACY_COVER_NAMES["bilibili"]),
         "douyin": _first(folder, COVER_NAMES["douyin"], LEGACY_COVER_NAMES["douyin"]),
     }
@@ -282,7 +289,11 @@ def material_zip(folder: Path, stage: str, kind: str) -> bytes:
             for filename, key in (("图一_已糊脸抽帧.png", "frame"), ("图二_固定人物参考.png", "identity")):
                 archive.write(asset_path(folder, key), filename)
         else:
-            archive.write(asset_path(folder, "person"), PERSON_NAME)
+            cover_person = batch_worker.cover_person_image(folder)
+            if cover_person is not None:
+                archive.write(cover_person, batch_worker.COVER_PERSON_NAME)
+            else:
+                archive.write(asset_path(folder, "person"), PERSON_NAME)
             copy_path = folder / "发布文案.txt"
             if copy_path.is_file():
                 archive.write(copy_path, "发布文案.txt")
@@ -560,8 +571,8 @@ async def _generate_cover(
     """封面走**第三方 API** 出带标题文字的成图（用户 2026-09-19：「封面也用api生成 不需要本地」）。
 
     提示词用 `prompt(folder, stage, kind)`（里面就是发布文案的标题与简介）；
-    参考图优先用这条成片抽出的 `封面参考.jpg`（2026-10-18：人物图的手可能画坏，成片的手是好的），
-    没有时才用 `人物图.png`（保住人物与画面）。
+    参考图优先用这条成片全帧扫描抽出的 `封面人物图.png`（2026-10-18：人物图的手可能画坏，
+    成片的手是好的，图片与封面页都用这张封面人物图），没有时才用 `人物图.png`（保住人物与画面）。
     出图比例 4:3（B站）/ 3:4（抖音），`save_upload()` 会按 `TARGETS` 精确裁到
     1448×1086 / 1086×1448 并做比例校验。
 
@@ -597,10 +608,10 @@ async def _generate_cover(
             marker.unlink(missing_ok=True)
         marker.write_text(json.dumps({"submittedAt": time.time(), "stage": stage}), encoding="utf-8")
         candidate = work / f"{stage}.png"
-        # 参考图：**成片抽出的封面参考帧优先**（2026-10-18：人物图手指可能画坏，成片的手正常）；
-        # 没有参考帧（老作品/抽帧失败）才退回人物图。封面只发这一张参考（identity_image=None）：
+        # 参考图：**成片逐帧抽出的封面人物图优先**（2026-10-18：人物图手指可能画坏，成片的手正常）；
+        # 没有封面人物图（老作品/抽帧失败）才退回人物图。封面只发这一张参考（identity_image=None）：
         # 再给一张「本人固定参考」的话，两张图是同一人的不同服装/场景，模型会把两个人一起画进封面。
-        reference = batch_worker.cover_frame(folder) or asset_path(folder, "person")
+        reference = batch_worker.cover_person_image(folder) or asset_path(folder, "person")
         await batch_image.generate_candidate_image(
             scene_image=reference,
             identity_image=None,
@@ -636,8 +647,10 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                         stage: str | None = None) -> None:
     """自动出图。`stage` 给定就**只跑那一步**（用户在页面上单独点某一张）。
 
-    stage ∈ {None(整条三步), "person", "bilibili", "douyin"}；封面**必须先有合格人物图**，
-    否则直接失败并把原因写进状态（页面上那两个按钮也据此置灰）。
+    stage ∈ {None(整条), "person", "bilibili", "douyin"}；封面改成出片后生成：
+    **先用成片抽帧得到 `封面人物图.png`，再以它作参考**（人物图的手可能画坏）。整条自动
+    在没有成片/封面人物图时会跳过封面，只补人物图；单点封面则明确报错，让用户先出片或
+    手动上传封面。页面据 `canCover` 置灰。
     """
     folder = resolve_folder(folder_id)
     kind = infer_kind(folder)
@@ -649,6 +662,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
     async with _AUTO_LOCK:
         try:
             person_score = -1
+            skipped_covers = False
             for step in steps:
                 # 用户点了「停止」：正在跑的那一步跑完就停，后面的步骤不再开始。
                 if _stop_requested():
@@ -665,19 +679,42 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                             allow_uncertain_retry=bool(force and stage == "person"),
                         )
                     continue
-                if not (folder / PERSON_NAME).is_file():
-                    raise RuntimeError("请先生成人物图，再做封面")
                 if not force and (folder / COVER_NAMES[step]).is_file():
                     continue
+                # 封面的参考图必须是「封面人物图」（成片逐帧抽帧，手部清晰），不是人物图。
+                cover_person = batch_worker.cover_person_image(folder)
+                if cover_person is None:
+                    video = folder / "最终成片.mp4"
+                    if not video.is_file():
+                        if stage is None:
+                            skipped_covers = True
+                            continue
+                        raise RuntimeError(
+                            "这条还没有最终成片；封面人物图要从成片逐帧抽帧生成。"
+                            "请先出片，或手动上传封面。"
+                        )
+                    _set_auto(folder_id, status="running", stage="frame",
+                              message="正在从成片逐帧挑手部最清晰的一帧，作为封面人物图", kind=kind)
+                    try:
+                        await asyncio.to_thread(
+                            batch_worker.extract_cover_person,
+                            video, folder / batch_worker.COVER_PERSON_NAME,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        raise RuntimeError(f"从成片抽封面人物图失败：{exc}") from exc
                 _set_auto(folder_id, status="running", stage=step,
-                          message=f"正在生成{label}", kind=kind)
+                          message=f"正在用封面人物图生成{label}", kind=kind)
                 await _generate_cover(
                     folder, step, kind,
                     # 单步按钮带 force=true，是用户明确授权在核对账单后重做；整条/批量自动
                     # 不能越过「上次结果未知」闸门。
                     allow_uncertain_retry=bool(force and stage == step),
                 )
-            done = "人物图与封面已自动补齐" if not stage else "已完成生成"
+            done = (
+                "人物图已完成；封面等成片后从封面人物图生成"
+                if skipped_covers else
+                ("人物图与封面已自动补齐" if not stage else "已完成生成")
+            )
             if stage in (None, "person") and person_score >= 0:
                 done += f"（人物图相似度 {person_score}/100）"
             note = _PERSON_NOTES.pop(folder_id, "")
@@ -701,13 +738,24 @@ def start_automatic(folder_id: str, *, force: bool = False,
     return AUTOMATIONS[folder_id]
 
 
-def start_all_missing() -> int:
+def start_all_missing() -> dict[str, int]:
+    """一键补齐：缺人物图的排队；缺封面的只有「有成片/已有封面人物图」才排队。
+
+    2026-10-18 起封面必须等成片后从封面人物图生成：还没出片的作品只补人物图，
+    封面计入 `waiting`，等出片后自动或手动补，不再用人物图硬出封面。
+    """
     _clear_stop()  # 一键生成 = 新的一轮意图
-    count = 0
+    queued = 0
+    waiting = 0
     for item in list_items():
         assets = item["assets"]
-        if assets["person"] and assets["bilibili"] and assets["douyin"]:
+        need_person = not assets["person"]
+        need_covers = not (assets["bilibili"] and assets["douyin"])
+        if not need_person and not need_covers:
+            continue
+        if need_covers and not need_person and not item.get("canCover"):
+            waiting += 1
             continue
         start_automatic(item["id"])
-        count += 1
-    return count
+        queued += 1
+    return {"queued": queued, "waiting": waiting}

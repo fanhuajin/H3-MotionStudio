@@ -13,10 +13,12 @@ type AutomationState = { status?: string; stage?: string; message?: string; star
 type WorkItem = {
   id: string; folderName: string; title: string; copy: string;
   kind: "singing" | "dance" | null;
-  assets: { frame: Asset; identity: Asset; person: Asset; bilibili: Asset; douyin: Asset };
+  assets: { frame: Asset; identity: Asset; person: Asset; coverPerson: Asset; bilibili: Asset; douyin: Asset };
   automation?: AutomationState;
   awaitingMaterials?: boolean;
   batchLive?: boolean;
+  hasVideo?: boolean;
+  canCover?: boolean;
 };
 type Stage = "person" | "bilibili" | "douyin";
 
@@ -249,7 +251,7 @@ export function ImageWorkbenchRoute() {
       );
       setNotice(stageArg
         ? `已开始重新生成${label}（会用新图覆盖现有那张）。`
-        : "已开始自动生成这条作品缺的人物图与封面。");
+        : "已开始补齐这条的缺图；封面会在成片后从封面人物图生成。");
       await refresh();
     } catch (error) {
       setNotice(String((error as Error).message || error));
@@ -293,11 +295,17 @@ export function ImageWorkbenchRoute() {
     if (busy) return;
     setBusy(true);
     try {
-      const data = await readJson<{ queued: number }>(
+      const data = await readJson<{ queued: number; waiting?: number }>(
         fetch("/api/image-workbench/automatic-all", { method: "POST" }),
         "一键生成全部失败",
       );
-      setNotice(data.queued ? `已把 ${data.queued} 条缺图作品排上队列，系统会一条一条跑。` : "没有缺图的作品。");
+      setNotice(
+        data.queued
+          ? `已把 ${data.queued} 条缺图作品排上队列${data.waiting ? `；另有 ${data.waiting} 条等成片后出封面` : ""}。`
+          : data.waiting
+            ? `没有可立即生成的：${data.waiting} 条等成片后从封面人物图出封面。`
+            : "没有缺图的作品。",
+      );
       await refresh();
     } catch (error) {
       setNotice(String((error as Error).message || error));
@@ -356,7 +364,7 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>人物图生成后直接采用并按设置放大，封面使用最终人物图排入标题与简介；已有图片直接沿用。</p></div>
+        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>人物图生成后直接采用；封面用成片逐帧挑出的「封面人物图」（手部最清晰的一帧）排入标题与简介；已有图片直接沿用。</p></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
           {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}
@@ -378,7 +386,7 @@ export function ImageWorkbenchRoute() {
             <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div></div>
             <div className="image-workbench-blank"><ImageSquare /><p>已同步批量制作记录，等待抽帧、人物图与文案就绪。</p><small>素材就绪后自动更新，可继续生成或查看封面。</small></div>
           </> : <>
-            <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span><button onClick={() => startAuto(item.id)} disabled={busy}>本条三张一次跑完</button></div></div>
+            <div className="image-workbench-title"><div><small>{item.folderName}</small><h2>{item.title}</h2></div><div className="image-auto-controls"><span>{item.kind === "dance" ? "跳舞 · 9:16" : item.kind === "singing" ? "唱歌 · 4:3" : "类型未识别"}</span><button onClick={() => startAuto(item.id)} disabled={busy}>补齐这条的缺图</button></div></div>
             {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><StudioBot mood="working" variant="swirl" size={42} />{item.automation.message || "正在自动生成…"}{elapsedOf(item) ? `（已用 ${elapsedOf(item)} 秒）` : ""}</p>}
             {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><StudioBot mood="success" size={42} />{item.automation.message}</p>}
             {item.automation?.status === "failed" && <p className="image-auto-failed"><StudioBot mood="error" variant="exclaim" size={42} />{item.automation.message || "自动生成失败"}</p>}
@@ -402,17 +410,17 @@ export function ImageWorkbenchRoute() {
                     onView={() => setViewer({ src: assetUrl(item, key), label })} onCopy={() => void copyImage(key, label)} /> : <div>{missing}</div>}
                   <figcaption><MagnifyingGlassPlus />{caption} · 点击查看</figcaption>
                 </figure>)}</div>}
-                {stage !== "person" && <div className="image-cover-reference"><strong>生成这张封面使用的人物图</strong><figure className="image-copy-surface">
-                  {item.assets.person ? <AssetPreview src={assetUrl(item, "person")} label="人物图" busy={busy}
-                    onView={() => setViewer({ src: assetUrl(item, "person"), label: "人物图" })} onCopy={() => void copyImage("person", "人物图")} />
-                    : <div><ImageSquare />缺少人物图</div>}
-                  <figcaption><MagnifyingGlassPlus />人物图 · 点击查看</figcaption></figure></div>}
+                {stage !== "person" && <div className="image-cover-reference"><strong>封面参考：封面人物图（成片逐帧挑手部最清晰的一帧）</strong><figure className="image-copy-surface">
+                  {item.assets.coverPerson ? <AssetPreview src={assetUrl(item, "coverPerson")} label="封面人物图" busy={busy}
+                    onView={() => setViewer({ src: assetUrl(item, "coverPerson"), label: "封面人物图" })} onCopy={() => void copyImage("coverPerson", "封面人物图")} />
+                    : <div><ImageSquare />{item.hasVideo ? "将从成片自动抽帧生成" : "还没有封面人物图（出片后自动生成）"}</div>}
+                  <figcaption><MagnifyingGlassPlus />封面人物图 · 点击查看</figcaption></figure></div>}
                 <div className="image-action-grid">
                   <button
                     className="primary"
                     onClick={() => startAuto(item.id, stage)}
-                    disabled={busy || (stage !== "person" && !item.assets.person)}
-                    title={stage !== "person" && !item.assets.person ? "请先生成人物图，再做封面" : undefined}
+                    disabled={busy || (stage !== "person" && !item.canCover)}
+                    title={stage !== "person" && !item.canCover ? "请先出片；封面人物图从成片抽帧生成（也可以手动上传封面）" : undefined}
                   ><SpinnerGap className={busy ? "spin" : undefined} />{stageAsset ? "重新生成这一步" : "API 自动生成这一步"}</button>
                   <button onClick={() => void copyPrompt(item.id, stage)}><ClipboardText />复制当前提示词</button>
                 </div>
