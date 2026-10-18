@@ -2244,7 +2244,7 @@ export function BatchRoute() {
                         </tr>
                         {selectedId === item.id && (
                           <tr className="batch-expanded-row">
-                            <td colSpan={5}>{renderSelectedDetail()}</td>
+                            <td colSpan={6}>{renderSelectedDetail()}</td>
                           </tr>
                         )}
                       </Fragment>
