@@ -1869,16 +1869,17 @@ export function BatchRoute() {
 
   const renderQueueActions = () => (
         <div className="batch-entry-actions">
+          {/* 2026-10-18 用户：「添加任务放到运行设置前边」——录入入口在前，策略在后。 */}
+          <button type="button" className={batch ? "batch-add-toggle" : "batch-primary small"} ref={inputToggle}
+            aria-haspopup="dialog" aria-expanded={addOpen} aria-controls="batch-add-dialog"
+            onClick={() => { restoreInputFocus.current = true; setAddError(""); setActiveDialog("add"); }}>
+            <UploadSimple />添加任务{(singing.trim() || dance.trim()) && <span className="batch-draft-badge">草稿 {splitUrls(singing).length + splitUrls(dance).length}</span>}
+          </button>
           <button type="button" className="batch-add-toggle batch-settings-trigger" ref={settingsTrigger}
             aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls="batch-running-settings-dialog"
             title={`自动出片：${autoRenderSwitchOn ? "开启" : "关闭"}；${prepShutdownSwitchOn ? "备料后关机" : shutdownSwitchOn ? "全部完成后关机" : "自动关机关闭"}`}
             onClick={() => { setSettingsFeedback(null); setActiveDialog("settings"); }}>
             <GearSix />运行设置{(prepShutdownSwitchOn || shutdownSwitchOn) && <span className="batch-settings-badge"><Power />{prepShutdownSwitchOn ? "备料后关机" : "完成后关机"}</span>}
-          </button>
-          <button type="button" className={batch ? "batch-add-toggle" : "batch-primary small"} ref={inputToggle}
-            aria-haspopup="dialog" aria-expanded={addOpen} aria-controls="batch-add-dialog"
-            onClick={() => { restoreInputFocus.current = true; setAddError(""); setActiveDialog("add"); }}>
-            <UploadSimple />添加任务{(singing.trim() || dance.trim()) && <span className="batch-draft-badge">草稿 {splitUrls(singing).length + splitUrls(dance).length}</span>}
           </button>
           {resumeOnly && <button type="button" className="batch-primary small" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续任务</button>}
           {batch && batch.autoRender === false && !resumeOnly && <button type="button" className="batch-primary small"
