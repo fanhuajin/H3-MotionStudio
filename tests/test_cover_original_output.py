@@ -54,7 +54,8 @@ class CoverOriginalOutputTests(unittest.IsolatedAsyncioTestCase):
 
                 async def generate(**kwargs):
                     self.assertIs(kwargs["upscale"], False)
-                    self.assertEqual(kwargs["scene_image"], folder / batch_worker.COVER_PERSON_NAME)
+                    self.assertEqual(kwargs["scene_image"].read_bytes(),
+                                     (folder / batch_worker.COVER_PERSON_NAME).read_bytes())
                     image = io.BytesIO()
                     size = (320, 240) if kwargs["ratio"] == "4:3" else (240, 320)
                     Image.new("RGB", size).save(image, "PNG")

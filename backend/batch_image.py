@@ -949,6 +949,7 @@ async def _generate_candidate_image_once(
     output_path: Path,
     on_progress: ProgressCallback | None = None,
     upscale: bool = True,
+    retain_checkpoint: bool = False,
 ) -> Path:
     """用「图像-1 造型场景 + 图像-2 唯一身份」做图片编辑，产出候选人物图。
 
@@ -1033,7 +1034,8 @@ async def _generate_candidate_image_once(
                         policy_rejected = True
                     continue
                 _store(response, output_path)
-                _clear_task_checkpoint(output_path)  # 图已落盘，任务记录不再需要（见 _clear_task_checkpoint）
+                if not retain_checkpoint:
+                    _clear_task_checkpoint(output_path)
             except httpx.HTTPError as error:
                 # 请求可能已被中转站接收并计费，只是响应返回途中超时/断线。
                 # 不自动换线路再发一遍，避免同一张图产生第二笔费用。
@@ -1101,14 +1103,19 @@ async def generate_candidate_image(
     on_progress: ProgressCallback | None = None,
     request_key: str | None = None,
     upscale: bool = True,
+    retain_checkpoint: bool = False,
 ) -> Path:
-    """计费出图入口；相同 request_key 正在执行时共享结果，不再向中转站重复提交。"""
+    """计费出图入口；相同 request_key 正在执行时共享结果，不重复提交。
+
+    retain_checkpoint=True 时由调用方在发布文件可靠保存后清理任务记录（封面使用）。
+    """
     output_path = Path(output_path)
     key = str(request_key or "").strip()
     if not key:
         return await _generate_candidate_image_once(
             scene_image=scene_image, identity_image=identity_image, prompt=prompt, ratio=ratio,
             output_path=output_path, on_progress=on_progress, upscale=upscale,
+            retain_checkpoint=retain_checkpoint,
         )
     existing = _BILLED_INFLIGHT.get(key)
     if existing is not None:
@@ -1125,6 +1132,7 @@ async def generate_candidate_image(
         result = await _generate_candidate_image_once(
             scene_image=scene_image, identity_image=identity_image, prompt=prompt, ratio=ratio,
             output_path=output_path, on_progress=on_progress, upscale=upscale,
+            retain_checkpoint=retain_checkpoint,
         )
         completion.set_result((result.read_bytes(), ""))
         return result

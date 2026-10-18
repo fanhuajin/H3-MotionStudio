@@ -349,6 +349,7 @@ class ImageWorkbenchTests(unittest.TestCase):
         """明确的内容政策 400 不能永久留下结果未知标记。"""
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
+            (folder / "人物图.png").write_bytes(png(900, 1200))
             marker = folder / ".h3-bilibili-request-pending"
 
             async def rejected(**kwargs):
@@ -364,6 +365,7 @@ class ImageWorkbenchTests(unittest.TestCase):
     def test_coalesced_policy_rejection_clears_cover_marker(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
+            (folder / "人物图.png").write_bytes(png(900, 1200))
             marker = folder / ".h3-bilibili-request-pending"
 
             async def rejected(**kwargs):

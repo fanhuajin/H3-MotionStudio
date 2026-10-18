@@ -68,13 +68,14 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
 
             async def fake_generate(**kwargs):
                 seen["scene_image"] = kwargs["scene_image"]
+                seen["reference_bytes"] = kwargs["scene_image"].read_bytes()
                 Path(kwargs["output_path"]).write_bytes(b"cover")
 
             with patch.object(
                 image_workbench.batch_image, "generate_candidate_image", side_effect=fake_generate
             ), patch.object(image_workbench, "save_upload"):
                 await image_workbench._generate_cover(folder, "bilibili", "dance")
-        self.assertEqual(seen["scene_image"], frame)
+        self.assertEqual(seen["reference_bytes"], b"frame")
 
     async def test_cover_reference_falls_back_to_person_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -189,7 +190,7 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
                 batch_worker.extract_cover_person(video, target)
             self.assertEqual(target.read_bytes(), b"\xff\xd8hand")
 
-    def test_extract_cover_person_falls_back_when_no_hand_is_found(self):
+    def test_extract_cover_person_falls_back_when_picker_is_unavailable(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             video = folder / "clip.mp4"

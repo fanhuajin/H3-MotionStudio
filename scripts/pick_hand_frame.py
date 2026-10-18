@@ -1,4 +1,4 @@
-"""Pick the frame with the **clearest hands** from a finished video.
+"""Pick a clear cover frame, judging visible hands or the scene when hands are absent.
 
 Run by ComfyUI's embedded python (ultralytics + torch + cv2 are available there).
 The batch worker calls this after a video is delivered: the chosen frame becomes
@@ -9,10 +9,12 @@ The scan is **every frame** of the final video. At 640 px wide, a hand detector
 (`hand_yolov8s.pt` from Impact Pack) locates hands; Laplacian variance inside each
 hand box measures blur. The weaker of the two best hands dominates, boxes touching
 the frame border (cut fingers) are penalized, low-confidence boxes are ignored.
+Frames without detected hands compete using central/overall Laplacian variance;
+sharp faces or backgrounds never compensate for blurry detected hands.
 Batches of 16 frames; CUDA is used when it has enough free memory, otherwise CPU.
 
 Output: writes the chosen frame at full resolution and prints one JSON line.
-Exit code 0 = written; 2 = no usable hand frame (caller falls back).
+Exit code 0 = written (hands optional); 2 = no usable frame (caller falls back).
 """
 
 from __future__ import annotations
@@ -23,7 +25,6 @@ import sys
 import time
 
 import cv2
-from ultralytics import YOLO
 
 
 def _resolve_device(name: str) -> str:
@@ -65,7 +66,13 @@ def _score_frame(gray, boxes, confs) -> tuple[float, list[dict]]:
             "box": [round(x1), round(y1), round(x2), round(y2)],
         })
     if not hands:
-        return 0.0, []
+        # 无手帧同样参与全片筛选，用相同尺度的 Laplacian 方差评人物中部及整体。
+        # 有手帧仍只按手部评分，脸/背景再锐也不能掩盖糊手。
+        center = gray[int(height * 0.10):int(height * 0.95),
+                      int(width * 0.15):int(width * 0.85)]
+        overall = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        person = float(cv2.Laplacian(center, cv2.CV_64F).var()) if center.size else overall
+        return 0.7 * person + 0.3 * overall, []
     hands.sort(key=lambda row: row["lap"], reverse=True)
     top = hands[:2]
     base = min(row["lap"] for row in top) if len(top) >= 2 else top[0]["lap"] * 0.6
@@ -90,6 +97,8 @@ def _grab(cap, index: int):
 
 
 def main() -> int:
+    from ultralytics import YOLO
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=True)
     parser.add_argument("--output", required=True)
@@ -147,9 +156,9 @@ def main() -> int:
             flush()
     flush()
 
-    if best_index < 0 or not best_hands:
+    if best_index < 0:
         cap.release()
-        print(json.dumps({"ok": False, "reason": "no-hand", "frames": frames}))
+        print(json.dumps({"ok": False, "reason": "no-frame", "frames": frames}))
         return 2
     chosen = _grab(cap, best_index)
     cap.release()

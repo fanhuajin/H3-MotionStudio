@@ -599,41 +599,76 @@ async def _generate_cover(
     _COVER_INFLIGHT[key] = completion
     marker = folder / f".h3-{stage}-request-pending"
     destination = folder / COVER_NAMES[stage]
-    work = Path(tempfile.mkdtemp(prefix="h3-auto-cover-"))
+    # 请求和原图必须跨失败/重启保留；只有最终封面可靠保存后才清理。
+    work = folder / f".h3-{stage}-work"
+    candidate = work / f"{stage}.png"
+    checkpoint = batch_image._task_checkpoint(candidate)
+    inputs = work / "request.json"
+    completed = False
     try:
+        work.mkdir(parents=True, exist_ok=True)
+        ready = False
+        if candidate.is_file():
+            try:
+                with Image.open(candidate) as image:
+                    image.load()
+                ready = True
+            except OSError:
+                pass  # 下载中断的文件不当成功；有任务记录则只续取原任务。
         if marker.is_file() and not allow_uncertain_retry:
             # 若新封面比 marker 更新，说明上次已经成功落盘、只是进程没来得及清 marker。
-            if destination.is_file() and destination.stat().st_mtime > marker.stat().st_mtime:
+            if (not checkpoint.is_file() and not ready and destination.is_file()
+                    and destination.stat().st_mtime_ns > marker.stat().st_mtime_ns):
                 marker.unlink(missing_ok=True)
+                completed = True
                 completion.set_result((True, ""))
                 return
-            raise RuntimeError(
-                f"上一次{stage}封面请求已提交但结果未确认；为避免重复扣费，本次没有自动重发。"
-                "请核对中转站后台后，在图片工作台明确点击这一步重做"
-            )
-        if allow_uncertain_retry:
+            if not ready and not checkpoint.is_file():
+                raise RuntimeError(
+                    f"上一次{stage}封面请求已提交但结果未确认；为避免重复扣费，本次没有自动重发。"
+                    "请核对中转站后台后，在图片工作台明确点击这一步重做"
+                )
+        # 已有任务 ID 或落盘原图时始终先恢复，单步重做也不丢弃可续取的已付费结果。
+        if allow_uncertain_retry and not ready and not checkpoint.is_file():
+            import shutil
+            shutil.rmtree(work)
+            work.mkdir()
             marker.unlink(missing_ok=True)
-        marker.write_text(json.dumps({"submittedAt": time.time(), "stage": stage}), encoding="utf-8")
-        candidate = work / f"{stage}.png"
-        # 参考图：**成片逐帧抽出的封面人物图优先**（2026-10-18：人物图手指可能画坏，成片的手正常）；
-        # 没有封面人物图（老作品/抽帧失败）才退回人物图。封面只发这一张参考（identity_image=None）：
-        # 再给一张「本人固定参考」的话，两张图是同一人的不同服装/场景，模型会把两个人一起画进封面。
-        reference = batch_worker.cover_person_image(folder) or asset_path(folder, "person")
-        await batch_image.generate_candidate_image(
-            scene_image=reference,
-            identity_image=None,
-            prompt=prompt(folder, stage, kind),
-            ratio="4:3" if stage == "bilibili" else "3:4",
-            output_path=candidate,
-            request_key=f"cover:{str(folder.resolve()).lower()}:{stage}",
-            upscale=False,
-        )
+        if not ready:
+            if not inputs.is_file():
+                if checkpoint.is_file():
+                    raise RuntimeError("封面任务记录缺少原始输入，请核对渠道后台；未重新提交生成")
+                reference = batch_worker.cover_person_image(folder) or asset_path(folder, "person")
+                frozen = work / f"reference{reference.suffix}"
+                frozen.write_bytes(reference.read_bytes())
+                snapshot = {"reference": frozen.name, "prompt": prompt(folder, stage, kind),
+                            "ratio": "4:3" if stage == "bilibili" else "3:4"}
+                temporary = inputs.with_suffix(".tmp")
+                temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+                os.replace(temporary, inputs)
+            snapshot = json.loads(inputs.read_text(encoding="utf-8"))
+            if not marker.is_file():
+                marker.write_text(json.dumps({"submittedAt": time.time(), "stage": stage}), encoding="utf-8")
+            # 冻结的参考来自成片清晰帧（老作品/抽帧失败才回退人物图），
+            # 续取时保持原参考和文案，避免改图/改文案使原任务指纹不匹配。
+            await batch_image.generate_candidate_image(
+                scene_image=work / snapshot["reference"],
+                identity_image=None,
+                prompt=snapshot["prompt"],
+                ratio=snapshot["ratio"],
+                output_path=candidate,
+                request_key=f"cover:{str(folder.resolve()).lower()}:{stage}",
+                upscale=False,
+                retain_checkpoint=True,
+            )
         save_upload(folder, stage, candidate.read_bytes(), preserve_cover=True)
+        completed = True
         marker.unlink(missing_ok=True)
         completion.set_result((True, ""))
     except batch_image.PolicyRejected as exc:
         # 明确的 400 拒绝没有待确认结果；允许用户之后在异常区点「重试」。
         marker.unlink(missing_ok=True)
+        completed = True
         if not completion.done():
             completion.set_result((False, str(exc)))
         raise
@@ -642,13 +677,15 @@ async def _generate_cover(
         # 结果已确定为拒绝，不能留下“结果未知”标记阻止用户日后主动重试。
         if "图片接口错误 400" in str(exc) and "内容政策" in str(exc):
             marker.unlink(missing_ok=True)
+            completed = True
         if not completion.done():
             completion.set_result((False, str(exc)))
         raise
     finally:
         _COVER_INFLIGHT.pop(key, None)
-        import shutil
-        shutil.rmtree(work, ignore_errors=True)
+        if completed:
+            import shutil
+            shutil.rmtree(work, ignore_errors=True)
 
 
 async def run_automatic(folder_id: str, *, force: bool = False,
@@ -702,12 +739,9 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                             "请先出片，或手动上传封面。"
                         )
                     _set_auto(folder_id, status="running", stage="frame",
-                              message="正在从成片逐帧挑手部最清晰的一帧，作为封面人物图", kind=kind)
+                              message="正在从成片逐帧选封面参考（有手看手部、无手看画面清晰度）", kind=kind)
                     try:
-                        await asyncio.to_thread(
-                            batch_worker.extract_cover_person,
-                            video, folder / batch_worker.COVER_PERSON_NAME,
-                        )
+                        await batch_worker.ensure_cover_person(folder)
                     except Exception as exc:  # noqa: BLE001
                         raise RuntimeError(f"从成片抽封面人物图失败：{exc}") from exc
                 _set_auto(folder_id, status="running", stage=step,

@@ -364,7 +364,7 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>人物图生成后直接采用；封面用成片逐帧挑出的「封面人物图」（手部最清晰的一帧）排入标题与简介；已有图片直接沿用。</p></div>
+        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>人物图生成后直接采用；封面用成片逐帧挑出的「封面人物图」排入标题与简介：有手看手部清晰度，无手看画面清晰度；已有图片直接沿用。</p></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
           {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}
@@ -410,7 +410,7 @@ export function ImageWorkbenchRoute() {
                     onView={() => setViewer({ src: assetUrl(item, key), label })} onCopy={() => void copyImage(key, label)} /> : <div>{missing}</div>}
                   <figcaption><MagnifyingGlassPlus />{caption} · 点击查看</figcaption>
                 </figure>)}</div>}
-                {stage !== "person" && <div className="image-cover-reference"><strong>封面参考：封面人物图（成片逐帧挑手部最清晰的一帧）</strong><figure className="image-copy-surface">
+                {stage !== "person" && <div className="image-cover-reference"><strong>封面参考：封面人物图（有手看手部、无手看画面清晰度）</strong><figure className="image-copy-surface">
                   {item.assets.coverPerson ? <AssetPreview src={assetUrl(item, "coverPerson")} label="封面人物图" busy={busy}
                     onView={() => setViewer({ src: assetUrl(item, "coverPerson"), label: "封面人物图" })} onCopy={() => void copyImage("coverPerson", "封面人物图")} />
                     : <div><ImageSquare />{item.hasVideo ? "将从成片自动抽帧生成" : "还没有封面人物图（出片后自动生成）"}</div>}

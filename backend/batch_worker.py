@@ -2480,6 +2480,9 @@ def cover_person_image(folder: Path | None) -> Path | None:
         target = folder / name
         try:
             if target.is_file() and target.stat().st_size > 0:
+                video = folder / "最终成片.mp4"
+                if video.is_file() and target.stat().st_mtime_ns < video.stat().st_mtime_ns:
+                    continue
                 return target
         except OSError:
             continue
@@ -2593,11 +2596,11 @@ def _hand_frame_enabled() -> bool:
 
 
 def _pick_hand_cover_person(video: Path, target: Path) -> bool:
-    """用本机手部检测模型从**整支成片每一帧**挑「手最清楚」的一帧，存成封面人物图。
+    """全片逐帧挑封面：有手按手部、无手按画面清晰度，均可入选。
 
     在 640 宽上逐帧检测（ComfyUI 自带 python + Impact Pack 权重），按手框内 Laplacian
     方差评清晰度；两只手里较模糊的那只主导，手贴画面边缘（手指被切）扣分。找到就写
-    全分辨率图并返回 True；没有手/模型或 python 不在/超时都返回 False，由
+    全分辨率图并返回 True；模型或 python 不在/超时才返回 False，由
     `extract_cover_person` 退回纯清晰度评分。不调任何付费接口。
     """
     if not _hand_frame_enabled():
@@ -2652,23 +2655,69 @@ def _pick_hand_cover_person(video: Path, target: Path) -> bool:
 
 
 def extract_cover_person(video: Path, target: Path) -> Path:
-    """从**最终成片**抽出封面人物图：**全视频逐帧、优先手部最清晰**。
+    """最终成片逐帧选图：有手看手部清晰度，无手看人物/整体画面清晰度。
 
     用户 2026-10-18：「最终成片也是全视频抽帧 找出手部最清晰的一张，这张做为封面人物图
     放到发布目录……用这张封面人物图去生成对应的封面」。先用本机 `hand_yolov8s.pt` 定位手、
-    按手框内清晰度逐帧选；模型/子进程不可用或整片没检测到手时，退回全帧扫描
+    按手框内清晰度逐帧选，无手帧也按画面清晰度一起竞争；模型/子进程不可用时退回全帧扫描
     `_frame_detail_score`（双侧手臂区域 + 全身细节）。两条路都纯本地，不调付费接口。
     """
     if _pick_hand_cover_person(video, target):
         return target
     duration = _video_duration_seconds(video)
-    scanned = _scan_all_frames(video, duration, _frame_scan_stride(duration))
+    scanned = _scan_all_frames(video, duration, 1)
     if not scanned:
         raise RuntimeError("成片全帧扫描失败，无法抽取封面人物图")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.unlink(missing_ok=True)
     target.write_bytes(max(scanned, key=lambda row: row[0])[1])
     return target
+
+
+async def ensure_cover_person(folder: Path) -> Path | None:
+    """批量与图片页共用：在全局 GPU 锁内检查新旧并原子更新参考帧。
+
+    调用方不持有 pipeline_lock（批量交付持有的是批次视频锁）。仅此处取得
+    全局锁，抽帧内部不再取锁；取消时等本地线程退出再释放锁，避免后台残留 GPU 工作。
+    """
+    from .pipeline import pipeline_lock
+
+    video = folder / "最终成片.mp4"
+    if not video.is_file():
+        return cover_person_image(folder)
+    current = cover_person_image(folder)
+    if current is not None:
+        return current
+    async with pipeline_lock:
+        current = cover_person_image(folder)
+        if current is not None:
+            return current
+        signature = (video.stat().st_mtime_ns, video.stat().st_size)
+        with tempfile.TemporaryDirectory(prefix=".h3-cover-frame-", dir=folder) as work:
+            staging = Path(work) / COVER_PERSON_NAME
+            task = asyncio.create_task(asyncio.to_thread(extract_cover_person, video, staging))
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # to_thread 无法中止原生进程，不能在线程仍用 GPU 时提前放锁。
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not task.cancelled():
+                    task.exception()
+                raise
+            if signature != (video.stat().st_mtime_ns, video.stat().st_size):
+                raise RuntimeError("抽帧期间成片已更新，请重新抽取封面人物图")
+            target = folder / COVER_PERSON_NAME
+            os.replace(staging, target)
+            # 保留文件系统高精度时间，并兼容成片携带未来修改时间的情况。
+            if target.stat().st_mtime_ns < signature[0]:
+                os.utime(target, ns=(target.stat().st_atime_ns, signature[0]))
+            return target
 
 
 async def _ensure_video_cover_person(
@@ -2678,14 +2727,11 @@ async def _ensure_video_cover_person(
     video = folder / "最终成片.mp4"
     if not video.is_file():
         return None
-    target = folder / COVER_PERSON_NAME
+    target = cover_person_image(folder)
+    if target is not None:
+        return target
     try:
-        if target.is_file() and target.stat().st_mtime >= video.stat().st_mtime:
-            return target
-    except OSError:
-        pass
-    try:
-        await asyncio.to_thread(extract_cover_person, video, target)
+        target = await ensure_cover_person(folder)
     except Exception as error:      # noqa: BLE001 - 抽帧失败只退回人物图，不拦封面/出片
         batch_store.add_item_log(
             batch_id, item_id, f"从成片抽封面人物图失败（将退回人物图出封面）：{error}"
@@ -2693,7 +2739,7 @@ async def _ensure_video_cover_person(
         return None
     batch_store.add_item_log(
         batch_id, item_id,
-        "已从最终成片逐帧扫描抽出封面人物图（挑手部最清晰的一帧，存为封面人物图.png），"
+        "已从最终成片逐帧扫描抽出封面人物图（有手看手部、无手看画面清晰度，存为封面人物图.png），"
         "两张封面与图片页都会用它作参考。",
     )
     return target
