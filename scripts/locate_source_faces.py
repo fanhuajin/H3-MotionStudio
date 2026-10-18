@@ -40,8 +40,11 @@ def locate(image_path: Path, model: Path) -> list[dict[str, float]]:
     result = []
     for i in np.asarray(selected).reshape(-1):
         x, y, w, h = boxes[int(i)]
-        result.append({"x0": max(0, x-w*0.15)/width, "y0": max(0, y-h*0.18)/height,
-                       "x1": min(width, x+w*1.15)/width, "y1": min(height, y+h*1.18)/height})
+        # 返回**原始人脸框**（不再向外扩 15%/18%）：调用方 `batch_image._features_box()`
+        # 会把它再收成眼鼻嘴那一块（用户 2026-10-18：「只要糊住五官就可以 不要特别大」）。
+        # 这里再扩一圈，收出来的框就会顶到整张脸，等于没缩。
+        result.append({"x0": max(0.0, x) / width, "y0": max(0.0, y) / height,
+                       "x1": min(width, x + w) / width, "y1": min(height, y + h) / height})
     return result
 
 

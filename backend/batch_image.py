@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 from . import netproxy
 from .settings import (
@@ -295,11 +295,39 @@ def _blur_region(image: Image.Image, box: dict[str, float]) -> Image.Image:
     y1 = max(y0 + 1, min(height, int(box["y1"] * height)))
     if x1 - x0 < 8 or y1 - y0 < 8:
         return image
-    region = image.crop((x0, y0, x1, y1)).filter(
-        ImageFilter.GaussianBlur(radius=max(14.0, (x1 - x0) / 5.0))
+    region = image.crop((x0, y0, x1, y1))
+    blurred = region.filter(ImageFilter.GaussianBlur(radius=max(10.0, (x1 - x0) / 2.5)))
+    # 羽化边缘：糊整张脸时硬边落在头发/背景上不明显，收成五官后硬边会压在脸颊和鼻梁上，
+    # 那道边会被模型当成真实轮廓画出来。所以用一张软化过的矩形蒙版贴回去。
+    feather = max(3, int(min(region.width, region.height) * 0.12))
+    mask = Image.new("L", region.size, 0)
+    ImageDraw.Draw(mask).rectangle(
+        (feather, feather, max(feather + 1, region.width - feather), max(feather + 1, region.height - feather)),
+        fill=255,
     )
-    image.paste(region, (x0, y0))
+    mask = mask.filter(ImageFilter.GaussianBlur(feather))
+    image.paste(blurred, (x0, y0), mask)
     return image
+
+
+# 只糊五官（2026-10-18 用户：「只要糊住五官就可以 不要特别大」）。
+# 为什么不再糊整张脸：整脸糊掉会把头型、发际线、下颌一起抹平；首帧是特写时半个画面变成
+# 一团，人物图的造型/背景信息也跟着丢了。挡住眼鼻嘴就足以阻断身份抄袭 —— 图二才是身份来源。
+_FEATURE_HALF_WIDTH = 0.27        # 横向：以脸中线为准，左右各 27% 脸宽
+_FEATURE_ROWS = (0.30, 0.84)      # 纵向：双眉 → 下唇（不含额头、发际线、下颌）
+
+
+def _features_box(box: dict[str, float]) -> dict[str, float]:
+    """把「整张脸」的检测框收成「五官」框。"""
+    width = box["x1"] - box["x0"]
+    height = box["y1"] - box["y0"]
+    centre = (box["x0"] + box["x1"]) / 2
+    return {
+        "x0": max(0.0, centre - width * _FEATURE_HALF_WIDTH),
+        "y0": max(0.0, box["y0"] + height * _FEATURE_ROWS[0]),
+        "x1": min(1.0, centre + width * _FEATURE_HALF_WIDTH),
+        "y1": min(1.0, box["y0"] + height * _FEATURE_ROWS[1]),
+    }
 
 
 def _locate_face_local(image_path: Path) -> dict[str, float] | None:
@@ -384,7 +412,7 @@ def prepare_defocused_reference(scene_image: Path, work_dir: Path) -> Path:
     with Image.open(scene_image) as opened:
         image = ImageOps.exif_transpose(opened).convert("RGB")
     for box in boxes:
-        _blur_region(image, box)
+        _blur_region(image, _features_box(box))
     target = Path(work_dir) / f"{scene_image.stem}-noface.png"
     target.parent.mkdir(parents=True, exist_ok=True)
     # 复制/下载与生图可能同时请求图一；原子替换避免读到半写入 PNG。
