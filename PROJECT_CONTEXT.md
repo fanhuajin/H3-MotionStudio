@@ -260,8 +260,7 @@ H3 分段估算常量在 `backend/settings.py`：24fps、首段 362 帧、后续
 | `H3_BATCH_IMAGE_QUALITY` / `H3_BATCH_IMAGE_FIDELITY` | 默认 `high`；后者对应编辑接口的 `input_fidelity`（异步接口会略过）|
 | `H3_BATCH_IMAGE_ASYNC` | 中转站是否「提交拿 task_id + GET 轮询」；不设则按站点判断（YeeMagine 为异步）|
 | `H3_BATCH_IMAGE_POLICY_RETRY` | 内容政策 400 是否自动重发；不设则仅非异步渠道开启（新渠道未验证不计费，默认关）|
-| `H3_BATCH_FRAME_FIRST` | 抽帧是否首帧优先：首帧有人物就用首帧，否则回到候选打分（默认开，`0` 关闭）|
-| `H3_BATCH_AI_FRAME_PICK` | 候选帧是否再调一次视觉模型挑图（默认关，纯本地打分）|
+| `H3_BATCH_AI_FRAME_PICK` | 候选帧是否再调一次视觉模型挑图（默认关，纯本地打分；抽帧默认约 25 张候选取分最高）|
 | `H3_BATCH_TEXT_BASE_URL` / `H3_BATCH_TEXT_API_KEY` | 预审文本分析端点与凭据（默认官方 `https://api.openai.com/v1`）|
 | `H3_BATCH_LUNA_MODEL` | 预审文本模型，默认 `gpt-5.6-luna` |
 | `H3_AUTO_CHATGPT_IMAGE=1` | 打开「备料后自动用 ChatGPT 生成候选人物图」（默认关闭）|

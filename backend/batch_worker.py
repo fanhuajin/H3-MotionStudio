@@ -1368,16 +1368,28 @@ def _extract_frame_bytes(source: Path, timestamp: float, *, flags: int) -> bytes
 
 
 def _scene_frame_candidates(source: Path, ratio: float) -> list[tuple[float, bytes]]:
-    """Sample nearby gestures and wider moments, preserving stable candidate order."""
+    """多抽一些帧，再按本地双侧区域清晰度取分最高的那张。
+
+    用户 2026-10-18：「抽帧多抽一些 找出评分最高的一张」。两层采样：
+      ① 目标时刻附近密采（±0.03~0.12 的时间比例 + 真正相邻的 0.15 秒），避免正好卡在
+         眨眼、转身、挥手那一下；
+      ② 全片 0.05~0.95 均匀铺 16 帧——整支舞里手部清楚的时刻常常不在目标位置。
+    抽帧是纯本地 ffmpeg，每帧几十到几百毫秒，所以多抽 20 来帧只多几秒，不产生任何费用。
+    """
     duration = _video_duration_seconds(source)
     flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    # Retain original candidates first for the optional visual picker, then broaden
-    # coverage and add actual neighbouring moments (old offsets were duration ratios).
-    nearby = min(0.01, 0.15 / max(duration, 0.001))
-    ratios = (ratio, ratio - 0.12, ratio + 0.12, ratio - 0.06, ratio + 0.06,
-              ratio - nearby, ratio + nearby, 0.08, 0.18, 0.62, 0.76, 0.90)
+    nearby = min(0.01, 0.15 / max(duration, 0.001))   # 0.15 秒换算成时间比例
+    ratios: list[float] = [
+        ratio,
+        ratio - 0.03, ratio + 0.03,
+        ratio - 0.06, ratio + 0.06,
+        ratio - 0.09, ratio + 0.09,
+        ratio - 0.12, ratio + 0.12,
+        ratio - nearby, ratio + nearby,
+    ]
+    ratios.extend(0.05 + 0.06 * step for step in range(16))
     candidates: list[tuple[float, bytes]] = []
-    for candidate_ratio in dict.fromkeys(max(0.04, min(0.96, value)) for value in ratios):
+    for candidate_ratio in dict.fromkeys(round(max(0.04, min(0.96, value)), 4) for value in ratios):
         frame = _extract_frame_bytes(source, duration * candidate_ratio, flags=flags)
         if frame:
             candidates.append((_frame_detail_score(frame), frame))
@@ -1386,68 +1398,10 @@ def _scene_frame_candidates(source: Path, ratio: float) -> list[tuple[float, byt
     return candidates
 
 
-def _frame_flags() -> int:
-    return subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-
-
-def first_frame_preferred() -> bool:
-    """首帧有人物时直接用首帧（用户 2026-10-18：「如果以后首帧有人物直接用首帧的」）。
-
-    `H3_BATCH_FRAME_FIRST=0` 整体退回原来的候选打分，便于回滚。
-    """
-    return env_value("H3_BATCH_FRAME_FIRST", "1").strip().lower() not in {
-        "0", "false", "no", "off", "none",
-    }
-
-
-def _first_frame_with_person(source: Path) -> bytes | None:
-    """取源视频首帧；首帧里**有人物**就返回它，没有人脸/人物就返回 None（交给候选打分）。
-
-    判定复用本地免费的人脸定位（与糊脸同一套）：先 SCRFD，没有结果再退回 Haar。
-    片头是黑场、纯色、字幕卡、纯背景时都检测不到人 → 自动走原来的 12 张候选打分，
-    不会因为「首帧没人」就抽一张空白帧去出图。这一步不调用任何付费接口。
-    """
-    frame = _extract_frame_bytes(source, 0.0, flags=_frame_flags())
-    if not frame:
-        return None
-    from . import batch_image
-
-    with tempfile.TemporaryDirectory(prefix="h3-first-frame-") as folder:
-        probe = Path(folder) / "first-frame.png"
-        probe.write_bytes(frame)
-        try:
-            if batch_image._locate_source_faces(probe):
-                logger.info("首帧检测到人物，直接使用源视频首帧作为抽帧（图一）")
-                return frame
-        except Exception:  # noqa: BLE001 - 定位失败只该退回打分，不该让备料失败
-            logger.warning("首帧 SCRFD 定位失败，尝试 Haar", exc_info=True)
-        if batch_image._locate_face_local(probe):
-            logger.info("首帧检测到人脸（Haar），直接使用源视频首帧作为抽帧（图一）")
-            return frame
-    logger.info("首帧没有检测到人物，改为在候选帧里按清晰度挑选")
-    return None
-
-
-def _use_first_frame(source: Path, target: Path) -> Path | None:
-    """首帧优先生效时写盘并返回目标路径；不适用返回 None。"""
-    if not first_frame_preferred():
-        return None
-    chosen = _first_frame_with_person(source)
-    if chosen is None:
-        return None
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.unlink(missing_ok=True)
-    target.write_bytes(chosen)
-    return target
-
-
 def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path:
-    """Choose by bilateral regional detail; no API or anatomy validation."""
+    """按双侧区域清晰度取分最高的一帧；不调 API、不做手部结构判据。"""
     target.parent.mkdir(parents=True, exist_ok=True)
     target.unlink(missing_ok=True)
-    preferred = _use_first_frame(source, target)
-    if preferred is not None:
-        return preferred
     candidates = _scene_frame_candidates(source, ratio)
     target.write_bytes(max(candidates, key=lambda candidate: candidate[0])[1])
     return target
@@ -1456,14 +1410,10 @@ def extract_scene_frame(source: Path, target: Path, ratio: float = 0.38) -> Path
 async def extract_scene_frame_with_hands(
     source: Path, target: Path, ratio: float = 0.38
 ) -> Path:
-    """首帧有人物就用首帧；否则按本地双侧细节挑选（可选 AI 挑图仍默认关闭）。
+    """多抽候选帧后取本地评分最高的一张（可选 AI 挑图仍默认关闭）。
 
-    用户 2026-10-18：「如果以后首帧有人物直接用首帧的，如果没有你再去找」——首帧那张
-    会一路用作图一（糊脸照旧）、发布目录的 `抽帧.jpg` 与素材包，所以这里只决定「拿哪一帧」。
+    这张会一路用作图一（糊脸照旧）、发布目录的 `抽帧.jpg` 与素材包，所以这里只决定「拿哪一帧」。
     """
-    preferred = await asyncio.to_thread(_use_first_frame, source, target)
-    if preferred is not None:
-        return preferred
     candidates = await asyncio.to_thread(_scene_frame_candidates, source, ratio)
     chosen: bytes | None = None
     # Default remains entirely local, with no extra paid visual request.
@@ -1813,8 +1763,8 @@ async def _prepare_review_work(
         _set_item(batch_id, item_id, refreshSceneFrame=False)
         batch_store.add_item_log(
             batch_id, item_id,
-            "已抽帧：首帧有人物就直接用首帧；首帧没有人（黑场/纯背景/字幕卡）才在最多12张"
-            "候选里按本地双侧区域清晰度挑选；未调用付费视觉接口。",
+            "已抽帧：目标时刻附近密采 + 全片均匀铺一层（共约 25 张候选），"
+            "取本地双侧区域清晰度评分最高的一张；未调用付费视觉接口。",
         )
 
     meta = item.get("sourceMetadata") or {}
