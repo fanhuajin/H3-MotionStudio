@@ -9741,8 +9741,97 @@ class SceneFramePickerTests(unittest.TestCase):
             self.assertGreater(wide.width, small.width * 2)
 
 
+class FirstFramePreferenceTests(unittest.TestCase):
+    """首帧优先（2026-10-18 用户：「如果以后首帧有人物直接用首帧的，如果没有你再去找」）。
+
+    首帧有人物 → 直接用首帧；首帧没人（黑场/纯背景/字幕卡）→ 仍然走候选打分。
+    `H3_BATCH_FRAME_FIRST=0` 可整体退回打分。
+    """
+
+    @staticmethod
+    def _frame(color: str, size: tuple[int, int] = (60, 90)) -> bytes:
+        import io
+
+        from PIL import Image
+
+        output = io.BytesIO()
+        Image.new("RGB", size, color).save(output, format="PNG")
+        return output.getvalue()
+
+    def _run(self, *, first: bytes | None, faces: list, haar: dict | None, scores: list, payloads: list) -> bytes:
+        from backend import batch_image, batch_worker
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            video = root / "source.mp4"
+            video.write_bytes(b"fake")
+            target = root / "scene-frame.jpg"
+            queue = list(payloads)
+            calls = {"n": 0}
+
+            def extract(*_args, **_kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    return first
+                return queue.pop(0) if queue else None
+
+            with patch.object(batch_worker, "_extract_frame_bytes", extract), patch.object(
+                batch_worker, "_video_duration_seconds", lambda _p: 10.0
+            ), patch.object(
+                batch_worker, "_frame_detail_score", lambda data: scores.pop(0)
+            ), patch.object(
+                batch_image, "_locate_source_faces", lambda _p: faces
+            ), patch.object(
+                batch_image, "_locate_face_local", lambda _p: haar
+            ):
+                return asyncio.run(
+                    batch_worker.extract_scene_frame_with_hands(video, target)
+                ).read_bytes()
+
+    def test_first_frame_with_a_face_is_used_even_if_other_frames_score_higher(self) -> None:
+        first = self._frame("#0000ff", (90, 160))
+        seen = self._run(first=first, faces=[{"x0": 0.4, "y0": 0.2, "x1": 0.6, "y1": 0.4}], haar=None,
+                         scores=[99.0, 98.0], payloads=[self._frame("#ff0000")])
+        self.assertEqual(seen, first)
+
+    def test_first_frame_without_a_person_falls_back_to_scoring(self) -> None:
+        better = self._frame("#00ff00", (90, 160))
+        worse = self._frame("#111111", (90, 160))
+        seen = self._run(first=self._frame("#000000"), faces=[], haar=None,
+                         scores=[10.0, 90.0], payloads=[worse, better])
+        self.assertEqual(seen, better)
+
+    def test_haar_result_also_counts_as_a_person(self) -> None:
+        first = self._frame("#00ffff", (90, 160))
+        seen = self._run(first=first, faces=[], haar={"x0": 0.4, "y0": 0.2, "x1": 0.6, "y1": 0.4},
+                         scores=[99.0], payloads=[self._frame("#ff0000")])
+        self.assertEqual(seen, first)
+
+    def test_the_switch_can_turn_the_rule_off(self) -> None:
+        from backend import batch_worker
+
+        scored = self._frame("#ff00ff", (90, 160))
+        question = unittest.mock.Mock(return_value=self._frame("#00ff00"))
+        with patch.dict(os.environ, {"H3_BATCH_FRAME_FIRST": "0"}, clear=False), \
+                patch.object(batch_worker, "_first_frame_with_person", question), \
+                patch.object(batch_worker, "_scene_frame_candidates", lambda _s, _r: [(1.0, scored)]):
+            with tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                video = root / "source.mp4"
+                video.write_bytes(b"fake")
+                result = asyncio.run(
+                    batch_worker.extract_scene_frame_with_hands(video, root / "scene-frame.jpg")
+                )
+                seen = result.read_bytes()
+        self.assertEqual(seen, scored)
+        question.assert_not_called()
+
+
 def _run_with(case: SceneFramePickerTests, pick, scores, payloads) -> bytes:
-    """跑一次 `extract_scene_frame_with_hands()`：抽帧与打分都是桩，模型挑选用 `pick` 替换。"""
+    """跑一次 `extract_scene_frame_with_hands()`：抽帧与打分都是桩，模型挑选用 `pick` 替换。
+
+    这里测的是「候选打分 + 模型挑图」那条路，所以显式把首帧优先关掉（首帧优先有自己的用例）。
+    """
     from backend import batch_ai, batch_worker
 
     with tempfile.TemporaryDirectory() as raw:
@@ -9753,6 +9842,8 @@ def _run_with(case: SceneFramePickerTests, pick, scores, payloads) -> bytes:
         queue = list(payloads)
         with patch.dict(os.environ, {"H3_BATCH_AI_FRAME_PICK": "1"}, clear=False), patch.object(
             batch_worker, "_video_duration_seconds", lambda _p: 10.0
+        ), patch.object(
+            batch_worker, "_first_frame_with_person", lambda _p: None,
         ), patch.object(
             batch_worker, "_extract_frame_bytes",
             lambda *a, **k: queue.pop(0) if queue else None,   # 抽完就当成抽不到帧
