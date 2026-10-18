@@ -565,7 +565,9 @@ def _resume_batch(batch_id: str, notice: str) -> dict[str, Any]:
     if not runner_alive:
         take_over_batch_run(batch_id)
         spawn(run_batch(batch_id))
-    return state
+    # 动作响应也带上 `prepReady` / `publishChain`：少了这两个字段，页面只能按「备料中」分区，
+    # 用户点「重新开始」后会先看到这一条跑回备料区、等下一次轮询才跳回出片区（2026-10-18）。
+    return _with_publish_chain(state)
 
 
 def _pending_items(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -785,12 +787,14 @@ def _wake_batch(batch_id: str, notice: str) -> dict[str, Any]:
             take_over_batch_run(batch_id)
             batch_store.update(batch_id, pauseRequested=False, runnerActive=False)
             spawn(run_batch(batch_id))
-        return batch_store.update(batch_id, notice=notice)
+        return _with_publish_chain(batch_store.update(batch_id, notice=notice))
     if status == "paused" or state.get("pauseRequested"):
-        return batch_store.update(
+        return _with_publish_chain(batch_store.update(
             batch_id, notice=f"{notice} 批次处于暂停，点「继续」后开始处理。"
-        )
-    return batch_store.update(batch_id, notice=f"{notice} 点「准备任务」后开始处理。")
+        ))
+    return _with_publish_chain(
+        batch_store.update(batch_id, notice=f"{notice} 点「准备任务」后开始处理。")
+    )
 
 
 def _with_publish_chain(state: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1758,11 +1762,14 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
         await websocket.close(code=4404)
         return
     await websocket.accept()
-    await websocket.send_json(state)
+    # 实时推送也要带 `prepReady` / `publishChain`：前端只在「状态没变」时沿用上一次的值，
+    # 状态一变（skipped → confirmed、confirmed → running）就会因为缺字段把条目分到备料区，
+    # 过几秒轮询再跳回出片区。这里按当前磁盘状态补一次（490 条约 15ms）。
+    await websocket.send_json(_with_publish_chain(state))
     queue = batch_store.subscribe(batch_id)
     try:
         while True:
-            await websocket.send_json(await queue.get())
+            await websocket.send_json(_with_publish_chain(await queue.get()))
     except WebSocketDisconnect:
         pass
     finally:

@@ -1,5 +1,7 @@
 # Prototype Instructions
 
+- **【2026-10-18 动作响应与实时推送必须带 `prepReady`（修「重新开始先回备料区」）】** 用户问：「以跳过的任务重新开始为什么回调到备料区然后才跳转到出片区」。根因不是真的重新备料，而是**字段缺失导致的分区误判**：`_resume_batch()` / `_wake_batch()` 之前返回原始 state，WebSocket 也直接推原始 state，而 `prepReady` / `publishChain` 只在 GET 里由 `_with_publish_chain()` 现算；前端 `TAB_MATCH` 用 `prepReady` 分区（备料区 = 未完成且无 `prepReady`），且只在「状态没变」时沿用上一次的值 —— 重新开始（skipped→confirmed）与开跑（confirmed→running）都算状态变化，于是条目先被分到备料区，等下一次轮询（3.5 秒）拿到带字段的状态才跳回出片区。日志确认过：那批跳过条目走的是「已有的人物图直接沿用…随后继续出片」的直通路径，不是重跑备料。已修：`_resume_batch` / `_wake_batch` / `batch_websocket`（首帧与每条推送）统一走 `_with_publish_chain()`；实测 490 条约 15ms（prepReady 12.6ms + publishChain 2.2ms），可以在每条推送里现算。测试 `test_action_response_carries_the_zone_fields` / `test_realtime_push_carries_the_zone_fields`（`BatchSingleVideoQueueTests`）；`test_backend` 仍是既有 15 条无关失败。**改完由用户自己重启后端。**
+
 - **【2026-10-18 封面改成后台补，不再挡下一条视频】** 用户问：「封面现在调用的是中转站的接口 还有必要阻塞整个流程吗」。结论：不必。已落地：
   - `_process_confirmed()` 改为 `_deliver()` → `_mark_delivered()`（条目立即 completed、放开视频锁）→ `_finish_covers_after_delivery()`；默认把两张封面丢进后台任务（`spawn_item_covers()` / `_BG_COVER_TASKS` / `_BG_COVER_KEYS` 去重），下一条视频立刻开跑。`H3_COVER_BLOCKING=1` 回到旧的「等封面做完再走下一条」语义。
   - **只把中转站等待放后台**：从成片全帧找手、抽 `封面人物图.png`（6~20 秒、要显存）仍在交付当下做完，避免和下一支视频抢 VRAM；后台只剩中转站请求（实测 60~100 秒/张）+ 本地 VOSR2 放大。放大要 GPU，按 `pipeline_lock` FIFO 排在视频之间（每条最多多等一次放大），不再等 2~4 分钟接口。

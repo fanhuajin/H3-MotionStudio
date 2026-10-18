@@ -9105,6 +9105,61 @@ class BatchSingleVideoQueueTests(unittest.TestCase):
         take_over.assert_not_called()
         spawn.assert_not_called()
 
+    def test_action_response_carries_the_zone_fields(self):
+        """「重新开始」的响应必须带 `prepReady`：少了它页面会先显示回备料区、过几秒才跳回出片区。
+
+        2026-10-18 用户报的：「以跳过的任务重新开始为什么回调到备料区然后才跳转到出片区」。
+        根因是 `_resume_batch()` 返回的是原始 state，`prepReady` 只在 GET 里由
+        `_with_publish_chain()` 现算；前端拿到没有这个字段的响应就把条目归到备料区。
+        """
+        import tempfile
+        from pathlib import Path
+
+        from backend import app as app_module
+        from backend import batch_worker
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "dance" / "027_跳舞_测试"
+            folder.mkdir(parents=True)
+            (folder / "人物图.png").write_bytes(b"person")
+            (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+            state = {
+                "id": "b1",
+                "status": "skipped",
+                "updatedAt": "2026-10-18T00:00:00+00:00",
+                "items": [
+                    {
+                        "id": "i1", "index": 1, "status": "confirmed", "stage": "confirmed",
+                        "kind": "dance", "outputs": {"folder": str(folder)},
+                    }
+                ],
+            }
+
+            class StubStore:
+                def update(self, _batch_id, **changes):
+                    state.update(changes)
+                    return state
+
+            with patch.object(app_module, "batch_store", StubStore()), \
+                 patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), \
+                 patch.object(batch_worker, "full_auto_enabled", return_value=True), \
+                 patch.object(app_module, "batch_run_alive", return_value=True), \
+                 patch.object(app_module, "spawn"):
+                result = app_module._resume_batch("b1", "已重试")
+
+        self.assertIn("prepReady", result["items"][0])
+        self.assertTrue(result["items"][0]["prepReady"])
+
+    def test_realtime_push_carries_the_zone_fields(self):
+        """实时推送同样要带 `prepReady`：状态一变（confirmed → running）前端就不沿用旧值。"""
+        import inspect
+
+        from backend import app as app_module
+
+        source = inspect.getsource(app_module.batch_websocket)
+        self.assertIn("_with_publish_chain", source)
+
 
 class CancelGateTests(unittest.TestCase):
     """2026-09-17 事故回归：**被取消的任务绝不许自己复活**。
