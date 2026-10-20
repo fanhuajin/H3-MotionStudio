@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useRememberedTab } from "./useRememberedTab";
 import { StudioBot } from "./StudioBot";
 import {
-  Check, ClipboardText, ImageSquare, MagnifyingGlassPlus, Minus, Plus, SpinnerGap, UploadSimple, WarningCircle, X,
+  Check, ClipboardText, ImageSquare, MagnifyingGlassPlus, Minus, Plus, SpinnerGap, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { readJson } from "./api";
 
@@ -138,7 +138,6 @@ export function ImageWorkbenchRoute() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [viewer, setViewer] = useState<{ src: string; label: string } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
   /** 每条自动化任务的本地开始时刻（后端不给百分比，就显示「已用 N 秒」避免看着像卡死）。 */
   const autoClock = useRef<Record<string, number>>({});
   const refreshInFlight = useRef<Promise<void> | null>(null);
@@ -343,7 +342,7 @@ export function ImageWorkbenchRoute() {
       setNotice(stage === "person" ? "人物图已保存到对应作品目录。" : "封面已校验尺寸并保存到对应作品目录。");
       await refresh();
     } catch (error) { setNotice(error instanceof Error ? error.message : "保存失败"); }
-    finally { setBusy(false); if (inputRef.current) inputRef.current.value = ""; }
+    finally { setBusy(false); }
   };
 
   useEffect(() => {
@@ -397,19 +396,14 @@ export function ImageWorkbenchRoute() {
                 aria-busy={busy} tabIndex={0} aria-label="图片预览与上传"
                 onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = busy ? "none" : "copy"; }}
                 onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file && !busy) void upload(file); }}>
-                <input ref={inputRef} type="file" hidden accept="image/png,image/jpeg,image/webp" disabled={busy}
-                  onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); }} />
                 {stageAsset ? <AssetPreview src={assetUrl(item, stage)} label={STAGES.find((row) => row.id === stage)?.label || "图片"} busy={busy}
                   onView={() => setViewer({ src: assetUrl(item, stage), label: STAGES.find((row) => row.id === stage)?.label || "图片" })}
                   onCopy={() => void copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} />
                   : <div><StudioBot mood={autoLive ? "working" : "idle"} variant={autoLive ? "thinking" : "egg"} size={104} /></div>}
-                <div className="image-preview-upload-tools">
-                  <button disabled={busy} onClick={() => inputRef.current?.click()}>{busy ? <SpinnerGap className="spin" /> : <UploadSimple />}{stageAsset ? "替换图片" : "上传图片"}</button>
-                </div>
                 <span>{stageAsset ? `${stageAsset.width} × ${stageAsset.height}` : "等待生成"}</span>
               </div>
               <div className="image-workbench-actions">
-                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点上方按钮用第三方接口自动出这张图</li><li>图片点击可放大；悬浮后点复制按钮，到别处自己出图</li><li>在左侧图片区域粘贴、拖入或选择图片，会自动保存并登记</li></ol></div>
+                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点上方按钮用第三方接口自动出这张图</li><li>图片点击可放大；悬浮后点复制按钮，到别处自己出图</li><li>在左侧图片区域粘贴或拖入图片，会自动保存并登记</li></ol></div>
                 {stage === "person" && <div className="image-reference-pair">{([
                   { key: "frame", label: "图一抽帧", caption: "图一", missing: "缺少抽帧" },
                   { key: "identity", label: "图二固定五官", caption: "图二", missing: "缺少参考" },

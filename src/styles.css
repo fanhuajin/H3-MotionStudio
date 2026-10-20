@@ -2042,12 +2042,3 @@ body {
 .image-reference-pair .image-view-trigger { height: 130px; }
 .image-cover-reference .image-view-trigger { height: 190px; }
 @media (max-width: 1120px) { .image-workbench-preview { height: 400px; min-height: 0; } }
-
-/* Reveal the upload action alongside the preview's existing hover controls. */
-.image-workbench-preview > .image-preview-upload-tools { position: absolute; z-index: 2; bottom: 12px; left: 12px; display: flex; opacity: 0; pointer-events: none; }
-.image-workbench-preview:hover > .image-preview-upload-tools,
-.image-workbench-preview:focus-within > .image-preview-upload-tools { opacity: 1; pointer-events: auto; }
-.image-preview-upload-tools button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 7px 10px; border: 1px solid rgba(106,179,149,.6); border-radius: 7px; background: rgba(14,15,16,.94); color: #eaf4f0; font-size: 12px; cursor: pointer; }
-.image-workbench-preview > .image-preview-upload-tools svg { width: 16px; height: 16px; }
-.image-preview-upload-tools button:disabled { opacity: .6; cursor: wait; }
-@media (hover: none) { .image-workbench-preview > .image-preview-upload-tools { opacity: 1; pointer-events: auto; } }
