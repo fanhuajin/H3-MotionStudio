@@ -27,6 +27,7 @@ logger = logging.getLogger("uvicorn.error")
 _REGEN_IMAGE_TASKS: set[asyncio.Task] = set()
 
 from . import input_preview
+from . import douyin_downloads
 from . import image_workbench
 from . import rvc_batch
 from . import batch_worker
@@ -3000,6 +3001,11 @@ async def _resolve_job(job_id: str) -> dict[str, Any] | None:
     Read paths never start the (memory-heavy) service: when it is offline or
     does not know the job anymore, the persisted mirror answers instead.
     """
+    if job_id.startswith("direct-"):
+        cached = mirror_get_job(job_id)
+        if not cached:
+            return None
+        return _settle_stale(cached, set(douyin_downloads.tasks))
     try:
         job = await douyin_service.job(job_id)
     except DouyinServiceOffline:
@@ -3025,10 +3031,7 @@ async def douyin_download(request: DouyinDownloadRequest):
         raise HTTPException(400, "请输入抖音作品链接")
     if not is_douyin_url(url):
         raise HTTPException(400, "当前只支持抖音链接")
-    try:
-        job = await douyin_service.submit(url)
-    except DouyinServiceError as exc:
-        raise HTTPException(502, str(exc)) from exc
+    job = douyin_downloads.submit(url)
     douyin_service.mark_activity()
     # Normalized payload: completed jobs (e.g. already downloaded) come back
     # with result and mediaUrl, and preview conversion starts immediately.
@@ -3146,7 +3149,8 @@ async def douyin_jobs():
         live_ids = {str(job.get("job_id")) for job in jobs_raw if isinstance(job, dict)}
     # Union with the mirror: after the service restarts (start/stop per use)
     # its memory is empty, but previously completed jobs must stay listed.
-    settled = [_settle_stale(job, live_ids) for job in mirror_jobs()]
+    active_ids = (live_ids or set()) | set(douyin_downloads.tasks)
+    settled = [_settle_stale(job, active_ids) for job in mirror_jobs()]
     return {"jobs": [douyin_job_payload(job) for job in settled]}
 
 
