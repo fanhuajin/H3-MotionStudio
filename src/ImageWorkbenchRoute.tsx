@@ -334,7 +334,7 @@ export function ImageWorkbenchRoute() {
   };
 
   const upload = async (file: File) => {
-    if (!item) return;
+    if (!item || busy) return;
     if (stage === "person" && !chosenKind) { setNotice("请先选择人物图属于唱歌还是跳舞，再保存成图。"); return; }
     const body = new FormData(); body.append("file", file);
     setBusy(true); setNotice("正在校验并保存……");
@@ -393,15 +393,28 @@ export function ImageWorkbenchRoute() {
             <div className="image-stage-tabs">{STAGES.map((entry, index) => { const ready = Boolean(item.assets[entry.id]); return <button key={entry.id} className={stage === entry.id ? "active" : ""} onClick={() => setStage(entry.id)}><i>{ready ? <Check weight="bold" /> : index + 1}</i><span><strong>{entry.label}</strong><small>{entry.spec}</small></span></button>; })}</div>
 
             <div className="image-workbench-content">
-              <div className={`image-workbench-preview image-copy-surface ${stage === "douyin" ? "portrait" : ""}`}>
+              <div className={`image-workbench-preview image-copy-surface ${stage === "douyin" ? "portrait" : ""}`}
+                aria-busy={busy}
+                onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = busy ? "none" : "copy"; }}
+                onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file && !busy) void upload(file); }}>
+                <input ref={inputRef} type="file" hidden accept="image/png,image/jpeg,image/webp" disabled={busy}
+                  onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); }} />
                 {stageAsset ? <AssetPreview src={assetUrl(item, stage)} label={STAGES.find((row) => row.id === stage)?.label || "图片"} busy={busy}
                   onView={() => setViewer({ src: assetUrl(item, stage), label: STAGES.find((row) => row.id === stage)?.label || "图片" })}
                   onCopy={() => void copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} />
-                  : <div><StudioBot mood={autoLive ? "working" : "idle"} variant={autoLive ? "thinking" : "egg"} size={104} /><strong>还没有这张图</strong><small>自己出好后拖到右侧上传</small></div>}
+                  : <button className="image-preview-upload-empty" disabled={busy} onClick={() => inputRef.current?.click()}>
+                    <StudioBot mood={autoLive ? "working" : "idle"} variant={autoLive ? "thinking" : "egg"} size={104} />
+                    <strong>{busy ? "正在处理……" : "还没有这张图"}</strong><small>点击选择图片，或拖到这里、按 Ctrl+V 粘贴</small>
+                  </button>}
+                <div className="image-preview-upload-tools">
+                  <button disabled={busy} onClick={() => inputRef.current?.click()}>{busy ? <SpinnerGap className="spin" /> : <UploadSimple />}{stageAsset ? "替换图片" : "选择图片"}</button>
+                  <small>{stage === "person" ? "保存为 人物图.png" : `自动校验并保存为 ${stage === "bilibili" ? "B站4x3.png" : "抖音3x4.png"}`}</small>
+                  {stageAsset && <small>支持拖入或 Ctrl+V 粘贴替换</small>}
+                </div>
                 <span>{stageAsset ? `${stageAsset.width} × ${stageAsset.height}` : "等待生成"}</span>
               </div>
               <div className="image-workbench-actions">
-                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点上方按钮用第三方接口自动出这张图</li><li>图片点击可放大；悬浮后点复制按钮，到别处自己出图</li><li>出好的图直接粘贴、拖入或选择上传，会自动保存并登记</li></ol></div>
+                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点上方按钮用第三方接口自动出这张图</li><li>图片点击可放大；悬浮后点复制按钮，到别处自己出图</li><li>在左侧图片区域粘贴、拖入或选择图片，会自动保存并登记</li></ol></div>
                 {stage === "person" && <div className="image-reference-pair">{([
                   { key: "frame", label: "图一抽帧", caption: "图一", missing: "缺少抽帧" },
                   { key: "identity", label: "图二固定五官", caption: "图二", missing: "缺少参考" },
@@ -424,10 +437,7 @@ export function ImageWorkbenchRoute() {
                   ><SpinnerGap className={busy ? "spin" : undefined} />{stageAsset ? "重新生成这一步" : "API 自动生成这一步"}</button>
                   <button onClick={() => void copyPrompt(item.id, stage)}><ClipboardText />复制当前提示词</button>
                 </div>
-                <label className="image-drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file) upload(file); }}>
-                  <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) upload(file); }} />
-                  {busy ? <SpinnerGap className="spin" /> : <UploadSimple />}<strong>{stageAsset ? "粘贴、拖入或选择图片替换" : "按 Ctrl+V 粘贴，或拖入、选择生成好的图片"}</strong><small>{stage === "person" ? "保存为 人物图.png" : `自动校验并保存为 ${stage === "bilibili" ? "B站4x3.png" : "抖音3x4.png"}`}</small>
-                </label>
+
               </div>
             </div>
           </>}
