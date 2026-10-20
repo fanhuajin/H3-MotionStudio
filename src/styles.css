@@ -2054,3 +2054,5 @@ body {
 .image-workbench-actions .image-action-grid { grid-template-columns: minmax(0, 1fr); }
 
 .image-reference-pair.image-reference-single { grid-template-columns: minmax(0, 1fr); }
+
+.image-workbench-actions .image-prompt-note { margin: 0; color: #aeb8b1; font-size: 12px; line-height: 1.65; }

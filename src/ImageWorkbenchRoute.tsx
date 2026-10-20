@@ -423,6 +423,7 @@ export function ImageWorkbenchRoute() {
                       : <div>请先完成人物图</div>}
                   </figure>
                 </div>}
+                {stage !== "person" && <p className="image-prompt-note">手部合理或自然遮挡时保留原构图；异常、看不清或检查失败时采用不露手近景。复制的提示词会按当前检查结果匹配，封面生成后直接保存。</p>}
                 <div className="image-action-grid">
                   <button disabled={busy} onClick={() => void copyPrompt(item.id, stage)}><ClipboardText />复制提示词</button>
                 </div>
