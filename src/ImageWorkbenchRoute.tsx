@@ -416,11 +416,13 @@ export function ImageWorkbenchRoute() {
                     onView={() => setViewer({ src: assetUrl(item, key), label })} onCopy={() => void copyImage(key, label)} /> : <div>{missing}</div>}
                   <figcaption>{caption}</figcaption>
                 </figure>)}</div>}
-                {stage !== "person" && <div className="image-cover-reference"><strong>封面参考：封面人物图（有手看手部、无手看画面清晰度）</strong><figure className="image-copy-surface">
-                  {item.assets.coverPerson ? <AssetPreview src={assetUrl(item, "coverPerson")} label="封面人物图" busy={busy}
-                    onView={() => setViewer({ src: assetUrl(item, "coverPerson"), label: "封面人物图" })} onCopy={() => void copyImage("coverPerson", "封面人物图")} />
-                    : <div><ImageSquare />{item.hasVideo ? "将从成片自动抽帧生成" : "还没有封面人物图（出片后自动生成）"}</div>}
-                  <figcaption><MagnifyingGlassPlus />封面人物图 · 点击查看</figcaption></figure></div>}
+                {stage !== "person" && <div className="image-reference-pair image-reference-single" aria-label="封面参考图片">
+                  <figure className="image-copy-surface">
+                    {item.assets.person ? <AssetPreview src={assetUrl(item, "person")} label="封面参考 · 人物图" busy={busy}
+                      onView={() => setViewer({ src: assetUrl(item, "person"), label: "封面参考 · 人物图" })} onCopy={() => void copyImage("person", "人物图")} />
+                      : <div>请先完成人物图</div>}
+                  </figure>
+                </div>}
                 <div className="image-action-grid">
                   <button disabled={busy} onClick={() => void copyPrompt(item.id, stage)}><ClipboardText />复制提示词</button>
                 </div>

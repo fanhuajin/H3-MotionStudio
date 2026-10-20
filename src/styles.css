@@ -2052,3 +2052,5 @@ body {
 .image-copy-surface > .image-hover-copy { min-height: 38px; padding: 8px 12px; font-size: 12px; }
 .image-copy-surface > .image-hover-copy svg { width: 18px; height: 18px; }
 .image-workbench-actions .image-action-grid { grid-template-columns: minmax(0, 1fr); }
+
+.image-reference-pair.image-reference-single { grid-template-columns: minmax(0, 1fr); }
