@@ -2056,3 +2056,13 @@ body {
 .image-reference-pair.image-reference-single { grid-template-columns: minmax(0, 1fr); }
 
 .image-workbench-actions .image-prompt-note { margin: 0; color: #aeb8b1; font-size: 12px; line-height: 1.65; }
+
+/* Progress updates must not resize the task columns or change row heights. */
+.batch-table { table-layout: fixed; min-width: 1100px; }
+.batch-table th:nth-child(4) { width: 340px; }
+.batch-table th:nth-child(5) { width: 64px; }
+.batch-table th:nth-child(6) { width: 250px; }
+.batch-status-cell { white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+.batch-status-percent { display: inline-block; min-width: 4ch; text-align: right; }
+.batch-status-cell .batch-elapsed { min-width: 7ch; }
+.batch-task-cell .batch-item-source { max-width: 100%; }

@@ -2130,13 +2130,6 @@ export function BatchRoute() {
                             {item.childJob?.upscaleBatch && item.childJob.upscaleBatches && (
                               <small className="batch-seg">二采分段 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</small>
                             )}
-                            {batch?.recoveryActive
-                              && item.id === batch.currentItemId
-                              && item.childJob?.currentNodeTitle && (
-                                <small className="batch-elapsed">
-                                  <Timer weight="fill" />{item.childJob.currentNodeTitle}
-                                </small>
-                              )}
                             {batch?.status === "running"
                               && item.coverStage
                               && batch.currentItemId === item.id && (
