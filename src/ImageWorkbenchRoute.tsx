@@ -394,7 +394,7 @@ export function ImageWorkbenchRoute() {
 
             <div className="image-workbench-content">
               <div className={`image-workbench-preview image-copy-surface ${stage === "douyin" ? "portrait" : ""}`}
-                aria-busy={busy}
+                aria-busy={busy} tabIndex={0} aria-label="图片预览与上传"
                 onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = busy ? "none" : "copy"; }}
                 onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file && !busy) void upload(file); }}>
                 <input ref={inputRef} type="file" hidden accept="image/png,image/jpeg,image/webp" disabled={busy}
@@ -402,14 +402,9 @@ export function ImageWorkbenchRoute() {
                 {stageAsset ? <AssetPreview src={assetUrl(item, stage)} label={STAGES.find((row) => row.id === stage)?.label || "图片"} busy={busy}
                   onView={() => setViewer({ src: assetUrl(item, stage), label: STAGES.find((row) => row.id === stage)?.label || "图片" })}
                   onCopy={() => void copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} />
-                  : <button className="image-preview-upload-empty" disabled={busy} onClick={() => inputRef.current?.click()}>
-                    <StudioBot mood={autoLive ? "working" : "idle"} variant={autoLive ? "thinking" : "egg"} size={104} />
-                    <strong>{busy ? "正在处理……" : "还没有这张图"}</strong><small>点击选择图片，或拖到这里、按 Ctrl+V 粘贴</small>
-                  </button>}
+                  : <div><StudioBot mood={autoLive ? "working" : "idle"} variant={autoLive ? "thinking" : "egg"} size={104} /></div>}
                 <div className="image-preview-upload-tools">
-                  <button disabled={busy} onClick={() => inputRef.current?.click()}>{busy ? <SpinnerGap className="spin" /> : <UploadSimple />}{stageAsset ? "替换图片" : "选择图片"}</button>
-                  <small>{stage === "person" ? "保存为 人物图.png" : `自动校验并保存为 ${stage === "bilibili" ? "B站4x3.png" : "抖音3x4.png"}`}</small>
-                  {stageAsset && <small>支持拖入或 Ctrl+V 粘贴替换</small>}
+                  <button disabled={busy} onClick={() => inputRef.current?.click()}>{busy ? <SpinnerGap className="spin" /> : <UploadSimple />}{stageAsset ? "替换图片" : "上传图片"}</button>
                 </div>
                 <span>{stageAsset ? `${stageAsset.width} × ${stageAsset.height}` : "等待生成"}</span>
               </div>

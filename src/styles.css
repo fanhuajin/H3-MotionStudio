@@ -2043,11 +2043,11 @@ body {
 .image-cover-reference .image-view-trigger { height: 190px; }
 @media (max-width: 1120px) { .image-workbench-preview { height: 400px; min-height: 0; } }
 
-/* Upload actions share the preview while image viewing and copying stay available. */
-.image-preview-upload-empty { display: grid; place-content: center; justify-items: center; gap: 8px; width: 100%; height: 100%; padding: 20px 16px 100px; border: 0; background: transparent; color: #a6a7a8; cursor: pointer; }
-.image-preview-upload-empty strong, .image-preview-upload-empty small { font-size: 12px; line-height: 1.65; }
-.image-workbench-preview > .image-preview-upload-tools { position: absolute; z-index: 2; bottom: 36px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 10px; padding: 8px; border-radius: 8px; background: rgba(14,15,16,.9); color: #a6b2ab; }
-.image-preview-upload-tools button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid #454947; border-radius: 6px; background: #242826; color: #eaf4f0; cursor: pointer; }
+/* Reveal the upload action alongside the preview's existing hover controls. */
+.image-workbench-preview > .image-preview-upload-tools { position: absolute; z-index: 2; bottom: 12px; left: 12px; display: flex; opacity: 0; pointer-events: none; }
+.image-workbench-preview:hover > .image-preview-upload-tools,
+.image-workbench-preview:focus-within > .image-preview-upload-tools { opacity: 1; pointer-events: auto; }
+.image-preview-upload-tools button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 7px 10px; border: 1px solid rgba(106,179,149,.6); border-radius: 7px; background: rgba(14,15,16,.94); color: #eaf4f0; font-size: 12px; cursor: pointer; }
 .image-workbench-preview > .image-preview-upload-tools svg { width: 16px; height: 16px; }
-.image-workbench-preview > .image-preview-upload-tools small { font-size: 12px; line-height: 1.65; }
-.image-preview-upload-tools button:disabled, .image-preview-upload-empty:disabled { opacity: .6; cursor: wait; }
+.image-preview-upload-tools button:disabled { opacity: .6; cursor: wait; }
+@media (hover: none) { .image-workbench-preview > .image-preview-upload-tools { opacity: 1; pointer-events: auto; } }
