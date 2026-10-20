@@ -422,7 +422,6 @@ export function ImageWorkbenchRoute() {
                     : <div><ImageSquare />{item.hasVideo ? "将从成片自动抽帧生成" : "还没有封面人物图（出片后自动生成）"}</div>}
                   <figcaption><MagnifyingGlassPlus />封面人物图 · 点击查看</figcaption></figure></div>}
                 <div className="image-action-grid">
-                  <button disabled={busy || !item.assets.person} onClick={() => void copyImage("person", "人物图")} title="复制原人物图"><ClipboardText />复制图片</button>
                   <button disabled={busy} onClick={() => void copyPrompt(item.id, stage)}><ClipboardText />复制提示词</button>
                 </div>
 

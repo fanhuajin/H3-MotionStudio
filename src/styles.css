@@ -2043,11 +2043,12 @@ body {
 .image-cover-reference .image-view-trigger { height: 190px; }
 @media (max-width: 1120px) { .image-workbench-preview { height: 400px; min-height: 0; } }
 
-.image-workbench-actions .image-cover-reference .image-hover-copy { position: static; display: flex; justify-content: center; width: 100%; min-height: 38px; padding: 8px 10px; border: 0; border-top: 1px solid #3b4540; border-radius: 0; font-size: 12px; opacity: 1; pointer-events: auto; }
-.image-workbench-actions .image-cover-reference .image-hover-copy svg { width: 18px; height: 18px; }
 
 /* Keep generation controls by the title and manual copy actions together below. */
 .image-auto-controls { flex-wrap: wrap; justify-content: flex-end; }
 .image-auto-controls .image-generate-stage { background: #242826; border-color: #454947; color: #eaf4f0; }
-.image-workbench-actions .image-cover-reference .image-hover-copy { display: none; }
 .image-action-grid button { justify-content: center; }
+
+.image-copy-surface > .image-hover-copy { min-height: 38px; padding: 8px 12px; font-size: 12px; }
+.image-copy-surface > .image-hover-copy svg { width: 18px; height: 18px; }
+.image-workbench-actions .image-action-grid { grid-template-columns: minmax(0, 1fr); }
