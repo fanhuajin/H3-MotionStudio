@@ -3366,6 +3366,11 @@ if dist_dir.is_dir():
     async def subtitle_frontend():
         return _spa_index()
 
+    @app.get("/douyin", include_in_schema=False)
+    @app.get("/douyin/", include_in_schema=False)
+    async def douyin_frontend():
+        return _spa_index()
+
     @app.get("/images", include_in_schema=False)
     async def images_frontend():
         return _spa_index()
