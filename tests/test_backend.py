@@ -2589,26 +2589,14 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("图二是唯一的面部身份参考", batch_ai.compose_image_prompt("dance"))
 
     def test_platform_compliance_block_is_in_every_image_prompt(self) -> None:
-        """2026-09-20 小红书处罚事故：出图提示词里必须有**过度裸露**硬约束。
-
-        根因：`9x16跳舞构图.txt` 把服装决定权整个交给源视频抽帧、`4x3唱歌构图.txt`
-        甚至写着「如果服装领口较低…不要进一步扩大领口」（等于承认低领合法），
-        全链路一个字都没写着装合规，于是「露事业线/透视」被原样继承，
-        账号被判「存在多篇涉及敏感部位裸露凸显、包含性诱惑内容的笔记」。
-
-        ⚠️ 口径以**平台规则页原文**为准（用户 2026-09-20 贴出「当前笔记违规点 → 过度裸露」）：
-        ① 胸/臀/背等部位或全身大面积裸露；② 透视/裸色等易造成未着装错觉；③ 紧身衣物隐私部位
-        轮廓线过于突出（凸点、骆驼趾）。**吊带/露肩/露脐/短裤/正常紧身都不算违规** ——
-        第一版把它们全禁了，用户当场指出「我感觉 12 17也不是」（012 是抹胸连衣裙、017 是吊带
-        露脐上衣，两张都不露事业线），所以这里专门钉住「不许再退回去一律禁」。
-        """
+        """两类提示词共用覆盖要求，不能再把部分露肤款式一概认定安全。"""
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【服装】", prompt)
             self.assertIn("胸前有衣物覆盖", prompt)
             self.assertIn("面料不透明", prompt)
             self.assertIn("可调整款式并保持原有气质", prompt)
-            self.assertIn("正常的露肩、露腰或短裤造型", prompt)
+            self.assertNotIn("无需改变正常的露肩", prompt)
         # 只管裸露：姿态、动作、裁切都不许出现在这一段里
         for word in ("摆胯", "腰部波浪", "姿态", "下边缘", "胸线"):
             self.assertNotIn(word, batch_ai.PLATFORM_SAFE_BLOCK)
@@ -2729,7 +2717,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         # 自动出图走的是精简模板：长提示词会把这一段淹掉（6628 字 vs 1225 字的实测对照）
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertLess(len(prompt), 900, "自动出图必须是精简模板")
+            self.assertLess(len(prompt), 1800, "分场景服装与背景要求仍须使用精简模板")
             self.assertIn("可调整款式并保持原有气质", prompt)
 
     def test_compliance_judge_uses_the_platform_rule_verbatim(self) -> None:

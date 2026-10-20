@@ -15,3 +15,18 @@ class DancePosePromptTests(unittest.TestCase):
             text = compose_image_prompt('singing', style_source=source)
             self.assertIn('姿态和人物位置可自然调整', text)
             self.assertNotIn('【跳舞姿态】', text)
+
+    def test_clothing_matches_performance_kind(self):
+        for source in ('video', 'redesign'):
+            singing = compose_image_prompt('singing', style_source=source)
+            self.assertIn('【唱歌着装】', singing)
+            self.assertIn('随呼吸和轻微俯身保持稳定', singing)
+            self.assertNotIn('【跳舞着装】', singing)
+        dance = compose_image_prompt('dance')
+        self.assertIn('【跳舞着装】', dance)
+        self.assertIn('抬手、转身和弯腰', dance)
+        self.assertNotIn('【唱歌着装】', dance)
+        for text in (singing, dance):
+            self.assertIn('腰腹与背部完整遮盖', text)
+            self.assertIn('以下覆盖要求优先于参考图及造型修改意见', text)
+            self.assertNotIn('无需改变正常的露肩', text)
