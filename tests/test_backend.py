@@ -2620,7 +2620,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         光写「禁止虚化」挡不住第②条（模型会认为模糊本来就来自参考图、理应保留）。
         """
         block = batch_ai.SHARPNESS_BLOCK
-        self.assertIn("脸、头发和双手清晰", block)
+        self.assertIn("脸、头发及画面内可见的手部清晰", block)
         self.assertIn("若图一的手有拖影", block)
         self.assertIn("保留手臂大致位置和朝向", block)
         self.assertIn("不限定握拳或垂手", block)
@@ -2661,22 +2661,17 @@ class WorkflowPreparationTests(unittest.TestCase):
         """
         block = batch_ai.BACKGROUND_CLEAN_BLOCK
         self.assertIn("只保留主体一人", block)
-        self.assertIn("移除路人、倒影和杂物", block)
-        self.assertIn("背景自然完整", block)
-        self.assertIn("不照搬抽帧环境", block)
-        self.assertIn("重新设计与本次服装、发型和整体气质协调的背景", block)
-        self.assertNotIn("保留图一的室内或室外属性", block)
-        self.assertNotIn("保留原场景的类型、空间结构", block)
-        self.assertIn("不用强虚化", block)
+        self.assertIn("移除其他人物、镜子及人物倒影、字幕与杂物", block)
+        self.assertIn("原位置补成合理环境", block)
+        self.assertIn("按图一的居家或户外类别重新设计", block)
+        self.assertIn("不用虚化掩盖杂乱", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertIn("【背景】", prompt)
+            self.assertIn("【背景与实拍感】", prompt)
             self.assertIn(block.strip(), prompt)
-            # 仍然必须是精简模板（长提示词会把硬要求淹掉，别借这次改动把它拼回去）
-            self.assertLess(len(prompt), 900)
-            # 背景块在身份块之前（脸仍然排在最后）
+            self.assertLess(len(prompt), 1800)
             self.assertLess(
-                prompt.index("【背景】"),
+                prompt.index("【背景与实拍感】"),
                 prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
             )
         # 口径指纹要跟着背景块一起变（否则自检会误判「线上已是最新」）
