@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useRememberedTab } from "./useRememberedTab";
 import { StudioBot } from "./StudioBot";
 import {
-  Check, ClipboardText, ImageSquare, MagnifyingGlassPlus, Minus, Plus, SpinnerGap, WarningCircle, X,
+  Check, ClipboardText, ImageSquare, Minus, Plus, SpinnerGap, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { readJson } from "./api";
 
@@ -403,14 +403,13 @@ export function ImageWorkbenchRoute() {
                 <span>{stageAsset ? `${stageAsset.width} × ${stageAsset.height}` : "等待生成"}</span>
               </div>
               <div className="image-workbench-actions">
-                <div className="image-workflow-note"><strong>怎么使用</strong><ol><li>点上方按钮用第三方接口自动出这张图</li><li>图片点击可放大；悬浮后点复制按钮，到别处自己出图</li><li>在左侧图片区域粘贴或拖入图片，会自动保存并登记</li></ol></div>
                 {stage === "person" && <div className="image-reference-pair">{([
                   { key: "frame", label: "图一抽帧", caption: "图一", missing: "缺少抽帧" },
                   { key: "identity", label: "图二固定五官", caption: "图二", missing: "缺少参考" },
                 ] as const).map(({ key, label, caption, missing }) => <figure key={key} className="image-copy-surface">
                   {item.assets[key] ? <AssetPreview src={assetUrl(item, key)} label={label} busy={busy}
                     onView={() => setViewer({ src: assetUrl(item, key), label })} onCopy={() => void copyImage(key, label)} /> : <div>{missing}</div>}
-                  <figcaption><MagnifyingGlassPlus />{caption} · 点击查看</figcaption>
+                  <figcaption>{caption}</figcaption>
                 </figure>)}</div>}
                 {stage !== "person" && <div className="image-cover-reference"><strong>封面参考：封面人物图（有手看手部、无手看画面清晰度）</strong><figure className="image-copy-surface">
                   {item.assets.coverPerson ? <AssetPreview src={assetUrl(item, "coverPerson")} label="封面人物图" busy={busy}

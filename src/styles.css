@@ -2042,3 +2042,6 @@ body {
 .image-reference-pair .image-view-trigger { height: 130px; }
 .image-cover-reference .image-view-trigger { height: 190px; }
 @media (max-width: 1120px) { .image-workbench-preview { height: 400px; min-height: 0; } }
+
+.image-workbench-actions .image-cover-reference .image-hover-copy { position: static; display: flex; justify-content: center; width: 100%; min-height: 38px; padding: 8px 10px; border: 0; border-top: 1px solid #3b4540; border-radius: 0; font-size: 12px; opacity: 1; pointer-events: auto; }
+.image-workbench-actions .image-cover-reference .image-hover-copy svg { width: 18px; height: 18px; }
