@@ -973,11 +973,6 @@ export function App() {
 
         <nav className="sidebar-navigation" aria-label="工作台导航">
           <p className="sidebar-section-label">创作工具</p>
-          <a className={isDouyinRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/douyin" aria-current={isDouyinRoute ? "page" : undefined}>
-            <DownloadSimple />
-            <span>抖音下载</span>
-            {isDouyinRoute && <i />}
-          </a>
           <a className={isBatchRoute || isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
             <ListChecks />
             <span>批量制作</span>
@@ -1012,6 +1007,11 @@ export function App() {
             <ClosedCaptioning />
             <span>生成字幕</span>
             {isSubtitleRoute && <i />}
+          </a>
+          <a className={isDouyinRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/douyin" aria-current={isDouyinRoute ? "page" : undefined}>
+            <DownloadSimple />
+            <span>抖音下载</span>
+            {isDouyinRoute && <i />}
           </a>
         </nav>
 
