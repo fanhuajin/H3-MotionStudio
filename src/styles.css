@@ -2006,9 +2006,9 @@ body {
 .image-copy-surface > .image-hover-copy svg { width: 15px; height: 15px; }
 .image-copy-surface:hover > .image-hover-copy, .image-copy-surface:focus-within > .image-hover-copy { opacity: 1; pointer-events: auto; }
 .image-hover-copy:disabled { cursor: wait; }
-.workbench-image-viewer { position: fixed; inset: 0; width: 100vw; max-width: none; height: 100dvh; max-height: none; margin: 0; padding: 0; border: 0; background: #101112; color: #eceeed; overflow: hidden; }
+.workbench-image-viewer { position: fixed; inset: 0; box-sizing: border-box; width: min(1080px, 92vw); max-width: calc(100vw - 32px); height: 84dvh; max-height: calc(100dvh - 32px); margin: auto; padding: 0; border: 1px solid #454947; border-radius: 12px; background: #101112; color: #eceeed; box-shadow: 0 24px 80px rgba(0,0,0,.5); overflow: hidden; }
 .workbench-image-viewer[open] { display: flex; flex-direction: column; }
-.workbench-image-viewer::backdrop { background: rgba(0,0,0,.9); }
+.workbench-image-viewer::backdrop { background: rgba(0,0,0,.65); }
 .workbench-viewer-toolbar { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #363738; background: #191b1a; }
 .workbench-viewer-toolbar strong { min-width: 0; font-size: 13px; }
 .workbench-viewer-toolbar > div { display: flex; align-items: center; gap: 8px; }
@@ -2018,7 +2018,7 @@ body {
 .workbench-viewer-toolbar output { min-width: 48px; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
 .workbench-viewer-viewport { display: grid; flex: 1; min-height: 0; place-items: center; overflow: hidden; cursor: grab; touch-action: none; user-select: none; }
 .workbench-viewer-viewport.dragging { cursor: grabbing; }
-.workbench-viewer-viewport img { display: block; max-width: calc(100vw - 40px); max-height: calc(100dvh - 124px); object-fit: contain; transform-origin: center; pointer-events: none; }
+.workbench-viewer-viewport img { display: block; max-width: min(1048px, calc(92vw - 32px)); max-height: calc(84dvh - 124px); object-fit: contain; transform-origin: center; pointer-events: none; }
 .workbench-viewer-hint { flex-shrink: 0; margin: 0; padding: 10px 16px 14px; color: #a6b2ab; font-size: 12px; text-align: center; }
 @media (hover: none) { .image-copy-surface > .image-hover-copy { opacity: 1; pointer-events: auto; } }
 @media (max-width: 600px) { .workbench-viewer-toolbar { padding: 10px; gap: 6px; } .workbench-viewer-toolbar > div { gap: 4px; } .workbench-viewer-toolbar strong { font-size: 11px; } }
@@ -2066,3 +2066,5 @@ body {
 .batch-status-percent { display: inline-block; min-width: 4ch; text-align: right; }
 .batch-status-cell .batch-elapsed { min-width: 7ch; }
 .batch-task-cell .batch-item-source { max-width: 100%; }
+
+@media (max-width: 600px) { .workbench-viewer-toolbar { flex-wrap: wrap; } .workbench-viewer-toolbar > div { margin-left: auto; } .workbench-viewer-viewport img { max-height: calc(84dvh - 156px); } }
