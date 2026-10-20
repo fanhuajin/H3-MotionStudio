@@ -152,11 +152,11 @@ export function DouyinRoute() {
       const payload = await response.json();
       const nextJobs = (payload.jobs || []) as DouyinJob[];
       setJobs(nextJobs);
-      if (!activeJob && nextJobs.length) setActiveJob(nextJobs[0]);
+      setActiveJob((current) => current ? nextJobs.find((job) => job.job_id === current.job_id) || current : nextJobs[0] || null);
     } catch {
       // The service may still be starting. Status copy already communicates this.
     }
-  }, [activeJob]);
+  }, []);
 
   const loadLoginStatus = useCallback(async () => {
     try {
@@ -213,6 +213,7 @@ export function DouyinRoute() {
   );
 
   const submit = async () => {
+    if (submitting) return;
     if (!recognized) {
       setError("请粘贴有效的抖音作品链接或短链。");
       return;
@@ -363,7 +364,9 @@ export function DouyinRoute() {
         {jobs.length ? (
           <div className="job-list">
             {jobs.slice(0, 6).map((job) => (
-              <button className={`job-row state-${job.status} ${activeJob?.job_id === job.job_id ? "selected" : ""}`} key={job.job_id} onClick={() => void loadJob(job.job_id)}>
+              <button className={`job-row state-${job.status} ${activeJob?.job_id === job.job_id ? "selected" : ""}`} key={job.job_id} onClick={() => void loadJob(job.job_id).catch((nextError) => {
+                setError(nextError instanceof Error ? nextError.message : "无法读取任务状态");
+              })}>
                 <span className="job-status-icon"><JobIcon status={job.status} /></span>
                 <span className="job-summary">
                   <strong>抖音作品 {job.url.match(/(?:modal_id=|\/video\/)(\d+)/)?.[1] || job.job_id}</strong>

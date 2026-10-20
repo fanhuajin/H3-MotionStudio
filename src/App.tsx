@@ -27,6 +27,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { BatchRoute } from "./BatchRoute";
+import { DouyinRoute } from "./DouyinRoute";
 import { readJson, readJsonOrNull } from "./api";
 import { MigrateRoute } from "./MigrateRoute";
 import { ImageWorkbenchRoute } from "./ImageWorkbenchRoute";
@@ -903,7 +904,7 @@ function MotionStudioRoute() {
 }
 
 const WORKSPACE_PAGE_KEY = "h3-motionstudio:workspace-page:v1";
-const WORKSPACE_PAGES = new Set(["/batch", "/images", "/singing", "/migrate", "/upscale", "/rvc", "/subtitle"]);
+const WORKSPACE_PAGES = new Set(["/batch", "/images", "/singing", "/migrate", "/upscale", "/rvc", "/subtitle", "/douyin"]);
 
 function restoreWorkspacePage(): string {
   let path = window.location.pathname.replace(/\/+$/, "");
@@ -953,6 +954,7 @@ export function App() {
   const isBatchRoute = path === "/batch";
   const isSingingRoute = path === "/singing";
   const isImagesRoute = path === "/images";
+  const isDouyinRoute = path === "/douyin";
   // 影动生成工作台根路径 `/`：进入默认选择「批量制作」（2026-09 用户：「启动项目的时候
   // 进入影动生成默认选择批量制作」）；歌曲生成独立到 `/singing`。
   const isWorkspaceRoute = path === "";
@@ -971,6 +973,11 @@ export function App() {
 
         <nav className="sidebar-navigation" aria-label="工作台导航">
           <p className="sidebar-section-label">创作工具</p>
+          <a className={isDouyinRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/douyin" aria-current={isDouyinRoute ? "page" : undefined}>
+            <DownloadSimple />
+            <span>抖音下载</span>
+            {isDouyinRoute && <i />}
+          </a>
           <a className={isBatchRoute || isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
             <ListChecks />
             <span>批量制作</span>
@@ -1021,7 +1028,7 @@ export function App() {
 
       <div className="route-stage" key={path}>
         {/* 路由只负责切换工作区；各业务组件继续独立管理请求、表单和任务状态。 */}
-        {isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
+        {isDouyinRoute ? <DouyinRoute /> : isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
       </div>
     </div>
   );
