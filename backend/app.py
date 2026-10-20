@@ -3002,12 +3002,15 @@ async def _resolve_job(job_id: str) -> dict[str, Any] | None:
     """
     try:
         job = await douyin_service.job(job_id)
-    except (DouyinServiceOffline, DouyinServiceError):
+    except DouyinServiceOffline:
         job = None
+    except DouyinServiceError as exc:
+        raise HTTPException(502, str(exc)) from exc
     if job:
         mirror_upsert([job])
         return job
-    return mirror_get_job(job_id)
+    cached = mirror_get_job(job_id)
+    return _settle_stale(cached, None) if cached else None
 
 
 @app.get("/api/douyin/status")
@@ -3152,7 +3155,7 @@ async def douyin_job(job_id: str):
     job = await _resolve_job(job_id)
     if not job:
         raise HTTPException(404, "任务不存在")
-    return douyin_job_payload(_settle_stale(job, None))
+    return douyin_job_payload(job)
 
 
 @app.get("/api/douyin/jobs/{job_id}/media")
