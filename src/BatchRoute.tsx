@@ -1976,6 +1976,7 @@ export function BatchRoute() {
             {selectedIds.size > 0 && (
               <div className="batch-bulk-bar">
                 <span>已选 {selectedIds.size} 条</span>
+                {activeTab !== "archive" && (
                 <button
                   className="batch-primary small"
                   disabled={!anyConfirmable || Boolean(busyAction)}
@@ -1984,6 +1985,7 @@ export function BatchRoute() {
                 >
                   <Check weight="bold" />确认并出片
                 </button>
+                )}
                 <button
                   disabled={!anyRestartable || Boolean(busyAction)}
                   onClick={() =>
@@ -2004,6 +2006,7 @@ export function BatchRoute() {
                 >
                   <ArrowClockwise />重新开始
                 </button>
+                {activeTab !== "archive" && (
                 <button
                   className="batch-warning"
                   disabled={!anySkippable || Boolean(busyAction)}
@@ -2025,6 +2028,7 @@ export function BatchRoute() {
                 >
                   <X />跳过
                 </button>
+                )}
                 <button
                   className="danger"
                   disabled={!anyDeletable || Boolean(busyAction)}
