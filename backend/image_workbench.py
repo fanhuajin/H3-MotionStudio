@@ -18,7 +18,7 @@ from PIL import Image, ImageOps
 
 import httpx
 
-from . import batch_ai, batch_image
+from . import batch_ai, batch_image, source_appearance
 from . import batch_worker as batch_worker
 from .batch_store import batch_store
 from .batch_worker import IDENTITY_PATH
@@ -506,12 +506,22 @@ def person_prompt(folder: Path, kind: str) -> str:
         ai = item.get("ai") or {}
         song_name = song_name or str(ai.get("song_name") or "")
         song_mood = song_mood or str(ai.get("song_mood") or "")
-    return batch_ai.compose_image_prompt(
+    value = batch_ai.compose_image_prompt(
         kind, "video", "", "both",
         song_name=song_name,
         song_mood=song_mood,
         ratio="4:3" if kind == "singing" else "9:16",
     )
+
+    frame = _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg")
+    return source_appearance.enrich_cached(frame, value) if frame else value
+
+
+async def prepare_person_materials(folder: Path) -> None:
+    """用户取人物图提示词或素材包时，补齐糊脸前的造型记录。"""
+    frame = _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg")
+    if frame is not None:
+        await source_appearance.review(frame)
 
 
 def _compliance_note(report: dict[str, Any]) -> str:
@@ -545,22 +555,30 @@ async def _generate_person(
     work.mkdir(parents=True, exist_ok=True)
     completed = False
     try:
+        candidate = work / "person.png"
+        image_prompt = await source_appearance.prepare_prompt(
+            frame, person_prompt(folder, kind), candidate
+        )
         scene, defocused = await batch_image.defocus_reference_face(frame, work)
         if not defocused:
             raise ValueError("抽帧未成功糊脸，已停止人物图生成。")
-        candidate = work / "person.png"
         # 与批量备料共用流程。合规结论写进状态消息，页面能看到原因。
         report: dict[str, Any] = {}
         _, similarity = await batch_image.generate_person_image(
             scene_image=scene,
             identity_image=IDENTITY_PATH,
-            prompt=person_prompt(folder, kind),
+            prompt=image_prompt,
             ratio=ratio,
             output_path=candidate,
             compliance=report,
             request_key=f"person:{folder.name.rsplit('_', 1)[-1].strip()}:{ratio}",
         )
         note = _compliance_note(report)
+        appearance = source_appearance.cached(frame)
+        if appearance and appearance.get("status") != "completed":
+            note = "；".join(filter(None, (
+                note, "抽帧发型与配饰未能确认，未猜测隐藏装饰；未自动重复识别",
+            )))
         if note:
             _PERSON_NOTES[_folder_id(folder)] = note
         save_upload(folder, "person", candidate.read_bytes(), kind, allow_repair=True)

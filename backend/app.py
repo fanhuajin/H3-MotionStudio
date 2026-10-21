@@ -3254,6 +3254,8 @@ async def image_workbench_prompt(folder_id: str, stage: str, kind: str = Query("
         actual_kind = image_workbench.infer_kind(folder) or kind
         # 人物图自动出图实际调用 person_prompt；封面实际调用 prompt。
         # 复制按钮必须取同一来源，避免手工重做时拿到另一版文字。
+        if stage == "person":
+            await image_workbench.prepare_person_materials(folder)
         value = (image_workbench.person_prompt(folder, actual_kind) if stage == "person"
                  else image_workbench.prompt(folder, stage, actual_kind))
         return {"prompt": value}
@@ -3265,6 +3267,8 @@ async def image_workbench_prompt(folder_id: str, stage: str, kind: str = Query("
 async def image_workbench_materials(folder_id: str, stage: str, kind: str = Query("singing")):
     try:
         folder = image_workbench.resolve_folder(folder_id)
+        if stage == "person":
+            await image_workbench.prepare_person_materials(folder)
         payload = image_workbench.material_zip(folder, stage, kind)
     except (ValueError, FileNotFoundError, KeyError) as exc:
         raise HTTPException(400, str(exc)) from exc

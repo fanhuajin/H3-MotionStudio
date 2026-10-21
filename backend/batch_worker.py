@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 
-from . import batch_ai, batch_image, batch_portrait
+from . import batch_ai, batch_image, batch_portrait, source_appearance
 from .batch_store import batch_store
 from .duration_policy import validate_dance_duration
 from .douyin_mirror import upsert_jobs as mirror_upsert
@@ -1825,6 +1825,9 @@ def _adopt_previous_work(batch_id: str, item_id: str) -> bool:
             song_mood=str(result.get("song_mood") or ""),
             ratio=ratio,
         )
+        raw_frame = Path(str(result.get("sceneFramePath") or ""))
+        if not (item["kind"] == "singing" and result.get("style_source") == "redesign") and raw_frame.is_file():
+            result["imagePrompt"] = source_appearance.enrich_cached(raw_frame, result["imagePrompt"])
         result["imageRatio"] = ratio
         try:
             (work / "出图提示词.txt").write_text(str(result["imagePrompt"]), encoding="utf-8")
@@ -2049,6 +2052,20 @@ async def _prepare_review_work(
         song_mood=str(result.get("song_mood") or ""),
         ratio=ratio,
     )
+    # 先读取未糊脸的造型，再屏蔽身份；已提交请求继续使用冻结的原提示词。
+    if not (item["kind"] == "singing" and style_source == "redesign") and provider != "frame":
+        if mode != "image" and previous_image.is_file():
+            image_prompt = source_appearance.enrich_cached(scene_frame, image_prompt)
+        else:
+            image_prompt = await source_appearance.prepare_prompt(
+                scene_frame, image_prompt, target_image,
+                legacy_prompt=str(previous_ai.get("imagePrompt") or ""),
+            )
+            appearance = source_appearance.cached(scene_frame)
+            if appearance and appearance.get("status") != "completed":
+                batch_store.add_item_log(
+                    batch_id, item_id, "抽帧发型与配饰未能确认，未猜测隐藏装饰；本次不自动重复识别。"
+                )
     # 所有类型及 API / local / manual 入口均先屏蔽抽帧的脸；图二始终保持清晰。
     scene, defocused = await batch_image.defocus_reference_face(scene_frame, work)
     if not defocused:
@@ -5341,6 +5358,9 @@ def set_item_ratio(batch_id: str, item_id: str, ratio: str) -> dict[str, Any]:
             song_mood=str(ai.get("song_mood") or ""),
             ratio=target,
         )
+        raw_frame = Path(str(ai.get("sceneFramePath") or ""))
+        if not (kind == "singing" and ai.get("style_source") == "redesign") and raw_frame.is_file():
+            ai["imagePrompt"] = source_appearance.enrich_cached(raw_frame, ai["imagePrompt"])
         ai["imageRatio"] = target
         try:
             prompt_path = DATA_DIR / "batches" / batch_id / item_id / "出图提示词.txt"

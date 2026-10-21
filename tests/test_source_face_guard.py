@@ -11,6 +11,14 @@ from backend import batch_image, image_workbench
 
 
 class SourceFaceGuardTests(unittest.TestCase):
+    def setUp(self):
+        from backend import source_appearance
+        recognition = patch.object(source_appearance, "review", AsyncMock(return_value={
+            "status": "unavailable", "sha256": "test-only",
+        }))
+        recognition.start()
+        self.addCleanup(recognition.stop)
+
     def test_detection_failure_never_returns_original(self):
         with tempfile.TemporaryDirectory() as raw:
             frame = Path(raw) / "抽帧.png"
@@ -104,7 +112,7 @@ class SourceFaceGuardTests(unittest.TestCase):
                 chatgpt_image._generate_candidate_sync("batch","item")
             args = generate.call_args.args
             self.assertEqual(args[0], [guarded,identity])
-            self.assertIn("搭配合适的新发型", args[1])
+            self.assertIn("发型与配饰参考图一", args[1])
             self.assertIn("图二是唯一的面部身份参考", args[1])
 
 if __name__ == "__main__":

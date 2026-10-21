@@ -6,7 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from PIL import Image
 
@@ -43,6 +43,12 @@ async def fake_defocus(frame: Path, work: Path) -> tuple[Path, bool]:
 
 class ImageWorkbenchTests(unittest.TestCase):
     def setUp(self) -> None:
+        from backend import source_appearance
+        recognition = patch.object(source_appearance, "review", AsyncMock(return_value={
+            "status": "unavailable", "sha256": "test-only",
+        }))
+        recognition.start()
+        self.addCleanup(recognition.stop)
         latest = patch.object(workbench.batch_store, "latest", return_value=None)
         latest.start()
         self.addCleanup(latest.stop)

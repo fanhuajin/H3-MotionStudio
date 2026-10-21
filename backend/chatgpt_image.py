@@ -209,14 +209,17 @@ def _generate_candidate_sync(batch_id: str, item_id: str, feedback: str = "") ->
         )
         return
 
-    from . import batch_ai, batch_image
+    from . import batch_ai, batch_image, source_appearance
     ai = item.get("ai") or {}
+    raw_scene = scene
     scene = batch_image.prepare_defocused_reference(scene, work / ".h3-reference-guard")
     prompt = batch_ai.compose_image_prompt(
         str(item.get("kind") or "singing"), str(ai.get("style_source") or "video"),
         feedback, "image", song_name=str(ai.get("song_name") or ""),
         song_mood=str(ai.get("song_mood") or ""), ratio=bw.item_ratio(item),
     )
+    if not (item.get("kind") == "singing" and ai.get("style_source") == "redesign"):
+        prompt = source_appearance.enrich_cached(raw_scene, prompt)
     images: list[Path] = [scene, IDENTITY_IMAGE]
 
     out = _out_path(batch_id, item_id, "反馈" if feedback else "")
