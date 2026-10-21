@@ -1,5 +1,10 @@
 .project-close-button { width: 100%; border: 0; background: transparent; text-align: left; font: inherit; cursor: pointer; }
 .project-close-button:hover { color: #e5b6a7; }
+.sidebar-service-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; padding: 8px 10px; border: 1px solid #373839; border-radius: 9px; background: #161718; }
+.sidebar-service-row .sidebar-runtime { flex: 1; min-width: 0; min-height: 30px; margin: 0; padding: 0; border: 0; background: transparent; white-space: nowrap; }
+.sidebar-service-row .runtime-icon { flex: none; width: 24px; height: 24px; }
+.sidebar-service-row .project-close-button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: auto; min-height: 32px; margin: 0; padding: 0 7px; gap: 5px; font-size: 10px; white-space: nowrap; }
+.sidebar-service-row .project-close-button svg { width: 13px; height: 13px; }
 .project-close-dialog { width: min(480px, calc(100vw - 32px)); font-size: 12px; line-height: 1.65; }
 .project-close-error { color: #e5b6a7; }
 .project-closed-screen { min-height: 100dvh; display: grid; place-items: center; padding: 24px; box-sizing: border-box; background: #121413; color: #cbd7ce; text-align: center; }
