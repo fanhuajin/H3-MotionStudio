@@ -24,7 +24,7 @@ async function api<T>(path = "", body?: unknown): Promise<T> {
   return value as T;
 }
 
-function Dialog({ title, children, footer, close, className = "" }: { title: string; children: ReactNode; footer?: ReactNode; close: () => void; className?: string }) {
+function Dialog({ title, children, footer, close, className = "", compactHeader = false }: { title: string; children: ReactNode; footer?: ReactNode; close: () => void; className?: string; compactHeader?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -37,8 +37,8 @@ function Dialog({ title, children, footer, close, className = "" }: { title: str
       const rect = event.currentTarget.getBoundingClientRect();
       if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) close();
     }}>
-    <header className="batch-settings-header"><span className="batch-modal-icon"><FolderOpen /></span>
-      <div><p>批量发布</p><h2 id="publish-dialog-title">{title}</h2></div>
+    <header className="batch-settings-header">{!compactHeader && <span className="batch-modal-icon"><FolderOpen /></span>}
+      <div>{!compactHeader && <p>批量发布</p>}<h2 id="publish-dialog-title">{title}</h2></div>
       <button className="batch-settings-close" aria-label="关闭弹窗" autoFocus onClick={close}><X /></button></header>
     <div className="batch-settings-scroll">{children}</div>
     {footer && <footer className="batch-settings-footer">{footer}</footer>}
@@ -272,7 +272,7 @@ export function PublishRoute() {
         <label className="publish-field">小时<select value={hour} disabled={!scheduled} onChange={e => setHour(e.target.value)}>{Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0")).map(h => <option key={h}>{h}</option>)}</select></label></div>
       <p>取消定时后，下一次运行将立即发布这些作品。</p>{modalError}
     </Dialog>}
-    {modal?.kind === "preview" && preview && <Dialog title={preview.name} className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)} footer={
+    {modal?.kind === "preview" && preview && <Dialog title={preview.name} compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)} footer={
       <div className="publish-preview-platforms">{previewPlatforms.map(p => <label key={p}>{labels[p]}{platformState(preview, p)}</label>)}</div>
     }>
       {preview.assets.video ? <VideoPreview key={preview.id} id={preview.id} /> : <p>未找到可预览的视频。</p>}
