@@ -140,6 +140,8 @@ class PublishStore:
 
     def start(self, platform):
         with self.lock:
+            if _PICKER_LOCK.locked():
+                raise ValueError("请先完成作品文件夹选择，再开始发布。")
             if self.active():
                 raise ValueError("发布正在运行，请勿重复开始。")
             if not dependencies_ready():
@@ -170,6 +172,7 @@ class PublishStore:
 
 publisher = PublishStore(DATA_DIR / "publisher")
 router = APIRouter(prefix="/api/publish", tags=["publish"])
+_PICKER_LOCK = threading.Lock()
 
 
 def publishing_in_flight():
@@ -252,6 +255,34 @@ def scan(request: ScanRequest):
             candidates.append({"folder": str(folder), "name": folder.name,
                                "assets": {key: bool(value) for key, value in found.items()}})
     return {"items": sorted(candidates, key=lambda i: i["folder"])}
+
+
+@router.post("/pick")
+def pick_folders(request: ScanRequest):
+    if not _PICKER_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "作品选择窗口已经打开，请先完成选择或取消。")
+    try:
+        with publisher.lock:
+            if publisher.active():
+                raise HTTPException(409, "请先停止发布，再添加作品。")
+        directory = Path(request.directory.strip().strip('"') or BATCH_OUTPUT_ROOT)
+        if not directory.is_dir():
+            directory = BATCH_OUTPUT_ROOT if BATCH_OUTPUT_ROOT.is_dir() else Path.home()
+        result = subprocess.run(
+            [sys.executable, "-B", "-X", "utf8", str(ENGINE / "folder_picker.py"), "--directory", str(directory)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode:
+            raise ValueError(result.stderr.strip() or "无法打开作品选择窗口。")
+        folders = json.loads(result.stdout)["folders"]
+        if not isinstance(folders, list) or len(folders) > 500 or any(not isinstance(p, str) for p in folders):
+            raise ValueError("选择结果无效，单次最多添加500个作品文件夹。")
+        return {"folders": folders}
+    except (ValueError, OSError, KeyError) as error:
+        raise HTTPException(400, f"文件夹选择失败：{error}") from error
+    finally:
+        _PICKER_LOCK.release()
 
 
 @router.post("/add")

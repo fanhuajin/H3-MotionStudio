@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+import threading
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
@@ -45,6 +47,67 @@ class PublishServiceTests(unittest.TestCase):
         response = self.client.post("/api/publish/scan", json={"directory": str(self.root)})
         self.assertEqual(response.status_code, 200)
         self.assertEqual([i["name"] for i in response.json()["items"]], [self.folder.name])
+        self.assertFalse(self.store.path.exists())
+
+    def test_native_picker_returns_exact_selection_without_adding_unselected_work(self):
+        self.work("002_跳舞_not_selected")
+        result = SimpleNamespace(returncode=0, stdout=json.dumps({"folders": [str(self.folder)]}), stderr="")
+        with patch.object(service.subprocess, "run", return_value=result) as run:
+            response = self.client.post("/api/publish/pick", json={"directory": str(self.root)})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["folders"], [str(self.folder)])
+        self.assertFalse(self.store.path.exists())
+        args = run.call_args.args[0]
+        self.assertIn(str(service.ENGINE / "folder_picker.py"), args)
+        self.assertEqual(args[-2:], ["--directory", str(self.root)])
+
+    def test_cancel_native_picker_does_not_modify_queue(self):
+        self.add()
+        before = self.store.path.read_bytes()
+        result = SimpleNamespace(returncode=0, stdout='{"folders": []}', stderr="")
+        with patch.object(service.subprocess, "run", return_value=result):
+            response = self.client.post("/api/publish/pick", json={})
+        self.assertEqual(response.json()["folders"], [])
+        self.assertEqual(self.store.path.read_bytes(), before)
+
+    def test_only_one_native_picker_can_be_open(self):
+        lock = threading.Lock()
+        lock.acquire()
+        with patch.object(service, "_PICKER_LOCK", lock), patch.object(service.subprocess, "run") as run:
+            response = self.client.post("/api/publish/pick", json={})
+        self.assertEqual(response.status_code, 409)
+        run.assert_not_called()
+
+    def test_picker_error_releases_guard_for_retry(self):
+        result = SimpleNamespace(returncode=1, stdout="", stderr="test picker error")
+        with patch.object(service.subprocess, "run", return_value=result):
+            response = self.client.post("/api/publish/pick", json={})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("test picker error", response.text)
+        self.assertFalse(service._PICKER_LOCK.locked())
+
+    def test_picker_cannot_open_during_publishing(self):
+        self.store.process = Mock()
+        self.store.process.poll.return_value = None
+        with patch.object(service.subprocess, "run") as run:
+            response = self.client.post("/api/publish/pick", json={})
+        self.assertEqual(response.status_code, 409)
+        run.assert_not_called()
+
+    def test_publishing_cannot_start_while_native_picker_is_open(self):
+        self.add()
+        lock = threading.Lock()
+        lock.acquire()
+        with patch.object(service, "_PICKER_LOCK", lock), patch.object(service.subprocess, "Popen") as popen:
+            response = self.client.post("/api/publish/start", json={})
+        self.assertEqual(response.status_code, 409)
+        popen.assert_not_called()
+
+    def test_invalid_picker_response_does_not_change_queue(self):
+        result = SimpleNamespace(returncode=0, stdout='{"folders": "bad"}', stderr="")
+        with patch.object(service.subprocess, "run", return_value=result):
+            response = self.client.post("/api/publish/pick", json={})
+        self.assertEqual(response.status_code, 400)
         self.assertFalse(self.store.path.exists())
 
     def test_add_deduplicates_and_schedules_next_hour(self):

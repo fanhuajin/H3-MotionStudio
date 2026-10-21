@@ -59,6 +59,7 @@ export function PublishRoute() {
   const [queue, setQueue] = useState<Queue | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [tab, setTab] = useState("all");
   const [modal, setModal] = useState<Modal | null>(null);
@@ -126,6 +127,23 @@ export function PublishRoute() {
       if (alive.current) { setBusy(false); void load(); }
     }
   }
+  async function pickFolders() {
+    if (busyRef.current || running) return;
+    busyRef.current = true;
+    generation.current++;
+    setBusy(true); setPickerOpen(true); setError("");
+    try {
+      const result = await api<{ folders: string[] }>("/pick", { directory: directory || queue?.defaultDirectory || "" });
+      if (!alive.current || !result.folders.length) return;
+      const updated = await api<Queue>("/add", { folders: result.folders });
+      if (alive.current) { setQueue(updated); setModal(null); }
+    } catch (failure) {
+      if (alive.current) setError((failure as Error).message);
+    } finally {
+      busyRef.current = false;
+      if (alive.current) { setBusy(false); setPickerOpen(false); void load(); }
+    }
+  }
   function schedule(ids: string[]) {
     const item = queue?.items.find(i => ids.includes(i.id));
     if (!item) return;
@@ -165,7 +183,8 @@ export function PublishRoute() {
             <button key={value} role="tab" aria-selected={tab === value} className={`batch-tab${tab === value ? " active" : ""}`} onClick={() => setTab(String(value))}>{text}<i>{count}</i></button>)}
         </div>
         <div className="publish-actions">
-          {button("添加作品", () => { setDirectory(directory || queue.defaultDirectory); setModal({ kind: "add" }); }, readonly, <Plus />)}
+          {button(pickerOpen ? "正在选择作品…" : "添加作品", () => void pickFolders(), readonly, <Plus />)}
+          {button("其他添加方式", () => { setDirectory(directory || queue.defaultDirectory); setModal({ kind: "add" }); }, readonly)}
           {button("安排时间", () => schedule(selected), readonly || !selected.length)}
           {button("删除记录", () => setModal({ kind: "remove", ids: [...selected] }), readonly || !selected.length, <Trash />)}
         </div>
@@ -199,7 +218,9 @@ export function PublishRoute() {
       </section>
     </>}
     {modal?.kind === "add" && <Dialog title="添加作品" close={() => !busy && setModal(null)}>
-      <p className="batch-settings-description">从发布成品目录勾选作品；也可粘贴单个或多个作品文件夹路径。已有记录自动跳过。</p>
+      <p className="batch-settings-description">打开系统选择框后，可按 Ctrl / Shift 多选要发布的作品文件夹。确认后直接加入队列；取消不添加。已有记录自动跳过。</p>
+      {button(pickerOpen ? "正在选择作品…" : "选择作品文件夹（可多选）", () => void pickFolders(), busy, <FolderOpen />)}
+      <p>也可读取父目录或手动粘贴作品路径：</p>
       <label className="publish-field">作品父目录<input value={directory} onChange={e => setDirectory(e.target.value)} /></label>
       {button("读取作品目录", () => {
         if (busyRef.current) return;
