@@ -67,7 +67,7 @@ function PublishTime({ item, disabled, save }: { item: Work; disabled: boolean; 
     setFeedback("保存中…");
     const saved = await save(changes);
     saving.current = false;
-    setFeedback(saved ? "已保存" : "保存失败，请重试");
+    setFeedback(saved ? "" : "保存失败，请重试");
     if (!saved && changes.date !== undefined) setDate(item.date);
   }
   return <div className="publish-inline-time">
