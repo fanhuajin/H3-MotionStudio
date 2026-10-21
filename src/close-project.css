@@ -1,9 +1,13 @@
 .project-close-button { width: 100%; border: 0; background: transparent; text-align: left; font: inherit; cursor: pointer; }
 .project-close-button:hover { color: #e5b6a7; }
-.sidebar-service-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; padding: 8px 10px; border: 1px solid #373839; border-radius: 9px; background: #161718; }
+.sidebar-service-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding: 7px 8px; border: 1px solid var(--shell-line); border-radius: 9px; background: rgba(25, 26, 27, .72); }
 .sidebar-service-row .sidebar-runtime { flex: 1; min-width: 0; min-height: 30px; margin: 0; padding: 0; border: 0; background: transparent; white-space: nowrap; }
-.sidebar-service-row .runtime-icon { flex: none; width: 24px; height: 24px; }
-.sidebar-service-row .project-close-button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: auto; min-height: 32px; margin: 0; padding: 0 7px; gap: 5px; font-size: 10px; white-space: nowrap; }
+.sidebar-service-row .runtime-icon { flex: none; width: 18px; height: 24px; background: transparent; }
+.sidebar-service-row .sidebar-runtime { gap: 5px; }
+.sidebar-service-row .sidebar-runtime strong { color: #b9c9c0; font-size: 11px; font-weight: 500; }
+.sidebar-service-row .project-close-button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: auto; min-height: 30px; margin: 0; padding: 0 8px; gap: 5px; border: 1px solid var(--shell-line-strong); border-radius: 6px; background: rgba(106, 179, 149, .05); color: #a9b9b0; font-size: 10px; white-space: nowrap; }
+.sidebar-service-row .project-close-button:hover { border-color: #9c7063; background: rgba(156, 112, 99, .1); color: #e5b6a7; }
+.sidebar-service-row .project-close-button:focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 2px; }
 .sidebar-service-row .project-close-button svg { width: 13px; height: 13px; }
 .project-close-dialog { width: min(480px, calc(100vw - 32px)); font-size: 12px; line-height: 1.65; }
 .project-close-error { color: #e5b6a7; }
