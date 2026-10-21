@@ -203,10 +203,6 @@ export function PublishRoute() {
     </header>
     {error && !modal && <p className="publish-error" role="alert">{error} {button("重新同步", () => void load(), busy)}</p>}
     {!queue ? <p role="status">正在读取发布队列…</p> : <>
-      <section className="publish-notice" role="status"><strong>{queue.notice}</strong>
-        <span>发布时保持平台登录，请勿操作鼠标键盘。Esc 可暂停；离开本页面后队列仍会继续。</span>
-        {!queue.dependenciesReady && <span className="publish-error">发布环境尚缺桌面执行依赖，请安装 backend/requirements-publish.txt 中的依赖后运行。</span>}
-      </section>
       <section className="publish-toolbar" aria-label="发布队列操作">
         <div className="publish-actions">
           {button(pickerOpen ? "正在选择作品…" : "添加作品", () => void pickFolders(), readonly, <Plus />)}
@@ -217,6 +213,10 @@ export function PublishRoute() {
             {button("停止发布", () => void action("/control/stop", {}, false), busy, <Stop />)}
           </> : button("开始 / 继续发布", () => setModal({ kind: "start" }), readonly || !queue.dependenciesReady || !queue.items.some(i => !done(i)), <Play />)}
         </div>
+      </section>
+      <section className="publish-notice" role="status"><strong>{queue.notice}</strong>
+        <span>发布时保持平台登录，请勿操作鼠标键盘。Esc 可暂停；离开本页面后队列仍会继续。</span>
+        {!queue.dependenciesReady && <span className="publish-error">发布环境尚缺桌面执行依赖，请安装 backend/requirements-publish.txt 中的依赖后运行。</span>}
       </section>
       <div className="publish-table-wrap"><table className="publish-table"><thead><tr>
         <th><input type="checkbox" aria-label="选择全部作品" disabled={readonly || !items.length}

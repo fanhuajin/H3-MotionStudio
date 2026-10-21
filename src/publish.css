@@ -4,7 +4,9 @@
 .publish-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; margin: 14px 0; }
 .publish-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .publish-page .batch-add-toggle { min-height: 34px; font-size: 12px; }
-.publish-actions svg { width: 16px; height: 16px; }
+.publish-actions > .batch-add-toggle { height: 34px; padding: 0 12px; border-color: var(--shell-line-strong); background: rgba(106, 179, 149, .07); color: #add5c4; font-weight: 600; white-space: nowrap; }
+.publish-actions > .batch-add-toggle:hover:not(:disabled) { border-color: var(--shell-accent); background: rgba(106, 179, 149, .13); }
+.publish-actions svg { width: 16px; height: 16px; flex-shrink: 0; }
 .publish-table-wrap { overflow-x: auto; border: 1px solid #34413c; border-radius: 12px; }
 .publish-table { width: 100%; min-width: 980px; border-collapse: collapse; text-align: left; color: #c6d2cb; }
 .publish-table th { color: #93a79a; font-weight: 500; background: #1b2421; padding: 12px; white-space: nowrap; }
