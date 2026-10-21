@@ -145,6 +145,29 @@ class PublishServiceTests(unittest.TestCase):
         self.assertFalse(changed["scheduled"])
         self.assertEqual(changed["states"], item["states"])
 
+    def test_bulk_time_edits_preserve_each_omitted_field(self):
+        first = self.add()
+        second = self.add(self.work("002_跳舞_test"))
+        self.edit(first, date="2027-01-01", hour="03", scheduled=True)
+        self.edit(second, date="2027-01-02", hour="08", scheduled=False)
+        ids = [first["id"], second["id"]]
+        def update(**changes):
+            response = self.client.post("/api/publish/edit", json={"ids": ids, **changes})
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()["items"]
+        rows = update(date="2027-02-03")
+        self.assertEqual([r["hour"] for r in rows], ["03", "08"])
+        self.assertEqual([r["scheduled"] for r in rows], [True, False])
+        self.edit(second, date="2027-02-04")
+        rows = update(hour="12")
+        self.assertEqual([r["date"] for r in rows], ["2027-02-03", "2027-02-04"])
+        self.assertEqual([r["scheduled"] for r in rows], [True, False])
+        rows = update(date="2027-03-05", hour="14")
+        self.assertTrue(all(r["date"] == "2027-03-05" and r["hour"] == "14" for r in rows))
+        self.assertEqual([r["scheduled"] for r in rows], [True, False])
+        rows = update(scheduled=False)
+        self.assertTrue(all(r["date"] == "2027-03-05" and r["hour"] == "14" and not r["scheduled"] for r in rows))
+
     def test_invalid_time_does_not_save(self):
         item = self.add()
         before = self.store.path.read_bytes()

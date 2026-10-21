@@ -99,6 +99,7 @@ export function PublishRoute() {
   const [date, setDate] = useState("");
   const [hour, setHour] = useState("01");
   const [scheduled, setScheduled] = useState(true);
+  const [scheduleFields, setScheduleFields] = useState({ date: false, hour: false, scheduled: false });
   const generation = useRef(0);
   const alive = useRef(true);
   const busyRef = useRef(false);
@@ -178,6 +179,7 @@ export function PublishRoute() {
   function schedule(ids: string[]) {
     const item = queue?.items.find(i => ids.includes(i.id));
     if (!item) return;
+    setScheduleFields({ date: false, hour: false, scheduled: false });
     setDate(item.date); setHour(item.hour); setScheduled(item.scheduled); setModal({ kind: "schedule", ids });
   }
   function platformState(item: Work, p: Platform) {
@@ -190,6 +192,15 @@ export function PublishRoute() {
         {state === "失败" && <option value="失败">失败</option>}<option>待发布</option><option>不发布</option></select>;
   }
   const items = queue?.items ?? [];
+  const scheduleChanges = {
+    ...(scheduleFields.date ? { date } : {}),
+    ...(scheduleFields.hour ? { hour } : {}),
+    ...(scheduleFields.scheduled ? { scheduled } : {}),
+  };
+  const scheduleChanged = modal?.kind === "schedule" && items.some(item => modal.ids.includes(item.id) && (
+    (scheduleFields.date && item.date !== date) || (scheduleFields.hour && item.hour !== hour)
+    || (scheduleFields.scheduled && item.scheduled !== scheduled)
+  ));
   const preview = modal?.kind === "preview" ? queue?.items.find(i => i.id === modal.id) : undefined;
   const review = modal?.kind === "review" ? queue?.items.find(i => i.id === modal.id) : undefined;
   const modalError = error && <p className="publish-error" role="alert">{error}</p>;
@@ -265,12 +276,18 @@ export function PublishRoute() {
         <label className="publish-field">原 multi_publish_state.json 路径<input value={importPath} onChange={e => setImportPath(e.target.value)} /></label>
         {button("导入记录", () => void action("/import", { path: importPath }), busy || !importPath.trim())}</details>{modalError}
     </Dialog>}
-    {modal?.kind === "schedule" && <Dialog title={`安排 ${modal.ids.length} 条作品的时间`} close={() => !busy && setModal(null)} footer={button("保存安排", () => void action("/edit", { ids: modal.ids, date, hour, scheduled }), busy || !date)}>
+    {modal?.kind === "schedule" && <Dialog title={`安排 ${modal.ids.length} 条作品的时间`} close={() => !busy && setModal(null)} footer={button("保存安排", () => void action("/edit", { ids: modal.ids, ...scheduleChanges }), busy || !scheduleChanged || (scheduleFields.date && !date))}>
       <p className="batch-settings-description">时间只应用到尚未完成的平台。分钟沿用平台页面值；已发布稿件不受影响。</p>
-      <label><input type="checkbox" checked={scheduled} onChange={e => setScheduled(e.target.checked)} />定时发布（北京时间）</label>
-      <div className="publish-time-fields"><label className="publish-field">日期<input type="date" value={date} disabled={!scheduled} onChange={e => setDate(e.target.value)} /></label>
-        <label className="publish-field">小时<select value={hour} disabled={!scheduled} onChange={e => setHour(e.target.value)}>{Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0")).map(h => <option key={h}>{h}</option>)}</select></label></div>
-      <p>取消定时后，下一次运行将立即发布这些作品。</p>{modalError}
+      <p>只修改勾选的项目，未勾选的日期、小时和发布方式各自保留。</p>
+      <div className="publish-time-fields">
+        <div className="publish-field"><label><input type="checkbox" checked={scheduleFields.date} disabled={busy} onChange={e => setScheduleFields({ ...scheduleFields, date: e.target.checked })} />修改日期</label>
+          <input type="date" aria-label="批量发布日期" value={date} disabled={busy || !scheduleFields.date} onChange={e => setDate(e.target.value)} /></div>
+        <div className="publish-field"><label><input type="checkbox" checked={scheduleFields.hour} disabled={busy} onChange={e => setScheduleFields({ ...scheduleFields, hour: e.target.checked })} />修改小时</label>
+          <select aria-label="批量发布小时" value={hour} disabled={busy || !scheduleFields.hour} onChange={e => setHour(e.target.value)}>{Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0")).map(h => <option key={h}>{h}</option>)}</select></div>
+        <div className="publish-field"><label><input type="checkbox" checked={scheduleFields.scheduled} disabled={busy} onChange={e => setScheduleFields({ ...scheduleFields, scheduled: e.target.checked })} />修改发布方式</label>
+          <select aria-label="批量发布方式" value={String(scheduled)} disabled={busy || !scheduleFields.scheduled} onChange={e => setScheduled(e.target.value === "true")}><option value="true">定时发布</option><option value="false">立即发布</option></select></div>
+      </div>
+      {scheduleFields.scheduled && !scheduled && <p>改为立即发布后，下一次运行将立即发布这些作品。</p>}{modalError}
     </Dialog>}
     {modal?.kind === "preview" && preview && <Dialog title={preview.name} compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)} footer={
       <div className="publish-preview-platforms">{previewPlatforms.map(p => <label key={p}>{labels[p]}{platformState(preview, p)}</label>)}</div>
