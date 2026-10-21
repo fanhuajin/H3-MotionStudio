@@ -1032,7 +1032,7 @@ export function App() {
           <div className="sidebar-service-row">
             <div className="sidebar-runtime">
               <span className="runtime-icon"><Circle weight="fill" /></span>
-              <div><strong>本地服务</strong><small>按需运行</small></div>
+              <div><strong>本地服务</strong></div>
             </div>
             <CloseProjectButton onAccepted={() => setProjectClosing(true)} />
           </div>
