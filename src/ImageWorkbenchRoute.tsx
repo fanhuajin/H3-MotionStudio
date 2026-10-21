@@ -363,7 +363,7 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片与封面</h1><p>人物图生成后直接采用；封面用成片逐帧挑出的「封面人物图」排入标题与简介：有手看手部清晰度，无手看画面清晰度；已有图片直接沿用。</p></div>
+        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片封面</h1><p>人物图生成后直接采用；封面用成片逐帧挑出的「封面人物图」排入标题与简介：有手看手部清晰度，无手看画面清晰度；已有图片直接沿用。</p></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
           {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}

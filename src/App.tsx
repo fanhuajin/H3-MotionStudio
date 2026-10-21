@@ -982,7 +982,7 @@ export function App() {
           </a>
           <a className={isImagesRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/images">
             <ImageSquare weight={isImagesRoute ? "fill" : "regular"} />
-            <span>图片与封面</span>
+            <span>图片封面</span>
             {isImagesRoute && <i />}
           </a>
           <a className={isSingingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/singing">
