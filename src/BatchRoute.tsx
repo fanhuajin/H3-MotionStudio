@@ -6,8 +6,6 @@ import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
   ArrowClockwise,
   ArrowUUpLeft,
-  CaretDown,
-  CaretUp,
   Check,
   Circle,
   GearSix,
@@ -952,26 +950,6 @@ export function BatchRoute() {
     } finally {
       setBusyAction("");
     }
-  };
-
-  /** 队列里上移 / 下移（调处理顺序，出片严格按队列顺序跑）。 */
-  const moveItem = (itemId: string, direction: "up" | "down") => {
-    if (!batch) return;
-    const endpoint = `/api/batches/${batch.id}/items/${itemId}/move`;
-    setBusyAction(`move-${itemId}`);
-    setError("");
-    fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ direction }),
-    })
-      .then((response) => {
-        if (!response.ok) return responseMessage(response, "调整顺序失败").then((message) => { throw new Error(message); });
-        return readJson<BatchState>(response, "调整顺序失败");
-      })
-      .then(acceptBatchState)
-      .catch((reason) => setError(`${reason instanceof Error ? reason.message : String(reason)}　〔POST ${endpoint}〕`))
-      .finally(() => setBusyAction(""));
   };
 
   /**
@@ -2189,28 +2167,6 @@ export function BatchRoute() {
                                 >
                                   <Trash />删除
                                 </button>
-                              )}
-                              {!["running", "revising", "completed", "deleted"].includes(item.status) && (
-                                <span className="batch-move">
-                                  <button
-                                    className="ghost"
-                                    disabled={Boolean(busyAction)}
-                                    onClick={() => moveItem(item.id, "up")}
-                                    title="在队列里上移（调处理顺序）"
-                                    aria-label="上移"
-                                  >
-                                    <CaretUp weight="bold" />
-                                  </button>
-                                  <button
-                                    className="ghost"
-                                    disabled={Boolean(busyAction)}
-                                    onClick={() => moveItem(item.id, "down")}
-                                    title="在队列里下移（调处理顺序）"
-                                    aria-label="下移"
-                                  >
-                                    <CaretDown weight="bold" />
-                                  </button>
-                                </span>
                               )}
                             </div>
                           </td>
