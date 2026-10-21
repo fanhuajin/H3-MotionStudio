@@ -11,7 +11,7 @@ const WORKSPACE_MOTIONS: Record<string, { state: StateId; duration: number }> = 
   "/upscale": { state: "swirl", duration: 1800 },
   "/rvc": { state: "comet", duration: 2800 },
   "/subtitle": { state: "notify", duration: 2600 },
-  "/douyin": { state: "thinking", duration: 3000 },
+  "/douyin": { state: "sleep", duration: 3000 },
   "/publish": { state: "burst", duration: 3000 },
 };
 
