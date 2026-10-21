@@ -975,11 +975,6 @@ export function App() {
 
         <nav className="sidebar-navigation" aria-label="工作台导航">
           <p className="sidebar-section-label">创作工具</p>
-          <a className={isPublishRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/publish" aria-current={isPublishRoute ? "page" : undefined}>
-            <ListChecks />
-            <span>三端批量发布</span>
-            {isPublishRoute && <i />}
-          </a>
           <a className={isBatchRoute || isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
             <ListChecks />
             <span>批量制作</span>
@@ -1019,6 +1014,11 @@ export function App() {
             <DownloadSimple />
             <span>抖音下载</span>
             {isDouyinRoute && <i />}
+          </a>
+          <a className={isPublishRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/publish" aria-current={isPublishRoute ? "page" : undefined}>
+            <ListChecks />
+            <span>三端批量发布</span>
+            {isPublishRoute && <i />}
           </a>
         </nav>
 
