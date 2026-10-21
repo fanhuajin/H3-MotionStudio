@@ -61,7 +61,6 @@ export function PublishRoute() {
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
-  const [tab, setTab] = useState("all");
   const [modal, setModal] = useState<Modal | null>(null);
   const [directory, setDirectory] = useState("");
   const [paths, setPaths] = useState("");
@@ -158,7 +157,7 @@ export function PublishRoute() {
         className={state === "失败" ? "publish-failed" : ""} onChange={event => void action("/edit", { ids: [item.id], platform: p, state: event.target.value }, false)}>
         {state === "失败" && <option value="失败">失败</option>}<option>待发布</option><option>不发布</option></select>;
   }
-  const filtered = queue?.items.filter(i => tab === "done" ? done(i) : tab === "issue" ? issue(i) : tab === "pending" ? !done(i) : true) ?? [];
+  const items = queue?.items ?? [];
   const preview = modal?.kind === "preview" ? queue?.items.find(i => i.id === modal.id) : undefined;
   const review = modal?.kind === "review" ? queue?.items.find(i => i.id === modal.id) : undefined;
   const modalError = error && <p className="publish-error" role="alert">{error}</p>;
@@ -168,7 +167,13 @@ export function PublishRoute() {
   return <main className="batch-page publish-page"><div className="batch-content">
     <header className="batch-header"><div><p className="batch-kicker">MULTI-PLATFORM PUBLISHING</p>
       <h1>批量发布</h1><p>安排作品与时间，按抖音 → 小红书 → B站依次发布。</p></div>
-      {queue && <span className="batch-status-pill">{running ? queue.phase === "paused" ? "已暂停" : "发布中" : "等待安排"} · 已处理 {queue.items.filter(done).length}/{queue.items.length}</span>}
+      {queue && <div className="publish-heading-actions">
+        <span className="batch-status-pill">{running ? queue.phase === "paused" ? "已暂停" : "发布中" : "等待安排"} · 已处理 {queue.items.filter(done).length}/{queue.items.length}</span>
+        <div className="publish-actions">{running ? <>
+          {button(queue.phase === "paused" ? "继续" : "暂停", () => void action(`/control/${queue.phase === "paused" ? "resume" : "pause"}`, {}, false), busy, queue.phase === "paused" ? <Play /> : <Pause />)}
+          {button("停止发布", () => void action("/control/stop", {}, false), busy, <Stop />)}
+        </> : button("开始 / 继续发布", () => setModal({ kind: "start" }), readonly || !queue.dependenciesReady || !queue.items.some(i => !done(i)), <Play />)}</div>
+      </div>}
     </header>
     {error && !modal && <p className="publish-error" role="alert">{error} {button("重新同步", () => void load(), busy)}</p>}
     {!queue ? <p role="status">正在读取发布队列…</p> : <>
@@ -177,11 +182,6 @@ export function PublishRoute() {
         {!queue.dependenciesReady && <span className="publish-error">发布环境尚缺桌面执行依赖，请安装 backend/requirements-publish.txt 中的依赖后运行。</span>}
       </section>
       <section className="publish-toolbar" aria-label="发布队列操作">
-        <div className="batch-tabs" role="tablist" aria-label="作品分类">
-          {[["all", "全部", queue.items.length], ["pending", "待处理", queue.items.filter(i => !done(i)).length],
-            ["issue", "需处理", queue.items.filter(issue).length], ["done", "已处理", queue.items.filter(done).length]].map(([value, text, count]) =>
-            <button key={value} role="tab" aria-selected={tab === value} className={`batch-tab${tab === value ? " active" : ""}`} onClick={() => setTab(String(value))}>{text}<i>{count}</i></button>)}
-        </div>
         <div className="publish-actions">
           {button(pickerOpen ? "正在选择作品…" : "添加作品", () => void pickFolders(), readonly, <Plus />)}
           {button("其他添加方式", () => { setDirectory(directory || queue.defaultDirectory); setModal({ kind: "add" }); }, readonly)}
@@ -190,12 +190,12 @@ export function PublishRoute() {
         </div>
       </section>
       <div className="publish-table-wrap"><table className="publish-table"><thead><tr>
-        <th><input type="checkbox" aria-label="选择当前分类全部作品" disabled={readonly || !filtered.length}
-          checked={filtered.length > 0 && filtered.every(i => selected.includes(i.id))} onChange={event => setSelected(event.target.checked ? [...new Set([...selected, ...filtered.map(i => i.id)])] : selected.filter(id => !filtered.some(i => i.id === id)))} /></th>
-        <th>序号</th><th>作品</th><th>发布时间 · 北京时间</th>{platforms.map(p => <th key={p}>{labels[p]}</th>)}<th>操作</th>
+        <th><input type="checkbox" aria-label="选择全部作品" disabled={readonly || !items.length}
+          checked={items.length > 0 && items.every(i => selected.includes(i.id))} onChange={event => setSelected(event.target.checked ? items.map(i => i.id) : [])} /></th>
+        <th>序号</th><th>作品</th><th>发布时间</th>{platforms.map(p => <th key={p}>{labels[p]}</th>)}<th>操作</th>
       </tr></thead><tbody>
-        {!filtered.length && <tr><td colSpan={8} className="publish-empty">{queue.items.length ? "当前分类没有作品。" : "还没有发布作品，点击「添加作品」从发布目录选择。"}</td></tr>}
-        {filtered.map(item => <tr key={item.id}>
+        {!items.length && <tr><td colSpan={8} className="publish-empty">还没有发布作品，点击「添加作品」从发布目录选择。</td></tr>}
+        {items.map(item => <tr key={item.id}>
           <td><input type="checkbox" aria-label={`选择${item.name}`} checked={selected.includes(item.id)} disabled={readonly}
             onChange={event => setSelected(event.target.checked ? [...selected, item.id] : selected.filter(id => id !== item.id))} /></td>
           <td className="batch-index">{String(queue.items.indexOf(item) + 1).padStart(3, "0")}</td>
@@ -209,13 +209,6 @@ export function PublishRoute() {
           <td>{button("查看作品", () => setModal({ kind: "preview", id: item.id }), running, <Play />)}</td>
         </tr>)}
       </tbody></table></div>
-      <section className="publish-footer"><span>已选 {selected.length} 条 · 运行按钮处理该平台全部待发布与失败作品</span>
-        <div className="publish-actions">{running ? <>
-          {button(queue.phase === "paused" ? "继续" : "暂停", () => void action(`/control/${queue.phase === "paused" ? "resume" : "pause"}`, {}, false), busy, queue.phase === "paused" ? <Play /> : <Pause />)}
-          {button("停止发布", () => void action("/control/stop", {}, false), busy, <Stop />)}
-        </> : <>{platforms.map(p => <span key={p}>{button(`只运行${labels[p]}`, () => setModal({ kind: "start", platform: p }), readonly || !queue.dependenciesReady || !queue.items.some(i => ["待发布", "失败"].includes(i.states[p])))}</span>)}
-          {button("开始 / 继续发布", () => setModal({ kind: "start" }), readonly || !queue.dependenciesReady || !queue.items.some(i => !done(i)), <Play />)}</>}</div>
-      </section>
     </>}
     {modal?.kind === "add" && <Dialog title="添加作品" close={() => !busy && setModal(null)}>
       <p className="batch-settings-description">打开系统选择框后，可按 Ctrl / Shift 多选要发布的作品文件夹。确认后直接加入队列；取消不添加。已有记录自动跳过。</p>
