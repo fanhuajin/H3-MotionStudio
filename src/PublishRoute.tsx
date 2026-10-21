@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { CheckCircle, FolderOpen, Pause, Play, Plus, Stop, Trash, X } from "@phosphor-icons/react";
 import "./publish.css";
 
@@ -48,12 +48,17 @@ function Dialog({ title, children, footer, close, className = "", compactHeader 
 function done(item: Work) { return platforms.every(p => ["已完成", "不发布"].includes(item.states[p])); }
 function issue(item: Work) { return platforms.some(p => ["失败", "待核对"].includes(item.states[p])); }
 
-function openDatePicker(input: HTMLInputElement) {
-  if (input.disabled || input.readOnly || typeof input.showPicker !== "function") return;
+function openDatePicker(event: MouseEvent<HTMLInputElement>) {
+  const input = event.currentTarget;
+  if (event.button !== 0 || input.disabled || input.readOnly || typeof input.showPicker !== "function") return false;
   try {
     input.showPicker();
+    // 日历成功打开后阻止鼠标默认选中年份段；键盘聚焦仍使用原生行为。
+    event.preventDefault();
+    return true;
   } catch {
     // 浏览器不允许打开时，保留原生日期输入和日历按钮的操作。
+    return false;
   }
 }
 
@@ -69,6 +74,7 @@ function PublishTime({ item, disabled, save }: { item: Work; disabled: boolean; 
   const [date, setDate] = useState(item.date);
   const [feedback, setFeedback] = useState("");
   const saving = useRef(false);
+  const pickerOpened = useRef(false);
   useEffect(() => setDate(item.date), [item.date]);
   async function commit(changes: { date?: string; hour?: string }) {
     if (disabled || saving.current) return;
@@ -81,8 +87,17 @@ function PublishTime({ item, disabled, save }: { item: Work; disabled: boolean; 
   }
   return <div className="publish-inline-time">
     <input type="date" aria-label={`${item.name} 发布日期`} value={date} disabled={disabled}
-      onClick={event => openDatePicker(event.currentTarget)}
-      onChange={event => { setDate(event.target.value); setFeedback(""); }} onBlur={event => {
+      onMouseDown={event => { pickerOpened.current = openDatePicker(event); }}
+      onKeyDown={() => { pickerOpened.current = false; }}
+      onChange={event => {
+        const value = event.target.value;
+        setDate(value); setFeedback("");
+        // 鼠标打开日历不依赖输入框聚焦，选定日期即保存；键盘编辑仍在失焦后保存。
+        if (pickerOpened.current && value && event.target.validity.valid && value !== item.date) {
+          pickerOpened.current = false;
+          void commit({ date: value });
+        }
+      }} onBlur={event => {
         if (!event.target.value || !event.target.validity.valid) { setDate(item.date); return; }
         if (date !== item.date) void commit({ date });
       }} />
@@ -277,7 +292,7 @@ export function PublishRoute() {
     </Dialog>}
     {modal?.kind === "schedule" && <Dialog title={`安排 ${modal.ids.length} 条作品的时间`} close={() => !busy && setModal(null)} footer={button("保存安排", () => void action("/edit", { ids: modal.ids, date, scheduled: true }), busy || !date || !scheduleChanged)}>
       <p className="batch-settings-description">所选作品按此日期定时发布，每条原有小时保持不变。</p>
-      <label className="publish-field">日期<input type="date" value={date} disabled={busy} onClick={event => openDatePicker(event.currentTarget)} onChange={e => setDate(e.target.value)} /></label>
+      <label className="publish-field">日期<input type="date" value={date} disabled={busy} onMouseDown={openDatePicker} onChange={e => setDate(e.target.value)} /></label>
       {modalError}
     </Dialog>}
     {modal?.kind === "preview" && preview && <Dialog title={preview.name} compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)} footer={
