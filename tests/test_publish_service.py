@@ -168,6 +168,23 @@ class PublishServiceTests(unittest.TestCase):
         rows = update(scheduled=False)
         self.assertTrue(all(r["date"] == "2027-03-05" and r["hour"] == "14" and not r["scheduled"] for r in rows))
 
+    def test_bulk_date_schedules_selected_items_without_reassigning_hours(self):
+        first = self.add()
+        second = self.add(self.work("002_跳舞_test"))
+        untouched = self.add(self.work("003_跳舞_test"))
+        self.edit(first, hour="03", scheduled=False)
+        self.edit(second, hour="08", scheduled=True)
+        self.edit(untouched, scheduled=False)
+        before = self.store.read()["items"][2]
+        response = self.client.post("/api/publish/edit", json={
+            "ids": [first["id"], second["id"]], "date": "2027-04-06", "scheduled": True,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        rows = response.json()["items"]
+        self.assertEqual([row["hour"] for row in rows[:2]], ["03", "08"])
+        self.assertTrue(all(row["date"] == "2027-04-06" and row["scheduled"] for row in rows[:2]))
+        self.assertEqual(self.store.read()["items"][2], before)
+
     def test_invalid_time_does_not_save(self):
         item = self.add()
         before = self.store.path.read_bytes()
