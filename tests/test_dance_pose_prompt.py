@@ -2,6 +2,21 @@ import unittest
 from backend.batch_ai import compose_image_prompt
 
 class DancePosePromptTests(unittest.TestCase):
+    def test_video_appearance_follows_frame_without_changing_redesign(self):
+        for kind in ('singing', 'dance'):
+            text = compose_image_prompt(kind)
+            self.assertIn('发型与配饰参考图一', text)
+            self.assertIn('眼镜、发饰、帽子、耳环、项链', text)
+            self.assertIn('未佩戴的配饰不凭空添加', text)
+            self.assertIn('模糊或遮挡而无法辨认的细节不臆造', text)
+            self.assertNotIn('发饰可有可无', text)
+            self.assertNotIn('不固定沿用', text)
+            self.assertIn('图二是唯一的面部身份参考', text)
+        redesign = compose_image_prompt('singing', style_source='redesign')
+        self.assertIn('根据歌曲氛围设计自然的发型', redesign)
+        self.assertIn('发饰可有可无', redesign)
+        self.assertNotIn('【发型与配饰】', redesign)
+
     def test_dance_requires_standing_at_each_ratio(self):
         for ratio in ('9:16', '4:3'):
             text = compose_image_prompt('dance', ratio=ratio)
