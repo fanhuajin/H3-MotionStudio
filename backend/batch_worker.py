@@ -5673,6 +5673,10 @@ def shutdown_tick() -> str:
 
     `idle` / `waiting`（还没跑完，继续等）/ `scheduled`（已在倒计时或刚排上）。
     """
+    from .project_shutdown import project_is_closing
+
+    if project_is_closing():
+        return "waiting"
     record = _read_pending_shutdown()
     if record:
         if float(record.get("executeAt") or 0) <= time.time():

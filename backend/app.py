@@ -28,6 +28,7 @@ _REGEN_IMAGE_TASKS: set[asyncio.Task] = set()
 
 from . import input_preview
 from .publish_service import router as publish_router
+from .project_shutdown import router as project_shutdown_router
 from . import douyin_downloads
 from . import image_workbench
 from . import rvc_batch
@@ -426,6 +427,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="H3 MotionStudio", version="0.1.0", lifespan=lifespan)
 app.include_router(publish_router)
+app.include_router(project_shutdown_router)
 
 
 @app.exception_handler(Exception)

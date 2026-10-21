@@ -38,6 +38,7 @@ import { SubtitleRoute } from "./SubtitleRoute";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
 import { WorkspaceBot } from "./WorkspaceBot";
+import { CloseProjectButton, ProjectClosingScreen } from "./CloseProject";
 import { UpScaleRoute } from "./UpScaleRoute";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
@@ -926,11 +927,14 @@ function restoreWorkspacePage(): string {
 
 export function App() {
   const [path, setPath] = useState(restoreWorkspacePage);
+  const [projectClosing, setProjectClosing] = useState(false);
   useEffect(() => {
     const onPopState = () => setPath(restoreWorkspacePage());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  if (projectClosing) return <ProjectClosingScreen onReturn={() => setProjectClosing(false)} />;
 
   const navigateWorkspace = (event: MouseEvent<HTMLElement>) => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -1025,6 +1029,7 @@ export function App() {
         <div className="sidebar-system">
           <p className="sidebar-section-label">系统</p>
           <SystemMonitor />
+          <CloseProjectButton onAccepted={() => setProjectClosing(true)} />
           <div className="sidebar-runtime">
             <span className="runtime-icon"><Circle weight="fill" /></span>
             <div><strong>本地服务</strong><small>按需运行</small></div>
