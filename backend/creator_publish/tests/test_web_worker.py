@@ -102,12 +102,12 @@ class WebWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "已停止"):
                 self.queue.pause()
 
-    def run_harness(self, prepare_error=False):
+    def run_harness(self, prepare_error=False, skipped=(), platforms=("douyin",)):
         queue = Mock()
         queue.state = {}
         queue.items = {"one": {"folder": self.root, "scheduled": False,
-                                "states": {p: "待发布" for p in PLATFORMS}}}
-        queue.adapters = {"douyin": (type("OfflineDraft", (), {}), Mock(), Mock(), Mock(), Mock())}
+                                "states": {p: "不发布" if p in skipped else "待发布" for p in PLATFORMS}}}
+        queue.adapters = {p: (type("OfflineDraft", (), {}), Mock(), Mock(), Mock(), Mock()) for p in PLATFORMS}
         events = []
         queue.run_platform.side_effect = lambda *args: events.append("publish")
         kernel = Mock()
@@ -122,7 +122,7 @@ class WebWorkerTests(unittest.TestCase):
                     raise RuntimeError("页面未就绪")
             pages.return_value.ensure.side_effect = ensure
             # 跳过外层真实桌面互斥，所有平台输入均是桩。
-            run_queue.__wrapped__(self.path, ("douyin",))
+            run_queue.__wrapped__(self.path, platforms)
         return events, queue
 
     def test_pages_are_prepared_before_first_platform_execution(self):
@@ -134,6 +134,16 @@ class WebWorkerTests(unittest.TestCase):
         events, queue = self.run_harness(prepare_error=True)
         self.assertEqual(events, ["pages_ready"])
         queue.run_platform.assert_not_called()
+
+    def test_unchecked_platforms_skip_asset_preparation_and_publishing(self):
+        for skipped in (("douyin",), ("bilibili", "xiaohongshu"), PLATFORMS):
+            with self.subTest(skipped=skipped):
+                _, queue = self.run_harness(skipped=skipped, platforms=PLATFORMS)
+                self.assertEqual([call.args[2] for call in queue.run_platform.call_args_list],
+                                 [p for p in PLATFORMS if p not in skipped])
+                for p in skipped:
+                    for prepare in queue.adapters[p][1:]:
+                        prepare.assert_not_called()
 
 
 if __name__ == "__main__":

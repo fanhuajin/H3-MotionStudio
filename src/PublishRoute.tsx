@@ -62,12 +62,34 @@ function openDatePicker(event: MouseEvent<HTMLInputElement>) {
   }
 }
 
-function VideoPreview({ id }: { id: string }) {
+function VideoPreview({ id, children, hasVideo = true }: { id: string; children: ReactNode; hasVideo?: boolean }) {
   const [failed, setFailed] = useState(false);
+  const [playBlocked, setPlayBlocked] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
-  return <div className="publish-video"><video ref={video} controls autoPlay playsInline preload="metadata" aria-label="作品视频预览"
-    src={`/api/publish/items/${id}/asset/video`} onError={() => setFailed(true)} onLoadedData={() => setFailed(false)} />
-    {failed && <p role="status">视频暂时无法加载。<button className="batch-add-toggle" onClick={() => { setFailed(false); video.current?.load(); }}>重新加载</button></p>}</div>;
+  useEffect(() => {
+    const player = video.current;
+    if (!player) return;
+    let disposed = false;
+    void player.play().catch(() => { if (!disposed && !player.error) setPlayBlocked(true); });
+    return () => {
+      disposed = true;
+      player.pause();
+    };
+  }, [id, hasVideo]);
+  async function play() {
+    const player = video.current;
+    if (!player) return;
+    try { await player.play(); setPlayBlocked(false); }
+    catch { if (!player.error) setPlayBlocked(true); }
+  }
+  return <div className="publish-video">
+    {hasVideo ? <video ref={video} controls autoPlay playsInline preload="metadata" aria-label="作品视频预览"
+      src={`/api/publish/items/${id}/asset/video`} onPlaying={() => setPlayBlocked(false)}
+      onError={() => { setFailed(true); setPlayBlocked(false); }} onLoadedData={() => setFailed(false)} /> : <p>未找到可预览的视频。</p>}
+    <div className="publish-video-platforms" role="group" aria-label="此视频发布平台">{children}</div>
+    {playBlocked && !failed && <div className="publish-video-play"><button className="batch-add-toggle" onClick={() => void play()}><Play />点击播放</button></div>}
+    {failed && <p role="status">视频暂时无法加载。<button className="batch-add-toggle" onClick={() => { setFailed(false); video.current?.load(); void play(); }}>重新加载</button></p>}
+  </div>;
 }
 
 function PublishTime({ item, disabled, save }: { item: Work; disabled: boolean; save: (changes: { date?: string; hour?: string }) => Promise<boolean> }) {
@@ -295,10 +317,20 @@ export function PublishRoute() {
       <label className="publish-field">日期<input type="date" value={date} disabled={busy} onMouseDown={openDatePicker} onChange={e => setDate(e.target.value)} /></label>
       {modalError}
     </Dialog>}
-    {modal?.kind === "preview" && preview && <Dialog title={preview.name} compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)} footer={
-      <div className="publish-preview-platforms">{previewPlatforms.map(p => <label key={p}>{labels[p]}{platformState(preview, p)}</label>)}</div>
-    }>
-      {preview.assets.video ? <VideoPreview key={preview.id} id={preview.id} /> : <p>未找到可预览的视频。</p>}
+    {modal?.kind === "preview" && preview && <Dialog title={preview.name} compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)}>
+      <VideoPreview key={preview.id} id={preview.id} hasVideo={preview.assets.video}>
+        {previewPlatforms.map(p => {
+          const state = preview.states[p];
+          const locked = ["已完成", "发布中", "待核对"].includes(state);
+          return <label key={p} title={locked ? `${labels[p]}：${state}` : undefined}>
+            <input type="checkbox" aria-label={`${preview.name} 发布到${labels[p]}`} checked={state !== "不发布"}
+              disabled={readonly || locked} onChange={event => void action("/edit", {
+                ids: [preview.id], platform: p, state: event.target.checked ? "待发布" : "不发布",
+              }, false)} />{labels[p]}{locked && <small>{state}</small>}
+          </label>;
+        })}
+        {busy && <span role="status">保存中…</span>}
+      </VideoPreview>
       {modalError}
     </Dialog>}
     {modal?.kind === "review" && review && <Dialog title={`核对${labels[modal.platform]}发布结果`} close={() => !busy && setModal(null)} footer={<>

@@ -132,6 +132,20 @@ class PublishServiceTests(unittest.TestCase):
         self.assertEqual(state["states"]["douyin"], "不发布")
         self.assertEqual(state["states"]["bilibili"], "待发布")
 
+    def test_platform_choices_survive_reload_and_other_item_edits(self):
+        first = self.add()
+        second = self.add(self.work("002_跳舞_test"))
+        self.assertTrue(all(state == "待发布" for state in first["states"].values()))
+        for platform in service.PLATFORMS:
+            self.assertEqual(self.edit(first, platform=platform, state="不发布").status_code, 200)
+        self.edit(second, hour="09")
+        rows = self.client.get("/api/publish").json()["items"]
+        self.assertTrue(all(state == "不发布" for state in rows[0]["states"].values()))
+        self.assertTrue(all(state == "待发布" for state in rows[1]["states"].values()))
+        self.edit(first, platform="bilibili", state="待发布")
+        states = service.PublishStore(self.store.directory).read()["items"][0]["states"]
+        self.assertEqual(states, {"douyin": "不发布", "xiaohongshu": "不发布", "bilibili": "待发布"})
+
     def test_time_fields_can_be_saved_independently(self):
         item = self.add()
         self.edit(item, scheduled=False)
