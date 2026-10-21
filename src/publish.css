@@ -20,12 +20,13 @@
 .publish-work strong { display: block; color: #f0f1f2; font-weight: 600; }
 .publish-work small, .publish-actual { display: block; margin-top: 4px; color: #969798; font-size: 10px; }
 .publish-work details p { margin: 5px 0; color: #d2b58c; }
-.publish-inline-time { display: grid; grid-template-columns: minmax(130px, 1fr) auto; gap: 5px 8px; }
+.publish-inline-time { position: relative; display: grid; grid-template-columns: minmax(130px, 1fr) auto; align-items: center; gap: 8px; }
 .publish-page .publish-inline-time input { min-width: 0; background: #17201c; color: #d4dfd7; border: 1px solid #405047; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 34px; box-sizing: border-box; color-scheme: dark; }
-.publish-inline-time small { grid-column: 1 / -1; color: #a3a895; font-size: 11px; }
+.publish-inline-time small { position: absolute; top: calc(100% + 2px); left: 0; color: var(--shell-muted); font-size: 10px; line-height: 14px; white-space: nowrap; }
+.publish-table td:has(.publish-inline-time small) { padding-top: 18px; padding-bottom: 18px; }
 .publish-inline-time input:disabled { opacity: .5; }
 .publish-page select, .publish-dialog select, .publish-dialog input:not([type=checkbox]), .publish-dialog textarea { background: #17201c; color: #d4dfd7; border: 1px solid #405047; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 34px; }
-.publish-table select, .publish-table .publish-inline-time input { min-height: 30px; padding: 5px 8px; border-color: var(--shell-line-strong); background: #121314; color: #d0d1d2; font-size: 11px; }
+.publish-table select, .publish-table .publish-inline-time input { box-sizing: border-box; height: 30px; min-height: 30px; margin: 0; padding: 5px 8px; border-color: var(--shell-line-strong); background: #121314; color: #d0d1d2; font-size: 11px; line-height: normal; vertical-align: middle; }
 .publish-table .batch-row-ops .batch-add-toggle { min-height: 28px; font-size: 11px; transition: none; }
 .publish-table .batch-row-ops svg { width: 14px; height: 14px; }
 .publish-table .publish-state { padding: 3px 8px; border: 1px solid rgba(106, 179, 149, .4); border-radius: 999px; background: rgba(26, 27, 28, .8); color: #8fc5af; font-size: 10px; }

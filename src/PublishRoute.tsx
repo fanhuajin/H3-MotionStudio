@@ -80,7 +80,7 @@ function PublishTime({ item, disabled, save }: { item: Work; disabled: boolean; 
       onChange={event => void commit({ hour: event.target.value })}>
       {Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0")).map(hour => <option key={hour} value={hour}>{hour} 时</option>)}
     </select>
-    <small role="status">{!item.scheduled && "立即发布"}{!item.scheduled && feedback && " · "}{feedback}</small>
+    {(feedback || !item.scheduled) && <small role="status">{!item.scheduled && "立即发布"}{!item.scheduled && feedback && " · "}{feedback}</small>}
   </div>;
 }
 
