@@ -1017,7 +1017,7 @@ export function App() {
           </a>
           <a className={isPublishRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/publish" aria-current={isPublishRoute ? "page" : undefined}>
             <ListChecks />
-            <span>三端批量发布</span>
+            <span>批量发布</span>
             {isPublishRoute && <i />}
           </a>
         </nav>

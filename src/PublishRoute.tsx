@@ -37,7 +37,7 @@ function Dialog({ title, children, footer, close }: { title: string; children: R
       if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) close();
     }}>
     <header className="batch-settings-header"><span className="batch-modal-icon"><FolderOpen /></span>
-      <div><p>三端批量发布</p><h2 id="publish-dialog-title">{title}</h2></div>
+      <div><p>批量发布</p><h2 id="publish-dialog-title">{title}</h2></div>
       <button className="batch-settings-close" aria-label="关闭弹窗" autoFocus onClick={close}><X /></button></header>
     <div className="batch-settings-scroll">{children}</div>
     {footer && <footer className="batch-settings-footer">{footer}</footer>}
@@ -149,7 +149,7 @@ export function PublishRoute() {
 
   return <main className="batch-page publish-page"><div className="batch-content">
     <header className="batch-header"><div><p className="batch-kicker">MULTI-PLATFORM PUBLISHING</p>
-      <h1>三端批量发布</h1><p>安排作品与时间，按抖音 → 小红书 → B站依次发布。</p></div>
+      <h1>批量发布</h1><p>安排作品与时间，按抖音 → 小红书 → B站依次发布。</p></div>
       {queue && <span className="batch-status-pill">{running ? queue.phase === "paused" ? "已暂停" : "发布中" : "等待安排"} · 已处理 {queue.items.filter(done).length}/{queue.items.length}</span>}
     </header>
     {error && !modal && <p className="publish-error" role="alert">{error} {button("重新同步", () => void load(), busy)}</p>}
@@ -195,7 +195,7 @@ export function PublishRoute() {
           {button(queue.phase === "paused" ? "继续" : "暂停", () => void action(`/control/${queue.phase === "paused" ? "resume" : "pause"}`, {}, false), busy, queue.phase === "paused" ? <Play /> : <Pause />)}
           {button("停止发布", () => void action("/control/stop", {}, false), busy, <Stop />)}
         </> : <>{platforms.map(p => <span key={p}>{button(`只运行${labels[p]}`, () => setModal({ kind: "start", platform: p }), readonly || !queue.dependenciesReady || !queue.items.some(i => ["待发布", "失败"].includes(i.states[p])))}</span>)}
-          {button("开始 / 继续三端发布", () => setModal({ kind: "start" }), readonly || !queue.dependenciesReady || !queue.items.some(i => !done(i)), <Play />)}</>}</div>
+          {button("开始 / 继续发布", () => setModal({ kind: "start" }), readonly || !queue.dependenciesReady || !queue.items.some(i => !done(i)), <Play />)}</>}</div>
       </section>
     </>}
     {modal?.kind === "add" && <Dialog title="添加作品" close={() => !busy && setModal(null)}>
@@ -218,7 +218,7 @@ export function PublishRoute() {
       </div>}
       <label className="publish-field">作品文件夹路径（每行一个）<textarea rows={3} value={paths} onChange={e => setPaths(e.target.value)} placeholder="D:\\作品\\001_跳舞_…" /></label>
       {button("加入发布队列", () => void action("/add", { folders: [...new Set([...chosen, ...paths.split(/\r?\n/).map(p => p.trim().replace(/^"|"$/g, "")).filter(Boolean)])] }), busy || (!chosen.length && !paths.trim()), <Plus />)}
-      <details className="publish-import"><summary>导入原三端队列</summary><p>保留原平台状态和检查点，原队列文件不修改。重复目录保留当前记录。</p>
+      <details className="publish-import"><summary>导入原发布队列</summary><p>保留原平台状态和检查点，原队列文件不修改。重复目录保留当前记录。</p>
         <label className="publish-field">原 multi_publish_state.json 路径<input value={importPath} onChange={e => setImportPath(e.target.value)} /></label>
         {button("导入记录", () => void action("/import", { path: importPath }), busy || !importPath.trim())}</details>{modalError}
     </Dialog>}
@@ -249,7 +249,7 @@ export function PublishRoute() {
       <p>删除选中的 {modal.ids.length} 条记录，视频、封面和文案文件都会保留。</p><p>之后重新添加会作为新作品，请留意已有发布结果。</p>{modalError}</Dialog>}
     {modal?.kind === "complete" && <Dialog title="手动标记已完成" close={() => !busy && setModal(null)} footer={button("确认已完成", () => void action("/edit", { ids: modal.ids, platform: modal.platform, complete: true }), busy)}>
       <p>确认这些作品已在{labels[modal.platform]}发布成功？标记后继续运行会跳过该平台。</p>{modalError}</Dialog>}
-    {modal?.kind === "start" && <Dialog title={modal.platform ? `运行${labels[modal.platform]}发布` : "开始三端发布"} close={() => !busy && setModal(null)} footer={button("开始发布", () => void action("/start", { platform: modal.platform }), busy, <Play />)}>
+    {modal?.kind === "start" && <Dialog title={modal.platform ? `运行${labels[modal.platform]}发布` : "开始批量发布"} close={() => !busy && setModal(null)} footer={button("开始发布", () => void action("/start", { platform: modal.platform }), busy, <Play />)}>
       <p>将处理{modal.platform ? labels[modal.platform] : "抖音、小红书和B站"}全部待发布和失败记录；已完成与不发布的作品会跳过。</p>
       <p>请保持目标创作中心标签页已登录，开始后不要操作鼠标键盘。可按 Esc 暂停。取消定时的作品会立即发布。</p>{modalError}</Dialog>}
   </div></main>;
