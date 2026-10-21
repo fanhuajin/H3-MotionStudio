@@ -173,9 +173,14 @@ textarea::placeholder, input::placeholder {
 
 .sidebar-system {
   margin-top: auto;
-  padding-top: 22px;
+  padding-top: 16px;
   border-color: var(--shell-line);
 }
+
+.sidebar-system > .sidebar-section-label { margin: 0 0 8px; }
+.sidebar-system .monitor-card { margin-top: 0; padding-bottom: 6px; }
+.sidebar-system .monitor-title { margin-bottom: 10px; }
+.sidebar-system .monitor-grid { gap: 6px; }
 
 .monitor-card, .sidebar-runtime {
   padding: 10px;
@@ -190,6 +195,7 @@ textarea::placeholder, input::placeholder {
 }
 
 .sidebar-system footer {
+  margin-top: 8px;
   color: var(--shell-faint);
   font-size: 9px;
   letter-spacing: .06em;
