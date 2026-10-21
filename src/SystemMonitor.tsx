@@ -41,16 +41,16 @@ function formatBytes(value?: number | null) {
 }
 
 function formatRate(bytesPerSec?: number | null) {
-  if (bytesPerSec == null || !Number.isFinite(bytesPerSec) || bytesPerSec < 0) return { value: "--", unit: "B/s" };
-  const [value, unit] = formatBytes(bytesPerSec).split(" ");
-  return { value, unit: `${unit}/s` };
+  if (bytesPerSec == null || !Number.isFinite(bytesPerSec) || bytesPerSec < 0) return "--";
+  return `${formatBytes(bytesPerSec)}/s`;
 }
 
 function NetworkRate({ direction, bytes }: { direction: "下载" | "上传"; bytes?: number }) {
   const rate = formatRate(bytes);
-  return <span className="monitor-net-rate" title={`${direction} ${rate.value} ${rate.unit}`} aria-label={`${direction} ${rate.value} ${rate.unit}`}>
-    <span className="monitor-net-direction" aria-hidden="true">{direction === "下载" ? "↓" : "↑"}</span>
-    <b>{rate.value}</b><small>{rate.unit}</small>
+  const [value, unit] = rate.split(" ");
+  return <span className="monitor-net-rate" title={`${direction} ${rate}`} aria-label={`${direction} ${rate}`}>
+    <i className={direction === "下载" ? "net-dn" : "net-up"} aria-hidden="true" />
+    <span className="monitor-net-reading"><span>{direction === "下载" ? "↓" : "↑"} {value}</span><span>{unit}</span></span>
   </span>;
 }
 
@@ -153,7 +153,7 @@ export function SystemMonitor() {
           )}
           <div className="monitor-row monitor-sub monitor-network" title="活动网卡合计吞吐（含无线）">
             <span className="monitor-label">网络</span>
-            <span className="monitor-network-rates">
+            <span className="monitor-value net-value">
               <NetworkRate direction="下载" bytes={net?.rxBytesPerSec} />
               <NetworkRate direction="上传" bytes={net?.txBytesPerSec} />
             </span>
