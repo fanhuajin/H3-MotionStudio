@@ -180,8 +180,6 @@ export function PublishRoute() {
       <section className="publish-toolbar" aria-label="发布队列操作">
         <div className="publish-actions">
           {button(pickerOpen ? "正在选择作品…" : "添加作品", () => void pickFolders(), readonly, <Plus />)}
-          {button("其他添加方式", () => { setDirectory(directory || queue.defaultDirectory); setModal({ kind: "add" }); }, readonly)}
-          {button("安排时间", () => schedule(selected), readonly || !selected.length)}
           {button("删除记录", () => setModal({ kind: "remove", ids: [...selected] }), readonly || !selected.length, <Trash />)}
           {running ? <>
             {button(queue.phase === "paused" ? "继续" : "暂停", () => void action(`/control/${queue.phase === "paused" ? "resume" : "pause"}`, {}, false), busy, queue.phase === "paused" ? <Play /> : <Pause />)}
