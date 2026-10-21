@@ -37,7 +37,7 @@ import { RvcRoute } from "./RvcRoute";
 import { SubtitleRoute } from "./SubtitleRoute";
 import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
-import { StudioBot } from "./StudioBot";
+import { WorkspaceBot } from "./WorkspaceBot";
 import { UpScaleRoute } from "./UpScaleRoute";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
@@ -968,7 +968,7 @@ export function App() {
         <div className="sidebar-top">
           <p className="sidebar-kicker">创作工作台</p>
           <a className="sidebar-brand" href="/" aria-label="H3 MotionStudio 首页">
-            <StudioBot size={40} interactive shape={path === "/migrate" ? "squircle" : undefined} variant={path === "/images" ? "play" : path === "/batch" || path === "" ? "wide" : path === "/singing" ? "idle" : path === "/migrate" ? "idle" : path === "/upscale" ? "swirl" : path === "/rvc" ? "comet" : path === "/subtitle" ? "notify" : "idle"} />
+            <WorkspaceBot key={path || "/batch"} path={path} />
             <strong>MotionStudio</strong>
           </a>
         </div>
