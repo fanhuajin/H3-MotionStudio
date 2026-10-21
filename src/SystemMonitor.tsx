@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import "./system-monitor.css";
 
 type GpuStat = {
   name: string;
@@ -38,20 +37,6 @@ function formatBytes(value?: number | null) {
     index += 1;
   }
   return `${size.toFixed(index < 2 ? 0 : 1)} ${units[index]}`;
-}
-
-function formatRate(bytesPerSec?: number | null) {
-  if (bytesPerSec == null || !Number.isFinite(bytesPerSec) || bytesPerSec < 0) return "--";
-  return `${formatBytes(bytesPerSec)}/s`;
-}
-
-function NetworkRate({ direction, bytes }: { direction: "下载" | "上传"; bytes?: number }) {
-  const rate = formatRate(bytes);
-  const [value, unit] = rate.split(" ");
-  return <span className="monitor-net-rate" title={`${direction} ${rate}`} aria-label={`${direction} ${rate}`}>
-    <i className={direction === "下载" ? "net-dn" : "net-up"} aria-hidden="true" />
-    <span className="monitor-net-reading"><span>{direction === "下载" ? "↓" : "↑"} {value}</span><span>{unit}</span></span>
-  </span>;
 }
 
 function toneOf(percent: number) {
@@ -102,7 +87,6 @@ export function SystemMonitor() {
   const cpu = stats?.cpu;
   const memory = stats?.memory;
   const disks = stats?.disks || [];
-  const net = stats?.net;
   const gpu = stats?.gpu?.[0];
 
   return (
@@ -151,13 +135,6 @@ export function SystemMonitor() {
           ) : (
             <div className="monitor-row monitor-sub"><span className="monitor-label">GPU</span><span className="monitor-bar-static" /><b className="monitor-value">--</b></div>
           )}
-          <div className="monitor-row monitor-sub monitor-network" title="活动网卡合计吞吐（含无线）">
-            <span className="monitor-label">网络</span>
-            <span className="monitor-value net-value">
-              <NetworkRate direction="下载" bytes={net?.rxBytesPerSec} />
-              <NetworkRate direction="上传" bytes={net?.txBytesPerSec} />
-            </span>
-          </div>
         </div>
       )}
     </div>

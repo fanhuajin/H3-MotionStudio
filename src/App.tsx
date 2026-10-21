@@ -1030,10 +1030,6 @@ export function App() {
           <p className="sidebar-section-label">系统</p>
           <SystemMonitor />
           <div className="sidebar-service-row">
-            <div className="sidebar-runtime">
-              <span className="runtime-icon"><Circle weight="fill" /></span>
-              <div><strong>本地服务</strong></div>
-            </div>
             <CloseProjectButton onAccepted={() => setProjectClosing(true)} />
           </div>
           <footer>H3 MOTIONSTUDIO <span>V0.2.0</span></footer>

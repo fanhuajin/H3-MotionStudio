@@ -1,6 +1,0 @@
-.sidebar-system .monitor-network { height: 30px; }
-.sidebar-system .monitor-network .net-value { grid-column: 2 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; }
-.sidebar-system .monitor-net-rate { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.sidebar-system .monitor-net-rate i { flex: none; }
-.sidebar-system .monitor-net-reading { display: grid; grid-template-rows: repeat(2, 15px); min-width: 0; line-height: 15px; }
-.sidebar-system .monitor-net-reading > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

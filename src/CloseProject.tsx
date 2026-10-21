@@ -31,7 +31,7 @@ export function CloseProjectButton({ onAccepted }: { onAccepted: () => void }) {
     finally { requesting.current = false; setBusy(false); }
   }
   return <>
-    <button ref={trigger} className="sidebar-nav-item project-close-button" onClick={() => { setError(""); setOpen(true); }}>
+    <button ref={trigger} className="project-close-button" onClick={() => { setError(""); setOpen(true); }}>
       <Power /><span>关闭项目</span>
     </button>
     {open && createPortal(<dialog ref={dialog} className="batch-settings-dialog project-close-dialog" aria-labelledby="project-close-title"
