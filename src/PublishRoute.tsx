@@ -48,6 +48,15 @@ function Dialog({ title, children, footer, close, className = "", compactHeader 
 function done(item: Work) { return platforms.every(p => ["已完成", "不发布"].includes(item.states[p])); }
 function issue(item: Work) { return platforms.some(p => ["失败", "待核对"].includes(item.states[p])); }
 
+function openDatePicker(input: HTMLInputElement) {
+  if (input.disabled || input.readOnly || typeof input.showPicker !== "function") return;
+  try {
+    input.showPicker();
+  } catch {
+    // 浏览器不允许打开时，保留原生日期输入和日历按钮的操作。
+  }
+}
+
 function VideoPreview({ id }: { id: string }) {
   const [failed, setFailed] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
@@ -72,6 +81,7 @@ function PublishTime({ item, disabled, save }: { item: Work; disabled: boolean; 
   }
   return <div className="publish-inline-time">
     <input type="date" aria-label={`${item.name} 发布日期`} value={date} disabled={disabled}
+      onClick={event => openDatePicker(event.currentTarget)}
       onChange={event => { setDate(event.target.value); setFeedback(""); }} onBlur={event => {
         if (!event.target.value || !event.target.validity.valid) { setDate(item.date); return; }
         if (date !== item.date) void commit({ date });
@@ -267,7 +277,7 @@ export function PublishRoute() {
     </Dialog>}
     {modal?.kind === "schedule" && <Dialog title={`安排 ${modal.ids.length} 条作品的时间`} close={() => !busy && setModal(null)} footer={button("保存安排", () => void action("/edit", { ids: modal.ids, date, scheduled: true }), busy || !date || !scheduleChanged)}>
       <p className="batch-settings-description">所选作品按此日期定时发布，每条原有小时保持不变。</p>
-      <label className="publish-field">日期<input type="date" value={date} disabled={busy} onChange={e => setDate(e.target.value)} /></label>
+      <label className="publish-field">日期<input type="date" value={date} disabled={busy} onClick={event => openDatePicker(event.currentTarget)} onChange={e => setDate(e.target.value)} /></label>
       {modalError}
     </Dialog>}
     {modal?.kind === "preview" && preview && <Dialog title={preview.name} compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)} footer={
