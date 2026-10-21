@@ -1,8 +1,8 @@
 .publish-page { font-size: 12px; line-height: 1.65; }
 .publish-notice { display: grid; gap: 5px; padding: 16px 18px; margin-bottom: 22px; border: 1px solid #34413c; border-radius: 12px; background: #1b2421; color: #a5b6ac; }
 .publish-notice strong { color: #d1dfd6; font-weight: 500; }
-.publish-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin: 14px 0; }
-.publish-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.publish-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 14px; flex-wrap: wrap; margin: 14px 0; }
+.publish-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .publish-page .batch-add-toggle { min-height: 34px; font-size: 12px; }
 .publish-actions svg { width: 16px; height: 16px; }
 .publish-table-wrap { overflow-x: auto; border: 1px solid #34413c; border-radius: 12px; }
