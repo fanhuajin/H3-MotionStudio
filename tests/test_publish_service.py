@@ -132,6 +132,19 @@ class PublishServiceTests(unittest.TestCase):
         self.assertEqual(state["states"]["douyin"], "不发布")
         self.assertEqual(state["states"]["bilibili"], "待发布")
 
+    def test_time_fields_can_be_saved_independently(self):
+        item = self.add()
+        self.edit(item, scheduled=False)
+        changed = self.edit(item, date="2027-01-02").json()["items"][0]
+        self.assertEqual(changed["date"], "2027-01-02")
+        self.assertEqual(changed["hour"], item["hour"])
+        self.assertFalse(changed["scheduled"])
+        changed = self.edit(item, hour="09").json()["items"][0]
+        self.assertEqual(changed["date"], "2027-01-02")
+        self.assertEqual(changed["hour"], "09")
+        self.assertFalse(changed["scheduled"])
+        self.assertEqual(changed["states"], item["states"])
+
     def test_invalid_time_does_not_save(self):
         item = self.add()
         before = self.store.path.read_bytes()

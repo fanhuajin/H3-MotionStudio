@@ -56,6 +56,34 @@ function VideoPreview({ id }: { id: string }) {
     {failed && <p role="status">视频暂时无法加载。<button className="batch-add-toggle" onClick={() => { setFailed(false); video.current?.load(); }}>重新加载</button></p>}</div>;
 }
 
+function PublishTime({ item, disabled, save }: { item: Work; disabled: boolean; save: (changes: { date?: string; hour?: string }) => Promise<boolean> }) {
+  const [date, setDate] = useState(item.date);
+  const [feedback, setFeedback] = useState("");
+  const saving = useRef(false);
+  useEffect(() => setDate(item.date), [item.date]);
+  async function commit(changes: { date?: string; hour?: string }) {
+    if (disabled || saving.current) return;
+    saving.current = true;
+    setFeedback("保存中…");
+    const saved = await save(changes);
+    saving.current = false;
+    setFeedback(saved ? "已保存" : "保存失败，请重试");
+    if (!saved && changes.date !== undefined) setDate(item.date);
+  }
+  return <div className="publish-inline-time">
+    <input type="date" aria-label={`${item.name} 发布日期`} value={date} disabled={disabled}
+      onChange={event => { setDate(event.target.value); setFeedback(""); }} onBlur={event => {
+        if (!event.target.value || !event.target.validity.valid) { setDate(item.date); return; }
+        if (date !== item.date) void commit({ date });
+      }} />
+    <select aria-label={`${item.name} 发布小时`} value={item.hour} disabled={disabled}
+      onChange={event => void commit({ hour: event.target.value })}>
+      {Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0")).map(hour => <option key={hour} value={hour}>{hour} 时</option>)}
+    </select>
+    <small role="status">{!item.scheduled && "立即发布"}{!item.scheduled && feedback && " · "}{feedback}</small>
+  </div>;
+}
+
 export function PublishRoute() {
   const [queue, setQueue] = useState<Queue | null>(null);
   const [error, setError] = useState("");
@@ -112,17 +140,19 @@ export function PublishRoute() {
   }, [modal, queue, busy]);
 
   async function action(path: string, body: unknown, close = true) {
-    if (busyRef.current) return;
+    if (busyRef.current) return false;
     busyRef.current = true;
     generation.current++;
     setBusy(true); setError("");
     try {
       const result = await api<Queue>(path, body);
-      if (!alive.current) return;
+      if (!alive.current) return false;
       if (result.items) setQueue(result);
       if (close) setModal(null);
+      return true;
     } catch (failure) {
       if (alive.current) setError((failure as Error).message);
+      return false;
     } finally {
       busyRef.current = false;
       if (alive.current) { setBusy(false); void load(); }
@@ -203,7 +233,7 @@ export function PublishRoute() {
             {issue(item) && <details><summary>查看处理信息</summary>{platforms.filter(p => item.details[p]).map(p =>
               <p key={p}>{labels[p]}：{item.details[p]?.error || item.details[p]?.stage || item.states[p]}</p>)}</details>}
           </td>
-          <td><button className="publish-time" disabled={readonly} onClick={() => schedule([item.id])}>{item.scheduled ? `${item.date} ${item.hour} 时` : "立即发布"}</button></td>
+          <td><PublishTime item={item} disabled={readonly} save={changes => action("/edit", { ids: [item.id], ...changes }, false)} /></td>
           {platforms.map(p => <td key={p}>{platformState(item, p)}{item.details[p]?.publish_at && <small className="publish-actual">实际：{item.details[p]?.publish_at}</small>}</td>)}
           <td className="publish-ops"><div className="batch-row-ops">{button("查看视频", () => setModal({ kind: "preview", id: item.id }), running, <Play />)}</div></td>
         </tr>)}

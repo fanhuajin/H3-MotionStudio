@@ -16,7 +16,10 @@
 .publish-work strong { display: block; font-weight: 500; }
 .publish-work small, .publish-actual { display: block; color: #a3a895; font-size: 11px; }
 .publish-work details p { margin: 5px 0; color: #d2b58c; }
-.publish-time { border: 0; background: none; color: #bccdc1; cursor: pointer; font: inherit; white-space: nowrap; padding: 3px 0; }
+.publish-inline-time { display: grid; grid-template-columns: minmax(130px, 1fr) auto; gap: 5px 8px; }
+.publish-page .publish-inline-time input { min-width: 0; background: #17201c; color: #d4dfd7; border: 1px solid #405047; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 34px; box-sizing: border-box; color-scheme: dark; }
+.publish-inline-time small { grid-column: 1 / -1; color: #a3a895; font-size: 11px; }
+.publish-inline-time input:disabled { opacity: .5; }
 .publish-page select, .publish-dialog select, .publish-dialog input:not([type=checkbox]), .publish-dialog textarea { background: #17201c; color: #d4dfd7; border: 1px solid #405047; border-radius: 6px; padding: 7px 9px; font: inherit; min-height: 34px; }
 .publish-page input[type=checkbox], .publish-dialog input[type=checkbox] { accent-color: #a2bd9f; }
 .publish-page button:disabled, .publish-page select:disabled { opacity: .5; cursor: default; }
