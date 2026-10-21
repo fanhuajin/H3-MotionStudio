@@ -27,6 +27,7 @@ logger = logging.getLogger("uvicorn.error")
 _REGEN_IMAGE_TASKS: set[asyncio.Task] = set()
 
 from . import input_preview
+from .publish_service import router as publish_router
 from . import douyin_downloads
 from . import image_workbench
 from . import rvc_batch
@@ -424,6 +425,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="H3 MotionStudio", version="0.1.0", lifespan=lifespan)
+app.include_router(publish_router)
 
 
 @app.exception_handler(Exception)
@@ -3380,6 +3382,11 @@ if dist_dir.is_dir():
     @app.get("/douyin", include_in_schema=False)
     @app.get("/douyin/", include_in_schema=False)
     async def douyin_frontend():
+        return _spa_index()
+
+    @app.get("/publish", include_in_schema=False)
+    @app.get("/publish/", include_in_schema=False)
+    async def publish_frontend():
         return _spa_index()
 
     @app.get("/images", include_in_schema=False)

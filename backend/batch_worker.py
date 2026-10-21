@@ -5519,10 +5519,13 @@ def work_in_flight() -> bool:
     `_STALE_VIDEO_TASKS`（被「重新开始」换代顶掉的旧 runner 留下的出片任务）也要算：
     它还在跑、还在写文件，这时候排自动关机就是把它连根砍掉。
     """
+    from .publish_service import publishing_in_flight
+
     return bool(
         _RUNNING_BATCHES or _VIDEO_TASKS or _ITEM_TASKS or _SALVAGE_TASKS or _STALE_VIDEO_TASKS
         # 后台补封面也算「还有活」：它还在写发布目录，这时候关机会留下缺封面的成品。
         or covers_in_flight()
+        or publishing_in_flight()
     )
 
 

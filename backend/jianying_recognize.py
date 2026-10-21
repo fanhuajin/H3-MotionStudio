@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend import jianying_desktop as jy  # noqa: E402
 from backend import jianying_uia as u  # noqa: E402
+from backend.creator_publish.desktop_session import desktop_session  # noqa: E402
 
 DRAFT_ROOT = Path(r"C:\Users\admin\AppData\Local\JianyingPro\User Data\Projects\com.lveditor.draft")
 TEMPLATE = Path(__file__).resolve().parent.parent / "data" / "jianying_template"
@@ -570,6 +571,7 @@ def _pick_file_in_dialog(video: Path, *, timeout: float = 40.0) -> None:
     )
 
 
+@desktop_session()
 def recognize_video(video: Path, *, name: str | None = None, close_after: bool | None = None
                     ) -> list[tuple[float, float, str]]:
     """一条视频走完整流程，**每次都从「开始创作」新建工程**，不再克隆/打开草稿。
