@@ -65,7 +65,7 @@ function openDatePicker(event: MouseEvent<HTMLInputElement>) {
 function VideoPreview({ id }: { id: string }) {
   const [failed, setFailed] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
-  return <div className="publish-video"><video ref={video} controls playsInline preload="metadata" aria-label="作品视频预览"
+  return <div className="publish-video"><video ref={video} controls autoPlay playsInline preload="metadata" aria-label="作品视频预览"
     src={`/api/publish/items/${id}/asset/video`} onError={() => setFailed(true)} onLoadedData={() => setFailed(false)} />
     {failed && <p role="status">视频暂时无法加载。<button className="batch-add-toggle" onClick={() => { setFailed(false); video.current?.load(); }}>重新加载</button></p>}</div>;
 }
