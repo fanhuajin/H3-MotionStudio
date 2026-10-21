@@ -15,6 +15,7 @@ from xiaohongshu_auto import (
     XiaohongshuDraft, prepare_xiaohongshu, xiaohongshu_cover, select_xiaohongshu_hour,
 )
 from desktop_session import desktop_session
+from platform_pages import PlatformPages
 
 
 def adapters():
@@ -149,6 +150,12 @@ def run_queue(state_path, platforms):
                 category(item["folder"])
                 if item["scheduled"]:
                     select(item["date"], item["hour"])
+        # 先通过原生标签页核对已有页面，只补开缺失项；全部就绪才进入任何上传/发布步骤。
+        browser = BilibiliDraft()
+        queue.active_draft = browser
+        browser.on_tick = queue.tick
+        browser.on_pause = queue.pause
+        PlatformPages(browser, queue.notice.set).ensure()
         for p in platforms:
             for key, item in queue.items.items():
                 if p in pending_platforms(item):

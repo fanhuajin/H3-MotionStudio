@@ -1,12 +1,13 @@
 """网页执行适配器回归：替换所有平台输入，不操作桌面。"""
 import json
 import os
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 
-from worker import WebQueue, atomic_write
+from worker import WebQueue, atomic_write, run_queue
 from multi_publish import PLATFORMS
 
 
@@ -100,6 +101,39 @@ class WebWorkerTests(unittest.TestCase):
         with patch.object(self.queue, "command", return_value="stop"):
             with self.assertRaisesRegex(RuntimeError, "已停止"):
                 self.queue.pause()
+
+    def run_harness(self, prepare_error=False):
+        queue = Mock()
+        queue.state = {}
+        queue.items = {"one": {"folder": self.root, "scheduled": False,
+                                "states": {p: "待发布" for p in PLATFORMS}}}
+        queue.adapters = {"douyin": (type("OfflineDraft", (), {}), Mock(), Mock(), Mock(), Mock())}
+        events = []
+        queue.run_platform.side_effect = lambda *args: events.append("publish")
+        kernel = Mock()
+        kernel.CreateMutexW.return_value = 1
+        modules = {"windows_mcp": Mock(), "windows_mcp.uia": Mock(), "keyboard_session": Mock()}
+        with patch.dict(sys.modules, modules), patch("worker.WebQueue", return_value=queue), \
+             patch("worker.ctypes.WinDLL", return_value=kernel), patch("worker.ctypes.get_last_error", return_value=0), \
+             patch("worker.BilibiliDraft"), patch("worker.PlatformPages") as pages:
+            def ensure():
+                events.append("pages_ready")
+                if prepare_error:
+                    raise RuntimeError("页面未就绪")
+            pages.return_value.ensure.side_effect = ensure
+            # 跳过外层真实桌面互斥，所有平台输入均是桩。
+            run_queue.__wrapped__(self.path, ("douyin",))
+        return events, queue
+
+    def test_pages_are_prepared_before_first_platform_execution(self):
+        events, queue = self.run_harness()
+        self.assertEqual(events, ["pages_ready", "publish"])
+        self.assertEqual(queue.state["phase"], "idle")
+
+    def test_page_preparation_failure_never_enters_platform_execution(self):
+        events, queue = self.run_harness(prepare_error=True)
+        self.assertEqual(events, ["pages_ready"])
+        queue.run_platform.assert_not_called()
 
 
 if __name__ == "__main__":

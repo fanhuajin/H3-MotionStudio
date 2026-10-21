@@ -251,6 +251,6 @@ export function PublishRoute() {
       <p>确认这些作品已在{labels[modal.platform]}发布成功？标记后继续运行会跳过该平台。</p>{modalError}</Dialog>}
     {modal?.kind === "start" && <Dialog title={modal.platform ? `运行${labels[modal.platform]}发布` : "开始批量发布"} close={() => !busy && setModal(null)} footer={button("开始发布", () => void action("/start", { platform: modal.platform }), busy, <Play />)}>
       <p>将处理{modal.platform ? labels[modal.platform] : "抖音、小红书和B站"}全部待发布和失败记录；已完成与不发布的作品会跳过。</p>
-      <p>请保持目标创作中心标签页已登录，开始后不要操作鼠标键盘。可按 Esc 暂停。取消定时的作品会立即发布。</p>{modalError}</Dialog>}
+      <p>开始后会先检查抖音、小红书和B站页面，只打开缺少的页面；三个页面就绪后再发布。请保持平台已登录，开始后不要操作鼠标键盘。可按 Esc 暂停。取消定时的作品会立即发布。</p>{modalError}</Dialog>}
   </div></main>;
 }
