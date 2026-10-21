@@ -62,7 +62,7 @@ function openDatePicker(event: MouseEvent<HTMLInputElement>) {
   }
 }
 
-function VideoPreview({ id, children, hasVideo = true }: { id: string; children: ReactNode; hasVideo?: boolean }) {
+function VideoPreview({ id, children, hasVideo = true, saving, saveError }: { id: string; children: ReactNode; hasVideo?: boolean; saving: boolean; saveError: string }) {
   const [failed, setFailed] = useState(false);
   const [playBlocked, setPlayBlocked] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
@@ -86,7 +86,10 @@ function VideoPreview({ id, children, hasVideo = true }: { id: string; children:
     {hasVideo ? <video ref={video} controls autoPlay playsInline preload="metadata" aria-label="作品视频预览"
       src={`/api/publish/items/${id}/asset/video`} onPlaying={() => setPlayBlocked(false)}
       onError={() => { setFailed(true); setPlayBlocked(false); }} onLoadedData={() => setFailed(false)} /> : <p>未找到可预览的视频。</p>}
-    <div className="publish-video-platforms" role="group" aria-label="此视频发布平台">{children}</div>
+    <div className="publish-video-platforms" role="group" aria-label="此视频发布平台" aria-busy={saving}>
+      {children}
+      <p className={`publish-video-save ${saveError ? "publish-error" : ""}`} role={saveError ? "alert" : "status"}>{saveError || (saving ? "保存中…" : "")}</p>
+    </div>
     {playBlocked && !failed && <div className="publish-video-play"><button className="batch-add-toggle" onClick={() => void play()}><Play />点击播放</button></div>}
     {failed && <p role="status">视频暂时无法加载。<button className="batch-add-toggle" onClick={() => { setFailed(false); video.current?.load(); void play(); }}>重新加载</button></p>}
   </div>;
@@ -135,6 +138,7 @@ export function PublishRoute() {
   const [queue, setQueue] = useState<Queue | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [platformEdit, setPlatformEdit] = useState<{ id: string; platform: Platform; checked: boolean } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [modal, setModal] = useState<Modal | null>(null);
@@ -202,6 +206,12 @@ export function PublishRoute() {
       busyRef.current = false;
       if (alive.current) { setBusy(false); void load(); }
     }
+  }
+  async function selectPreviewPlatform(item: Work, platform: Platform, checked: boolean) {
+    if (busyRef.current) return;
+    setPlatformEdit({ id: item.id, platform, checked });
+    await action("/edit", { ids: [item.id], platform, state: checked ? "待发布" : "不发布" }, false);
+    if (alive.current) setPlatformEdit(null);
   }
   async function pickFolders() {
     if (busyRef.current || running) return;
@@ -318,20 +328,18 @@ export function PublishRoute() {
       {modalError}
     </Dialog>}
     {modal?.kind === "preview" && preview && <Dialog title={preview.name} compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)}>
-      <VideoPreview key={preview.id} id={preview.id} hasVideo={preview.assets.video}>
+      <VideoPreview key={preview.id} id={preview.id} hasVideo={preview.assets.video} saving={busy} saveError={error}>
         {previewPlatforms.map(p => {
           const state = preview.states[p];
           const locked = ["已完成", "发布中", "待核对"].includes(state);
           return <label key={p} title={locked ? `${labels[p]}：${state}` : undefined}>
-            <input type="checkbox" aria-label={`${preview.name} 发布到${labels[p]}`} checked={state !== "不发布"}
-              disabled={readonly || locked} onChange={event => void action("/edit", {
-                ids: [preview.id], platform: p, state: event.target.checked ? "待发布" : "不发布",
-              }, false)} />{labels[p]}{locked && <small>{state}</small>}
+            <input type="checkbox" aria-label={`${preview.name} 发布到${labels[p]}`}
+              checked={platformEdit?.id === preview.id && platformEdit.platform === p ? platformEdit.checked : state !== "不发布"}
+              disabled={running || locked} aria-disabled={busy || running || locked}
+              onChange={event => void selectPreviewPlatform(preview, p, event.target.checked)} />{labels[p]}{locked && <small>{state}</small>}
           </label>;
         })}
-        {busy && <span role="status">保存中…</span>}
       </VideoPreview>
-      {modalError}
     </Dialog>}
     {modal?.kind === "review" && review && <Dialog title={`核对${labels[modal.platform]}发布结果`} close={() => !busy && setModal(null)} footer={<>
       {button("确认未发布", () => void action("/edit", { ids: [review.id], platform: modal.platform, review: false }), busy)}

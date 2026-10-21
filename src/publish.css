@@ -60,12 +60,14 @@
 .publish-video-dialog .publish-video { max-height: none; }
 .publish-video-dialog .publish-video video { display: block; height: min(68dvh, 720px); max-height: max(120px, calc(100dvh - 220px)); object-fit: contain; }
 .publish-video-platforms { position: absolute; top: 12px; right: 12px; left: 12px; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; opacity: 0; pointer-events: none; }
-.publish-video:hover .publish-video-platforms, .publish-video:focus-within .publish-video-platforms { opacity: 1; pointer-events: auto; }
+.publish-video:hover .publish-video-platforms, .publish-video:focus-within .publish-video-platforms, .publish-video-platforms[aria-busy="true"], .publish-video-platforms:has([role="alert"]:not(:empty)) { opacity: 1; pointer-events: auto; }
 .publish-video-platforms label { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 4px 10px; border: 1px solid var(--shell-line-strong); border-radius: 7px; background: rgba(18, 19, 20, .94); color: #d0d1d2; cursor: pointer; }
 .publish-video-platforms label:has(:checked) { border-color: rgba(106, 179, 149, .45); color: #add5c4; }
 .publish-video-platforms label:has(:disabled) { cursor: default; }
 .publish-video-platforms small { color: var(--shell-muted); font-size: 10px; }
-.publish-video-platforms > span { padding: 4px 8px; border-radius: 7px; background: #121314; color: #d0d1d2; }
+.publish-video-platforms .publish-video-save { position: absolute; top: calc(100% + 6px); right: 0; max-width: 100%; margin: 0; padding: 4px 8px; border-radius: 7px; background: #121314; color: #d0d1d2; overflow-wrap: anywhere; }
+.publish-video-platforms .publish-video-save:empty { display: none; }
+.publish-video-platforms .publish-video-save.publish-error { color: #e4af9c; }
 .publish-video-play { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
 .publish-video-play .batch-add-toggle { background: #202725; }
 @media (hover: none), (pointer: coarse) { .publish-video-platforms { opacity: 1; pointer-events: auto; } }
