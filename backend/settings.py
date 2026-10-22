@@ -173,10 +173,8 @@ UPSCALE_MODEL_X2 = "RealESRGAN_x2plus.pth"
 # 窗口（一次新 prompt 执行 = 处理一批帧）推进「放大 X/N」徽章。
 UPSCALE_BATCH_FRAMES = 8
 
-# 出图后的本地放大：中转站按 1k 档请求（`batch_image.image_sizes()`），出图后用 VOSR2 2×
-# 放回 2k 档。人物图与两张封面共用同一条出图函数，所以这一处生效三处。
-# 关掉本地放大（`H3_IMAGE_UPSCALE=off`）时，1k 的图会以原尺寸交付（封面仍会被缩放到
-# TARGETS 尺寸，等于放大，会软）—— 所以正常情况下不要关。
+# 本地放大参数仅供需要补放大的低分辨率图片使用；新请求尺寸由 batch_image.image_sizes()
+# 决定，达到目标尺寸的返回图跳过放大。封面原图直存，不走本地放大。
 IMAGE_UPSCALE_SCALE = 2
 IMAGE_UPSCALE_SETTINGS = {
     "quality_profile": "speed", "tile_strategy": "auto", "tile_size": 512, "tile_overlap": 32,
@@ -337,7 +335,7 @@ def upscale_engine_name() -> str:
 
 
 def image_upscale_engine() -> str:
-    """出图后是否本地放大：`vosr2`（默认，1k 档出图 → VOSR2 2× 回 2k 档）或 `off`。"""
+    """低分辨率图片的本地补放大引擎：`vosr2`（默认）或 `off`。"""
     return (env_value("H3_IMAGE_UPSCALE") or "vosr2").strip().lower()
 
 

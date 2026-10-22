@@ -353,7 +353,7 @@ def save_upload(
     width, height = image.size
     original_cover = preserve_cover and stage in COVER_NAMES
     if allow_repair and not original_cover and min(width, height) < 640:
-        # 我们自己的出图（1k 档出图 + 本地 VOSR2 放大）：放大是内存里的任务，后端在排队
+        # 我们自己的低分辨率补放大：放大是内存里的任务，后端在排队
         # 期间被杀就没了 —— 这时不能把这张**已经付过钱**的图判成「分辨率太低」，本地补一刀。
         image, note = batch_image.ensure_deliverable_image(image)
         if note:

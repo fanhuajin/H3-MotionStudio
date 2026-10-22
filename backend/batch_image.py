@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import logging
 import mimetypes
@@ -43,8 +44,7 @@ REQUEST_TIMEOUT = 900.0
 
 # Sunburst 文档：宽高为 16 的倍数，最大边 <=3840，长宽比 <=3:1，
 # 总像素在 655,360~8,294,400 之间。请求显式传像素尺寸，不使用 1k/2k 字符串。
-# 横图与 3:4 封面请求为 1K 档；9:16 用 720x1280 满足像素下限，为 2K 档。
-# 中转站按实际返回尺寸计费，本地 VOSR2 放大不改变这次请求的计费档位。
+# 旧尺寸表保留供历史任务恢复及低分辨率补放大使用；新请求以 image_sizes() 为准。
 IMAGE_SIZES_1K = {"4:3": "1024x768", "9:16": "720x1280", "3:4": "768x1024"}
 # 改造前的 2k 档尺寸：`H3_IMAGE_UPSCALE=off` 时整体退回这一套（那时不做本地放大）。
 IMAGE_SIZES_2K = {"4:3": "1536x1152", "9:16": "1152x2048", "3:4": "1152x1536"}
@@ -746,10 +746,16 @@ async def _submit_or_resume(data: dict[str, str], files: list, output_path: Path
 
 def _store(response: httpx.Response, output_path: Path) -> Path:
     payload = response.json()
-    entry = (payload.get("data") or [{}])[0]
+    result = _result_payload(payload)
+    if not result:
+        raise RuntimeError("图片接口未返回图片，仅文字或未知响应不能作为生成成功；不自动重发")
+    entry = result["data"][0]
     encoded = entry.get("b64_json")
     if encoded:
-        output_path.write_bytes(base64.b64decode(encoded))
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise RuntimeError("图片接口返回的图片编码无效；保留任务记录，不自动重发") from error
     elif entry.get("url"):
         # 图片地址由中转站给出（可能是境外对象存储/COS），沿用**这次出图用的那条路线**。
         # 这张图**已经花钱出好了**，下载失败就白花 —— 所以连接没建立时换另一条线路再下一次
@@ -767,9 +773,18 @@ def _store(response: httpx.Response, output_path: Path) -> Path:
                 download = client.get(image_url)
         if download.is_error:
             raise RuntimeError(f"图片已生成但下载失败：HTTP {download.status_code}")
-        output_path.write_bytes(download.content)
+        content = download.content
     else:
         raise RuntimeError("图片接口没有返回图像数据")
+    # HTTP 200 / URL / base64 都不能证明内容是图像；校验后才覆盖文件和清理任务记录。
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image.verify()
+        with Image.open(io.BytesIO(content)) as image:
+            image.load()
+    except (OSError, ValueError, Image.DecompressionBombError) as error:
+        raise RuntimeError("图片接口返回内容不是可用图片（可能只有文字或错误页）；保留任务记录，不自动重发") from error
+    output_path.write_bytes(content)
     return output_path
 
 
@@ -880,7 +895,7 @@ async def _upscale_after_relay(
     ratio: str,
     on_progress: ProgressCallback | None = None,
 ) -> Path:
-    """1k 档出图后用本地 VOSR2 放大回 2k 档（人物图与两张封面共用这一条路径）。
+    """低分辨率图片用本地 VOSR2 补放大；封面原图直存不调用此步骤。
 
     **排队等 GPU，不设上限**：放大要 ComfyUI，而 ComfyUI 被 pipeline_lock 串行（H3 采样
     一跑就是几十分钟）。放大是 FIFO 排队的，视频一让出显卡就先轮到它、下一条视频排在它
@@ -1047,7 +1062,7 @@ async def _generate_candidate_image_once(
                 # 记录后退出；不能自动换方案再产生新的计费请求。
                 failures.append(f"[{plan}/{field}] 不适用：{error}")
                 break
-            # 1k 档出图 → 本地 VOSR2 2× 放回 2k 档（三个比例都走 1k 档，见 image_sizes()）。
+            # 仅在需要时补做本地放大，达到目标尺寸的图片跳过。
             # 先停掉"正在通过中转站生成…"的计时器：接下来是**本地放大排队等 GPU**，
             # 视频采样期间可能要排几十分钟，继续显示中转站计时会让人以为卡在出图那一步
             # （2026-09-23 用户：「我看到你一动不动」——其实是排在视频后面等显卡）。
