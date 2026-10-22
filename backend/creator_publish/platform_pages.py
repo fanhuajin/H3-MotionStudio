@@ -1,5 +1,6 @@
 """开始发布前，用浏览器原生标签和地址栏补齐平台页面，不注入网页。"""
 import os
+import ctypes
 import time
 from urllib.parse import urlsplit
 
@@ -62,9 +63,28 @@ class PlatformPages:
         self.notice = notice
 
     def windows(self):
-        return [window for window in self.driver.uia.GetRootControl().GetChildren()
-                if window.ClassName in ("Chrome_WidgetWin_1", "MozillaWindowClass")
-                and any(name in window.Name for name in ("Edge", "Chrome", "Firefox"))]
+        # 先用 Win32 筛选浏览器句柄，避免读取桌面上远程工具等无关应用的 UIA 提供程序。
+        user32 = ctypes.windll.user32
+        handles = []
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        user32.EnumWindows.argtypes = [callback_type, ctypes.c_void_p]
+        user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        def collect(handle, _):
+            if not user32.IsWindowVisible(handle):
+                return True
+            name = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(handle, name, len(name))
+            if name.value in ("Chrome_WidgetWin_1", "MozillaWindowClass"):
+                title = ctypes.create_unicode_buffer(1024)
+                user32.GetWindowTextW(handle, title, len(title))
+                if any(browser in title.value for browser in ("Edge", "Chrome", "Firefox")):
+                    handles.append(handle)
+            return True
+        user32.EnumWindows(callback_type(collect), 0)
+        self.driver.check()
+        return [self.driver.uia.ControlFromHandle(handle) for handle in handles]
 
     def selected(self, window):
         tabs = [c for c in chrome_controls(window, self.driver.check) if c.ControlTypeName == "TabItemControl"]

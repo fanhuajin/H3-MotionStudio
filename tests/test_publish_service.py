@@ -272,6 +272,36 @@ class PublishServiceTests(unittest.TestCase):
         with patch.object(service, "publishing_in_flight", return_value=True):
             self.assertTrue(batch_worker.work_in_flight())
 
+    def test_stop_fallback_terminates_only_matching_worker_and_preserves_submission(self):
+        item = self.add()
+        state = self.store.read()
+        state.update(phase="running", workerPid=123)
+        state["items"][0]["states"]["douyin"] = "发布中"
+        state["items"][0]["details"]["douyin"] = {"submitted": True}
+        service.write_json(self.store.path, state)
+        service.write_json(self.store.control_path, {"command": "stop", "id": "stop-one"})
+        process = Mock()
+        process.cmdline.return_value = [str(service.ENGINE / "worker.py"), str(self.store.path)]
+        with patch.object(service.time, "sleep"), patch.object(self.store, "active", side_effect=[True, False]), patch.object(service.psutil, "Process", return_value=process):
+            self.store.finish_stop("stop-one")
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+        saved = self.store.read()
+        self.assertEqual(saved["phase"], "idle")
+        self.assertEqual(saved["items"][0]["states"]["douyin"], "待核对")
+
+    def test_stop_fallback_never_terminates_unrelated_process(self):
+        self.add()
+        state = self.store.read()
+        state["workerPid"] = 123
+        service.write_json(self.store.path, state)
+        service.write_json(self.store.control_path, {"command": "stop", "id": "stop-one"})
+        process = Mock()
+        process.cmdline.return_value = ["unrelated.py"]
+        with patch.object(service.time, "sleep"), patch.object(self.store, "active", return_value=True), patch.object(service.psutil, "Process", return_value=process):
+            self.store.finish_stop("stop-one")
+        process.terminate.assert_not_called()
+
     def test_corrupt_publish_state_blocks_shutdown(self):
         self.store.directory.mkdir()
         self.store.path.write_text("broken", encoding="utf-8")

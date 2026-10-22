@@ -138,6 +138,30 @@ class PublishStore:
             write_json(self.path, state)
             return state
 
+    def finish_stop(self, command_id):
+        """UIA 调用可能无法返回；超时后结束准确匹配的执行进程，保留提交意图供核对。"""
+        time.sleep(5)
+        with self.lock:
+            try:
+                command = json.loads(self.control_path.read_text(encoding="utf-8"))
+                if command.get("id") != command_id or command.get("command") != "stop":
+                    return
+                if not self.active():
+                    return
+                pid = (self.process.pid if self.process is not None and self.process.poll() is None
+                       else self.read().get("workerPid"))
+                if not isinstance(pid, int) or pid <= 0:
+                    return
+                process = psutil.Process(pid)
+                arguments = process.cmdline()
+                if str(ENGINE / "worker.py") not in arguments or str(self.path) not in arguments:
+                    return
+                process.terminate()
+                process.wait(timeout=5)
+                self.snapshot()
+            except (OSError, ValueError, psutil.Error):
+                return
+
     def start(self, platform):
         with self.lock:
             if _PICKER_LOCK.locked():
@@ -399,7 +423,10 @@ def control(command: str):
             current = json.loads(publisher.control_path.read_text(encoding="utf-8"))
             if current.get("command") == "stop" and command != "stop":
                 raise HTTPException(409, "正在安全停止，请等待当前操作结束。")
-        write_json(publisher.control_path, {"command": command, "id": uuid.uuid4().hex})
+        command_id = uuid.uuid4().hex
+        write_json(publisher.control_path, {"command": command, "id": command_id})
+        if command == "stop":
+            threading.Thread(target=publisher.finish_stop, args=(command_id,), daemon=True).start()
     return {"accepted": True}
 
 
