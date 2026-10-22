@@ -119,6 +119,19 @@ class PlatformPageTests(unittest.TestCase):
         root = NS(ControlTypeName="WindowControl", GetChildren=lambda: [webpage])
         self.assertEqual(list(chrome_controls(root)), [root])
 
+    def test_browser_traversal_checks_stop_before_reading_controls(self):
+        root = NS(GetChildren=Mock())
+        with self.assertRaisesRegex(RuntimeError, "停止"):
+            list(chrome_controls(root, Mock(side_effect=RuntimeError("停止"))))
+        root.GetChildren.assert_not_called()
+
+    def test_browser_traversal_times_out_instead_of_scanning_forever(self):
+        root = NS(GetChildren=Mock())
+        with patch("platform_pages.time.monotonic", side_effect=[0, 16]):
+            with self.assertRaisesRegex(RuntimeError, "读取超时"):
+                list(chrome_controls(root))
+        root.GetChildren.assert_not_called()
+
     def test_address_bar_alone_does_not_mean_page_loaded(self):
         self.driver.uia.WalkControl.return_value = []
         with patch.object(self.pages, "address", return_value=PAGES["douyin"]), \

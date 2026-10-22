@@ -138,6 +138,7 @@ function PublishTime({ item, disabled, save }: { item: Work; disabled: boolean; 
 export function PublishRoute() {
   const [queue, setQueue] = useState<Queue | null>(null);
   const [error, setError] = useState("");
+  const [actionFeedback, setActionFeedback] = useState("");
   const [busy, setBusy] = useState(false);
   const [platformEdit, setPlatformEdit] = useState<{ id: string; platform: Platform; checked: boolean } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -197,15 +198,16 @@ export function PublishRoute() {
     if (busyRef.current) return false;
     busyRef.current = true;
     generation.current++;
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setActionFeedback("正在处理…");
     try {
       const result = await api<Queue>(path, body);
       if (!alive.current) return false;
       if (result.items) setQueue(result);
+      setActionFeedback(path === "/control/stop" ? "停止指令已接收，正在等待当前操作安全结束…" : "操作已接收，正在同步状态…");
       if (close) setModal(null);
       return true;
     } catch (failure) {
-      if (alive.current) setError((failure as Error).message);
+      if (alive.current) { setError((failure as Error).message); setActionFeedback(""); }
       return false;
     } finally {
       busyRef.current = false;
@@ -267,6 +269,7 @@ export function PublishRoute() {
     {!queue ? <p role="status">正在读取发布队列…</p> : <>
       <section className="publish-notice">
         <div className="publish-notice-text" role="status"><strong>{queue.notice}</strong>
+          {actionFeedback && <span>{queue.phase === "idle" && actionFeedback.startsWith("停止指令") ? "发布已停止。" : actionFeedback}</span>}
           <span>发布时保持平台登录，请勿操作鼠标键盘。Esc 可暂停；离开本页面后队列仍会继续。</span>
           {!queue.dependenciesReady && <span className="publish-error">发布环境尚缺桌面执行依赖，请安装 backend/requirements-publish.txt 中的依赖后运行。</span>}
         </div>

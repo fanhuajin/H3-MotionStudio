@@ -37,10 +37,17 @@ def platform_for_url(value):
     return None
 
 
-def chrome_controls(window):
+def chrome_controls(window, check=None):
     """只走浏览器外壳，网页自身的 Tab 控件和输入框不参与标签/地址栏判断。"""
     stack = [(window, 0)]
+    deadline = time.monotonic() + 15
+    visited = 0
     while stack:
+        if check:
+            check()
+        visited += 1
+        if visited > 2000 or time.monotonic() > deadline:
+            raise RuntimeError("浏览器控件读取超时，未开始发布；请关闭多余窗口后重试。")
         control, depth = stack.pop()
         if control.ControlTypeName == "DocumentControl":
             continue
@@ -60,7 +67,7 @@ class PlatformPages:
                 and any(name in window.Name for name in ("Edge", "Chrome", "Firefox"))]
 
     def selected(self, window):
-        tabs = [c for c in chrome_controls(window) if c.ControlTypeName == "TabItemControl"]
+        tabs = [c for c in chrome_controls(window, self.driver.check) if c.ControlTypeName == "TabItemControl"]
         selected = [tab for tab in tabs if tab.GetSelectionItemPattern().IsSelected]
         if len(selected) != 1:
             raise RuntimeError("无法确认浏览器当前标签页，未打开重复页面。")
@@ -68,7 +75,7 @@ class PlatformPages:
 
     def address(self, window):
         values = []
-        for control in chrome_controls(window):
+        for control in chrome_controls(window, self.driver.check):
             if control.ControlTypeName != "EditControl" or control.IsOffscreen:
                 continue
             if not (any(word in control.Name.lower() for word in ("地址", "address", "search or enter web", "搜索或输入"))
