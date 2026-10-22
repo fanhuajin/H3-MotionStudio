@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -78,9 +79,35 @@ class WebWorkerTests(unittest.TestCase):
             self.queue.tick()
 
     def test_parent_exit_stops_worker(self):
-        with patch("worker.os.getppid", return_value=-1):
+        with patch("worker.psutil.Process") as process:
+            process.return_value.parents.return_value = []
             with self.assertRaisesRegex(RuntimeError, "已停止"):
                 self.queue.tick()
+
+    def test_windows_venv_launcher_keeps_backend_as_live_ancestor(self):
+        with patch("worker.psutil.Process") as process:
+            process.return_value.parents.return_value = [Mock(pid=-1), Mock(pid=self.queue.state["ownerPid"])]
+            self.queue.tick()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows venv launcher regression")
+    def test_real_python_child_accepts_backend_through_venv_launcher(self):
+        state = self.saved()
+        state["ownerPid"] = os.getpid()
+        atomic_write(self.path, state)
+        result = subprocess.run(
+            [sys.executable, "-B", "-c",
+             "from pathlib import Path; import sys; from worker import WebQueue; WebQueue(Path(sys.argv[1])).tick()",
+             str(self.path)],
+            cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_backend_exit_also_stops_paused_worker(self):
+        with patch.object(self.queue, "command", return_value="pause"), \
+             patch("worker.psutil.Process") as process:
+            process.return_value.parents.return_value = []
+            with self.assertRaisesRegex(RuntimeError, "已停止"):
+                self.queue.pause()
 
     def test_web_pause_waits_and_returns_focus_on_resume(self):
         draft = Mock(paused_seconds=0.)

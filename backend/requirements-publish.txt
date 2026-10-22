@@ -1,3 +1,4 @@
 # 与原三端发布项目使用相同的桌面执行依赖；仅 Windows 发布功能需要。
 windows-mcp==0.8.5
 pyperclip>=1.9,<2
+psutil>=7,<8

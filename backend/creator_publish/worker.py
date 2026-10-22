@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import time
+import psutil
 
 from multi_publish import MultiQueue, SubmissionTracking, PLATFORMS, pending_platforms
 from bilibili_auto import (
@@ -82,7 +83,7 @@ class WebQueue(MultiQueue):
 
     def tick(self):
         # 后端进程退出后停止继续操作；提交意图已在鼠标按下之前持久化。
-        if os.getppid() != self.state["ownerPid"] or self.command() == "stop":
+        if not self.owner_alive() or self.command() == "stop":
             raise RuntimeError("发布已停止，可核对记录后继续。")
         if self.command() == "pause":
             self.web_pause = True
@@ -90,6 +91,14 @@ class WebQueue(MultiQueue):
                 self.pause()
             finally:
                 self.web_pause = False
+
+    def owner_alive(self):
+        # Windows venv python.exe 会经转发进程启动实际解释器，后端可能是祖父进程。
+        # 仍要求后端位于存活的父进程链中，避免后端退出后继续操作桌面。
+        try:
+            return any(parent.pid == self.state["ownerPid"] for parent in psutil.Process().parents())
+        except psutil.Error:
+            return False
 
     def pause(self):
         started = time.monotonic()
@@ -99,7 +108,7 @@ class WebQueue(MultiQueue):
         if not getattr(self, "web_pause", False) and self.command() == "resume":
             self.control_file.unlink(missing_ok=True)
         while self.command() != "resume":
-            if self.command() == "stop" or os.getppid() != self.state["ownerPid"]:
+            if self.command() == "stop" or not self.owner_alive():
                 raise RuntimeError("发布已停止，可核对记录后继续。")
             time.sleep(.1)
         self.control_file.unlink(missing_ok=True)
