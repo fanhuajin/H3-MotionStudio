@@ -42,8 +42,8 @@ class DancePosePromptTests(unittest.TestCase):
         self.assertIn('抬手、转身和弯腰', dance)
         self.assertNotIn('【唱歌着装】', dance)
         for text in (singing, dance):
-            self.assertIn('腰腹与背部完整遮盖', text)
-            self.assertIn('以下覆盖要求优先于参考图及造型修改意见', text)
+            self.assertIn('图一是裙子就保留裙子，不要改成裤子', text)
+            self.assertIn('仅在明显过度裸露时局部调整', text)
             self.assertNotIn('无需改变正常的露肩', text)
 
     def test_singing_closeup_does_not_require_offscreen_limbs(self):
