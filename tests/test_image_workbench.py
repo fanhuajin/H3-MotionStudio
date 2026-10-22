@@ -557,12 +557,7 @@ class ImageWorkbenchTests(unittest.TestCase):
             self.assertIn(chatgpt_image.COVER_SHARPNESS_RULE, instruction)
 
     def test_prompts_clean_the_background(self) -> None:
-        """2026-09-21：抽帧背景里的其他人一律去掉、杂乱背景清干净；封面**只加**「不要第二个人」。
-
-        ⚠️ 封面**不写**背景清理整段 —— 用户 2026-09-19：「封面图不需要出现 背景规则」。
-        背景跟着人物图走即可（人物图那一步已经清成单人 + 干净背景，封面是拿它当唯一参考图）。
-        手工入口读的是**用户桌面那份长提示词**，所以人物图这条口径也只能写在代码里。
-        """
+        """人物图保持自然日常实拍和单人背景；封面不重复背景重设计规则。"""
         block = batch_ai.BACKGROUND_CLEAN_BLOCK.strip()
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
@@ -574,7 +569,9 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn(block, person, "人物图提示词必须带背景清理整段")
         self.assertIn("只保留主体一人", person)
         self.assertIn("不加人工散景", person)
-        self.assertIn("日常唱歌或跳舞视频画面", person)
+        self.assertIn("固定手机机位拍下的日常表演", person)
+        self.assertIn("手机和支架不入镜", person)
+        self.assertIn("移除其他人物、镜子及人物倒影、字幕与杂物", person)
         self.assertNotIn("不出现床", person)
         self.assertIn("画面仍只有参考图中的一人", cover)
         self.assertNotIn(block, cover, "封面不写背景风格规则（用户 2026-09-19）")
@@ -592,22 +589,22 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("只能有参考图里这一个人", cover_common.PROMPT_TEMPLATE)
 
     def test_person_prompt_keeps_outfit_rule_out_of_cover(self) -> None:
-        """人物图保留着装约束，封面不重复要求改造原图服装。
-
-        `prompt()` 的人物图分支现在与批量备料共用短提示词。
-        口径 = 小红书规则页原文（① 大面积裸露 ② 透视/裸色 ③ 紧身到凸点轮廓突出）。
-        """
+        """人物图共用当前面料、合身及活动遮盖要求，封面不重复服装改造。"""
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             person = workbench.prompt(folder, "person", "dance")
             cover = workbench.prompt(folder, "douyin", "dance")
         self.assertIn("【服装】", person)
-        self.assertIn("胸前有衣物覆盖", person)
+        self.assertIn(batch_ai.CLOTHING_EXPOSURE_BLOCK, person)
+        self.assertIn("面料不透、与肤色有清楚区分", person)
+        self.assertIn("剪裁自然合身并留有活动余量", person)
+        self.assertIn("抬手、转身时遮盖稳定", person)
         self.assertIn("自然精致淡妆", person)
         self.assertIn("【背景与实拍感】", person)
         self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内
         self.assertNotIn("【服装】", cover)
+        self.assertNotIn(batch_ai.CLOTHING_EXPOSURE_BLOCK, cover)
         self.assertNotIn("面料不透明", cover)
 
 
