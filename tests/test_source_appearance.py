@@ -24,7 +24,10 @@ class SourceAppearanceTests(unittest.IsolatedAsyncioTestCase):
         cache = patch.object(appearance, "CACHE_ROOT", self.root / "cache")
         cache.start()
         self.addCleanup(cache.stop)
-        self.answer = {"hair": "黑色长发，高马尾", "glasses": "黑色细框透明眼镜", "accessories": "蓝色发夹"}
+        self.answer = {
+            "hair": "黑色长发，高马尾", "glasses": "黑色细框透明眼镜", "accessories": "蓝色发夹",
+            "makeup": "双眼下方淡蜜桃色腮红，浅棕下眼影，水润豆沙色唇妆",
+        }
         model = patch.object(batch_ai, "_chat_structured", AsyncMock(return_value=self.answer))
         self.model = model.start()
         self.addCleanup(model.stop)
@@ -40,6 +43,9 @@ class SourceAppearanceTests(unittest.IsolatedAsyncioTestCase):
         data = content[1]["image_url"]["url"].split(",", 1)[1]
         self.assertEqual(base64.b64decode(data), self.frame.read_bytes())
         self.assertIn("不描述脸型、五官", content[0]["text"])
+        self.assertIn("两眼下方的淡色晕染", content[0]["text"])
+        self.assertIn("不要把眼袋、黑眼圈", content[0]["text"])
+        self.assertEqual(first["makeup"], self.answer["makeup"])
 
     async def test_changed_frame_gets_new_observation(self):
         await appearance.review(self.frame)
@@ -77,6 +83,9 @@ class SourceAppearanceTests(unittest.IsolatedAsyncioTestCase):
         output = self.root / "person.png"
         prompt = await appearance.prepare_prompt(self.frame, base, output)
         self.assertIn("黑色细框透明眼镜", prompt)
+        self.assertIn("妆容：" + self.answer["makeup"], prompt)
+        self.assertNotIn("自然精致淡妆", prompt)
+        self.assertEqual(prompt.count("【妆容】"), 1)
         self.assertNotIn("JSON", prompt)
         self.assertNotIn('"hair":', prompt)
         self.assertIn("发型：黑色长发，高马尾；眼镜：黑色细框透明眼镜；配饰：蓝色发夹", prompt)
@@ -100,6 +109,40 @@ class SourceAppearanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(appearance.enrich(prompt, await appearance.review(self.frame)), prompt)
         self.model.assert_awaited_once()
 
+    async def test_no_recognizable_makeup_keeps_default_without_inventing_details(self):
+        self.answer["makeup"] = ""
+        prompt = await appearance.prepare_prompt(
+            self.frame, batch_ai.compose_image_prompt("dance"), self.root / "person.png"
+        )
+        self.assertIn("自然精致淡妆", prompt)
+        self.assertNotIn("妆容：", prompt)
+        self.assertNotIn("蜜桃色", prompt)
+
+    async def test_old_cache_without_makeup_is_reused_without_another_paid_review(self):
+        record = await appearance.review(self.frame)
+        del record["makeup"]
+        appearance._write(appearance._path(appearance._key(self.frame)), record)
+        self.model.reset_mock()
+        prompt = await appearance.prepare_prompt(
+            self.frame, batch_ai.compose_image_prompt("dance"), self.root / "person.png"
+        )
+        self.assertIn("黑色细框透明眼镜", prompt)
+        self.assertIn("自然精致淡妆", prompt)
+        self.assertNotIn("妆容：", prompt)
+        self.model.assert_not_awaited()
+
+    async def test_old_paid_snapshot_is_preserved_without_inserting_makeup(self):
+        output = self.root / "person.png"
+        (self.root / "person_attempt1.png.relay-task.json").write_text("{}", encoding="utf-8")
+        appearance._write(output.with_name(output.name + ".source-prompt.json"), {"prompt": "旧付费提示词"})
+        prompt = await appearance.prepare_prompt(self.frame, batch_ai.compose_image_prompt("dance"), output)
+        self.assertEqual(prompt, "旧付费提示词")
+        self.model.assert_not_awaited()
+
+    async def test_invalid_makeup_description_is_not_used(self):
+        self.answer["makeup"] = []
+        self.assertEqual((await appearance.review(self.frame))["status"], "unavailable")
+
     async def test_legacy_pending_task_keeps_original_prompt_without_recognition(self):
         output = self.root / "person.png"
         (self.root / "person_attempt1.png.relay-task.json").write_text("{}", encoding="utf-8")
@@ -122,6 +165,7 @@ class SourceAppearanceTests(unittest.IsolatedAsyncioTestCase):
             prompt = image_workbench.person_prompt(self.root, "dance")
             payload = image_workbench.material_zip(self.root, "person", "dance")
         self.assertIn("黑色细框透明眼镜", prompt)
+        self.assertIn("妆容：" + self.answer["makeup"], prompt)
         self.assertNotIn("JSON", prompt)
         self.assertNotIn('"hair":', prompt)
         self.assertIn("发型：黑色长发，高马尾；眼镜：黑色细框透明眼镜；配饰：蓝色发夹", prompt)
@@ -145,6 +189,8 @@ class SourceAppearanceTests(unittest.IsolatedAsyncioTestCase):
             order.append("generate")
             self.assertEqual(kwargs["scene_image"], guarded)
             self.assertIn("黑色细框透明眼镜", kwargs["prompt"])
+            self.assertIn("妆容：" + self.answer["makeup"], kwargs["prompt"])
+            self.assertNotIn("自然精致淡妆", kwargs["prompt"])
             Image.new("RGB", (100, 100)).save(kwargs["output_path"])
             return kwargs["output_path"], -1
         with patch.object(batch_image, "defocus_reference_face", blur), \
