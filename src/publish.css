@@ -59,8 +59,7 @@
 .batch-settings-dialog.publish-video-dialog { width: min(960px, calc(100vw - 40px)); max-height: calc(100dvh - 40px); padding: 0; }
 .publish-video-dialog .publish-video { max-height: none; }
 .publish-video-dialog .publish-video video { display: block; height: min(68dvh, 720px); max-height: max(120px, calc(100dvh - 220px)); object-fit: contain; }
-.publish-video-platforms { position: absolute; top: 12px; right: 12px; left: 12px; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; opacity: 0; pointer-events: none; }
-.publish-video:hover .publish-video-platforms, .publish-video:focus-within .publish-video-platforms, .publish-video-platforms[aria-busy="true"], .publish-video-platforms:has([role="alert"]:not(:empty)) { opacity: 1; pointer-events: auto; }
+.publish-video-platforms { position: absolute; top: 12px; right: 12px; left: 12px; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 .publish-video-platforms label { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 4px 10px; border: 1px solid var(--shell-line-strong); border-radius: 7px; background: rgba(18, 19, 20, .94); color: #d0d1d2; cursor: pointer; }
 .publish-video-platforms label:has(:checked) { border-color: rgba(106, 179, 149, .45); color: #add5c4; }
 .publish-video-platforms label:has(:disabled) { cursor: default; }
@@ -70,5 +69,4 @@
 .publish-video-platforms .publish-video-save.publish-error { color: #e4af9c; }
 .publish-video-play { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
 .publish-video-play .batch-add-toggle { background: #202725; }
-@media (hover: none), (pointer: coarse) { .publish-video-platforms { opacity: 1; pointer-events: auto; } }
 @media (max-width: 700px) { .publish-dialog { width: calc(100vw - 24px); } .batch-settings-dialog.publish-video-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); } }

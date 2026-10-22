@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { CheckCircle, FolderOpen, Pause, Play, Plus, Stop, Trash, X } from "@phosphor-icons/react";
 import "./publish.css";
+import { useVideoPreviewWheel } from "./useVideoPreviewWheel";
 
 const platforms = ["douyin", "xiaohongshu", "bilibili"] as const;
 const previewPlatforms = ["douyin", "bilibili", "xiaohongshu"] as const;
@@ -259,6 +260,7 @@ export function PublishRoute() {
     const target = items[previewIndex + offset];
     if (!busy && previewIndex >= 0 && target) setModal({ kind: "preview", id: target.id });
   }
+  useVideoPreviewWheel(Boolean(preview) && !busy, switchPreview);
   const review = modal?.kind === "review" ? queue?.items.find(i => i.id === modal.id) : undefined;
   const modalError = error && <p className="publish-error" role="alert">{error}</p>;
   const button = (text: string, onClick: () => void, disabled = false, icon?: ReactNode) =>

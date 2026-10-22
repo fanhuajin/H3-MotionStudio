@@ -1,6 +1,7 @@
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { readJson } from "./api";
+import { useVideoPreviewWheel } from "./useVideoPreviewWheel";
 import { StudioBot, statusMood } from "./StudioBot";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
@@ -677,6 +678,7 @@ export function BatchRoute() {
       url: `/api/batches/${encodeURIComponent(batch.id)}/items/${encodeURIComponent(item.id)}/output/videoFinal`,
     });
   }, [batch, videoPreview, previewItems]);
+  useVideoPreviewWheel(Boolean(videoPreview), switchPreview);
   useEffect(() => {
     if (!videoPreview) return;
     const onKey = (event: KeyboardEvent) => {
