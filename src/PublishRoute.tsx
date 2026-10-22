@@ -176,14 +176,18 @@ export function PublishRoute() {
     if (modal?.kind !== "preview" || !queue) return;
     const navigate = (event: KeyboardEvent) => {
       if (busy || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-      if (event.target instanceof Element && event.target.closest('select, input, textarea, [contenteditable]:not([contenteditable="false"]), [role="combobox"], [role="slider"]')) return;
+      if (event.target instanceof Element) {
+        // 平台勾选后焦点仍在 checkbox 上；上下键继续切视频，空格仍由原生控件处理。
+        const platformCheckbox = event.target.matches('.publish-video-platforms input[type="checkbox"]');
+        if (!platformCheckbox && event.target.closest('select, input, textarea, [contenteditable]:not([contenteditable="false"]), [role="combobox"], [role="slider"]')) return;
+      }
       const offset = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0;
       if (!offset) return;
       event.preventDefault();
       const index = queue.items.findIndex(i => i.id === modal.id) + offset;
       if (index >= 0 && index < queue.items.length) setModal({ kind: "preview", id: queue.items[index].id });
     };
-    // 捕获阶段接住播放器上的上下键，让它们切换作品；表单控件仍保留自己的方向键行为。
+    // 播放器和平台勾选框上的上下键切换作品，其余表单保留自己的方向键行为。
     document.addEventListener("keydown", navigate, true);
     return () => document.removeEventListener("keydown", navigate, true);
   }, [modal, queue, busy]);
