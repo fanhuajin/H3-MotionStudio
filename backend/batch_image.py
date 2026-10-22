@@ -20,6 +20,8 @@ import logging
 import mimetypes
 import shutil
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import quote, urlparse
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -40,6 +42,31 @@ logger = logging.getLogger(__name__)
 
 OFFICIAL_URL = "https://api.openai.com/v1"
 REQUEST_TIMEOUT = 900.0
+
+# 异步接口只在提交阶段等待接单回执；同步出图及已接单任务仍有独立的长等待。
+SUBMIT_TIMEOUT = 120.0
+_STATUS_REPORTER: ContextVar[Callable[[str], None] | None] = ContextVar("image_status_reporter", default=None)
+
+
+@contextmanager
+def report_request_status(callback: Callable[[str], None]):
+    """按异步任务隔离状态通知，避免并行作品的接单消息串到其他条目。"""
+    token = _STATUS_REPORTER.set(callback)
+    try:
+        yield
+    finally:
+        _STATUS_REPORTER.reset(token)
+
+
+def _report_request_status(message: str) -> None:
+    logger.info("%s", message)
+    callback = _STATUS_REPORTER.get()
+    if callback is not None:
+        try:
+            callback(message)
+        except Exception:
+            # 展示失败不能改变已付费任务的执行结果。
+            logger.exception("图片请求状态通知失败")
 
 # Sunburst 文档：宽高为 16 的倍数，最大边 <=3840，长宽比 <=3:1，
 # 总像素在 655,360~8,294,400 之间。请求显式传像素尺寸，不使用 1k/2k 字符串。
@@ -534,16 +561,26 @@ async def _post(
     # 按设计退回"源视频取帧"，用户看到的就是「人物图 = 抽帧图」。
     url = f"{base_url()}/images/edits"
     route = _route() if proxy is _KEEP_ROUTE else proxy
-    if async_tasks():
+    asynchronous = async_tasks()
+    if asynchronous:
         data = {k: v for k, v in data.items() if k != "input_fidelity"}
         data.update({"async": "true", "response_format": "url"})
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, proxy=route) as client:
-        return await client.post(
-            url,
-            headers={"Authorization": f"Bearer {api_key()}"},
-            data=data,
-            files=files,
-        )
+    timeout = httpx.Timeout(SUBMIT_TIMEOUT, connect=30.0) if asynchronous else REQUEST_TIMEOUT
+    _report_request_status("正在提交图片请求，等待中转站接单回执（尚未确认受理）")
+    async with httpx.AsyncClient(timeout=timeout, proxy=route) as client:
+        try:
+            return await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key()}"},
+                data=data,
+                files=files,
+            )
+        except httpx.ReadTimeout as error:
+            netproxy.note_failure()
+            raise RuntimeError(
+                "图片提交阶段等待响应超时（ReadTimeout），未收到任务 ID 或图片，"
+                "无法确认中转站是否受理；保留未知请求保护，不自动重发。请核对渠道后台"
+            ) from error
 
 
 def _alternative_route(current: str | None) -> tuple[bool, str | None]:
@@ -686,6 +723,7 @@ async def _resolve_task(response: httpx.Response, output_path: Path, fingerprint
     # 先落盘再轮询：中途被打断时下次只会 GET 同一条任务，绝不重新提交（不重复计费）。
     _save_task_record(checkpoint, record)
     label = f"（任务 {task_id}）"
+    _report_request_status(f"中转站已受理图片任务（任务 ID：{task_id}），任务记录已保存，正在查询结果")
     deadline = time.monotonic() + REQUEST_TIMEOUT
     async with httpx.AsyncClient(timeout=60, proxy=_route()) as client:
         while time.monotonic() < deadline:
@@ -1043,9 +1081,8 @@ async def _generate_candidate_image_once(
                 netproxy.note_failure()
                 break
             except RuntimeError as error:
-                # 输入组装不适用（最典型：composite 需要两张图、而封面只有一张）。
-                # 记录后退出；不能自动换方案再产生新的计费请求。
-                failures.append(f"[{plan}/{field}] 不适用：{error}")
+                # 包括输入不适用、提交结果未知和已接单任务失败；均不盲目换方案。
+                failures.append(f"[{plan}/{field}] 请求失败：{error}")
                 break
             # 1k 档出图 → 本地 VOSR2 2× 放回 2k 档（三个比例都走 1k 档，见 image_sizes()）。
             # 先停掉"正在通过中转站生成…"的计时器：接下来是**本地放大排队等 GPU**，

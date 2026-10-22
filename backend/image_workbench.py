@@ -764,12 +764,14 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                         raise RuntimeError(f"从成片抽封面人物图失败：{exc}") from exc
                 _set_auto(folder_id, status="running", stage=step,
                           message=f"正在用封面人物图生成{label}", kind=kind)
-                await _generate_cover(
-                    folder, step, kind,
-                    # 单步按钮带 force=true，是用户明确授权在核对账单后重做；整条/批量自动
-                    # 不能越过「上次结果未知」闸门。
-                    allow_uncertain_retry=bool(force and stage == step),
-                )
+                with batch_image.report_request_status(
+                    lambda message: _set_auto(folder_id, message=message)
+                ):
+                    await _generate_cover(
+                        folder, step, kind,
+                        # 单步重做才允许越过未知结果保护；已有任务仍只续取。
+                        allow_uncertain_retry=bool(force and stage == step),
+                    )
             done = (
                 "人物图已完成；封面等成片后从封面人物图生成"
                 if skipped_covers else

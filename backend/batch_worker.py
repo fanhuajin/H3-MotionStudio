@@ -2160,7 +2160,7 @@ async def _prepare_review_work(
                 # 而日志里只有一句笼统的连接失败，看不出是代理没生效。
                 batch_store.add_item_log(
                     batch_id, item_id,
-                    f"已向中转站发出人物图请求（首图 1 张；直接使用生成结果，不做自检；"
+                    f"准备向中转站提交人物图请求（首图 1 张；直接使用生成结果，不做自检；"
                     f"不自动重做；"
                     f"{batch_image.route_note()}）……",
                 )
@@ -2576,15 +2576,18 @@ async def _generate_covers_via_api(
                     batch_store.set_item_milestone(
                         batch_id, item_id, "prepare", currentNode=f"正在生成{label}"
                     )
-                batch_store.add_item_log(batch_id, item_id, f"已向中转站发出{label}请求……")
+                batch_store.add_item_log(batch_id, item_id, f"准备生成{label}，检查素材后提交中转站……")
                 started = time.monotonic()
                 try:
-                    if allow_uncertain_retry:
-                        await image_workbench._generate_cover(
-                            folder, stage, kind, allow_uncertain_retry=True
-                        )
-                    else:
-                        await image_workbench._generate_cover(folder, stage, kind)
+                    with batch_image.report_request_status(
+                        lambda message: batch_store.add_item_log(batch_id, item_id, f"{label}：{message}")
+                    ):
+                        if allow_uncertain_retry:
+                            await image_workbench._generate_cover(
+                                folder, stage, kind, allow_uncertain_retry=True
+                            )
+                        else:
+                            await image_workbench._generate_cover(folder, stage, kind)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:  # noqa: BLE001 - 封面失败不该把整条作品判失败
