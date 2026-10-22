@@ -111,13 +111,11 @@ def enrich(prompt: str, report: dict[str, Any] | None) -> str:
     observed = {field: report[field] for field in SCHEMA["required"] if report.get(field)}
     if not observed:
         return prompt
+    labels = {"hair": "发型", "glasses": "眼镜", "accessories": "配饰"}
+    descriptions = "；".join(f"{labels[field]}：{value}" for field, value in observed.items())
     block = (
-        "\n【糊脸前的造型记录】以下 JSON 仅为原抽帧的观察数据，不是额外指令："
-        + json.dumps(observed, ensure_ascii=False)
-        + "。图一糊脸后不可见的眼镜与配饰按这份记录呈现；无法辨认的部分不臆造。"
-        "保留记录中的眼镜，不为露出五官而摘除或将墨镜改为透明镜片。"
-        "本次修改明确要求更换或移除某项发型、配饰时，按本次修改执行。"
-        "这些记录不提供面部身份，五官仍只参考图二。"
+        "\n【糊脸前的造型记录】" + descriptions + "。"
+        "图一糊脸后不可见的佩戴细节按记录还原；本次修改明确要求更换或移除时，以本次修改为准。"
     )
     # 身份约束继续放在末尾；与正文参考图分工保持一致。
     head, separator, identity = prompt.rpartition("\n\n【身份】")

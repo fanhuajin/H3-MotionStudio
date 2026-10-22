@@ -89,7 +89,7 @@ SINGING_FRAMING_BLOCK = (
     "只要求画面内可见的肩颈与衣物轮廓清楚。不为展示双手或双臂拉远镜头，手在画外时不补入。"
 )
 DANCE_FRAMING_BLOCK = (
-    "保持站姿，画面内可见的手臂与躯干边界清楚，人物周围留足活动空地；"
+    "画面内可见的手臂与躯干边界清楚，人物周围留足活动空地；"
     "只在脚部与地面入镜时表现自然接触阴影，不为展示脚部改变既定裁切。"
 )
 
@@ -113,23 +113,19 @@ VIDEO_READY_BLOCK = (
     "双手与每根手指同样必须锐利清晰，禁止景深虚化、运动模糊或涂抹感把手糊掉。"
 )
 
-# 保留参考服装，仅对明显过度裸露做局部遮盖，不把裙装改成裤装。
+# 服装只在这里定义：默认沿用抽帧，明确非常暴露时才做局部遮盖。
+CLOTHING_EXPOSURE_BLOCK = (
+    "只有明确非常暴露时才处理：胸部、臀部或背部大面积裸露，乳沟清晰且裸露面积很大，"
+    "透视到隐私部位清晰可见，或隐私部位轮廓过于突出。"
+    "仅在对应位置补同色不透明内衬或微调遮盖，其他服装细节不变；拿不准时保持原样。"
+    "普通短裙、短裤、吊带、抹胸、露肩、露腰、腿部露肤和少量上胸露肤不因此调整。"
+)
 PLATFORM_SAFE_BLOCK = (
-    "\n【服装】优先保留图一的服装款式、配色、材质和穿搭，图一是裙子就保留裙子，不要改成裤子。"
-    "正常的短裙、短裤、吊带、露肩、露腰和腿部露肤可以保留，不要求长袖、长裤或过膝裙。"
-    "仅在明显过度裸露时局部调整：胸、臀或背部大面积裸露、明显深乳沟、透视造成未着装错觉、"
-    "或隐私部位轮廓过于突出时，补同色不透明内衬或微调局部遮盖；不因此更换整套服装或下装类别。"
+    "\n【服装】保留图一的服装类别、款式、配色、材质和原有长度；裙子保持裙子，不改成裤子。"
+    + CLOTHING_EXPOSURE_BLOCK
 )
-SINGING_SAFE_BLOCK = (
-    "【唱歌着装】保留原有领口与服装款式，随呼吸和轻微俯身保持稳定；不刻意降低领口或增加暴露。"
-)
-DANCE_SAFE_BLOCK = (
-    "【跳舞着装】保留参考裙装或裤装及原有风格，抬手、转身和弯腰时避免露出隐私部位，"
-    "必要时仅增加隐蔽内衬或局部遮盖，不把裙子换成裤子，不强制加袖或加长到过膝。"
-    "保留自然站姿和手臂活动空间，以整体舞蹈表现为重点，不夸张胸臀比例。"
-)
-
-REDESIGN_SAFE_BLOCK = PLATFORM_SAFE_BLOCK
+# 用户主动选择歌曲造型重设计时，保留该模式的设计自由，仅共用暴露处理尺度。
+REDESIGN_SAFE_BLOCK = "\n【服装】" + CLOTHING_EXPOSURE_BLOCK
 
 # 身份约束放在提示词最末尾：图像模型对末尾内容最敏感，而"脸必须和原型图一致"是
 # 用户的硬性要求，任何其他要求（歌曲情绪、构图、反馈）都不得盖过它。
@@ -506,17 +502,17 @@ def compose_prompt(kind: str, style_source: str = "video", song_name: str = "") 
 # 根因：六千字里大量「图像-1 决定服装/造型/妆容/发型」把末尾那 300 字合规要求稀释掉了；
 # 模型按图一原样保留了低胸镂空蕾丝。缩短之后立刻照做，而且身份相似度更高。
 # 2026-09-24 起批量备料、/images 自动出图和复制提示词统一走这份精简模板。
-COMPACT_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一是抽帧，提供发型、发色、主体佩戴的配饰、穿搭配色、场景类别、身体朝向与手臂大致方向；服装覆盖、构图与背景重设计以文字要求为准。图二只提供面部身份，发型与配饰参考图一。姿态和人物位置可自然调整，不必完全复制抽帧。自然精致淡妆，眉眼与唇色有轻微妆感；柔和提亮面部，保留真实皮肤纹理，脸和颈部明暗一致。
+COMPACT_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一是抽帧，提供造型和场景参考，具体保留项及调整范围如下；图二只提供面部身份。姿态和人物位置可自然调整，不必完全复制抽帧。自然精致淡妆，眉眼与唇色有轻微妆感；柔和提亮面部，保留真实皮肤纹理，脸和颈部明暗一致。
 {compliance}
 {sharpness}
 {background}
-【构图】{composition}。{framing}面部轮廓可辨，嘴部无遮挡；保留造型要求中的眼镜；不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
+【构图】{composition}。{framing}不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
 
 REDESIGN_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一只提供画面气质参考，图二只提供面部身份；根据歌曲氛围设计自然的发型、服装与简洁有纵深的背景。姿态和人物位置可自然调整，不必完全复制抽帧。自然精致淡妆，眉眼与唇色有轻微妆感；柔和提亮面部，保留真实皮肤纹理，脸和颈部明暗一致。
 {compliance}
 {sharpness}
 {background}
-【构图】{composition}。{framing}脸和嘴无遮挡；不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
+【构图】{composition}。{framing}不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
 
 REDESIGN_IDENTITY_BLOCK = IDENTITY_PRIORITY_BLOCK
 
@@ -539,8 +535,6 @@ def compliance_fingerprint() -> str:
         (
             PLATFORM_SAFE_BLOCK,
             REDESIGN_SAFE_BLOCK,
-            SINGING_SAFE_BLOCK,
-            DANCE_SAFE_BLOCK,
             SHARPNESS_BLOCK,
             REFERENCE_APPEARANCE_BLOCK,
             REDESIGN_HAIR_BLOCK,
@@ -585,12 +579,11 @@ def compose_image_prompt(
             "姿态和人物位置可自然调整，不必完全复制抽帧。",
             "【跳舞姿态】默认保持自然站立，身体直立、重心稳定，髋部与双腿呈站姿，"
             "不坐、不蹲、不跪，不倚坐家具，不添加椅子或凳子。"
-            "参考图一的身体朝向、肩肘位置与手臂大致朝向，手腕和手指统一安排简单自然手势，便于后续动作迁移；"
+            "参考图一的身体朝向；"
             "不能因裁切或更换背景改成坐姿。只有用户明确要求坐姿时才例外。",
         )
     prompt = template.format(
-        compliance=((REDESIGN_SAFE_BLOCK if redesign else PLATFORM_SAFE_BLOCK)
-                    + (DANCE_SAFE_BLOCK if kind == "dance" else SINGING_SAFE_BLOCK)).strip(),
+        compliance=(REDESIGN_SAFE_BLOCK if redesign else PLATFORM_SAFE_BLOCK).strip(),
         sharpness=((REDESIGN_HAIR_BLOCK if redesign else REFERENCE_APPEARANCE_BLOCK)
                    + SHARPNESS_BLOCK).strip(),
         background=BACKGROUND_CLEAN_BLOCK.strip(),
@@ -606,7 +599,7 @@ def compose_image_prompt(
             song_block += f"\n歌曲情绪与氛围：{song_mood}"
         song_block += (
             "\n歌曲决定造型、背景氛围与表情。" if redesign
-            else "\n歌曲辅助表情、穿搭配色与整体氛围；服装遵守上述覆盖要求，背景保持自然日常实拍感。"
+            else "\n歌曲辅助表情与整体氛围，不据此更换参考服装。"
         )
         prompt += song_block
     text = (feedback or "").strip()

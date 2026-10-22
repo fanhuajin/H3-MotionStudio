@@ -77,12 +77,27 @@ class SourceAppearanceTests(unittest.IsolatedAsyncioTestCase):
         output = self.root / "person.png"
         prompt = await appearance.prepare_prompt(self.frame, base, output)
         self.assertIn("黑色细框透明眼镜", prompt)
+        self.assertNotIn("JSON", prompt)
+        self.assertNotIn('"hair":', prompt)
+        self.assertIn("发型：黑色长发，高马尾；眼镜：黑色细框透明眼镜；配饰：蓝色发夹", prompt)
         self.assertLess(prompt.index("【糊脸前的造型记录】"), prompt.index("【身份】"))
         self.assertTrue(prompt.endswith(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()))
         candidate = output.with_name("person_attempt1.png")
         candidate.with_name(candidate.name + ".request-pending").write_text("{}", encoding="utf-8")
         resumed = await appearance.prepare_prompt(self.frame, "修改后的提示词", output)
         self.assertEqual(resumed, prompt)
+        self.model.assert_awaited_once()
+
+    async def test_new_request_replaces_old_json_record_once(self):
+        await appearance.review(self.frame)
+        base = batch_ai.compose_image_prompt("dance")
+        head, separator, identity = base.rpartition("\n\n【身份】")
+        old = head + '\n【糊脸前的造型记录】以下 JSON：{"hair":"黑色长发"}' + separator + identity
+        prompt = await appearance.prepare_prompt(self.frame, old, self.root / "new.png")
+        self.assertNotIn("JSON", prompt)
+        self.assertNotIn('"hair":', prompt)
+        self.assertEqual(prompt.count("【糊脸前的造型记录】"), 1)
+        self.assertEqual(appearance.enrich(prompt, await appearance.review(self.frame)), prompt)
         self.model.assert_awaited_once()
 
     async def test_legacy_pending_task_keeps_original_prompt_without_recognition(self):
@@ -107,6 +122,9 @@ class SourceAppearanceTests(unittest.IsolatedAsyncioTestCase):
             prompt = image_workbench.person_prompt(self.root, "dance")
             payload = image_workbench.material_zip(self.root, "person", "dance")
         self.assertIn("黑色细框透明眼镜", prompt)
+        self.assertNotIn("JSON", prompt)
+        self.assertNotIn('"hair":', prompt)
+        self.assertIn("发型：黑色长发，高马尾；眼镜：黑色细框透明眼镜；配饰：蓝色发夹", prompt)
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             self.assertEqual(archive.read("提示词.txt").decode(), prompt)
         self.model.assert_awaited_once()

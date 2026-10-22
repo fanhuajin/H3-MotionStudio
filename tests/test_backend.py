@@ -2589,13 +2589,13 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("图二是唯一的面部身份参考", batch_ai.compose_image_prompt("dance"))
 
     def test_platform_compliance_block_is_in_every_image_prompt(self) -> None:
-        """两类提示词共用覆盖要求，不能再把部分露肤款式一概认定安全。"""
+        """普通露肤保留，只有明确非常暴露才允许局部处理。"""
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【服装】", prompt)
-            self.assertIn("胸前有衣物覆盖", prompt)
-            self.assertIn("面料不透明", prompt)
-            self.assertIn("可调整款式并保持原有气质", prompt)
+            self.assertIn("只有明确非常暴露时才处理", prompt)
+            self.assertIn("补同色不透明内衬或微调遮盖", prompt)
+            self.assertIn("裙子保持裙子，不改成裤子", prompt)
             self.assertNotIn("无需改变正常的露肩", prompt)
         # 只管裸露：姿态、动作、裁切都不许出现在这一段里
         for word in ("摆胯", "腰部波浪", "姿态", "下边缘", "胸线"):
@@ -2691,29 +2691,19 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("伴舞", text)
         self.assertIn("index=0", text)          # 分不出高下时的老回退口径不能丢
 
-    def test_compliance_allows_changing_the_outfit_when_the_source_is_racy(self) -> None:
-        """源头造型擦边时**允许换款式**——用户 2026-09-20 取消了早期那条硬约束。
-
-        时间线（别再改回去）：① 第一版让模型「换成同一气质但端庄的款式」，模型把 015 下装
-        画成牛仔裤，用户否掉「太丑了 同款裤子可以长一点 不要换款式 丝袜允许保留」→ 于是加了
-        「只做最小改动 / 绝对不要换款式」；② 当天稍晚用户又说这条**可以不要**，明确选择
-        「连『绝对不要换款式』一起去掉」→ 现在恢复成「为了合规可以换款式、换造型」。
-        **但两条平台要求必须留着**：半透蕾丝要垫同色不透明内衬、低胸要把胸口盖住。
-        """
+    def test_compliance_only_adjusts_clear_excessive_exposure_locally(self) -> None:
+        """服装类别和款式保留；普通露肤及不确定情况不能触发换装。"""
         block = batch_ai.PLATFORM_SAFE_BLOCK
-        # 允许换款式（不再有那条硬约束，引用用户原话的噪音也一起删掉）
-        self.assertIn("可调整款式并保持原有气质", block)
-        self.assertNotIn("绝对不要换款式", block)
-        self.assertNotIn("同款、同色、同材质照旧", block)
-        self.assertNotIn("太丑了", block)
-        # 合规本身仍需处理的两点（平台①②）
-        self.assertIn("面料不透明", block)
-        self.assertIn("胸前有衣物覆盖", block)
-        # 自动出图走的是精简模板：长提示词会把这一段淹掉（6628 字 vs 1225 字的实测对照）
+        self.assertIn("保留图一的服装类别、款式、配色、材质和原有长度", block)
+        self.assertIn("只有明确非常暴露时才处理", block)
+        self.assertIn("拿不准时保持原样", block)
+        self.assertIn("普通短裙、短裤、吊带、抹胸、露肩、露腰", block)
+        self.assertIn("仅在对应位置补同色不透明内衬或微调遮盖", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertLess(len(prompt), 1800, "分场景服装与背景要求仍须使用精简模板")
-            self.assertIn("可调整款式并保持原有气质", prompt)
+            self.assertLess(len(prompt), 1800)
+            self.assertEqual(prompt.count("【服装】"), 1)
+            self.assertNotIn("可调整款式", prompt)
 
     def test_compliance_judge_uses_the_platform_rule_verbatim(self) -> None:
         """出图后的自检也必须按平台三小条判，并显式豁免吊带/露肩/露脐（别再误杀 012/017）。"""
