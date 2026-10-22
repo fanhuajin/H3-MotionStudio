@@ -24,7 +24,7 @@ async function api<T>(path = "", body?: unknown): Promise<T> {
   return value as T;
 }
 
-function Dialog({ title, children, footer, close, className = "", compactHeader = false }: { title: string; children: ReactNode; footer?: ReactNode; close: () => void; className?: string; compactHeader?: boolean }) {
+function Dialog({ title, subtitle, children, footer, close, className = "", compactHeader = false }: { title: string; subtitle?: string; children: ReactNode; footer?: ReactNode; close: () => void; className?: string; compactHeader?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -38,7 +38,8 @@ function Dialog({ title, children, footer, close, className = "", compactHeader 
       if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) close();
     }}>
     <header className="batch-settings-header">{!compactHeader && <span className="batch-modal-icon"><FolderOpen /></span>}
-      <div>{!compactHeader && <p>批量发布</p>}<h2 id="publish-dialog-title">{title}</h2></div>
+      <div>{!compactHeader && <p>批量发布</p>}<h2 id="publish-dialog-title">{title}</h2>
+        {subtitle && <p className="publish-preview-summary" role="status">{subtitle}</p>}</div>
       <button className="batch-settings-close" aria-label="关闭弹窗" autoFocus onClick={close}><X /></button></header>
     <div className="batch-settings-scroll">{children}</div>
     {footer && <footer className="batch-settings-footer">{footer}</footer>}
@@ -331,7 +332,11 @@ export function PublishRoute() {
       <label className="publish-field">日期<input type="date" value={date} disabled={busy} onMouseDown={openDatePicker} onChange={e => setDate(e.target.value)} /></label>
       {modalError}
     </Dialog>}
-    {modal?.kind === "preview" && preview && <Dialog title={preview.name} compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)}>
+    {modal?.kind === "preview" && preview && <Dialog title={preview.name}
+      subtitle={`第 ${items.findIndex(item => item.id === preview.id) + 1} 条 / 共 ${items.length} 条 · ${preview.scheduled
+        ? preview.date && preview.hour ? `安排发布：${preview.date} ${preview.hour}:00（北京时间）` : "发布时间待设置"
+        : "立即发布"}`}
+      compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)}>
       <VideoPreview key={preview.id} id={preview.id} hasVideo={preview.assets.video} saving={busy} saveError={error}>
         {previewPlatforms.map(p => {
           const state = preview.states[p];
