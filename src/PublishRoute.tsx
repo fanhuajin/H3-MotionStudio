@@ -49,6 +49,17 @@ function Dialog({ title, children, footer, close, className = "", compactHeader 
 function done(item: Work) { return platforms.every(p => ["已完成", "不发布"].includes(item.states[p])); }
 function issue(item: Work) { return platforms.some(p => ["失败", "待核对"].includes(item.states[p])); }
 
+function formatPublishTime(value: string) {
+  const normalized = value.trim().replace(" ", "T");
+  const zoned = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}+08:00`;
+  const date = new Date(zoned);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).format(date);
+}
+
 function openDatePicker(event: MouseEvent<HTMLInputElement>) {
   const input = event.currentTarget;
   if (event.button !== 0 || input.disabled || input.readOnly || typeof input.showPicker !== "function") return false;
@@ -154,13 +165,18 @@ export function PublishRoute() {
   const alive = useRef(true);
   const busyRef = useRef(false);
   const running = Boolean(queue && queue.phase !== "idle");
+  const completed = Boolean(queue?.items.length && queue.items.every(done));
   const readonly = running || busy || !queue;
   const load = useCallback(async () => {
     if (busyRef.current) return;
     const current = ++generation.current;
     try {
       const result = await api<Queue>();
-      if (alive.current && current === generation.current) setQueue(result);
+      if (alive.current && current === generation.current) {
+        setQueue(result);
+        setActionFeedback("");
+        setError("");
+      }
     } catch (failure) {
       if (alive.current && current === generation.current) setError((failure as Error).message);
     }
@@ -269,7 +285,7 @@ export function PublishRoute() {
   return <main className="batch-page publish-page"><div className="batch-content">
     <header className="batch-header"><div><p className="batch-kicker">MULTI-PLATFORM PUBLISHING</p>
       <h1>批量发布</h1><p>安排作品与时间，按抖音 → 小红书 → B站依次发布。</p></div>
-      {queue && <span className="batch-status-pill">{running ? queue.phase === "paused" ? "已暂停" : "发布中" : "等待安排"} · 已处理 {queue.items.filter(done).length}/{queue.items.length}</span>}
+      {queue && <span className="batch-status-pill">{running ? queue.phase === "paused" ? "已暂停" : "发布中" : completed ? "已全部完成" : "等待安排"} · 已处理 {queue.items.filter(done).length}/{queue.items.length}</span>}
     </header>
     {error && !modal && <p className="publish-error" role="alert">{error} {button("重新同步", () => void load(), busy)}</p>}
     {!queue ? <p role="status">正在读取发布队列…</p> : <>
@@ -305,7 +321,10 @@ export function PublishRoute() {
               <p key={p}>{labels[p]}：{item.details[p]?.error || item.details[p]?.stage || item.states[p]}</p>)}</details>}
           </td>
           <td><PublishTime item={item} disabled={readonly} save={changes => action("/edit", { ids: [item.id], ...changes }, false)} /></td>
-          {platforms.map(p => <td key={p}>{platformState(item, p)}{item.details[p]?.publish_at && <small className="publish-actual">实际：{item.details[p]?.publish_at}</small>}</td>)}
+          {platforms.map(p => {
+            const actual = item.details[p]?.publish_at;
+            return <td key={p}>{platformState(item, p)}{actual && <small className="publish-actual" title="北京时间">实际：{formatPublishTime(actual)}</small>}</td>;
+          })}
           <td className="publish-ops"><div className="batch-row-ops">{button("查看视频", () => setModal({ kind: "preview", id: item.id }), running, <Play />)}</div></td>
         </tr>)}
       </tbody></table></div>
