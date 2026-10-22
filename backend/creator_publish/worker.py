@@ -2,6 +2,7 @@
 import argparse
 import ctypes
 import json
+import logging
 import os
 from pathlib import Path
 import time
@@ -186,6 +187,7 @@ def run_queue(state_path, platforms):
                     queue.run_platform(key, item, p)
         queue.notice.set("所选平台全部处理完成，记录已保留。")
     except Exception as error:
+        logging.exception("发布队列停止，保留执行位置供诊断")
         queue.notice.set(f"发布已停止：{error}")
     finally:
         if "keyboard_session" in locals():

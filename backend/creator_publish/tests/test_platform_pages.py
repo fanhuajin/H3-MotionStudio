@@ -3,6 +3,7 @@ from types import SimpleNamespace as NS
 import time
 import unittest
 from unittest.mock import Mock, call, patch
+from _ctypes import COMError
 
 from platform_pages import PAGES, PlatformPages, chrome_controls, platform_for_url
 
@@ -24,6 +25,23 @@ class PlatformPageTests(unittest.TestCase):
         launch.assert_not_called()
         activate.assert_not_called()
         ready.assert_not_called()
+
+    def test_loading_tab_com_error_retries_read_without_opening(self):
+        failure = COMError(-2147220991, "事件无法调用任何订户", None)
+        with patch.object(self.pages, "_scan_once", side_effect=[failure, ([self.window], self.found)]), \
+             patch("platform_pages.time.sleep"), patch.object(self.pages, "open_page") as opener:
+            self.assertEqual(self.pages.scan(), ([self.window], self.found))
+        opener.assert_not_called()
+
+    def test_page_loading_com_error_waits_then_accepts_ready_document(self):
+        failure = COMError(-2147220991, "事件无法调用任何订户", None)
+        self.driver.uia.WalkControl.return_value = [
+            (NS(ControlTypeName="DocumentControl", IsOffscreen=False, Name="抖音创作者中心"), 0)]
+        with patch.object(self.pages, "address", side_effect=[failure, PAGES["douyin"]]), \
+             patch("platform_pages.read_browser_url", return_value=PAGES["douyin"]), \
+             patch("platform_pages.time.sleep"):
+            self.pages.wait_ready("douyin")
+        self.driver.keys.assert_not_called()
 
     def test_select_existing_activates_target_in_shared_browser(self):
         with patch.object(self.pages, "scan", return_value=([self.window], self.found)), \

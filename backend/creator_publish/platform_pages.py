@@ -2,6 +2,7 @@
 import os
 import ctypes
 import time
+from _ctypes import COMError
 from urllib.parse import urlsplit
 
 from browser_page import read_browser_url
@@ -111,6 +112,17 @@ class PlatformPages:
         self.driver.check()
 
     def scan(self):
+        # 新标签加载时旧UIA节点会失效，只重读标签栏，不重复打开或发布。
+        for attempt in range(4):
+            try:
+                return self._scan_once()
+            except COMError:
+                if attempt == 3:
+                    raise
+                self.driver.check()
+                time.sleep(.3)
+
+    def _scan_once(self):
         found = {}
         windows = self.windows()
         for window in windows:
@@ -167,7 +179,7 @@ class PlatformPages:
                              for control, _ in self.driver.uia.WalkControl(self.driver.window, maxDepth=20))
                 if loaded and platform_for_url(address) == platform and platform_for_url(document) == platform:
                     return
-            except RuntimeError:
+            except (RuntimeError, COMError):
                 pass
             time.sleep(.3)
         raise RuntimeError(f"{LABELS[platform]}页面尚未就绪，请完成登录或检查加载后继续；未开始发布。")

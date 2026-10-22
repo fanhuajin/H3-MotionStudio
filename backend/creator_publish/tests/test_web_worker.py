@@ -140,14 +140,19 @@ class WebWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "已停止"):
                 self.queue.pause()
 
-    def run_harness(self, prepare_error=False, skipped=(), platforms=("douyin",)):
+    def run_harness(self, prepare_error=False, skipped=(), platforms=("douyin",), select_browser=False):
         queue = Mock()
         queue.state = {}
         queue.items = {"one": {"folder": self.root, "scheduled": False,
                                 "states": {p: "不发布" if p in skipped else "待发布" for p in PLATFORMS}}}
         queue.adapters = {p: (type("OfflineDraft", (), {}), Mock(), Mock(), Mock(), Mock()) for p in PLATFORMS}
         events = []
-        queue.run_platform.side_effect = lambda *args: events.append("publish")
+        def publish(key, item, platform):
+            if select_browser:
+                draft_type = queue.adapters[platform][0]
+                draft_type.select_browser(object.__new__(draft_type))
+            events.append("publish")
+        queue.run_platform.side_effect = publish
         kernel = Mock()
         kernel.CreateMutexW.return_value = 1
         modules = {"windows_mcp": Mock(), "windows_mcp.uia": Mock(), "keyboard_session": Mock()}
@@ -159,6 +164,7 @@ class WebWorkerTests(unittest.TestCase):
                 if prepare_error:
                     raise RuntimeError("页面未就绪")
             pages.return_value.ensure.side_effect = ensure
+            pages.return_value.select_existing.side_effect = lambda platform: events.append("select_" + platform)
             # 跳过外层真实桌面互斥，所有平台输入均是桩。
             run_queue.__wrapped__(self.path, platforms)
         return events, queue
@@ -167,6 +173,10 @@ class WebWorkerTests(unittest.TestCase):
         events, queue = self.run_harness()
         self.assertEqual(events, ["pages_ready", "publish"])
         self.assertEqual(queue.state["phase"], "idle")
+
+    def test_prepared_pages_return_to_douyin_before_upload_flow(self):
+        events, _ = self.run_harness(select_browser=True)
+        self.assertEqual(events, ["pages_ready", "select_douyin", "publish"])
 
     def test_page_preparation_failure_never_enters_platform_execution(self):
         events, queue = self.run_harness(prepare_error=True)
