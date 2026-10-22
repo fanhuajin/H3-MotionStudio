@@ -1380,3 +1380,38 @@ def fallback_result(*, kind: str, description: str, tags: list[str]) -> dict[str
     }
     ensure_copy_fields(result, kind=kind, description=description, source_tags=tags)
     return result
+
+
+COVER_HAND_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "status": {"type": "string", "enum": ["reasonable", "no_hands", "unreasonable", "uncertain"]},
+        "reason": {"type": "string"},
+        "fingersCutByFrame": {"type": "string", "enum": ["yes", "no", "uncertain"]},
+    }, "required": ["status", "reason", "fingersCutByFrame"],
+}
+
+
+async def judge_cover_hands(image: Path) -> dict[str, Any]:
+    """封面专用检查，不改变人物图备料的判断或生成次数。"""
+    result = await _chat_structured(
+        content=[
+            {"type": "text", "text": (
+                "检查图片中所有可见人物的手部。沿肩、肘、前臂追踪到手腕，检查左右对应、掌背与拇指方向、"
+                "手指连接、数量、关节、比例、遮挡及手腕衔接。不要把正常透视、弯指或自然遮挡判为多指少指；"
+                "另外独立检查 fingersCutByFrame：任意人物任意一只手的手指被图片上、下、左、右边缘截断，"
+                "或部分手指延伸到画外，返回 yes，即使可见部分结构正常也一样。逐一检查四条画面边界。"
+                "手指贴近边缘但完整可见、正常弯指、被身体或衣物自然遮挡，以及双手完全不入镜，返回 no；"
+                "不能仅因没有看到五根手指或手臂出画就判 yes。无法确定是否被边缘截断返回 uncertain。"
+                "status 与截断判断独立，reason 同时简述手部结构与边缘截断情况。"
+                "清晰纹理不等于结构正确。明确自然合理返回 reasonable；完全没有可见手掌或手指返回 no_hands；"
+                "明确畸形返回 unreasonable；模糊、遮挡或难以确认结构返回 uncertain。reason 用简短中文说明。"
+            )},
+            {"type": "image_url", "image_url": {"url": _data_url(image), "detail": "high"}},
+        ], schema=COVER_HAND_SCHEMA, name="cover_hands", label="封面手部检查失败",
+    )
+    if (result.get("status") not in {"reasonable", "no_hands", "unreasonable", "uncertain"}
+            or result.get("fingersCutByFrame") not in {"yes", "no", "uncertain"}
+            or not isinstance(result.get("reason"), str)):
+        raise ValueError("封面手部检查结果无效")
+    return result

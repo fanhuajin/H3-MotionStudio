@@ -2,6 +2,9 @@ import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { readJson } from "./api";
 import { useVideoPreviewWheel } from "./useVideoPreviewWheel";
+import { BatchVideo } from "./BatchVideo";
+import { PreviewImage } from "./PreviewImage";
+import { ImageViewer } from "./ImageWorkbenchRoute";
 import { StudioBot, statusMood } from "./StudioBot";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
@@ -203,6 +206,7 @@ interface BatchItem {
   error?: string | null;
   warning?: string | null;
   prepReady?: boolean;
+  renderQueued?: boolean;
 }
 
 interface BatchState {
@@ -369,7 +373,7 @@ function readInputDraft() {
     // 还没建批次时先记在本地，点「准备任务」时随批次一起提交。
     shutdownOn: parsed.shutdownOn === true,
     shutdownAfterPrepOn: parsed.shutdownAfterPrepOn === true,
-    autoRenderOn: parsed.autoRenderOn !== false,
+    autoRenderOn: false,
   };
 }
 
@@ -395,7 +399,7 @@ function batchStatusLabel(status: string, stage?: string) {
     paused: "已暂停",
     failed: "需要重试",
     completed: "已完成",
-    skipped: "已跳过",
+    skipped: "等待区",
   } as Record<string, string>)[status] || status;
 }
 
@@ -415,7 +419,7 @@ function responseMessage(response: Response, fallback: string): Promise<string> 
     .catch((reason) => (reason instanceof Error ? reason.message : fallback));
 }
 
-/** 备料、待出片、异常、已跳过和已完成各自分区。 */
+/** 备料、待出片、异常、等待区和已完成各自分区。 */
 type TabId = "prep" | "render" | "exception" | "archive" | "completed";
 
 const TAB_KEY = "h3-motionstudio:batch-tab:v1";
@@ -433,17 +437,17 @@ function readActiveTab(): TabId {
 }
 const TABS: Array<{ id: TabId; label: string }> = [
   { id: "prep", label: "备料区" },
+  { id: "archive", label: "等待区" },
   { id: "render", label: "出片区" },
   { id: "exception", label: "异常" },
-  { id: "archive", label: "已跳过" },
   { id: "completed", label: "已完成" },
 ];
 const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
   prep: (item) => !["completed", "skipped", "failed"].includes(item.status) && !item.prepReady,
-  render: (item) => !["skipped", "completed", "failed"].includes(item.status) && Boolean(item.prepReady),
+  render: (item) => !["skipped", "completed", "failed"].includes(item.status) && Boolean(item.prepReady) && Boolean(item.renderQueued || renderingNow(item)),
   exception: (item) => item.status === "failed",
   completed: (item) => item.status === "completed",
-  archive: (item) => item.status === "skipped",
+  archive: (item) => item.status === "skipped" || (item.status === "confirmed" && Boolean(item.prepReady) && !item.renderQueued),
 };
 
 /** 这一条有没有可看的成片：优先 outputs 快照，其次发布目录里的真实文件（publishChain.clean）。 */
@@ -452,6 +456,7 @@ function hasFinalVideo(item: BatchItem): boolean {
 }
 
 function itemZoneStatus(item: BatchItem): string {
+  if (item.status === "skipped" || (item.status === "confirmed" && item.prepReady && !item.renderQueued)) return "等待安排";
   if (item.coverStage && !["failed", "skipped", "completed"].includes(item.status)) return "备料中";
   if (item.status === "confirmed" && !item.prepReady) return "备料中";
   return batchStatusLabel(item.status, item.stage);
@@ -464,6 +469,7 @@ function prepElapsedMs(item: BatchItem, nowMs: number): number | null {
 }
 
 function prepPhase(item: BatchItem): string {
+  if (item.status === "skipped" || (item.status === "confirmed" && item.prepReady && !item.renderQueued)) return "等待安排";
   if (item.coverStage) return `正在生成${item.coverStage === "bilibili" ? "B站" : "抖音"}封面`;
   const runningStep = (item.milestones || []).find((step) => step.status === "running");
   if (runningStep?.currentNode) return runningStep.currentNode;
@@ -581,6 +587,7 @@ export function BatchRoute() {
   // 刷新或重新进入页面时恢复上次选择的分区。
   const [activeTab, setActiveTab] = useState<TabId>(readActiveTab);
   const [videoPreview, setVideoPreview] = useState<{ id: string; title: string; url: string } | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
   const videoDialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (videoPreview) videoDialog.current?.showModal();
@@ -793,6 +800,7 @@ export function BatchRoute() {
   }, [selectedId]);
 
   const switchTab = (id: TabId) => {
+    if (id !== activeTab) setSelectedIds(new Set());
     setActiveTab(id);
     try {
       localStorage.setItem(TAB_KEY, id);
@@ -836,7 +844,7 @@ export function BatchRoute() {
       // 新建批次时把「全部完成后自动关机」一起提交（追加时该开关已经挂在批次上，由开关接口改）
       const payload = append
         ? { singingUrls, danceUrls, autoStart }
-        : { singingUrls, danceUrls, autoStart, shutdownOnComplete: shutdownOn && !shutdownAfterPrepOn, shutdownAfterPrep: shutdownAfterPrepOn, autoRender: autoRenderOn && !shutdownAfterPrepOn };
+        : { singingUrls, danceUrls, autoStart, shutdownOnComplete: shutdownOn && !shutdownAfterPrepOn, shutdownAfterPrep: shutdownAfterPrepOn, autoRender: false };
       const response = await fetch(target, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -872,7 +880,7 @@ export function BatchRoute() {
   };
 
   const call = async (action: string, method = "POST", body?: object) => {
-    if (!batch) return;
+    if (!batch || busyAction) return;
     const settingAction = ["auto-render", "shutdown-on-complete", "shutdown-after-prep"].includes(action);
     if (settingAction) setSettingsFeedback(null);
     const endpoint = `/api/batches/${batch.id}/${action}`;
@@ -1003,7 +1011,6 @@ export function BatchRoute() {
   // 开关显示的永远是**当前批次**的值（没批次才用本地草稿）
   const shutdownSwitchOn = batch ? Boolean(batch.shutdownOnComplete) : shutdownOn;
   const prepShutdownSwitchOn = batch ? Boolean(batch.shutdownAfterPrep) : shutdownAfterPrepOn;
-  const autoRenderSwitchOn = batch ? batch.autoRender !== false : autoRenderOn;
   // 倒计时每秒跳：后端只给时间戳，剩几秒在本地算
   const shutdownTick = useNowTick(Boolean(shutdown.pending));
   const shutdownSecondsLeft = shutdown.pending
@@ -1269,7 +1276,7 @@ export function BatchRoute() {
   const anyConfirmable = selectedItems.some(
     (item) => item.status === "awaiting_review" && Boolean(item.ai?.reference_image_path),
   );
-  // 能批量「重新开始」的只有已经跑完一轮的（失败 / 已跳过 / 已出片），
+  // 能批量「重新开始」的只有已经跑完一轮的（失败 / 等待区 / 已出片），
   // 跟单条「重试 / 重新开始」按钮同一条规则。
   const anyRestartable = selectedItems.some((item) =>
     ["failed", "skipped", "completed"].includes(item.status),
@@ -1310,10 +1317,10 @@ export function BatchRoute() {
               if (
                 renderingNow(item)
                 && !(await askConfirm({
-                  title: "停止这一条当前的出片？",
-                  detail: "已经生成到一半的进度会作废。取消后可以点「重新开始」再出片。",
+                  title: "跳过这一条任务？",
+                  detail: "已经生成到一半的进度会作废。跳过后进入等待区，可以点「开始出片」再次安排。",
                   items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
-                  confirmLabel: "停止出片",
+                  confirmLabel: "跳过任务",
                   tone: "warning",
                 }))
               ) {
@@ -1322,9 +1329,9 @@ export function BatchRoute() {
               await itemCallFor(item, "skip");
             })()
           }
-          title="停止这一条当前的生成/出片；取消后可以重新开始"
+          title="跳过这一条任务并移入等待区；之后可以再次开始出片"
         >
-          <X weight="bold" />取消
+          <X weight="bold" />跳过
         </button>
       );
     }
@@ -1336,39 +1343,11 @@ export function BatchRoute() {
         </>
       );
     }
-    if (["skipped", "completed"].includes(item.status)) {
-      return (
-        <>
-          <button
-            onClick={() =>
-              void (async () => {
-                // 已出片的「重新开始」会覆盖发布目录里的成片，先问一句；失败 / 已跳过没有成片可覆盖
-                if (
-                  item.status === "completed"
-                  && !(await askConfirm({
-                    title: "再出一版？",
-                    detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
-                    items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
-                    confirmLabel: "再出一版",
-                    tone: "restart",
-                  }))
-                ) {
-                  return;
-                }
-                await itemCallFor(item, "retry");
-              })()
-            }
-            title={item.ai?.reference_image_path ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
-          >
-            <ArrowClockwise />重新开始
-          </button>
-          {item.status === "skipped" && (
-            <button title="只把状态改成已完成，不重新生成" onClick={() => void completeItem(item)}>
-              <Check weight="bold" />标记已完成
-            </button>
-          )}
-        </>
-      );
+    if (TAB_MATCH.archive(item)) {
+      return <><button disabled={Boolean(busyAction) || prepBlocked}
+        title={prepBlocked ? "备料区全部完成后可以开始出片" : "沿用已有素材，开始这一条出片"}
+        onClick={() => void call("render", "POST", { itemIds: [item.id] })}><Play />开始出片</button>
+        <button title="只把状态改成已完成，不重新生成" onClick={() => void completeItem(item)}><Check weight="bold" />标记已完成</button></>;
     }
     return null;
   };
@@ -1396,31 +1375,21 @@ export function BatchRoute() {
             </div>
           </div>
           <div className="batch-item-actions">
-            {/* 失败 / 已跳过 / 已出片：都能直接再出一版（同一接口，已确认过的只重跑出片） */}
-            {["failed", "skipped", "completed"].includes(item.status) && (
+            {/* 失败 / 等待区 / 已出片：都能直接再出一版（同一接口，已确认过的只重跑出片） */}
+            {TAB_MATCH.archive(item) && (
+              <button disabled={Boolean(busyAction) || prepBlocked}
+                title={prepBlocked ? "备料区全部完成后可以开始出片" : "沿用已有素材，开始这一条出片"}
+                onClick={() => void call("render", "POST", { itemIds: [item.id] })}><Play />开始出片</button>
+            )}
+            {item.status === "failed" && (
               <button
                 onClick={() =>
-                  void (async () => {
-                    if (
-                      item.status === "completed"
-                      && !(await askConfirm({
-                        title: "再出一版？",
-                        detail: "会重新跑一遍生成链路，新成片会覆盖发布目录里的同名文件。",
-                        items: [`第 ${itemNumber(item)} 条 · ${itemTitle(item)}`],
-                        confirmLabel: "再出一版",
-                        tone: "restart",
-                      }))
-                    ) {
-                      return;
-                    }
-                    if (item.status === "failed") await retryFailedItem(item);
-                    else await itemCall("retry");
-                  })()
+                  void retryFailedItem(item)
                 }
                 title={hasImage ? "沿用已有的候选图与文案，只重跑出片" : "从下载抖音视频与备料开始重做这一条"}
               >
                 <ArrowClockwise />
-                {item.status === "failed" ? "重试" : "重新开始"}
+                重试
               </button>
             )}
             {["failed", "skipped", "confirmed"].includes(item.status) && (
@@ -1508,11 +1477,9 @@ export function BatchRoute() {
           </div>
           <div className="batch-source-body">
             {item.sourcePath ? (
-              <video
+              <BatchVideo
                 key={item.sourcePath}
                 src={`/api/batches/${batch!.id}/items/${item.id}/stage/source`}
-                controls
-                preload="metadata"
               />
             ) : (
               <div className="batch-source-empty">还没下载源视频<br />下载完成后这里可以直接播放核对</div>
@@ -1608,10 +1575,15 @@ export function BatchRoute() {
             <div className="batch-review-image">
               {hasImage ? (
                 <>
-                  <img
+                  <button type="button" className="batch-image-view-trigger"
+                    aria-label="放大查看候选人物图" title="点击放大查看"
+                    onClick={() => setImagePreview(`/api/batches/${batch!.id}/items/${item.id}/image?v=${imageToken || item.revision || 0}`)}>
+                  <PreviewImage
                     src={`/api/batches/${batch!.id}/items/${item.id}/image?v=${imageToken || item.revision || 0}`}
                     alt="候选人物图"
+                    retry={false}
                   />
+                  </button>
                   {generatingImage && (
                     <div className="batch-image-loading">
                       <SpinnerGap className="spin" />
@@ -1844,8 +1816,7 @@ export function BatchRoute() {
     );
   };
 
-  const resumeOnly = Boolean(batch && batch.status === "paused" && !batch.recoveryActive
-    && (batch.autoRender !== false || prepBlocked || !visibleItems.some((item) => item.status === "confirmed")));
+  const resumeOnly = Boolean(batch && batch.status === "paused" && !batch.recoveryActive);
 
   const renderQueueActions = () => (
         <div className="batch-entry-actions">
@@ -1858,16 +1829,13 @@ export function BatchRoute() {
           </button>
           <button type="button" className="batch-add-toggle batch-settings-trigger" ref={settingsTrigger}
             aria-haspopup="dialog" aria-expanded={settingsOpen} aria-controls="batch-running-settings-dialog"
-            title={`自动出片：${autoRenderSwitchOn ? "开启" : "关闭"}；${prepShutdownSwitchOn ? "备料后关机" : shutdownSwitchOn ? "全部完成后关机" : "自动关机关闭"}`}
+            title={`${prepShutdownSwitchOn ? "备料后关机" : shutdownSwitchOn ? "全部完成后关机" : "自动关机关闭"}`}
             onClick={() => { setSettingsFeedback(null); setActiveDialog("settings"); }}>
             <GearSix />运行设置{(prepShutdownSwitchOn || shutdownSwitchOn) && <span className="batch-settings-badge"><Power />{prepShutdownSwitchOn ? "备料后关机" : "完成后关机"}</span>}
           </button>
           {resumeOnly && <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续任务</button>}
-          {batch && batch.autoRender === false && !resumeOnly && <button type="button" className="batch-add-toggle"
-            disabled={Boolean(busyAction) || prepBlocked || !visibleItems.some((item) => item.status === "confirmed")}
-            title={prepBlocked ? "备料区全部完成后才能开始出片" : "逐条开始出片"} onClick={() => void call("render")}>
-            <Play />{batch.status === "paused" ? "继续并开始出片" : batch.renderRequested ? "已安排出片" : "开始出片"}
-          </button>}
+
+
 
         </div>
   );
@@ -1889,7 +1857,7 @@ export function BatchRoute() {
         {batch && (
           <div className={`batch-status-pill ${batch.status}`}>
             <StudioBot mood={batchFinishedWithSkips ? "waiting" : statusMood(batch.status)} variant={batch.status === "paused" ? "sleep" : undefined} size={38} />
-            {batchFinishedWithSkips ? "本轮已结束" : batchStatusLabel(batch.status)} · 已完成 {renderedCount}/{effectiveTotal}{skippedCount > 0 ? ` · 已跳过 ${skippedCount}` : ""}
+            {batchFinishedWithSkips ? "本轮已结束" : batchStatusLabel(batch.status)} · 已完成 {renderedCount}/{effectiveTotal}{skippedCount > 0 ? ` · 等待区 ${skippedCount}` : ""}
           </div>
         )}
       </header>
@@ -1899,6 +1867,7 @@ export function BatchRoute() {
 
 
       {error && <div className="batch-alert"><WarningCircle weight="fill" />{error}</div>}
+      {busyAction && <div className="batch-alert info" role="status"><SpinnerGap className="spin" />正在处理操作，请稍候…</div>}
       {!error && notice && <div className="batch-alert info"><ListChecks weight="fill" />{notice}</div>}
 
       {/* 关机倒计时：这是**会真的关机**的状态，必须显眼并且能一键撤销 */}
@@ -1956,6 +1925,7 @@ export function BatchRoute() {
             {selectedIds.size > 0 && (
               <div className="batch-bulk-bar">
                 <span>已选 {selectedIds.size} 条</span>
+                {activeTab !== "render" && activeTab !== "completed" && <>
                 {activeTab !== "archive" && (
                 <button
                   className="batch-primary small"
@@ -1967,9 +1937,10 @@ export function BatchRoute() {
                 </button>
                 )}
                 <button
-                  disabled={!anyRestartable || Boolean(busyAction)}
-                  onClick={() =>
-                    void batchOp("retry-many", {
+                  disabled={Boolean(busyAction) || (activeTab === "archive" ? prepBlocked || !selectedItems.some(TAB_MATCH.archive) : !anyRestartable)}
+                  onClick={() => activeTab === "archive"
+                    ? void call("render", "POST", { itemIds: selectedItems.filter(TAB_MATCH.archive).map(item => item.id) })
+                    : void batchOp("retry-many", {
                       title: `重新开始选中的 ${selectedIds.size} 条？`,
                       detail: "已经出过片的会重跑一遍生成链路，新成片会覆盖发布目录里的同名文件；"
                         + "已有图片直接沿用，缺失图片会重新请求补齐，可能产生新的图片费用；备料齐全后再出片。正在出片的不会被重开。",
@@ -1979,14 +1950,15 @@ export function BatchRoute() {
                     })
                   }
                   title={
-                    anyRestartable
-                      ? "把勾选里「已失败 / 已跳过 / 已出片」的条目重新跑一遍（出片仍一条一条来）"
-                      : "勾选里没有可重新开始的条目（只有失败 / 已跳过 / 已出片的能重开）"
+                    activeTab === "archive" ? (prepBlocked ? "备料区全部完成后可以开始出片" : "开始勾选任务的出片，按队列逐条制作") : anyRestartable
+                      ? "把勾选里「已失败 / 等待区 / 已出片」的条目重新跑一遍（出片仍一条一条来）"
+                      : "勾选里没有可重新开始的条目（只有失败 / 等待区 / 已出片的能重开）"
                   }
                 >
-                  <ArrowClockwise />重新开始
+                  {activeTab === "archive" ? <><Play />开始出片</> : <><ArrowClockwise />重新开始</>}
                 </button>
-                {activeTab !== "archive" && (
+                </>}
+                {activeTab !== "completed" && activeTab !== "archive" && (
                 <button
                   className="batch-warning"
                   disabled={!anySkippable || Boolean(busyAction)}
@@ -2136,7 +2108,7 @@ export function BatchRoute() {
                           </td>
                           <td className="batch-ratio-cell">{itemRatio(item)}</td>
                           <td className="batch-ops-cell" onClick={(event) => event.stopPropagation()}>
-                            <div className="batch-row-ops">
+                            <div className="batch-row-ops" inert={Boolean(busyAction)} aria-busy={Boolean(busyAction)}>
                               {item.status === "completed" && hasFinalVideo(item) && (
                                 <button
                                   className="batch-add-toggle"
@@ -2190,6 +2162,7 @@ export function BatchRoute() {
 
       {/* 页内确认框（不用 window.confirm）：深色壳子里的同风格弹框，把「影响哪几条」摊开，
           危险操作用红色确认键、Esc / 点遮罩 = 取消（2026-09-15 用户：「弹出框的效果样式改下」）。 */}
+      {imagePreview && <ImageViewer key={imagePreview} src={imagePreview} label="候选人物图" onClose={() => setImagePreview(null)} />}
       {videoPreview && (
         <dialog
           ref={videoDialog}
@@ -2208,7 +2181,7 @@ export function BatchRoute() {
             <h2 id="batch-video-title">{videoPreview.title}</h2>
             <button autoFocus aria-label="关闭成片预览" onClick={() => setVideoPreview(null)}><X /></button>
           </div>
-          <video key={videoPreview.url} src={videoPreview.url} controls autoPlay playsInline preload="metadata" />
+          <BatchVideo key={videoPreview.url} src={videoPreview.url} autoPlay />
           <div className="batch-video-navigation">
             <button disabled={previewIndex <= 0} onClick={() => switchPreview(-1)}>↑ 上一条</button>
             <span>{previewIndex >= 0 ? `${previewIndex + 1} / ${previewItems.length}` : "成片预览"}</span>
@@ -2289,31 +2262,8 @@ export function BatchRoute() {
         </>}>
         <div className="batch-settings-body">
         <div className="batch-shutdown-row">
-          <span>
-            <b>备料完成后自动出片</b>
-            <small>默认开启。关闭后，待处理备料完成即可在出片区手动启动；异常条目可稍后补跑。</small>
-          </span>
-          <button
-            type="button"
-            role="switch"
-            aria-label="备料完成后自动出片"
-            aria-checked={autoRenderSwitchOn}
-            className={`batch-switch ${autoRenderSwitchOn ? "on" : ""}`}
-            disabled={!loaded || Boolean(busyAction)}
-            onClick={() => {
-              if (batch) void call("auto-render", "POST", { enabled: batch.autoRender === false });
-              else {
-                setAutoRenderOn((value) => !value);
-                setSettingsFeedback({ error: false, text: "已记住此设置，点击准备任务时应用" });
-              }
-            }}
-          >
-            <i />{autoRenderSwitchOn ? "已开启" : "已关闭"}
-          </button>
-        </div>
-        <div className="batch-shutdown-row">
           <span><b><Power weight="fill" /> 备料完成后关机</b>
-            <small>默认关闭。其余条目备料完成后关机，异常条目留待之后处理，不阻止关机；开启后关闭自动出片，关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
+            <small>默认关闭。其余条目备料完成后关机，异常条目留待之后处理，不阻止关机；关机前留 {shutdownDelaySeconds} 秒，可随时取消。</small></span>
           <button type="button" role="switch" aria-label="备料完成后关机" aria-checked={prepShutdownSwitchOn}
             className={`batch-switch ${prepShutdownSwitchOn ? "on" : ""}`}
             disabled={!loaded || Boolean(busyAction)} onClick={toggleShutdownAfterPrep}>
@@ -2341,7 +2291,7 @@ export function BatchRoute() {
           </button>
         </div>
         </div>
-            <p className="batch-settings-rule"><ListChecks aria-hidden="true" />备料完成后关机开启时，会关闭自动出片及全部完成后关机。关机前有 {shutdownDelaySeconds} 秒倒计时，可在页面取消。</p>
+            <p className="batch-settings-rule"><ListChecks aria-hidden="true" />备料完成后关机开启时，会关闭全部完成后关机。关机前有 {shutdownDelaySeconds} 秒倒计时，可在页面取消。</p>
             {shutdown.pending && <div className="batch-alert shutdown"><Power /><span>关机倒计时进行中：剩余 <b>{shutdownSecondsLeft}</b> 秒</span><button type="button" className="batch-primary small" disabled={Boolean(busyAction)} onClick={() => void cancelShutdown()}>取消关机</button></div>}
 
       </BatchDialog>}

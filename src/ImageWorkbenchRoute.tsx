@@ -6,6 +6,7 @@ import {
   Check, ClipboardText, ImageSquare, Minus, Plus, SpinnerGap, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { readJson } from "./api";
+import { PreviewImage } from "./PreviewImage";
 
 type Asset = { name: string; width: number; height: number; bytes: number; version?: string } | null;
 /** 后端 image_workbench.AUTOMATIONS 里的单条状态（list_items 会带出来）。 */
@@ -13,12 +14,13 @@ type AutomationState = { status?: string; stage?: string; message?: string; star
 type WorkItem = {
   id: string; folderName: string; title: string; copy: string;
   kind: "singing" | "dance" | null;
-  assets: { frame: Asset; identity: Asset; person: Asset; coverPerson: Asset; bilibili: Asset; douyin: Asset };
+  assets: { frame: Asset; identity: Asset; person: Asset; bilibili: Asset; douyin: Asset };
   automation?: AutomationState;
   awaitingMaterials?: boolean;
   batchLive?: boolean;
   hasVideo?: boolean;
   canCover?: boolean;
+  coverReview?: { status: string; reason: string } | null;
 };
 type Stage = "person" | "bilibili" | "douyin";
 
@@ -34,7 +36,8 @@ const STAGES: Array<{ id: Stage; label: string; spec: string }> = [
 const identitySources = new Map<string, string>();
 
 function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
-  const version = String(item.assets[key]?.version || item.assets[key]?.bytes || 0);
+  const asset = item.assets[key];
+  const version = String(asset?.version || asset?.bytes || 0);
   const url = `/api/image-workbench/${item.id}/asset/${key}?v=${version}`;
   if (key !== "identity") return url;
   if (!identitySources.has(version)) {
@@ -53,7 +56,7 @@ function AssetPreview({ src, label, busy, onView, onCopy }: {
 }) {
   return <>
     <button type="button" className="image-view-trigger" aria-label={`放大查看${label}`} title="点击放大查看" onClick={onView}>
-      <img src={`${src}&preview=true`} alt={label} draggable={false} decoding="async" />
+      <PreviewImage src={`${src}&preview=true`} alt={label} retry={false} />
     </button>
     <button type="button" className="image-hover-copy" aria-label={`复制${label}`} disabled={busy} onClick={onCopy}>
       <ClipboardText />复制图片
@@ -61,7 +64,7 @@ function AssetPreview({ src, label, busy, onView, onCopy }: {
   </>;
 }
 
-function ImageViewer({ src, label, onClose }: { src: string; label: string; onClose: () => void }) {
+export function ImageViewer({ src, label, onClose }: { src: string; label: string; onClose: () => void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
@@ -123,7 +126,7 @@ function ImageViewer({ src, label, onClose }: { src: string; label: string; onCl
         dragRef.current = null; setDragging(false);
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       }}>
-      <img src={src} alt={label} draggable={false} style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }} />
+      <PreviewImage src={src} alt={label} style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }} />
     </div>
     <p className="workbench-viewer-hint">滚轮放大缩小 · 拖动查看细节 · Esc 关闭</p>
   </dialog>, document.body);
@@ -250,7 +253,7 @@ export function ImageWorkbenchRoute() {
       );
       setNotice(stageArg
         ? `已开始重新生成${label}（会用新图覆盖现有那张）。`
-        : "已开始补齐这条的缺图；封面会在成片后从封面人物图生成。");
+        : "已开始补齐这条的缺图；封面会在成片后检查人物图手部后生成。");
       await refresh();
     } catch (error) {
       setNotice(String((error as Error).message || error));
@@ -302,7 +305,7 @@ export function ImageWorkbenchRoute() {
         data.queued
           ? `已把 ${data.queued} 条缺图作品排上队列${data.waiting ? `；另有 ${data.waiting} 条等成片后出封面` : ""}。`
           : data.waiting
-            ? `没有可立即生成的：${data.waiting} 条等成片后从封面人物图出封面。`
+            ? `没有可立即生成的：${data.waiting} 条等成片后检查人物图手部后出封面。`
             : "没有缺图的作品。",
       );
       await refresh();
@@ -314,7 +317,7 @@ export function ImageWorkbenchRoute() {
   }, [busy, refresh]);
 
   const copyImage = async (key: keyof WorkItem["assets"], label: string) => {
-    if (!item?.assets[key]) { setNotice(`还没有${label}。`); return; }
+    if (!item || !item.assets[key]) { setNotice(`还没有${label}。`); return; }
     setBusy(true); setNotice("");
     try {
       const response = await fetch(assetUrl(item, key));
@@ -363,7 +366,7 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片封面</h1><p>人物图生成后直接采用；封面用成片逐帧挑出的「封面人物图」排入标题与简介：有手看手部清晰度，无手看画面清晰度；已有图片直接沿用。</p></div>
+        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片封面</h1><p>封面仍等视频成功后生成，直接使用原人物图：手部合理且手指未被画面边缘截断时保留构图，截指、异常或无法判断时改为不露手半身构图；封面生成后直接保存。</p></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
           {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}
@@ -389,7 +392,7 @@ export function ImageWorkbenchRoute() {
                     className="image-generate-stage"
                     onClick={() => startAuto(item.id, stage)}
                     disabled={busy || (stage !== "person" && !item.canCover)}
-                    title={stage !== "person" && !item.canCover ? "请先出片；封面人物图从成片抽帧生成（也可以手动上传封面）" : undefined}
+                    title={stage !== "person" && !item.canCover ? "请先完成人物图并出片；封面在视频成功后生成（也可以手动上传封面）" : undefined}
                   ><SpinnerGap className={busy ? "spin" : undefined} />{stageAsset ? "重新生成这一步" : "API 自动生成这一步"}</button><button onClick={() => startAuto(item.id)} disabled={busy}>补齐这条的缺图</button></div></div>
             {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><StudioBot mood="working" variant="swirl" size={42} />{item.automation.message || "正在自动生成…"}{elapsedOf(item) ? `（已用 ${elapsedOf(item)} 秒）` : ""}</p>}
             {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><StudioBot mood="success" size={42} />{item.automation.message}</p>}
@@ -423,7 +426,7 @@ export function ImageWorkbenchRoute() {
                       : <div>请先完成人物图</div>}
                   </figure>
                 </div>}
-                {stage !== "person" && <p className="image-prompt-note">手部合理或自然遮挡时保留原构图；异常、看不清或检查失败时采用不露手近景。复制的提示词会按当前检查结果匹配，封面生成后直接保存。</p>}
+                {stage !== "person" && <p className="image-prompt-note">手指完整可见或自然遮挡时保留原构图；手指被画面边缘截断、异常、看不清或检查失败时采用不露手半身构图。复制的提示词会按当前检查结果匹配，封面生成后直接保存。</p>}
                 <div className="image-action-grid">
                   <button disabled={busy} onClick={() => void copyPrompt(item.id, stage)}><ClipboardText />复制提示词</button>
                 </div>

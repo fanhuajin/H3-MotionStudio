@@ -87,6 +87,33 @@ _COVER_TASKS: set[asyncio.Task] = set()
 _COVER_ITEM_KEYS: set[tuple[str, str]] = set()
 
 
+def cleanup_batch_history(repository: Any = None) -> dict[str, int]:
+    """清掉旧批次和已结束的 deleted 记录，仅临时保护取消/交付所需记录。"""
+    # 只保护当前正在收尾的记录，不让另一条视频阻止已删闲置条目的清理。
+    busy = bool(_RUNNING_BATCHES or any(not task.done() for tasks in
+        (_ITEM_TASKS.values(), _SALVAGE_TASKS, _VIDEO_TASKS, _PREP_TASKS, _STALE_VIDEO_TASKS,
+         _COVER_TASKS, _BG_COVER_TASKS) for task in tasks))
+    repository = repository if repository is not None else batch_store
+    if not hasattr(repository, "prune_history"):
+        return {"batches": 0, "items": 0}
+    state = repository.latest()
+    if not state:
+        return {"batches": 0, "items": 0}
+    protected = set()
+    for item in state.get("items") or []:
+        if item.get("status") != "deleted":
+            continue
+        child_id = str(item.get("videoJobId") or (item.get("childJob") or {}).get("id") or "")
+        if busy and (item.get("id") == state.get("currentItemId")
+                     or f"{state['id']}:{item['id']}" in _ITEM_TASKS
+                     or (child_id and any(not task.done() for task in _SALVAGE_TASKS))
+                     or (str(state["id"]), str(item["id"])) in _BG_COVER_KEYS):
+            protected.add(str(item["id"]))
+        if child_id and (store.get(child_id) or {}).get("status") in {"queued", "running", "cancelling"}:
+            protected.add(str(item["id"]))
+    return repository.prune_history(str(state["id"]), protected)
+
+
 def cancel_item_work(batch_id: str, item_id: str) -> bool:
     task = _ITEM_TASKS.get(f"{batch_id}:{item_id}")
     if not task or task.done():
@@ -393,13 +420,7 @@ PUBLISH_COVER_ALIASES = {
 }
 # 源视频抽帧（图一）也复制一份进发布目录，方便直接拿去出图（用户 2026-09-16 要求）
 PUBLISH_FRAME_NAME = "抽帧.jpg"
-# 【2026-10-18】封面人物图：从**最终成片**全帧扫描挑「手部最清晰」的一帧，存进发布目录，
-# 和 `人物图.png` 放在同一层；封面与 `/images` 页面都用它当参考图，不再用可能画坏手的人物图。
-# 用户原话：「这张做为封面人物图放到发布目录的对应文件夹下就像现有的人物图一样的目录，
-# 用这张封面人物图去生成对应的封面，图片与封面也是用这张封面人物图」。
-COVER_PERSON_NAME = "封面人物图.png"
-# 读取兼容：早期实现叫 `封面参考.jpg`（本次改名前的产物），老目录仍能认。
-COVER_PERSON_ALIASES = ("封面人物图.png", "封面人物图.jpg", "封面参考.jpg")
+
 
 
 def new_item(
@@ -498,7 +519,7 @@ def new_batch_state(
         "currentItemId": items[0]["id"] if items else None,
         "pauseRequested": False,
         "runnerActive": False,
-        "autoRender": bool(auto_render) and not shutdown_after_prep,
+        "autoRender": False,
         "shutdownAfterPrep": bool(shutdown_after_prep),
         "renderRequested": False,
         # 整批跑完后是否自动关机：**默认关闭**，用户在批量页的开关里打开（2026-09-15）
@@ -806,6 +827,7 @@ def mark_item_completed(batch_id: str, item_id: str) -> dict[str, Any]:
             warning=warning,
             childJob=None,
             videoJobId=None,
+            renderQueued=False,
             skipRequested=False,
             deleteRequested=False,
             forceRender=False,
@@ -926,6 +948,7 @@ def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: b
             stage="confirmed" if approved else "queued",
             error=None,
             warning=None,
+            renderQueued=False,
             skipRequested=False,
             deleteRequested=False,
             childJob=None,
@@ -954,12 +977,12 @@ def restart_item_log(direct: bool) -> str:
 
     用户 2026-09-20：「如果人物图 B站图片 抖音图片都有的话点击重新开始不要重新生成」——
     所以这句话必须写清「已有的图沿用、不会重新出图」。2026-10-18 起封面改到出片后从
-    成片抽帧生成，所以「缺失封面」不再在备料里补。
+    检查人物图手部后生成，所以「缺失封面」不再在备料里补。
     """
     if direct:
         return (
             "已重新开始这一条：已有的人物图直接沿用，不会重新出图；"
-            "封面改为出片后从成片抽帧生成，不再在备料里补；随后继续出片。"
+            "封面改为出片后检查人物图手部再生成，不再在备料里补；随后继续出片。"
         )
     return (
         "已重新开始这一条，将从下载与备料重做；已经出好的人物图与封面会直接沿用，"
@@ -1677,11 +1700,9 @@ async def _prepare_review(
 
 
 async def _run_prep(batch_id: str, item_id: str) -> None:
-    """单链路备料：下载、预审、人物图与文案落盘。
+    """下载、预审、人物图与文案落盘；封面等视频交付后检查原人物图再生成。
 
-    **封面不在这里出**（2026-10-18 用户：「生成人物图之后先不要生成封面图，只有视频生成
-    完成之后，从视频抽帧抽取一张图片去生成封面图」）——人物图的手指可能有问题，而成片里
-    的手指是好的，所以封面参考帧改从最终成片里抽。备料齐了就自动放行出片，不等封面。
+    备料完成后留在等待区，按逐条手动安排继续出片，不等封面。
     """
     _set_item(batch_id, item_id, prepAttemptStartedAt=now_iso())
     existing = _item(batch_id, item_id)
@@ -1745,11 +1766,7 @@ def resume_failed_item_with_complete_images(folder: Path) -> dict[str, str] | No
 
 
 async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
-    """补齐封面并确认文件落盘（**老流程/手动补封面用**）。
-
-    2026-10-18 起正常备料不再调用它：封面改到出片交付后由 `_finish_item_covers()` 从成片
-    抽帧生成。这里保留给持久化的 `coverOnlyPrep` 条目和显式补封面场景，参考图仍是人物图。
-    """
+    """兼容旧 coverOnlyPrep 记录；最终成片未交付时不生成封面。"""
     item = _item(batch_id, item_id)
     if not full_auto_enabled():
         return
@@ -1762,6 +1779,8 @@ async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
         folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
     if folder is None or publish_published_image(folder) is None:
         raise RuntimeError("人物图尚未落入发布目录，无法完成备料")
+    if not (folder / "最终成片.mp4").is_file():
+        return  # 旧 coverOnlyPrep 记录也不能提前生成封面。
     if not (folder / "发布文案.txt").is_file():
         raise RuntimeError("发布文案尚未落盘，无法完成备料")
     retry_authorized = bool(item.get("retryMissingCovers"))
@@ -2389,7 +2408,7 @@ async def _prepare_review_work(
             )
 
     # 封面自动化（ChatGPT 桌面端那条老路）也**不在备料阶段触发**：2026-10-18 起封面统一
-    # 改到出片交付之后、从成片抽帧再出（见 `_finish_item_covers`）。`_maybe_spawn_covers`
+    # 改到出片交付之后、检查人物图手部再出（见 `_finish_item_covers`）。`_maybe_spawn_covers`
     # 保留给显式调用，不再在备料里自动发。
     #
     # **自动放行出片**：默认也已关闭（图片自动化的一部分）——上传人物图后停在
@@ -2399,7 +2418,7 @@ async def _prepare_review_work(
 
 
 def _auto_confirm_prepared_item(batch_id: str, item_id: str) -> None:
-    """新备料和复用素材共用自动确认；封面不再拦出片（出片后才从成片抽帧出封面）。"""
+    """新备料和复用素材共用自动确认；封面不再拦出片（出片后才检查人物图手部并出封面）。"""
     if not _cgi_auto_confirm():
         return
     fresh = _item(batch_id, item_id)
@@ -2435,22 +2454,13 @@ def _cgi_auto_confirm() -> bool:
 
 
 def cover_reference_image(item: dict[str, Any], folder: Path | None = None) -> Path | None:
-    """封面要以哪张图为基准：**发布目录里的 `封面人物图.*` 优先**，其次 `人物图.*`。
-
-    2026-10-18 起封面在出片之后生成：`封面人物图` 是从最终成片全帧扫描挑出的手部最清晰
-    的一帧（人物图的手指可能画坏，成片的手是好的）。老作品 / 还没抽出封面人物图时才退回人物图。
-    """
-    frame = cover_person_image(folder)
-    if frame is not None:
-        return frame
+    """封面只使用原人物图；不再使用视频抽帧或固定身份图兜底。"""
     published = publish_published_image(folder)
     if published is not None:
         return published
     candidate = _deliverable_image(item)
     if candidate is not None:
         return candidate
-    if IDENTITY_PATH.is_file():
-        return IDENTITY_PATH
     return None
 
 
@@ -2485,27 +2495,6 @@ def publish_output_path(item: dict[str, Any], key: str) -> Path | None:
     return None
 
 
-def cover_person_image(folder: Path | None) -> Path | None:
-    """发布目录里的「封面人物图」（成片全帧扫描挑出的手部最清晰一帧），没有返回 None。
-
-    封面与 `/images` 页面都用它当参考图：人物图的手指可能画坏，成片的手是好的（2026-10-18）。
-    读取兼容旧名 `封面参考.jpg`，保证本次改名之前已经抽过帧的目录仍能用。
-    """
-    if folder is None or not folder.is_dir():
-        return None
-    for name in COVER_PERSON_ALIASES:
-        target = folder / name
-        try:
-            if target.is_file() and target.stat().st_size > 0:
-                video = folder / "最终成片.mp4"
-                if video.is_file() and target.stat().st_mtime_ns < video.stat().st_mtime_ns:
-                    continue
-                return target
-        except OSError:
-            continue
-    return None
-
-
 # 全自动链路里封面出图要**严格串行**（一条一条跑，避免同时打十几个中转站请求被限流）。
 _COVER_LOCK = asyncio.Lock()
 
@@ -2516,7 +2505,7 @@ def spawn_api_covers(
     """【全自动】用**中转站**出这条的两张封面（后台任务，与出片并行）。
 
     时机（2026-10-18 调整）：**成片交付之后**才出封面 —— 由 `_finish_item_covers()` 在
-    `_deliver()` 之后调用，先抽 `封面人物图.png` 再出图。此前封面在备料阶段生成，
+    `_deliver()` 之后调用，检查原人物图手部后再出图。此前封面在备料阶段生成，
     参考图是人物图，人物图手指画坏时封面也跟着坏（用户 2026-10-18 反馈）。
     `only_missing=True`：两张封面都在就直接返回，不白跑（重新开始时避免重复出图）。
     `force=True`：**已存在的封面也要重出**（人物图被换掉时必须这样，见 `adopt_published_portrait`）。
@@ -2529,7 +2518,7 @@ def spawn_api_covers(
     folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
     if folder is None or not folder.is_dir():
         return False
-    if publish_published_image(folder) is None:
+    if not (folder / "最终成片.mp4").is_file() or publish_published_image(folder) is None:
         return False
     if not (folder / "发布文案.txt").is_file():
         return False
@@ -2562,6 +2551,8 @@ async def _generate_covers_via_api(
     """
     from . import image_workbench
 
+    if not (folder / "最终成片.mp4").is_file():
+        return ["封面等待最终成片成功交付"]
     item = _item(batch_id, item_id)
     kind = str(item.get("kind") or "singing")
     errors: list[str] = []
@@ -2606,167 +2597,8 @@ async def _generate_covers_via_api(
     return errors
 
 
-HAND_FRAME_SCRIPT = PROJECT_ROOT / "scripts" / "pick_hand_frame.py"
-
-
-def _hand_frame_enabled() -> bool:
-    """封面选帧要不要先走「手部检测」：默认开，`H3_HAND_FRAME=0` 可退回纯清晰度评分。"""
-    raw = (env_value("H3_HAND_FRAME", "1") or "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
-
-
-def _pick_hand_cover_person(video: Path, target: Path) -> bool:
-    """全片逐帧挑封面：有手按手部、无手按画面清晰度，均可入选。
-
-    在 640 宽上逐帧检测（ComfyUI 自带 python + Impact Pack 权重），按手框内 Laplacian
-    方差评清晰度；两只手里较模糊的那只主导，手贴画面边缘（手指被切）扣分。找到就写
-    全分辨率图并返回 True；模型或 python 不在/超时才返回 False，由
-    `extract_cover_person` 退回纯清晰度评分。不调任何付费接口。
-    """
-    if not _hand_frame_enabled():
-        return False
-    python = Path(COMFY_PYTHON)
-    model = Path(
-        env_value("H3_HAND_MODEL")
-        or (COMFY_ROOT / "models" / "ultralytics" / "bbox" / "hand_yolov8s.pt")
-    )
-    if not (python.is_file() and HAND_FRAME_SCRIPT.is_file() and model.is_file()):
-        return False
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.unlink(missing_ok=True)
-    command = [
-        str(python), str(HAND_FRAME_SCRIPT),
-        "--video", str(video), "--output", str(target), "--model", str(model),
-        "--device", env_value("H3_HAND_DEVICE", "auto") or "auto",
-    ]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            timeout=900,
-            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-        )
-    except Exception as error:      # noqa: BLE001 - 选帧失败只该退回评分，不该拦住封面
-        logger.warning("手部选帧子进程失败（退回清晰度评分）：%s", error)
-        return False
-    payload: dict[str, Any] = {}
-    for line in reversed((result.stdout or b"").decode("utf-8", errors="replace").splitlines()):
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                payload = json.loads(line)
-            except ValueError:
-                continue
-            break
-    if result.returncode == 0 and payload.get("ok") and target.is_file() and target.stat().st_size > 0:
-        logger.info(
-            "封面人物图：全片 %s 帧，选中 t=%ss，%s 只手，得分 %s（%.1fs）",
-            payload.get("frames"), payload.get("time"), len(payload.get("hands") or []),
-            payload.get("score"), payload.get("elapsed") or 0,
-        )
-        return True
-    logger.warning(
-        "手部选帧没有找到可用帧（rc=%s, %s），退回清晰度评分：%s",
-        result.returncode, payload.get("reason") or "unknown",
-        (result.stderr or b"")[-400:].decode("utf-8", errors="replace"),
-    )
-    target.unlink(missing_ok=True)
-    return False
-
-
-def extract_cover_person(video: Path, target: Path) -> Path:
-    """最终成片逐帧选图：有手看手部清晰度，无手看人物/整体画面清晰度。
-
-    用户 2026-10-18：「最终成片也是全视频抽帧 找出手部最清晰的一张，这张做为封面人物图
-    放到发布目录……用这张封面人物图去生成对应的封面」。先用本机 `hand_yolov8s.pt` 定位手、
-    按手框内清晰度逐帧选，无手帧也按画面清晰度一起竞争；模型/子进程不可用时退回全帧扫描
-    `_frame_detail_score`（双侧手臂区域 + 全身细节）。两条路都纯本地，不调付费接口。
-    """
-    if _pick_hand_cover_person(video, target):
-        return target
-    duration = _video_duration_seconds(video)
-    scanned = _scan_all_frames(video, duration, 1)
-    if not scanned:
-        raise RuntimeError("成片全帧扫描失败，无法抽取封面人物图")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.unlink(missing_ok=True)
-    target.write_bytes(max(scanned, key=lambda row: row[0])[1])
-    return target
-
-
-async def ensure_cover_person(folder: Path) -> Path | None:
-    """批量与图片页共用：在全局 GPU 锁内检查新旧并原子更新参考帧。
-
-    调用方不持有 pipeline_lock（批量交付持有的是批次视频锁）。仅此处取得
-    全局锁，抽帧内部不再取锁；取消时等本地线程退出再释放锁，避免后台残留 GPU 工作。
-    """
-    from .pipeline import pipeline_lock
-
-    video = folder / "最终成片.mp4"
-    if not video.is_file():
-        return cover_person_image(folder)
-    current = cover_person_image(folder)
-    if current is not None:
-        return current
-    async with pipeline_lock:
-        current = cover_person_image(folder)
-        if current is not None:
-            return current
-        signature = (video.stat().st_mtime_ns, video.stat().st_size)
-        with tempfile.TemporaryDirectory(prefix=".h3-cover-frame-", dir=folder) as work:
-            staging = Path(work) / COVER_PERSON_NAME
-            task = asyncio.create_task(asyncio.to_thread(extract_cover_person, video, staging))
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                # to_thread 无法中止原生进程，不能在线程仍用 GPU 时提前放锁。
-                while not task.done():
-                    try:
-                        await asyncio.shield(task)
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception:
-                        break
-                if not task.cancelled():
-                    task.exception()
-                raise
-            if signature != (video.stat().st_mtime_ns, video.stat().st_size):
-                raise RuntimeError("抽帧期间成片已更新，请重新抽取封面人物图")
-            target = folder / COVER_PERSON_NAME
-            os.replace(staging, target)
-            # 保留文件系统高精度时间，并兼容成片携带未来修改时间的情况。
-            if target.stat().st_mtime_ns < signature[0]:
-                os.utime(target, ns=(target.stat().st_atime_ns, signature[0]))
-            return target
-
-
-async def _ensure_video_cover_person(
-    batch_id: str, item_id: str, folder: Path
-) -> Path | None:
-    """确保发布目录里有这张成片的 `封面人物图.png`；成片更新过（重出片）就重新抽。"""
-    video = folder / "最终成片.mp4"
-    if not video.is_file():
-        return None
-    target = cover_person_image(folder)
-    if target is not None:
-        return target
-    try:
-        target = await ensure_cover_person(folder)
-    except Exception as error:      # noqa: BLE001 - 抽帧失败只退回人物图，不拦封面/出片
-        batch_store.add_item_log(
-            batch_id, item_id, f"从成片抽封面人物图失败（将退回人物图出封面）：{error}"
-        )
-        return None
-    batch_store.add_item_log(
-        batch_id, item_id,
-        "已从最终成片逐帧扫描抽出封面人物图（有手看手部、无手看画面清晰度，存为封面人物图.png），"
-        "两张封面与图片页都会用它作参考。",
-    )
-    return target
-
-
 async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) -> None:
-    """出片交付之后：**先抽封面人物图，再出两张封面**（2026-10-18 用户要求）。
+    """出片交付之后：检查人物图手部，再生成两张封面。
 
     封面失败只写日志，不把已经完成的视频判失败；缺的那张之后可在 `/images` 页面补。
     除取消外**不向上抛错**，避免 runner 把已完成的条目误判成失败。
@@ -2780,11 +2612,8 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
             return
         if _covers_ready(item):
             return
-        frame = await _ensure_video_cover_person(batch_id, item_id, folder)
-        if frame is None:
-            batch_store.add_item_log(
-                batch_id, item_id, "没有可用的封面人物图（成片缺失或抽帧失败），本次用人物图出封面。"
-            )
+        if not (folder / "最终成片.mp4").is_file():
+            return
         retry_authorized = bool(item.get("retryMissingCovers"))
         if retry_authorized:
             _set_item(batch_id, item_id, retryMissingCovers=False)
@@ -2860,19 +2689,12 @@ def spawn_item_covers(batch_id: str, item_id: str, folder: Path | None) -> bool:
 async def _finish_covers_after_delivery(
     batch_id: str, item_id: str, folder: Path | None
 ) -> None:
-    """交付完成之后补封面：默认**后台**，`H3_COVER_BLOCKING=1` 时才等它做完。
-
-    「从成片全帧找手、抽封面人物图」这一步仍然留在前台（GPU 正空着，6~20 秒）：
-    它要占显存，等下一支视频开跑后再做容易把视频挤 OOM；真正丢到后台的只有
-    中转站请求（60~100 秒/张）和原图保存，不做封面二次放大。
-    """
+    """视频交付后后台检查人物图并补封面，不再抽帧或占用本地 GPU。"""
     if not full_auto_enabled():
         return
     if cover_blocking():
         await _finish_item_covers(batch_id, item_id, folder)
         return
-    if folder is not None and Path(folder).is_dir():
-        await _ensure_video_cover_person(batch_id, item_id, Path(folder))
     spawn_item_covers(batch_id, item_id, folder)
 
 
@@ -2892,6 +2714,8 @@ def _maybe_spawn_covers(batch_id: str, item_id: str, *, only_missing: bool = Fal
     if not folder:
         return False
     publish_folder = Path(folder)
+    if publish_folder is None or not (publish_folder / "最终成片.mp4").is_file():
+        return False
     image = cover_reference_image(item, publish_folder)
     copy = publish_folder / "发布文案.txt"
     if image is None or not copy.is_file():
@@ -2932,7 +2756,7 @@ async def ensure_publish_images(
     if not expect_covers and full_auto_enabled():
         cover_names = {name for names in PUBLISH_COVER_ALIASES.values() for name in names}
         missing = [name for name in missing if name not in cover_names]
-        tail = "（封面会在出片后从成片抽帧生成）"
+        tail = "（封面会在出片后检查人物图手部再生成）"
     else:
         tail = "（图片由你自己出/自己上传）"
     if reason and missing:
@@ -4155,7 +3979,7 @@ async def _mark_delivered(batch_id: str, item_id: str, outputs: dict[str, str], 
         error=None,
     )
     batch_store.add_item_log(batch_id, item_id, f"{note}{outputs['folder']}")
-    # 封面已在 `_finish_item_covers()` 里按成片抽帧生成；这里只收尾，不再发图片请求。
+    # 封面已在 `_finish_item_covers()` 里按人物图生成；这里只收尾，不再发图片请求。
 
 
 async def _salvage_deliver(batch_id: str, item_id: str) -> bool:
@@ -4528,7 +4352,7 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
             _set_item(batch_id, item_id, status="completed", stage="completed",
                       outputs=outputs, finishedAt=now_iso(), error=None)
             batch_store.add_item_log(batch_id, item_id, "已有最终成片，直接沿用；未重复提交出片任务。")
-            # 封面缺了就按成片抽帧补（已有两张则直接跳过）；默认后台，不挡下一条视频。
+            # 封面缺了就检查人物图手部再补（已有两张则直接跳过）；默认后台，不挡下一条视频。
             await _finish_covers_after_delivery(batch_id, item_id, folder)
             return
     # 源视频可能已经被清理掉（用户重新开始一条老任务时很常见）：先补下载，
@@ -4593,7 +4417,7 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
         batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
         _set_item(batch_id, item_id, stage="deliver", childJob=None)
         outputs = await _deliver(batch_id, item_id, video_job)
-        # 先标完成、放行下一条视频；封面（参考帧从这支成片里抽，手部正常）随后补：
+        # 先标完成、放行下一条视频；封面（原人物图手部检查与构图适配）随后补：
         # 默认后台补（中转站 60~100 秒/张，没必要把下一条视频卡在后面），失败不影响已完成视频。
         await _mark_delivered(batch_id, item_id, outputs, note="发布文件已整理：")
         await _finish_covers_after_delivery(
@@ -4694,7 +4518,7 @@ def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
     类型优先级两边一致（用户 2026-09-20：「如果有唱歌和跳舞的视频，跳舞优先」）。
     """
     for item in _priority_sorted(state.get("items") or []):
-        if str(item.get("status")) == "confirmed":
+        if str(item.get("status")) == "confirmed" and item.get("renderQueued", False):
             return item
     return None
 
@@ -4702,7 +4526,7 @@ def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
 def _next_prep(state: dict[str, Any]) -> dict[str, Any] | None:
     """下一个要备料的条目（pending / revising）。
 
-    2026-10-18 起**不再**把「已确认但缺封面」的条目拉回备料：封面改到出片之后从成片抽帧
+    2026-10-18 起**不再**把「已确认但缺封面」的条目拉回备料：封面改到出片之后检查人物图手部再
     生成，出片闸门不再等封面，所以这里只看还没备料的条目。
     """
     return _next_work(state, allow_confirmed=False)
@@ -5045,7 +4869,7 @@ async def run_batch(batch_id: str) -> None:
             #     它是"先备料（pending/revising）、再出片"的顺序，会先挑到待备料的那一条，
             #     于是已经备好的条目反而要等备料做完才轮到 GPU。
             if video_task is None and prep_task is None and not _prep_remaining(state) and (
-                state.get("autoRender", True) or state.get("renderRequested", False)
+                state.get("renderRequested", False)
             ):
                 pick = _next_confirmed(state)
                 if pick is not None:
@@ -5095,12 +4919,15 @@ async def run_batch(batch_id: str) -> None:
                 )
                 return
             if _next_confirmed(state) is not None and not (
-                state.get("autoRender", True) or state.get("renderRequested", False)
+                state.get("renderRequested", False)
             ):
                 batch_store.update(
                     batch_id, status="awaiting_review", stage="ready_to_render",
-                    runnerActive=False, notice="备料已完成，出片区等待你点击「开始出片」。",
+                    runnerActive=False, notice="出片队列已暂停，请点击「继续任务」。",
                 )
+                return
+            if any(row.get("status") == "confirmed" and not row.get("renderQueued") for row in state.get("items") or []):
+                batch_store.update(batch_id, status="awaiting_review", stage="ready_to_render", runnerActive=False, renderRequested=False, notice="备料已完成，任务在等待区，等待手动安排出片。")
                 return
             if state.get("renderRequested"):
                 batch_store.update(batch_id, renderRequested=False)
@@ -5241,6 +5068,7 @@ def replace_item_source(
             videoJobId=None,
             childJob=None,
             reviewApproved=False,
+            renderQueued=False,
             skipRequested=False,
             deleteRequested=False,
             reopenRequested=False,

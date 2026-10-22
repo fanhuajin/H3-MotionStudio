@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import logging
 import mimetypes
@@ -42,7 +43,6 @@ logger = logging.getLogger(__name__)
 
 OFFICIAL_URL = "https://api.openai.com/v1"
 REQUEST_TIMEOUT = 900.0
-
 # 异步接口只在提交阶段等待接单回执；同步出图及已接单任务仍有独立的长等待。
 SUBMIT_TIMEOUT = 120.0
 _STATUS_REPORTER: ContextVar[Callable[[str], None] | None] = ContextVar("image_status_reporter", default=None)
@@ -70,8 +70,7 @@ def _report_request_status(message: str) -> None:
 
 # Sunburst 文档：宽高为 16 的倍数，最大边 <=3840，长宽比 <=3:1，
 # 总像素在 655,360~8,294,400 之间。请求显式传像素尺寸，不使用 1k/2k 字符串。
-# 横图与 3:4 封面请求为 1K 档；9:16 用 720x1280 满足像素下限，为 2K 档。
-# 中转站按实际返回尺寸计费，本地 VOSR2 放大不改变这次请求的计费档位。
+# 旧尺寸表保留供历史任务恢复及低分辨率补放大使用；新请求以 image_sizes() 为准。
 IMAGE_SIZES_1K = {"4:3": "1024x768", "9:16": "720x1280", "3:4": "768x1024"}
 # 改造前的 2k 档尺寸：`H3_IMAGE_UPSCALE=off` 时整体退回这一套（那时不做本地放大）。
 IMAGE_SIZES_2K = {"4:3": "1536x1152", "9:16": "1152x2048", "3:4": "1152x1536"}
@@ -88,9 +87,12 @@ POLICY_RETRIES = 2
 POLICY_RETRY_DELAY = 5.0
 
 
+IMAGE_SIZES_4K = {"4:3": "3264x2448", "9:16": "2160x3840", "3:4": "2448x3264"}
+
+
 def image_sizes() -> dict[str, str]:
-    """当前生效的出图尺寸表。关掉本地放大时**整体**退回 2k 档尺寸（真回滚，不是半套）。"""
-    return IMAGE_SIZES_2K if image_upscale_engine() == "off" else IMAGE_SIZES_1K
+    """新请求使用中转站原生4K；既有任务按原尺寸恢复。"""
+    return IMAGE_SIZES_4K
 ProgressCallback = Callable[[float, str], Awaitable[None]]
 _BILLED_INFLIGHT: dict[str, asyncio.Future[tuple[bytes | None, str]]] = {}
 
@@ -289,9 +291,7 @@ def _build_request(
         )
         paths = [(combined, f"image[]")]
     else:
-        # **单参考**（identity_image=None）是给**封面**用的：封面以该条 `人物图.png` 为准，
-        # 只发一张。early 版本封面误传了「人物图 + 本人固定参考」两张**不同服装**的人像，
-        # 模型直接把两个人一起画进封面（用户 2026-09-19 截图确认）—— 封面必须只发一张。
+        # 人物图使用双参考；新封面仅提交原人物图，旧任务保留其原始参考以便续取。
         paths = [(Path(scene_image), field)]
         if relay_identity is not None:
             paths.append((relay_identity, field))
@@ -722,8 +722,8 @@ async def _resolve_task(response: httpx.Response, output_path: Path, fingerprint
     record = {"baseUrl": base_url(), "model": model(), "taskId": str(task_id), "fingerprint": fingerprint}
     # 先落盘再轮询：中途被打断时下次只会 GET 同一条任务，绝不重新提交（不重复计费）。
     _save_task_record(checkpoint, record)
-    label = f"（任务 {task_id}）"
     _report_request_status(f"中转站已受理图片任务（任务 ID：{task_id}），任务记录已保存，正在查询结果")
+    label = f"（任务 {task_id}）"
     deadline = time.monotonic() + REQUEST_TIMEOUT
     async with httpx.AsyncClient(timeout=60, proxy=_route()) as client:
         while time.monotonic() < deadline:
@@ -744,6 +744,8 @@ async def _resolve_task(response: httpx.Response, output_path: Path, fingerprint
             task = body.get("data") if isinstance(body.get("data"), dict) else body
             status = str(task.get("status", "")).lower()
             if status in {"failed", "failure", "error", "cancelled", "canceled"}:
+                record["terminalFailure"] = status
+                _save_task_record(checkpoint, record)
                 raise RuntimeError(f"图片任务失败{label}；保留任务记录，请核对渠道后台后手动处理")
             result = _result_payload(body)
             if result:
@@ -772,7 +774,25 @@ async def _submit_or_resume(data: dict[str, str], files: list, output_path: Path
         if record.get("baseUrl") != base_url() or record.get("model") != model():
             raise RuntimeError("存在其他渠道的任务记录，请先人工核对，不自动重发")
         if record.get("fingerprint") != fingerprint:
-            raise RuntimeError("任务记录与当前输入不同，请先人工核对旧任务，不自动重发")
+            # Resolution migration: accept only an otherwise identical legacy request.
+            legacy_match = False
+            for sizes in (IMAGE_SIZES_1K, IMAGE_SIZES_2K):
+                for ratio, size in sizes.items():
+                    if data.get("size") != IMAGE_SIZES_4K[ratio]:
+                        continue
+                    legacy_data = dict(data, size=size)
+                    legacy_digest = hashlib.sha256(json.dumps(legacy_data, sort_keys=True).encode())
+                    for field, (name, content, mime) in files:
+                        legacy_digest.update(field.encode())
+                        legacy_digest.update(content)
+                    if legacy_digest.hexdigest() == record.get("fingerprint"):
+                        fingerprint = record["fingerprint"]
+                        legacy_match = True
+                        break
+                if legacy_match:
+                    break
+            if not legacy_match:
+                raise RuntimeError("任务记录与当前输入不同，请先人工核对旧任务，不自动重发")
         if record.get("result"):
             fresh = await _refresh_result(record, checkpoint)
             return httpx.Response(200, json=fresh or record["result"])
@@ -784,10 +804,16 @@ async def _submit_or_resume(data: dict[str, str], files: list, output_path: Path
 
 def _store(response: httpx.Response, output_path: Path) -> Path:
     payload = response.json()
-    entry = (payload.get("data") or [{}])[0]
+    result = _result_payload(payload)
+    if not result:
+        raise RuntimeError("图片接口未返回图片，仅文字或未知响应不能作为生成成功；不自动重发")
+    entry = result["data"][0]
     encoded = entry.get("b64_json")
     if encoded:
-        output_path.write_bytes(base64.b64decode(encoded))
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise RuntimeError("图片接口返回的图片编码无效；保留任务记录，不自动重发") from error
     elif entry.get("url"):
         # 图片地址由中转站给出（可能是境外对象存储/COS），沿用**这次出图用的那条路线**。
         # 这张图**已经花钱出好了**，下载失败就白花 —— 所以连接没建立时换另一条线路再下一次
@@ -805,9 +831,18 @@ def _store(response: httpx.Response, output_path: Path) -> Path:
                 download = client.get(image_url)
         if download.is_error:
             raise RuntimeError(f"图片已生成但下载失败：HTTP {download.status_code}")
-        output_path.write_bytes(download.content)
+        content = download.content
     else:
         raise RuntimeError("图片接口没有返回图像数据")
+    # HTTP 200 / URL / base64 都不能证明内容是图像；校验后才覆盖文件和清理任务记录。
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            image.verify()
+        with Image.open(io.BytesIO(content)) as image:
+            image.load()
+    except (OSError, ValueError, Image.DecompressionBombError) as error:
+        raise RuntimeError("图片接口返回内容不是可用图片（可能只有文字或错误页）；保留任务记录，不自动重发") from error
+    output_path.write_bytes(content)
     return output_path
 
 
@@ -918,7 +953,7 @@ async def _upscale_after_relay(
     ratio: str,
     on_progress: ProgressCallback | None = None,
 ) -> Path:
-    """1k 档出图后用本地 VOSR2 放大回 2k 档（人物图与两张封面共用这一条路径）。
+    """低分辨率图片用本地 VOSR2 补放大；封面原图直存不调用此步骤。
 
     **排队等 GPU，不设上限**：放大要 ComfyUI，而 ComfyUI 被 pipeline_lock 串行（H3 采样
     一跑就是几十分钟）。放大是 FIFO 排队的，视频一让出显卡就先轮到它、下一条视频排在它
@@ -1084,7 +1119,7 @@ async def _generate_candidate_image_once(
                 # 包括输入不适用、提交结果未知和已接单任务失败；均不盲目换方案。
                 failures.append(f"[{plan}/{field}] 请求失败：{error}")
                 break
-            # 1k 档出图 → 本地 VOSR2 2× 放回 2k 档（三个比例都走 1k 档，见 image_sizes()）。
+            # 仅在需要时补做本地放大，达到目标尺寸的图片跳过。
             # 先停掉"正在通过中转站生成…"的计时器：接下来是**本地放大排队等 GPU**，
             # 视频采样期间可能要排几十分钟，继续显示中转站计时会让人以为卡在出图那一步
             # （2026-09-23 用户：「我看到你一动不动」——其实是排在视频后面等显卡）。

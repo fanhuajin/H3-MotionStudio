@@ -1051,7 +1051,8 @@ def generate(
     `timeout`：等出图的上限（秒）。默认 `H3_CHATGPT_IMAGE_TIMEOUT` / 900 秒
     （用户 2026-09-17：「等待生成图片的时间可以久一点无所谓」）。
 
-    返回落盘路径；超时/取图失败返回 None。调用方负责单链路。
+    返回落盘路径；入口或发送失败返回 None；参考图上传失败、等图超时抛出 RuntimeError。
+    调用方负责单链路并展示失败原因；聊天模式本身不保证当前对话有生图能力。
     """
     from playwright.sync_api import sync_playwright
 
@@ -1113,11 +1114,11 @@ def generate(
         if images:
             mode = attach_images(page, images, what=save_to.name)
             if not mode:
-                logger.warning("参考图没能挂上（file input 与拖放都失败）：%s", save_to.name)
+                raise RuntimeError("参考图上传失败，已停止发送生图请求")
             # **等上传真的完成**（发送按钮从 disabled 变回可点）再往下走。上传中就发送，
             # 消息根本发不出去，接着还会白等十分钟生成图超时（用户 2026-09-16 实测）。
             if not wait_for_attachments(page, len(images), what=save_to.name):
-                logger.warning("附件上传超过等待上限，仍然尝试发送一次：%s", save_to.name)
+                raise RuntimeError("参考图上传未完成，已停止发送生图请求")
             # **等上传完之后**再记录基线：否则贴进去的参考图会被当成「新生成的图」取回来
             # （实测踩过：取回来的其实是图二本人，因为 canvas 重编码后字节数不同所以没被发现）。
             attached = set(_list_blobs(page))
@@ -1236,8 +1237,7 @@ def generate(
                 last_note = waited
                 logger.info("等生成图……已等 %.0f 秒（%s）", waited, save_to.name)
         if not data:
-            logger.warning("等待生成图超时（%s，已等 %.0f 秒）", save_to.name, timeout)
-            return None
+            raise RuntimeError("聊天生图未取得图片（可能仅返回文字、当前对话无生图能力或取图超时）；不能作为生成成功，请检查该对话的生图能力，不自动重发")
 
         save_to.write_bytes(data)
         return save_to

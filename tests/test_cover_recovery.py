@@ -1,9 +1,7 @@
 import asyncio
 import base64
 import io
-import os
 import tempfile
-import threading
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -11,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from PIL import Image
 
-from backend import batch_image, batch_worker as worker, image_workbench as workbench, pipeline
+from backend import batch_image, batch_worker as worker, image_workbench as workbench
 
 
 def png():
@@ -20,111 +18,57 @@ def png():
     return result.getvalue()
 
 
-class CoverFrameResourceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_waits_for_global_pipeline_and_rechecks_shared_frame(self):
-        with tempfile.TemporaryDirectory() as raw:
-            folder = Path(raw)
-            (folder / "最终成片.mp4").write_bytes(b"video")
-            lock = asyncio.Lock()
-            calls = []
-
-            def extract(video, target):
-                self.assertTrue(lock.locked())
-                calls.append(video)
-                target.write_bytes(png())
-                return target
-
-            with patch.object(pipeline, "pipeline_lock", lock), patch.object(worker, "extract_cover_person", side_effect=extract):
-                await lock.acquire()
-                first = asyncio.create_task(worker.ensure_cover_person(folder))
-                second = asyncio.create_task(worker.ensure_cover_person(folder))
-                await asyncio.sleep(0)
-                self.assertEqual(calls, [])
-                lock.release()
-                results = await asyncio.wait_for(asyncio.gather(first, second), 2)
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(results, [folder / worker.COVER_PERSON_NAME] * 2)
-            self.assertFalse(lock.locked())
-
-    async def test_cancellation_keeps_gpu_locked_until_thread_exits(self):
-        with tempfile.TemporaryDirectory() as raw:
-            folder = Path(raw)
-            (folder / "最终成片.mp4").write_bytes(b"video")
-            started, release = threading.Event(), threading.Event()
-            lock = asyncio.Lock()
-
-            def extract(video, target):
-                started.set()
-                release.wait(3)
-                target.write_bytes(png())
-
-            with patch.object(pipeline, "pipeline_lock", lock), patch.object(worker, "extract_cover_person", side_effect=extract):
-                task = asyncio.create_task(worker.ensure_cover_person(folder))
-                try:
-                    self.assertTrue(await asyncio.to_thread(started.wait, 2))
-                    task.cancel()
-                    await asyncio.sleep(0)
-                    self.assertTrue(lock.locked())
-                    self.assertFalse(task.done())
-                finally:
-                    release.set()
-                    with self.assertRaises(asyncio.CancelledError):
-                        await asyncio.wait_for(task, 2)
-                self.assertFalse(lock.locked())
-                self.assertFalse((folder / worker.COVER_PERSON_NAME).exists())
-
-    async def test_image_page_refreshes_stale_frame_then_reuses_it(self):
-        with tempfile.TemporaryDirectory() as raw:
-            folder = Path(raw)
-            video, frame = folder / "最终成片.mp4", folder / worker.COVER_PERSON_NAME
-            frame.write_bytes(b"old")
-            video.write_bytes(b"new video")
-            os.utime(frame, ns=(1_000_000_000, 1_000_000_000))
-            os.utime(video, ns=(2_000_000_000, 2_000_000_000))
-            self.assertIsNone(worker.cover_person_image(folder))
-
-            def extract(_video, target):
-                target.write_bytes(png())
-
-            with patch.object(pipeline, "pipeline_lock", asyncio.Lock()), \
-                 patch.object(worker, "extract_cover_person", side_effect=extract) as extract_mock, \
-                 patch.object(workbench, "resolve_folder", return_value=folder), \
-                 patch.object(workbench, "infer_kind", return_value="dance"), \
-                 patch.object(workbench, "_stop_requested", return_value=False), \
-                 patch.object(workbench, "_set_auto"), \
-                 patch.object(workbench, "_generate_cover", new_callable=AsyncMock) as generate:
-                await workbench.run_automatic("i", force=True, stage="bilibili")
-                await workbench.run_automatic("i", force=True, stage="douyin")
-                extract_mock.assert_called_once()
-                self.assertEqual(generate.await_count, 2)
-            self.assertEqual(frame.read_bytes(), png())
-
-    async def test_failed_extraction_does_not_publish_partial_or_stale_frame(self):
-        with tempfile.TemporaryDirectory() as raw:
-            folder = Path(raw)
-            video, frame = folder / "最终成片.mp4", folder / worker.COVER_PERSON_NAME
-            frame.write_bytes(b"old")
-            video.write_bytes(b"new video")
-            os.utime(frame, ns=(1_000_000_000, 1_000_000_000))
-            os.utime(video, ns=(2_000_000_000, 2_000_000_000))
-
-            def extract(_video, target):
-                target.write_bytes(b"partial")
-                raise RuntimeError("failed")
-
-            with patch.object(pipeline, "pipeline_lock", asyncio.Lock()), \
-                 patch.object(worker, "extract_cover_person", side_effect=extract), \
-                 patch.object(worker.batch_store, "add_item_log"):
-                self.assertIsNone(await worker._ensure_video_cover_person("b", "i", folder))
-            self.assertEqual(frame.read_bytes(), b"old")
-            self.assertIsNone(worker.cover_person_image(folder))
-
-
 class CoverRequestRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        judge = patch.object(workbench.batch_ai, "judge_cover_hands", new_callable=AsyncMock,
+                             return_value={"status": "reasonable", "reason": "结构自然", "fingersCutByFrame": "no"})
+        judge.start()
+        self.addCleanup(judge.stop)
+
+    async def test_terminal_failure_retries_once_with_fallback_for_each_ratio(self):
+        for stage, ratio in (("bilibili", "4:3 横版"), ("douyin", "3:4 竖版")):
+            for retry_succeeds in (True, False):
+                with self.subTest(stage=stage, success=retry_succeeds), tempfile.TemporaryDirectory() as raw:
+                    folder = Path(raw)
+                    (folder / "最终成片.mp4").write_bytes(b"video")
+                    (folder / workbench.PERSON_NAME).write_bytes(png())
+                    requests = []
+                    client = httpx.AsyncClient
+
+                    def handler(request):
+                        if request.method == "POST":
+                            requests.append(request.content.decode("utf-8", errors="replace"))
+                            return httpx.Response(202, json={"task_id": f"task-{len(requests)}"})
+                        if len(requests) == 1 or not retry_succeeds:
+                            return httpx.Response(200, json={"status": "failed"})
+                        return httpx.Response(200, json={"status": "completed", "data": [{
+                            "b64_json": base64.b64encode(png()).decode(),
+                        }]})
+
+                    def factory(**kwargs):
+                        return client(transport=httpx.MockTransport(handler), timeout=2)
+
+                    with patch.object(batch_image, "_prepare_route", new_callable=AsyncMock), \
+                         patch.object(batch_image, "api_key", return_value="test-only"), \
+                         patch.object(httpx, "AsyncClient", side_effect=factory), \
+                         patch.object(worker, "mark_publish_copy_locked"), \
+                         patch.object(worker, "resume_failed_item_with_complete_images", return_value=None):
+                        if retry_succeeds:
+                            await workbench._generate_cover(folder, stage, "dance")
+                            self.assertEqual((folder / workbench.COVER_NAMES[stage]).read_bytes(), png())
+                        else:
+                            with self.assertRaises(RuntimeError):
+                                await workbench._generate_cover(folder, stage, "dance")
+                    self.assertEqual(len(requests), 2)
+                    self.assertIn("不重新摆姿势", requests[0])
+                    self.assertIn("将双臂调整为自然下垂", requests[1])
+                    self.assertIn(ratio, requests[1])
+
     async def test_downloaded_task_record_survives_publish_save_failure(self):
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
-            (folder / worker.COVER_PERSON_NAME).write_bytes(png())
+            (folder / "最终成片.mp4").write_bytes(b"video")
+            (folder / workbench.PERSON_NAME).write_bytes(png())
 
             async def submitted(data, files, candidate):
                 batch_image._task_checkpoint(candidate).write_text('{"taskId":"already-paid"}')
@@ -167,7 +111,8 @@ class CoverRequestRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
-            reference = folder / worker.COVER_PERSON_NAME
+            (folder / "最终成片.mp4").write_bytes(b"video")
+            reference = folder / workbench.PERSON_NAME
             reference.write_bytes(payload)
             with patch.object(batch_image, "_prepare_route", new_callable=AsyncMock), \
                  patch.object(batch_image, "api_key", return_value="test-only"), \
@@ -191,7 +136,8 @@ class CoverRequestRecoveryTests(unittest.IsolatedAsyncioTestCase):
         for mode in ("save", "cancel"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as raw:
                 folder = Path(raw)
-                (folder / worker.COVER_PERSON_NAME).write_bytes(png())
+                (folder / "最终成片.mp4").write_bytes(b"video")
+                (folder / workbench.PERSON_NAME).write_bytes(png())
                 started = asyncio.Event()
 
                 async def generate(**kwargs):
@@ -226,6 +172,7 @@ class CoverRequestRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_unknown_request_never_submits_automatically(self):
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
+            (folder / "最终成片.mp4").write_bytes(b"video")
             (folder / ".h3-bilibili-request-pending").write_text("unknown")
             with patch.object(batch_image, "generate_candidate_image", new_callable=AsyncMock) as generate:
                 with self.assertRaisesRegex(RuntimeError, "避免重复扣费"):

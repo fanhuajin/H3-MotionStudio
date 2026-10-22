@@ -48,8 +48,8 @@ class BatchZoneTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 400)
         create.assert_not_called()
 
-    def test_new_batch_defaults_to_auto_render(self):
-        self.assertTrue(batch_worker.new_batch_state(["https://v.douyin.com/a"], [])["autoRender"])
+    def test_new_batch_always_waits_for_manual_schedule(self):
+        self.assertFalse(batch_worker.new_batch_state(["https://v.douyin.com/a"], [], auto_render=True)["autoRender"])
         self.assertFalse(batch_worker.new_batch_state(["https://v.douyin.com/a"], [], auto_render=False)["autoRender"])
 
     def test_prep_blockers_ignore_covers_and_failed_items(self):
@@ -158,3 +158,31 @@ class BatchZoneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WaitingQueueTests(unittest.TestCase):
+    def test_runner_only_picks_explicitly_scheduled_items(self):
+        waiting = {"id": "waiting", "status": "confirmed", "index": 1}
+        queued = {"id": "queued", "status": "confirmed", "index": 2, "renderQueued": True}
+        self.assertIsNone(batch_worker._next_confirmed({"items": [waiting]}))
+        self.assertEqual(batch_worker._next_confirmed({"items": [waiting, queued]})["id"], "queued")
+
+    def test_schedule_selected_waiting_and_skipped_only(self):
+        state = {"status": "completed", "items": [
+            {"id": "a", "status": "confirmed"},
+            {"id": "b", "status": "skipped"},
+            {"id": "c", "status": "confirmed"}]}
+        with patch.object(app, "_batch_or_404", return_value=state), \
+             patch.object(batch_worker, "_set_item") as mark, \
+             patch.object(batch_worker, "restart_item_to_run") as restart, \
+             patch.object(app.batch_store, "update"), \
+             patch.object(app, "_resume_batch", return_value=state):
+            asyncio.run(app.start_batch_render("batch", app.BatchItemIdsRequest(itemIds=["a", "b"])))
+        self.assertEqual([call.args[1] for call in mark.call_args_list], ["a", "b"])
+        restart.assert_called_once_with("batch", "b")
+
+    def test_removed_auto_render_cannot_be_enabled(self):
+        with patch.object(app, "_batch_or_404", return_value={}), patch.object(app.batch_store, "update") as update:
+            with self.assertRaises(HTTPException):
+                asyncio.run(app.set_batch_auto_render("batch", app.BatchAutoRenderRequest(enabled=True)))
+        update.assert_not_called()

@@ -339,6 +339,7 @@ class ImageWorkbenchTests(unittest.TestCase):
         """进程中断后留下 pending：批量自动链路必须停住，不能再扣一笔。"""
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
+            (folder / "最终成片.mp4").write_bytes(b"video")
             (folder / ".h3-bilibili-request-pending").write_text("submitted", encoding="utf-8")
             calls = 0
 
@@ -355,13 +356,15 @@ class ImageWorkbenchTests(unittest.TestCase):
         """明确的内容政策 400 不能永久留下结果未知标记。"""
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
+            (folder / "最终成片.mp4").write_bytes(b"video")
             (folder / "人物图.png").write_bytes(png(900, 1200))
             marker = folder / ".h3-bilibili-request-pending"
 
             async def rejected(**kwargs):
                 raise workbench.batch_image.PolicyRejected("内容政策 400")
 
-            with patch.object(workbench.batch_image, "generate_candidate_image", rejected), \
+            with patch.object(workbench.batch_ai, "judge_cover_hands", new=AsyncMock(return_value={"status": "reasonable", "reason": "正常"})), \
+                 patch.object(workbench.batch_image, "generate_candidate_image", rejected), \
                  patch.object(workbench, "asset_path", return_value=folder / "人物图.png"), \
                  patch.object(workbench, "prompt", return_value="封面提示词"):
                 with self.assertRaises(workbench.batch_image.PolicyRejected):
@@ -371,13 +374,15 @@ class ImageWorkbenchTests(unittest.TestCase):
     def test_coalesced_policy_rejection_clears_cover_marker(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
+            (folder / "最终成片.mp4").write_bytes(b"video")
             (folder / "人物图.png").write_bytes(png(900, 1200))
             marker = folder / ".h3-bilibili-request-pending"
 
             async def rejected(**kwargs):
                 raise RuntimeError("图片接口错误 400：内容政策拒绝")
 
-            with patch.object(workbench.batch_image, "generate_candidate_image", rejected), \
+            with patch.object(workbench.batch_ai, "judge_cover_hands", new=AsyncMock(return_value={"status": "reasonable", "reason": "正常"})), \
+                 patch.object(workbench.batch_image, "generate_candidate_image", rejected), \
                  patch.object(workbench, "asset_path", return_value=folder / "人物图.png"), \
                  patch.object(workbench, "prompt", return_value="封面提示词"):
                 with self.assertRaisesRegex(RuntimeError, "内容政策"):
@@ -521,7 +526,7 @@ class ImageWorkbenchTests(unittest.TestCase):
             folder = Path(raw)
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             cover = workbench.prompt(folder, "bilibili", "dance")
-        self.assertIn("完整保留原图", cover)
+        self.assertIn("肩部以上近景", cover)
         self.assertIn("标题：测试标题", cover)
         self.assertIn("简介：测试简介", cover)
         self.assertIn("4:3 横版", cover)

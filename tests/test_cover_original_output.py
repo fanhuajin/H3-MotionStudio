@@ -12,12 +12,19 @@ from backend import batch_image, batch_worker, image_workbench as workbench
 
 
 class CoverOriginalOutputTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        judge = patch.object(workbench.batch_ai, "judge_cover_hands", new_callable=AsyncMock,
+                             return_value={"status": "reasonable", "reason": "结构自然"})
+        judge.start()
+        self.addCleanup(judge.stop)
+
     async def test_relay_covers_keep_original_bytes_without_any_resize(self):
         for stage, size in (("bilibili", (1024, 768)), ("douyin", (768, 1024)),
                             ("bilibili", (319, 241))):
             with self.subTest(stage=stage, size=size), tempfile.TemporaryDirectory() as raw:
                 folder = Path(raw)
-                reference = folder / batch_worker.COVER_PERSON_NAME
+                (folder / "最终成片.mp4").write_bytes(b"video")
+                reference = folder / workbench.PERSON_NAME
                 Image.new("RGB", (64, 64)).save(reference)
                 buffer = io.BytesIO()
                 Image.new("RGB", size, (70, 90, 80)).save(buffer, "PNG")
@@ -49,13 +56,14 @@ class CoverOriginalOutputTests(unittest.IsolatedAsyncioTestCase):
         for entry in ("batch", "single", "missing"):
             with self.subTest(entry=entry), tempfile.TemporaryDirectory() as raw:
                 folder = Path(raw)
-                Image.new("RGB", (64, 64)).save(folder / batch_worker.COVER_PERSON_NAME)
+                (folder / "最终成片.mp4").write_bytes(b"video")
+                Image.new("RGB", (64, 64)).save(folder / workbench.PERSON_NAME)
                 seen = []
 
                 async def generate(**kwargs):
                     self.assertIs(kwargs["upscale"], False)
                     self.assertEqual(kwargs["scene_image"].read_bytes(),
-                                     (folder / batch_worker.COVER_PERSON_NAME).read_bytes())
+                                     (folder / workbench.PERSON_NAME).read_bytes())
                     image = io.BytesIO()
                     size = (320, 240) if kwargs["ratio"] == "4:3" else (240, 320)
                     Image.new("RGB", size).save(image, "PNG")

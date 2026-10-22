@@ -5,6 +5,7 @@ import json
 import sqlite3
 import threading
 from copy import deepcopy
+from contextlib import closing
 from typing import Any, Callable
 
 from .settings import DB_PATH
@@ -84,6 +85,8 @@ class BatchStore:
         都齐了」就跳过。
         """
         for item in state.get("items") or []:
+            if item.get("status") == "deleted":
+                continue
             ai = item.get("ai")
             if not isinstance(ai, dict) or not ai:
                 continue
@@ -108,6 +111,8 @@ class BatchStore:
         于是同一条出现两个标题。放在读取路径上，历史条目读一次就对齐。
         """
         for item in state.get("items") or []:
+            if item.get("status") == "deleted":
+                continue
             ai = item.get("ai")
             if not isinstance(ai, dict):
                 continue
@@ -124,7 +129,7 @@ class BatchStore:
         self._sync_titles(state)
 
     def _init_db(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS batches (
@@ -139,7 +144,7 @@ class BatchStore:
 
     def create(self, state: dict[str, Any]) -> dict[str, Any]:
         self._normalize(state)
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             connection.execute(
                 "INSERT INTO batches (id, created_at, updated_at, status, state_json) VALUES (?, ?, ?, ?, ?)",
                 (
@@ -153,7 +158,7 @@ class BatchStore:
         return deepcopy(state)
 
     def get(self, batch_id: str) -> dict[str, Any] | None:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT state_json FROM batches WHERE id = ?", (batch_id,)
             ).fetchone()
@@ -164,7 +169,7 @@ class BatchStore:
         return state
 
     def latest(self) -> dict[str, Any] | None:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             # created_at 在 Windows 上的分辨率约 15.6ms：同一毫秒内建的两个批次会拿到相同
             # 时间戳，只按时间排序会随机取到旧的那条；rowid 兜底保证取最新插入的。
             row = connection.execute(
@@ -177,7 +182,7 @@ class BatchStore:
         return state
 
     def active(self) -> dict[str, Any] | None:
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT state_json FROM batches WHERE status IN ('queued', 'running', 'paused', 'awaiting_review', 'failed')"
                 " ORDER BY created_at DESC, rowid DESC LIMIT 1"
@@ -194,7 +199,7 @@ class BatchStore:
         `active()` 只给最新的一条，服务重启自检时要按 `runnerActive` 逐条判断，
         所以这里给出整个列表（正常只有一个，历史遗留可能有多个）。
         """
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT state_json FROM batches"
                 " WHERE status IN ('queued', 'running', 'paused', 'awaiting_review', 'failed')"
@@ -210,34 +215,36 @@ class BatchStore:
             found.append(state)
         return found
 
-    def update(self, batch_id: str, **changes: Any) -> dict[str, Any]:
-        state = self.get(batch_id)
-        if state is None:
-            raise KeyError(batch_id)
-        state.update(changes)
+    def _save(self, batch_id: str, state: dict[str, Any]) -> dict[str, Any]:
+        """调用方持锁；state 是本次读出的独立对象，不需要再深拷贝给调用方。"""
         state["updatedAt"] = now_iso()
         self._normalize(state)
-        with self._lock, self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute(
                 "UPDATE batches SET updated_at = ?, status = ?, state_json = ? WHERE id = ?",
-                (
-                    state["updatedAt"],
-                    state["status"],
-                    json.dumps(state, ensure_ascii=False),
-                    batch_id,
-                ),
+                (state["updatedAt"], state["status"], json.dumps(state, ensure_ascii=False), batch_id),
             )
         self._publish(batch_id, state)
-        return deepcopy(state)
+        return state
+
+    def update(self, batch_id: str, **changes: Any) -> dict[str, Any]:
+        with self._lock:
+            state = self.get(batch_id)
+            if state is None:
+                raise KeyError(batch_id)
+            state.update(changes)
+            return self._save(batch_id, state)
 
     def mutate(
         self, batch_id: str, mutator: Callable[[dict[str, Any]], None]
     ) -> dict[str, Any]:
-        state = self.get(batch_id)
-        if state is None:
-            raise KeyError(batch_id)
-        mutator(state)
-        return self.update(batch_id, **state)
+        # 同一把锁覆盖读取、修改和写入，避免并发修改覆盖另一条已保存的状态。
+        with self._lock:
+            state = self.get(batch_id)
+            if state is None:
+                raise KeyError(batch_id)
+            mutator(state)
+            return self._save(batch_id, state)
 
     def mutate_item(
         self,
@@ -347,7 +354,7 @@ class BatchStore:
         """
         if not aweme_id:
             return []
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT state_json FROM batches WHERE state_json LIKE ?"
                 " ORDER BY created_at DESC, rowid DESC LIMIT ?",
@@ -374,7 +381,7 @@ class BatchStore:
         job_id = str(job_id or "").strip()
         if not job_id:
             return None
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT state_json FROM batches WHERE state_json LIKE ?"
                 " ORDER BY created_at DESC, rowid DESC LIMIT ?",
@@ -396,7 +403,7 @@ class BatchStore:
         关机看护任务每 10 秒扫一次：只看状态会漏掉「刚刚跑完、状态已经变成 completed」的批次，
         所以直接按 state_json 里的标记找（与 `items_for_aweme` 同一套做法）。
         """
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT state_json FROM batches WHERE state_json LIKE ? OR state_json LIKE ?"
                 " ORDER BY created_at DESC, rowid DESC LIMIT 20",
@@ -412,8 +419,41 @@ class BatchStore:
             states.append(state)
         return states
 
+    def prune_history(self, keep_batch_id: str | None = None, protected_ids: set[str] | None = None) -> dict[str, int]:
+        """只保留最新批次和未删除条目；运行收尾中的条目由调用方临时保护。"""
+        protected_ids = protected_ids or set()
+        with self._lock, closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            latest = connection.execute(
+                "SELECT id, state_json FROM batches ORDER BY created_at DESC, rowid DESC LIMIT 1"
+            ).fetchone()
+            if not latest or (keep_batch_id and latest["id"] != keep_batch_id):
+                return {"batches": 0, "items": 0}
+            batch_id = latest["id"]
+            state = json.loads(latest["state_json"])
+            before = state.get("items") or []
+            remaining = [item for item in before if item.get("status") != "deleted" or item.get("id") in protected_ids]
+            removed = len(before) - len(remaining)
+            old = connection.execute("DELETE FROM batches WHERE id != ?", (batch_id,)).rowcount
+            if not remaining:
+                connection.execute("DELETE FROM batches WHERE id = ?", (batch_id,))
+                state.update(items=[], total=0, deletedCount=0, completedCount=0,
+                             status="cancelled", currentItemId=None, updatedAt=now_iso())
+            elif removed:
+                state.update(items=remaining, total=len(remaining),
+                             deletedCount=sum(item.get("status") == "deleted" for item in remaining),
+                             completedCount=sum(item.get("status") in {"completed", "skipped"} for item in remaining),
+                             updatedAt=now_iso())
+                if state.get("currentItemId") not in {item.get("id") for item in remaining}:
+                    state["currentItemId"] = None
+                connection.execute("UPDATE batches SET state_json = ?, updated_at = ? WHERE id = ?",
+                                   (json.dumps(state, ensure_ascii=False), state["updatedAt"], batch_id))
+            if removed or not remaining:
+                self._publish(batch_id, state)
+            return {"batches": old + int(not remaining), "items": removed}
+
     def subscribe(self, batch_id: str) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=5)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
         self._subscribers.setdefault(batch_id, set()).add(queue)
         return queue
 
@@ -430,7 +470,10 @@ class BatchStore:
                 except asyncio.QueueEmpty:
                     pass
             try:
-                queue.put_nowait(deepcopy(state))
+                # 已删除条目在安全收尾后物理清理，收尾期间也不再复制、推送给页面。
+                visible = {**state, "items": [item for item in state.get("items") or []
+                                            if item.get("status") != "deleted"]}
+                queue.put_nowait(deepcopy(visible))
             except asyncio.QueueFull:
                 pass
 

@@ -1,5 +1,4 @@
 import asyncio
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +8,8 @@ from backend import batch_worker, image_workbench
 
 
 class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
-    """2026-10-18：人物图之后先不出封面，出片后从成片抽帧再出封面。"""
+
+    """封面等待视频交付，使用原人物图并在后台完成。"""
 
     async def test_prep_no_longer_generates_covers(self):
         with patch.object(batch_worker, "_item", return_value={"status": "pending"}), patch.object(
@@ -23,59 +23,6 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
         prepare.assert_awaited()
         covers.assert_not_awaited()
 
-    async def test_finish_item_covers_uses_video_frame(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            item = {"status": "completed", "kind": "dance", "ai": {}}
-            with patch.object(batch_worker, "_item", return_value=item), patch.object(
-                batch_worker, "full_auto_enabled", return_value=True
-            ), patch.object(batch_worker, "_covers_ready", return_value=False), patch.object(
-                batch_worker, "_ensure_video_cover_person",
-                new_callable=AsyncMock, return_value=folder / batch_worker.COVER_PERSON_NAME,
-            ) as ensure, patch.object(
-                batch_worker, "_generate_covers_via_api", new_callable=AsyncMock, return_value=[]
-            ) as generate, patch.object(
-                batch_worker.batch_store, "add_item_log"
-            ):
-                await batch_worker._finish_item_covers("batch", "item", folder)
-        ensure.assert_awaited()
-        generate.assert_awaited()
-
-    async def test_cover_failure_does_not_raise(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            item = {"status": "completed", "kind": "dance", "ai": {}}
-            with patch.object(batch_worker, "_item", return_value=item), patch.object(
-                batch_worker, "full_auto_enabled", return_value=True
-            ), patch.object(batch_worker, "_covers_ready", return_value=False), patch.object(
-                batch_worker, "_ensure_video_cover_person", new_callable=AsyncMock, return_value=None
-            ), patch.object(
-                batch_worker, "_generate_covers_via_api",
-                new_callable=AsyncMock, return_value=["B站封面失败"],
-            ), patch.object(batch_worker.batch_store, "add_item_log") as log:
-                await batch_worker._finish_item_covers("batch", "item", folder)
-        self.assertTrue(any("图片页" in str(call) for call in log.call_args_list))
-
-    async def test_generate_cover_prefers_video_frame(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            frame = folder / batch_worker.COVER_PERSON_NAME
-            person = folder / "人物图.png"
-            frame.write_bytes(b"frame")
-            person.write_bytes(b"person")
-            (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
-            seen = {}
-
-            async def fake_generate(**kwargs):
-                seen["scene_image"] = kwargs["scene_image"]
-                seen["reference_bytes"] = kwargs["scene_image"].read_bytes()
-                Path(kwargs["output_path"]).write_bytes(b"cover")
-
-            with patch.object(
-                image_workbench.batch_image, "generate_candidate_image", side_effect=fake_generate
-            ), patch.object(image_workbench, "save_upload"):
-                await image_workbench._generate_cover(folder, "bilibili", "dance")
-        self.assertEqual(seen["reference_bytes"], b"frame")
 
     async def test_cover_reference_falls_back_to_person_image(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -112,11 +59,11 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
         messages = [str(call) for call in set_auto.call_args_list]
         self.assertTrue(any("还没有最终成片" in message for message in messages))
 
-    def test_single_cover_generation_uses_cover_person(self):
+    def test_single_cover_generation_uses_person_after_video(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             (folder / "人物图.png").write_bytes(b"person")
-            (folder / "封面人物图.png").write_bytes(b"cover-person")
+            (folder / "最终成片.mp4").write_bytes(b"video")
             (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
             with patch.object(image_workbench, "resolve_folder", return_value=folder), patch.object(
                 image_workbench, "infer_kind", return_value="dance"
@@ -150,75 +97,6 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(batch_worker._prep_assets_ready(item))
                 self.assertFalse(batch_worker._covers_ready(item))
 
-    def test_extract_cover_person_from_generated_video(self):
-        try:
-            subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True, timeout=30)
-        except (OSError, subprocess.SubprocessError):
-            self.skipTest("本机没有 ffmpeg")
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            video = folder / "clip.mp4"
-            made = subprocess.run(
-                [
-                    "ffmpeg", "-v", "error", "-y",
-                    "-f", "lavfi", "-i", "testsrc=size=360x640:rate=24:duration=3",
-                    "-pix_fmt", "yuv420p", str(video),
-                ],
-                capture_output=True,
-                timeout=120,
-            )
-            if made.returncode != 0:
-                self.skipTest("本机 ffmpeg 无法生成测试视频")
-            target = folder / batch_worker.COVER_PERSON_NAME
-            with patch.object(batch_worker, "_pick_hand_cover_person", return_value=False):
-                batch_worker.extract_cover_person(video, target)
-            self.assertTrue(target.is_file() and target.stat().st_size > 0)
-            self.assertEqual(target.read_bytes()[:2], b"\xff\xd8")   # JPEG
-
-    def test_extract_cover_person_prefers_the_hand_picker(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            video = folder / "clip.mp4"
-            video.write_bytes(b"fake")
-            target = folder / batch_worker.COVER_PERSON_NAME
-
-            def fake_pick(video_path, target_path):
-                Path(target_path).write_bytes(b"\xff\xd8hand")
-                return True
-
-            with patch.object(batch_worker, "_pick_hand_cover_person", side_effect=fake_pick):
-                batch_worker.extract_cover_person(video, target)
-            self.assertEqual(target.read_bytes(), b"\xff\xd8hand")
-
-    def test_extract_cover_person_falls_back_when_picker_is_unavailable(self):
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            video = folder / "clip.mp4"
-            video.write_bytes(b"fake")
-            target = folder / batch_worker.COVER_PERSON_NAME
-            with patch.object(batch_worker, "_pick_hand_cover_person", return_value=False), patch.object(
-                batch_worker, "_video_duration_seconds", return_value=3.0
-            ), patch.object(
-                batch_worker, "_scan_all_frames", return_value=[(1.0, b"\xff\xd8fallback")]
-            ):
-                batch_worker.extract_cover_person(video, target)
-            self.assertEqual(target.read_bytes(), b"\xff\xd8fallback")
-
-
-    async def test_covers_go_to_background_after_delivery(self):
-        """默认不挡下一条视频：抽完封面人物图就把两张封面丢到后台。"""
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            with patch.object(batch_worker, "full_auto_enabled", return_value=True), patch.object(
-                batch_worker, "cover_blocking", return_value=False
-            ), patch.object(
-                batch_worker, "_ensure_video_cover_person", new_callable=AsyncMock
-            ) as ensure, patch.object(
-                batch_worker, "spawn_item_covers", return_value=True
-            ) as spawn:
-                await batch_worker._finish_covers_after_delivery("batch", "item", folder)
-        ensure.assert_awaited()
-        spawn.assert_called_once()
 
     async def test_cover_blocking_switch_still_awaits_generation(self):
         with tempfile.TemporaryDirectory() as directory:

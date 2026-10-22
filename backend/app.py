@@ -464,7 +464,7 @@ class BatchCreateRequest(BaseModel):
     # 整批跑完后是否自动关机（页面开关，默认关闭）
     shutdownOnComplete: bool = False
     shutdownAfterPrep: bool = False
-    autoRender: bool = True
+    autoRender: bool = False
 
 
 class BatchShutdownRequest(BaseModel):
@@ -810,8 +810,10 @@ def _with_publish_chain(state: dict[str, Any] | None) -> dict[str, Any] | None:
     """
     if not state:
         return state
+    # 页面不会展示已删除条目；历史仍完整保存在数据库，API 不传它们的大段提示词和日志。
+    state = {**state, "items": [item for item in state.get("items") or [] if item.get("status") != "deleted"]}
     for item in state.get("items") or []:
-        # 2026-10-18：备料齐不再看封面 —— 封面改到出片后从成片抽帧生成。
+        # 2026-10-18：备料齐不再看封面 —— 封面改到出片后检查人物图手部后生成。
         item["prepReady"] = batch_worker._prep_assets_ready(item) if batch_worker.full_auto_enabled() else bool(
             (item.get("ai") or {}).get("reference_image_path")
         )
@@ -826,6 +828,7 @@ def _with_publish_chain(state: dict[str, Any] | None) -> dict[str, Any] | None:
 
 @app.get("/api/batches/latest")
 async def latest_batch():
+    batch_worker.cleanup_batch_history(batch_store)
     state = _heal_stalled_batch(batch_store.latest())
     if not state:
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
@@ -856,6 +859,7 @@ async def create_batch(request: BatchCreateRequest):
     if not state["items"]:
         raise HTTPException(400, "唱歌和跳舞填写了相同链接，重复链接已从两边去掉；请填写不同的链接")
     batch_store.create(state)
+    batch_store.prune_history(state["id"])
     if request.shutdownOnComplete or request.shutdownAfterPrep:
         # 开关在建批次时就已经打开：立刻挂上看护任务（批次跑完那一刻才真的排关机）
         ensure_shutdown_watcher()
@@ -953,27 +957,32 @@ async def resume_batch(batch_id: str):
 
 @app.post("/api/batches/{batch_id}/auto-render")
 async def set_batch_auto_render(batch_id: str, request: BatchAutoRenderRequest):
-    state = _batch_or_404(batch_id)
-    if state.get("status") == "cancelled":
-        raise HTTPException(409, "批次已取消")
-    batch_store.update(batch_id, autoRender=request.enabled, renderRequested=False, shutdownAfterPrep=False if request.enabled else state.get("shutdownAfterPrep", False))
-    note = "自动出片已开启；备料区清空后开始出片。" if request.enabled else "自动出片已关闭；备料完成后等待手动启动。"
-    if request.enabled and state.get("status") not in {"paused", "failed", "completed"}:
-        return _resume_batch(batch_id, note)
-    return batch_store.update(batch_id, notice=note)
+    _batch_or_404(batch_id)
+    if request.enabled:
+        raise HTTPException(409, "备料完成后统一进入等待区，请手动安排出片")
+    return batch_store.update(batch_id, autoRender=False)
 
 
 @app.post("/api/batches/{batch_id}/render")
-async def start_batch_render(batch_id: str):
+async def start_batch_render(batch_id: str, request: BatchItemIdsRequest | None = None):
     state = _batch_or_404(batch_id)
-    if state.get("status") in {"cancelled", "failed"}:
-        raise HTTPException(409, "批次已停止，请先继续或处理失败条目")
+    if state.get("status") == "cancelled":
+        raise HTTPException(409, "批次已取消")
     if batch_worker._prep_remaining(state):
-        raise HTTPException(409, "备料区还有待处理任务；完成后即可开始出片，异常条目可稍后补跑")
-    if not any(item.get("status") == "confirmed" for item in state.get("items") or []):
-        raise HTTPException(409, "出片区没有等待出片的任务")
-    batch_store.update(batch_id, renderRequested=True, shutdownAfterPrep=False)
-    return _resume_batch(batch_id, "已请求出片；备料区所有任务完成后开始逐条出片。")
+        raise HTTPException(409, "备料区还有待处理任务，完成后可以安排出片")
+    wanted = set(request.itemIds) if request else None
+    candidates = [row for row in state.get("items") or []
+                  if (wanted is None or row["id"] in wanted)
+                  and (row.get("status") == "skipped" or
+                       (row.get("status") == "confirmed" and not row.get("renderQueued")))]
+    if not candidates:
+        raise HTTPException(409, "等待区没有可安排的任务")
+    for row in candidates:
+        if row.get("status") == "skipped":
+            batch_worker.restart_item_to_run(batch_id, row["id"])
+        batch_worker._set_item(batch_id, row["id"], renderQueued=True)
+    batch_store.update(batch_id, autoRender=False, renderRequested=True, shutdownAfterPrep=False)
+    return _resume_batch(batch_id, "已安排出片，按队列逐条制作。")
 
 
 @app.post("/api/batches/{batch_id}/shutdown-on-complete")
@@ -1351,8 +1360,9 @@ async def skip_batch_item(batch_id: str, item_id: str):
     item = _batch_item_or_404(batch_id, item_id)
     if item.get("status") in {"completed", "skipped", "deleted"}:
         raise HTTPException(409, "当前条目已经结束")
-    batch_store.mutate_item(batch_id, item_id, lambda row: row.update(skipRequested=True))
     cancel_item_work(batch_id, item_id)
+    if item.get("status") in {"running", "revising"}:
+        batch_store.mutate_item(batch_id, item_id, lambda row: row.update(skipRequested=True))
     # 正在出片的那一条：光设 `skipRequested` 远远不够 —— 子任务在 ComfyUI 里照跑不误，
     # 用户看到的就是「点了取消没效果」（2026-09-15 用户：「点击列表取消怎么没有效果」）。
     # 跟删除端点走同一条路：**真的把子任务取消掉**，pipeline 会在下一个检查点收尾
@@ -1367,7 +1377,7 @@ async def skip_batch_item(batch_id: str, item_id: str):
                 raise
     if item.get("status") not in {"running", "revising"}:
         def mark_skipped(row: dict[str, Any]) -> None:
-            row.update(status="skipped", stage="skipped", finishedAt=now_iso(), childJob=None)
+            row.update(status="skipped", stage="skipped", finishedAt=now_iso(), childJob=None, skipRequested=True, renderQueued=False)
             for milestone in row.get("milestones") or []:
                 if milestone.get("status") in {"pending", "running"}:
                     milestone["status"] = "skipped"
@@ -1409,7 +1419,9 @@ async def delete_batch_item(batch_id: str, item_id: str):
                 if milestone.get("status") in {"pending", "running"}:
                     milestone["status"] = "skipped"
         batch_store.mutate_item(batch_id, item_id, mark_deleted)
-    return _wake_batch(batch_id, "条目已删除。")
+    result = _wake_batch(batch_id, "条目已删除。")
+    batch_worker.cleanup_batch_history(batch_store)
+    return result
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/move")
@@ -1512,7 +1524,9 @@ async def delete_batch_items_endpoint(batch_id: str, request: BatchItemIdsReques
     note = f"已删除 {marked} 条。"
     if busy:
         note += f" 其中 {len(busy)} 条正在出片，已请求安全取消，已生成的成片会保留。"
-    return _wake_batch(batch_id, note)
+    response = _wake_batch(batch_id, note)
+    batch_worker.cleanup_batch_history(batch_store)
+    return response
 
 
 @app.get("/api/batches/{batch_id}/items/{item_id}/image")

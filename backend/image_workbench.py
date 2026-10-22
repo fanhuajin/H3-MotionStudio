@@ -18,7 +18,7 @@ from PIL import Image, ImageOps
 
 import httpx
 
-from . import batch_ai, batch_image, source_appearance
+from . import batch_ai, batch_image, cover_review, source_appearance
 from . import batch_worker as batch_worker
 from .batch_store import batch_store
 from .batch_worker import IDENTITY_PATH
@@ -178,7 +178,6 @@ def list_items() -> list[dict[str, Any]]:
         douyin = _first(folder, COVER_NAMES["douyin"])
         if not any((copy, frame, person, bili, douyin)):
             continue
-        cover_person = batch_worker.cover_person_image(folder)
         has_video = (folder / "最终成片.mp4").is_file()
         items.append({
             "id": _folder_id(folder),
@@ -188,10 +187,10 @@ def list_items() -> list[dict[str, Any]]:
             "kind": infer_kind(folder),
             "automation": AUTOMATIONS.get(_folder_id(folder)),
             "hasVideo": has_video,
-            "canCover": bool(cover_person or has_video),
+            "canCover": bool(person and has_video),
+            "coverReview": cover_review.read_report(person, folder / ".h3-cover-hands.json") if person else None,
             "assets": {
                 "frame": _meta(frame), "identity": _meta(IDENTITY_PATH), "person": _meta(person),
-                "coverPerson": _meta(cover_person),
                 "bilibili": _meta(bili), "douyin": _meta(douyin),
             },
         })
@@ -217,7 +216,7 @@ def list_items() -> list[dict[str, Any]]:
             "copy": "", "kind": row.get("kind"),
             "automation": None, "awaitingMaterials": True, "batchLive": live,
             "hasVideo": False, "canCover": False,
-            "assets": {name: None for name in ("frame", "identity", "person", "coverPerson", "bilibili", "douyin")},
+            "assets": {name: None for name in ("frame", "identity", "person", "bilibili", "douyin")},
         }
         items.append(entry)
         by_id[key] = entry
@@ -229,7 +228,6 @@ def asset_path(folder: Path, key: str) -> Path:
         "frame": _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg"),
         "identity": IDENTITY_PATH if IDENTITY_PATH.is_file() else None,
         "person": _first(folder, PERSON_NAME),
-        "coverPerson": batch_worker.cover_person_image(folder),
         "bilibili": _first(folder, COVER_NAMES["bilibili"], LEGACY_COVER_NAMES["bilibili"]),
         "douyin": _first(folder, COVER_NAMES["douyin"], LEGACY_COVER_NAMES["douyin"]),
     }
@@ -263,17 +261,43 @@ def preview_path(path: Path) -> Path:
     return target
 
 
-def prompt(folder: Path, stage: str, kind: str = "singing") -> str:
+def prompt(folder: Path, stage: str, kind: str = "singing", *, hand_report: dict[str, Any] | None = None, failure_fallback: bool = False) -> str:
     copy = _copy_text(folder)
     if stage == "person":
         return person_prompt(folder, kind)
     # 画幅话术只写比例、不写平台名（用户 2026-09-20：封面多平台复用，提示词里出现
     # 「B站」/「抖音」会让模型把对应平台的 logo 画进封面）。
-    # 封面只在人物图上排标题和简介，不再附加人物图生成阶段的手部、服装和背景规则。
+    # 原人物图单参考；检查合理保留构图，否则明确使用不露手半身构图。
     ratio = "4:3 横版" if stage == "bilibili" else "3:4 竖版"
     title = _copy_field(copy, "标题") or _title(copy, folder.name)
     introduction = _copy_field(copy, "简介")
-    return f"""以参考图为底图制作 {ratio} 封面。保留原图人物的脸部五官、发型、发饰、表情、视线、姿态、服装、背景与光线，保持人物原有比例和位置，不重新摆姿势。原图中已经可见的手臂、双手和手指保持原样，不改变动作、位置、形态和遮挡关系，不重画已有手部。适配画幅时优先向人物旁边扩展背景，形成连续的文字留白。如果扩图使原本被画面边缘裁切的袖口、手腕或双手所在位置进入画面，允许仅自然补全原图画外缺失的部分，沿原有手臂方向和动作延续袖口、手腕和手掌，保持透视一致、连接连续、手指数量及连接合理。不得出现空袖口、手腕突然截断、双手消失或新增手臂，不得只删除手掌而留下断臂。仍处于最终画幅之外，或因双手背在身后、被身体或衣物自然遮挡而不可见的手部，保持原有遮挡关系，无需补出或强行展示，不为露出双手改变姿态。不为排字删除、遮盖或改变人物及手部；留白不足时优先移动文字、换行或缩小字号，再适量扩展背景。只将下列文字自然融入画面。
+    person = _first(folder, PERSON_NAME)
+    report = hand_report or (cover_review.read_report(person, folder / ".h3-cover-hands.json") if person else None)
+    # 横版需要更小的人物占宽，避免套用竖版肩宽后变成大头特写。
+    framing_scale = (
+        "双肩总宽约占画面宽度的35%至45%，最多不超过45%；头顶留出约8%的画面高度，"
+        "头部从发顶到下巴约占画面高度的四分之一至三分之一，镜头完整展示至腰部附近。"
+        if stage == "bilibili" else
+        "双肩总宽约占画面宽度的一半，最多不超过六成，头顶留出自然余量。"
+    )
+    framing = (
+        "保持参考人物的脸部五官、发型、发饰、服装、场景与光线，改为适度拉远的半身构图，展示头部至腰部附近，"
+        "人物偏左，右侧留出连续的文字空间；完整保留双肩，"
+        f"{framing_scale}"
+        "头顶和两侧留有自然边距，不裁切肩膀，不放大头脸，不用贴脸特写或肩部以上近景来避手。"
+        "若参考图的手或手臂举到胸前、肩旁或脸旁，不得仅靠裁切隐藏；将双臂调整为自然下垂，双手及手腕完全位于画面下边缘之外。"
+        "自然补全原先被手或手臂遮挡的衣服、背景及必要的人物轮廓，不改变人物五官身份；"
+        "不残留手指、手腕、截断手掌或突兀的手臂，不得只删除手掌而留下断臂。"
+        if failure_fallback or cover_review.hide_hands(report) else
+        "保留原图人物的脸部五官、发型、发饰、表情、视线、姿态、服装、背景与光线，保持人物原有比例和位置，不重新摆姿势。"
+        "原图中已经可见的手臂、双手和手指保持原样，不改变动作、位置、形态和遮挡关系，不重画已有手部。"
+        "适配画幅时优先向人物旁边扩展背景，形成连续的文字留白。"
+        "适配画幅只扩展背景，不扩展人物肢体，不补画原图画外的手掌或手指。"
+        "不得出现空袖口、手腕突然截断、双手消失或新增手臂，不得只删除手掌而留下断臂。"
+        "仍处于最终画幅之外，或因双手背在身后、被身体或衣物自然遮挡而不可见的手部，保持原有遮挡关系，无需补出或强行展示，不为露出双手改变姿态。"
+        "不为排字删除、遮盖或改变人物及手部；留白不足时优先移动文字、换行或缩小字号，再适量扩展背景。"
+    )
+    return f"""仅以这张原人物图为参考制作 {ratio} 封面。{framing}只将下列文字自然融入画面。
 标题：{title}
 简介：{introduction}
 标题采用自然有手写感的毛笔字，重点词用协调的颜色突出，搭配少量自然笔触或手绘下划线；简介用清楚易读的小字轻量融入画面，不使用厚重边框。文字准确完整，不重复，不改写标题与简介。
@@ -289,11 +313,7 @@ def material_zip(folder: Path, stage: str, kind: str) -> bytes:
             for filename, key in (("图一_已糊脸抽帧.png", "frame"), ("图二_固定人物参考.png", "identity")):
                 archive.write(asset_path(folder, key), filename)
         else:
-            cover_person = batch_worker.cover_person_image(folder)
-            if cover_person is not None:
-                archive.write(cover_person, batch_worker.COVER_PERSON_NAME)
-            else:
-                archive.write(asset_path(folder, "person"), PERSON_NAME)
+            archive.write(asset_path(folder, "person"), PERSON_NAME)
             copy_path = folder / "发布文案.txt"
             if copy_path.is_file():
                 archive.write(copy_path, "发布文案.txt")
@@ -353,7 +373,7 @@ def save_upload(
     width, height = image.size
     original_cover = preserve_cover and stage in COVER_NAMES
     if allow_repair and not original_cover and min(width, height) < 640:
-        # 我们自己的出图（1k 档出图 + 本地 VOSR2 放大）：放大是内存里的任务，后端在排队
+        # 我们自己的低分辨率补放大：放大是内存里的任务，后端在排队
         # 期间被杀就没了 —— 这时不能把这张**已经付过钱**的图判成「分辨率太低」，本地补一刀。
         image, note = batch_image.ensure_deliverable_image(image)
         if note:
@@ -593,17 +613,9 @@ async def _generate_person(
 async def _generate_cover(
     folder: Path, stage: str, kind: str, *, allow_uncertain_retry: bool = False
 ) -> None:
-    """封面走**第三方 API** 出带标题文字的成图（用户 2026-09-19：「封面也用api生成 不需要本地」）。
-
-    提示词用 `prompt(folder, stage, kind)`（里面就是发布文案的标题与简介）；
-    参考图优先用这条成片全帧扫描抽出的 `封面人物图.png`（2026-10-18：人物图的手可能画坏，
-    成片的手是好的，图片与封面页都用这张封面人物图），没有时才用 `人物图.png`（保住人物与画面）。
-    请求比例 4:3（B站）/ 3:4（抖音）；中转站返回什么尺寸就原样保存，
-    不做 AI 放大或按本地目标尺寸再次缩放、裁切。
-
-    历史上这里曾是「本地确定性合成」（人物图 + 模糊背景垫底），因为中转站对封面类请求
-    偶有审核失败；现在改为 API 直出，失败会如实写进 automation.message 由页面显示。
-    """
+    """视频交付后，用原人物图检查手部并生成封面；旧付费任务保持原输入续取。"""
+    if not (folder / "最终成片.mp4").is_file():
+        raise RuntimeError("这条还没有最终成片；请先出片，或手动上传封面。")
     key = (str(folder.resolve()).lower(), stage)
     existing = _COVER_INFLIGHT.get(key)
     if existing is not None:
@@ -656,29 +668,59 @@ async def _generate_cover(
             if not inputs.is_file():
                 if checkpoint.is_file():
                     raise RuntimeError("封面任务记录缺少原始输入，请核对渠道后台；未重新提交生成")
-                reference = batch_worker.cover_person_image(folder) or asset_path(folder, "person")
-                frozen = work / f"reference{reference.suffix}"
+                reference = asset_path(folder, "person")
+                frozen = work / "reference.png"
                 frozen.write_bytes(reference.read_bytes())
-                snapshot = {"reference": frozen.name, "prompt": prompt(folder, stage, kind),
-                            "ratio": "4:3" if stage == "bilibili" else "3:4"}
+                # 先冻结实际提交的图片，再检查；两种比例共用同内容的检查结果。
+                report = await cover_review.review(frozen, folder / ".h3-cover-hands.json")
+                base_prompt = prompt(folder, stage, kind, hand_report=report)
+                snapshot = {"reference": frozen.name, "prompt": base_prompt,
+                            "handReview": report, "ratio": "4:3" if stage == "bilibili" else "3:4"}
+                # 截指输入首次就使用备用构图，失败后不再重复同一备用付费请求。
+                if report.get("fingersCutByFrame") in {"yes", "uncertain"}:
+                    snapshot["failureFallback"] = True
                 temporary = inputs.with_suffix(".tmp")
                 temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
                 os.replace(temporary, inputs)
             snapshot = json.loads(inputs.read_text(encoding="utf-8"))
             if not marker.is_file():
                 marker.write_text(json.dumps({"submittedAt": time.time(), "stage": stage}), encoding="utf-8")
-            # 冻结的参考来自成片清晰帧（老作品/抽帧失败才回退人物图），
+            # 新请求冻结原人物图；历史请求可含双参考，
             # 续取时保持原参考和文案，避免改图/改文案使原任务指纹不匹配。
-            await batch_image.generate_candidate_image(
-                scene_image=work / snapshot["reference"],
-                identity_image=None,
-                prompt=snapshot["prompt"],
-                ratio=snapshot["ratio"],
-                output_path=candidate,
-                request_key=f"cover:{str(folder.resolve()).lower()}:{stage}",
-                upscale=False,
-                retain_checkpoint=True,
-            )
+            while True:
+                try:
+                    await batch_image.generate_candidate_image(
+                        scene_image=work / snapshot["reference"],
+                        identity_image=work / snapshot["identity"] if snapshot.get("identity") else None,
+                        prompt=snapshot["prompt"],
+                        ratio=snapshot["ratio"],
+                        output_path=candidate,
+                        request_key=f"cover:{str(folder.resolve()).lower()}:{stage}",
+                        upscale=False,
+                        retain_checkpoint=True,
+                    )
+                    break
+                except RuntimeError:
+                    # Only a provider-confirmed terminal failure permits a fresh paid request.
+                    # Timeouts, query/download errors and unknown outcomes retain the original task.
+                    record = json.loads(checkpoint.read_text(encoding="utf-8")) if checkpoint.is_file() else {}
+                    if not record.get("terminalFailure") or snapshot.get("failureFallback"):
+                        raise
+                    logger.warning("%s 封面任务明确失败，换用避手半身构图备用提示词重试一次：%s", stage, folder.name)
+                    (work / "failed-task.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+                    reference = asset_path(folder, "person")
+                    frozen = work / "fallback-reference.png"
+                    frozen.write_bytes(reference.read_bytes())
+                    snapshot = {
+                        "reference": frozen.name,
+                        "prompt": prompt(folder, stage, kind, failure_fallback=True),
+                        "ratio": "4:3" if stage == "bilibili" else "3:4",
+                        "failureFallback": True,
+                    }
+                    temporary = inputs.with_suffix(".tmp")
+                    temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+                    os.replace(temporary, inputs)
+                    batch_image._clear_task_checkpoint(candidate)
         save_upload(folder, stage, candidate.read_bytes(), preserve_cover=True)
         completed = True
         marker.unlink(missing_ok=True)
@@ -711,8 +753,8 @@ async def run_automatic(folder_id: str, *, force: bool = False,
     """自动出图。`stage` 给定就**只跑那一步**（用户在页面上单独点某一张）。
 
     stage ∈ {None(整条), "person", "bilibili", "douyin"}；封面改成出片后生成：
-    **先用成片抽帧得到 `封面人物图.png`，再以它作参考**（人物图的手可能画坏）。整条自动
-    在没有成片/封面人物图时会跳过封面，只补人物图；单点封面则明确报错，让用户先出片或
+    参考原人物图，先检查手部再决定保留原构图或避手半身构图。整条自动
+    在没有成片时会跳过封面，只补人物图；单点封面则明确报错，让用户先出片或
     手动上传封面。页面据 `canCover` 置灰。
     """
     folder = resolve_folder(folder_id)
@@ -744,26 +786,13 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                     continue
                 if not force and (folder / COVER_NAMES[step]).is_file():
                     continue
-                # 封面的参考图必须是「封面人物图」（成片逐帧抽帧，手部清晰），不是人物图。
-                cover_person = batch_worker.cover_person_image(folder)
-                if cover_person is None:
-                    video = folder / "最终成片.mp4"
-                    if not video.is_file():
-                        if stage is None:
-                            skipped_covers = True
-                            continue
-                        raise RuntimeError(
-                            "这条还没有最终成片；封面人物图要从成片逐帧抽帧生成。"
-                            "请先出片，或手动上传封面。"
-                        )
-                    _set_auto(folder_id, status="running", stage="frame",
-                              message="正在从成片逐帧选封面参考（有手看手部、无手看画面清晰度）", kind=kind)
-                    try:
-                        await batch_worker.ensure_cover_person(folder)
-                    except Exception as exc:  # noqa: BLE001
-                        raise RuntimeError(f"从成片抽封面人物图失败：{exc}") from exc
+                if not (folder / "最终成片.mp4").is_file():
+                    if stage is None:
+                        skipped_covers = True
+                        continue
+                    raise RuntimeError("这条还没有最终成片；请先出片，或手动上传封面。")
                 _set_auto(folder_id, status="running", stage=step,
-                          message=f"正在用封面人物图生成{label}", kind=kind)
+                          message=f"正在检查人物图手部并生成{label}（异常或不确定时改为不露手半身构图）", kind=kind)
                 with batch_image.report_request_status(
                     lambda message: _set_auto(folder_id, message=message)
                 ):
@@ -773,7 +802,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                         allow_uncertain_retry=bool(force and stage == step),
                     )
             done = (
-                "人物图已完成；封面等成片后从封面人物图生成"
+                "人物图已完成；封面等成片后检查人物图手部再生成"
                 if skipped_covers else
                 ("人物图与封面已自动补齐" if not stage else "已完成生成")
             )
@@ -801,10 +830,10 @@ def start_automatic(folder_id: str, *, force: bool = False,
 
 
 def start_all_missing() -> dict[str, int]:
-    """一键补齐：缺人物图的排队；缺封面的只有「有成片/已有封面人物图」才排队。
+    """一键补齐：缺人物图的排队；缺封面的只有人物图与最终成片齐备才排队。
 
-    2026-10-18 起封面必须等成片后从封面人物图生成：还没出片的作品只补人物图，
-    封面计入 `waiting`，等出片后自动或手动补，不再用人物图硬出封面。
+    2026-10-18 起封面必须等成片后检查人物图手部后生成：还没出片的作品只补人物图，
+    封面计入 `waiting`，等出片后自动或手动补。
     """
     _clear_stop()  # 一键生成 = 新的一轮意图
     queued = 0
