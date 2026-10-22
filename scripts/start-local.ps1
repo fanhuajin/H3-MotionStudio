@@ -2,7 +2,14 @@
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $projectRoot
 
-$healthPath = '/api/config'
+function Set-StartupProgress {
+    param([int]$Value, [string]$Message)
+    if ($env:H3_STARTUP_PROGRESS) {
+        [System.IO.File]::WriteAllText($env:H3_STARTUP_PROGRESS, "$Value|$Message", [System.Text.Encoding]::UTF8)
+    }
+}
+Set-StartupProgress 5 '正在检查工作台…'
+$healthPath = '/api/system/project-status'
 
 # **首选端口改成 15111（ComfyUI 同理改成 15188）** —— 用户 2026-09-19 明确要求：
 # 「直接帮我改掉 不要用这些端口了 改成系统不要的」。原来首选 8111/8188，但这两个端口
@@ -103,10 +110,12 @@ foreach ($port in $portCandidates) {
     if (Test-ServiceReady -Url $existingUrl) {
         Write-Host ('检测到工作台已在运行（' + $existingUrl + '），直接打开窗口。')
         Start-Process $existingUrl
+        Set-StartupProgress 100 '工作台已就绪'
         exit 0
     }
 }
 
+Set-StartupProgress 15 '正在检查本地环境…'
 # 选一个能绑的端口：先 8111，不可用就换 15000 以上的稳定端口。
 $servicePort = 0
 $failed = @()
@@ -200,11 +209,16 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
     python -m venv (Join-Path $projectRoot '.venv')
 }
 
+Set-StartupProgress 30 '正在准备运行依赖…'
 Write-Host '正在准备后端依赖……'
 & $venvPython -m pip install -r (Join-Path $projectRoot 'backend\requirements.txt') --disable-pip-version-check
+if ($LASTEXITCODE -ne 0) { throw '后端依赖准备失败，请查看启动日志。' }
+Set-StartupProgress 55 '正在准备工作台页面…'
 Write-Host '正在构建前端页面……'
 npm run build
 
+if ($LASTEXITCODE -ne 0) { throw '工作台页面构建失败，请查看启动日志。' }
+Set-StartupProgress 80 '正在启动本地服务…'
 Write-Host '正在启动本地服务……'
 # 后端输出必须落盘：2026-09-13 页面上出现过「Unexpected token 'I', "Internal S"...」，
 # 但当时的实例没有重定向输出，500 的 traceback 直接丢了，只能靠猜。
@@ -256,6 +270,7 @@ try {
     Write-Host ('启动成功！正在打开工作台：' + $serviceUrl) -ForegroundColor Green
     Write-Host '提示：关闭本窗口会同时停止工作台服务。' -ForegroundColor DarkGray
     Write-Host ''
+    Set-StartupProgress 100 '工作台已就绪'
     Start-Process $serviceUrl
     Wait-Process -Id $backend.Id
 } finally {

@@ -79,7 +79,7 @@ def close_project(request: Request):
                     batch_store.update(cancelled["batchId"], shutdownOnComplete=False, shutdownAfterPrep=False)
                 except KeyError:
                     pass
-            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             with (DATA_DIR / "project-close.log").open("ab") as log:
                 _HELPER = subprocess.Popen([
                     sys.executable, "-B", str(PROJECT_ROOT / "scripts" / "stop-project.py"),

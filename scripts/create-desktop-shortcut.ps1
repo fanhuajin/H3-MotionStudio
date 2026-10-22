@@ -3,7 +3,7 @@
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $assetDirectory = Join-Path $projectRoot 'assets'
 $iconPath = Join-Path $assetDirectory 'H3-MotionStudio.ico'
-$launcherPath = Join-Path $projectRoot '启动H3影动高清工作台.bat'
+$launcherPath = Join-Path $projectRoot 'scripts\launch-workbench.vbs'
 $desktopPath = [Environment]::GetFolderPath('Desktop')
 $shortcutPath = Join-Path $desktopPath 'H3影动高清工作台.lnk'
 
@@ -77,7 +77,8 @@ try {
 
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $launcherPath
+$shortcut.TargetPath = Join-Path $env:WINDIR 'System32\wscript.exe'
+$shortcut.Arguments = '"{0}"' -f $launcherPath
 $shortcut.WorkingDirectory = $projectRoot
 $shortcut.IconLocation = "$iconPath,0"
 $shortcut.Description = '启动 H3 影动高清工作台'

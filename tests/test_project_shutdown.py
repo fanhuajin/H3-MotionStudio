@@ -61,6 +61,10 @@ class ProjectShutdownTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn(str(shutdown.PROJECT_ROOT / "scripts/stop-project.py"), command)
         self.assertEqual(command[command.index("--pid") + 1], "10")
+        flags = popen.call_args.kwargs["creationflags"]
+        self.assertEqual(flags & getattr(shutdown.subprocess, "DETACHED_PROCESS", 0), 0)
+        self.assertEqual(flags & getattr(shutdown.subprocess, "CREATE_NO_WINDOW", 0),
+                         getattr(shutdown.subprocess, "CREATE_NO_WINDOW", 0))
         cancel.assert_called_once()
 
     def test_duplicate_click_does_not_spawn_second_helper(self):
