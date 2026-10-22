@@ -273,18 +273,24 @@ def prompt(folder: Path, stage: str, kind: str = "singing", *, hand_report: dict
     introduction = _copy_field(copy, "简介")
     person = _first(folder, PERSON_NAME)
     report = hand_report or (cover_review.read_report(person, folder / ".h3-cover-hands.json") if person else None)
-    # 横版需要更小的人物占宽，避免套用竖版肩宽后变成大头特写。
+    # B站恢复脸部突出的近景；抖音继续沿用当前拉远半身构图。
     framing_scale = (
-        "双肩总宽约占画面宽度的35%至45%，最多不超过45%；头顶留出约8%的画面高度，"
-        "头部从发顶到下巴约占画面高度的四分之一至三分之一，镜头完整展示至腰部附近。"
+        "头部与肩颈为主体，脸部突出，画面下边缘裁至胸部附近，头顶保留自然边距，不拉远至腰部。"
         if stage == "bilibili" else
         "双肩总宽约占画面宽度的一半，最多不超过六成，头顶留出自然余量。"
     )
-    framing = (
+    avoid_hands_crop = (
+        "保持参考人物的脸部五官、发型、发饰、服装、场景与光线，采用胸部以上近景构图，"
+        "人物偏左，右侧留出连续的文字空间；"
+        f"{framing_scale}"
+        if stage == "bilibili" else
         "保持参考人物的脸部五官、发型、发饰、服装、场景与光线，改为适度拉远的半身构图，展示头部至腰部附近，"
         "人物偏左，右侧留出连续的文字空间；完整保留双肩，"
         f"{framing_scale}"
         "头顶和两侧留有自然边距，不裁切肩膀，不放大头脸，不用贴脸特写或肩部以上近景来避手。"
+    )
+    framing = (
+        avoid_hands_crop +
         "若参考图的手或手臂举到胸前、肩旁或脸旁，不得仅靠裁切隐藏；将双臂调整为自然下垂，双手及手腕完全位于画面下边缘之外。"
         "自然补全原先被手或手臂遮挡的衣服、背景及必要的人物轮廓，不改变人物五官身份；"
         "不残留手指、手腕、截断手掌或突兀的手臂，不得只删除手掌而留下断臂。"

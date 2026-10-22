@@ -51,11 +51,16 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
                         self.assertNotIn("只扩展必要背景", kw["prompt"])
                         self.assertNotIn("适度拉远的半身构图", kw["prompt"])
                     else:
-                        self.assertIn("适度拉远的半身构图", kw["prompt"])
+                        self.assertIn("胸部以上近景构图" if kw["ratio"] == "4:3" else "适度拉远的半身构图", kw["prompt"])
                         self.assertIn("胸前、肩旁或脸旁", kw["prompt"])
-                        self.assertIn("完整保留双肩", kw["prompt"])
-                        self.assertIn("最多不超过45%" if kw["ratio"] == "4:3" else "最多不超过六成", kw["prompt"])
-                        self.assertIn("不放大头脸", kw["prompt"])
+                        if kw["ratio"] == "4:3":
+                            self.assertIn("脸部突出", kw["prompt"])
+                            self.assertNotIn("适度拉远的半身构图", kw["prompt"])
+                            self.assertNotIn("最多不超过45%", kw["prompt"])
+                        else:
+                            self.assertIn("完整保留双肩", kw["prompt"])
+                            self.assertIn("最多不超过六成", kw["prompt"])
+                            self.assertIn("不放大头脸", kw["prompt"])
                         self.assertIn("不得仅靠裁切", kw["prompt"])
                         self.assertIn("双臂调整为自然下垂", kw["prompt"])
                         self.assertIn("自然补全原先被手或手臂遮挡", kw["prompt"])
@@ -81,9 +86,10 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(judge.await_count, 1)
                 self.assertEqual(len(seen), 2)
                 for call in seen:
-                    self.assertEqual("适度拉远的半身构图" in call["prompt"], cut != "no")
+                    crop = "胸部以上近景构图" if call["ratio"] == "4:3" else "适度拉远的半身构图"
+                    self.assertEqual(crop in call["prompt"], cut != "no")
                     if cut != "no":
-                        self.assertIn("最多不超过45%" if call["ratio"] == "4:3" else "最多不超过六成", call["prompt"])
+                        self.assertIn("脸部突出" if call["ratio"] == "4:3" else "最多不超过六成", call["prompt"])
 
     async def test_old_review_cache_is_rechecked(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -175,7 +181,7 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 zipped = wb.material_zip(folder, "bilibili", "dance")
             with zipfile.ZipFile(io.BytesIO(zipped)) as archive:
                 self.assertEqual(set(archive.namelist()), {"提示词.txt", "人物图.png", "发布文案.txt"})
-                self.assertIn("适度拉远的半身构图", archive.read("提示词.txt").decode())
+                self.assertIn("胸部以上近景构图", archive.read("提示词.txt").decode())
             blur.assert_not_called()
 
     async def test_cover_failure_never_reverts_completed_video(self):

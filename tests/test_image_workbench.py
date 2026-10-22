@@ -526,7 +526,7 @@ class ImageWorkbenchTests(unittest.TestCase):
             folder = Path(raw)
             (folder / "发布文案.txt").write_text("标题：测试标题\n简介：测试简介", encoding="utf-8")
             cover = workbench.prompt(folder, "bilibili", "dance")
-        self.assertIn("肩部以上近景", cover)
+        self.assertIn("胸部以上近景构图", cover)
         self.assertIn("标题：测试标题", cover)
         self.assertIn("简介：测试简介", cover)
         self.assertIn("4:3 横版", cover)
