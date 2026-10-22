@@ -2483,7 +2483,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("自然精致淡妆", prompt)
         self.assertIn("脸和颈部明暗一致", prompt)
         self.assertIn("手在画外时不补入", prompt)
-        self.assertIn("只有非常暴露时", prompt)
+        self.assertIn("穿着明显过于清凉时", prompt)
         self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
         # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
         copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
@@ -2587,9 +2587,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【服装】", prompt)
-            self.assertIn("只有非常暴露时", prompt)
-            self.assertIn("适当调整款式或增加遮盖", prompt)
-            self.assertIn("服装可以自然调整", prompt)
+            self.assertIn("穿着明显过于清凉时", prompt)
+            self.assertIn("使需要遮盖的位置覆盖稳妥、面料不透", prompt)
+            self.assertIn("可自然调整款式", prompt)
             self.assertNotIn("无需改变正常的露肩", prompt)
         # 只管裸露：姿态、动作、裁切都不许出现在这一段里
         for word in ("摆胯", "腰部波浪", "姿态", "下边缘", "胸线"):
@@ -2689,10 +2689,10 @@ class WorkflowPreparationTests(unittest.TestCase):
         """参考原穿搭并允许调整，普通露肤无需刻意遮盖。"""
         block = batch_ai.PLATFORM_SAFE_BLOCK
         self.assertIn("参考图一的穿搭风格、配色和整体气质", block)
-        self.assertIn("服装可以自然调整", block)
-        self.assertIn("正常露肩、露腰、露腿、短裙等可以保留", block)
-        self.assertIn("只有非常暴露时", block)
-        self.assertIn("适当调整款式或增加遮盖", block)
+        self.assertIn("可自然调整款式", block)
+        self.assertIn("正常露肩、露腰、露腿及短裙造型可以保留", block)
+        self.assertIn("穿着明显过于清凉时", block)
+        self.assertIn("使需要遮盖的位置覆盖稳妥、面料不透", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertLess(len(prompt), 1400)
