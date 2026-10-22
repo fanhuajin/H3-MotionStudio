@@ -24,7 +24,7 @@ async function api<T>(path = "", body?: unknown): Promise<T> {
   return value as T;
 }
 
-function Dialog({ title, subtitle, children, footer, close, className = "", compactHeader = false }: { title: string; subtitle?: string; children: ReactNode; footer?: ReactNode; close: () => void; className?: string; compactHeader?: boolean }) {
+function Dialog({ title, children, footer, close, className = "", compactHeader = false }: { title: string; children: ReactNode; footer?: ReactNode; close: () => void; className?: string; compactHeader?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
@@ -38,8 +38,7 @@ function Dialog({ title, subtitle, children, footer, close, className = "", comp
       if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) close();
     }}>
     <header className="batch-settings-header">{!compactHeader && <span className="batch-modal-icon"><FolderOpen /></span>}
-      <div>{!compactHeader && <p>批量发布</p>}<h2 id="publish-dialog-title">{title}</h2>
-        {subtitle && <p className="publish-preview-summary" role="status">{subtitle}</p>}</div>
+      <div>{!compactHeader && <p>批量发布</p>}<h2 id="publish-dialog-title">{title}</h2></div>
       <button className="batch-settings-close" aria-label="关闭弹窗" autoFocus onClick={close}><X /></button></header>
     <div className="batch-settings-scroll">{children}</div>
     {footer && <footer className="batch-settings-footer">{footer}</footer>}
@@ -255,6 +254,11 @@ export function PublishRoute() {
   const scheduleChanged = modal?.kind === "schedule" && items.some(item => modal.ids.includes(item.id)
     && (item.date !== date || !item.scheduled));
   const preview = modal?.kind === "preview" ? queue?.items.find(i => i.id === modal.id) : undefined;
+  const previewIndex = preview ? items.findIndex(item => item.id === preview.id) : -1;
+  function switchPreview(offset: number) {
+    const target = items[previewIndex + offset];
+    if (!busy && previewIndex >= 0 && target) setModal({ kind: "preview", id: target.id });
+  }
   const review = modal?.kind === "review" ? queue?.items.find(i => i.id === modal.id) : undefined;
   const modalError = error && <p className="publish-error" role="alert">{error}</p>;
   const button = (text: string, onClick: () => void, disabled = false, icon?: ReactNode) =>
@@ -336,9 +340,6 @@ export function PublishRoute() {
       {modalError}
     </Dialog>}
     {modal?.kind === "preview" && preview && <Dialog title={preview.name}
-      subtitle={`第 ${items.findIndex(item => item.id === preview.id) + 1} 条 / 共 ${items.length} 条 · ${preview.scheduled
-        ? preview.date && preview.hour ? `安排发布：${preview.date} ${preview.hour}:00（北京时间）` : "发布时间待设置"
-        : "立即发布"}`}
       compactHeader className="batch-video-dialog publish-video-dialog" close={() => !busy && setModal(null)}>
       <VideoPreview key={preview.id} id={preview.id} hasVideo={preview.assets.video} saving={busy} saveError={error}>
         {previewPlatforms.map(p => {
@@ -352,6 +353,11 @@ export function PublishRoute() {
           </label>;
         })}
       </VideoPreview>
+      <div className="batch-video-navigation">
+        <button disabled={busy || previewIndex <= 0} onClick={() => switchPreview(-1)}>↑ 上一条</button>
+        <span role="status">{previewIndex + 1} / {items.length}</span>
+        <button disabled={busy || previewIndex < 0 || previewIndex >= items.length - 1} onClick={() => switchPreview(1)}>↓ 下一条</button>
+      </div>
     </Dialog>}
     {modal?.kind === "review" && review && <Dialog title={`核对${labels[modal.platform]}发布结果`} close={() => !busy && setModal(null)} footer={<>
       {button("确认未发布", () => void action("/edit", { ids: [review.id], platform: modal.platform, review: false }), busy)}
