@@ -32,17 +32,9 @@ $script:progressValue = 5
 $script:pulse = 0
 $script:ready = $false
 $script:fadeTicks = 0
-$appIcon = [System.Drawing.Icon]::new((Join-Path $projectRoot 'assets\H3-MotionStudio.ico'), 256, 256)
-# 现有 ICO 内嵌 PNG；直接读取该帧，避开 Windows PowerShell 的 ToBitmap 兼容问题。
-$iconBytes = [IO.File]::ReadAllBytes((Join-Path $projectRoot 'assets\H3-MotionStudio.ico'))
-$imageOffset = [BitConverter]::ToUInt32($iconBytes, 18)
-$imageLength = [BitConverter]::ToUInt32($iconBytes, 14)
-$iconStream = [IO.MemoryStream]::new($iconBytes, $imageOffset, $imageLength)
-$iconFrame = [System.Drawing.Image]::FromStream($iconStream)
-$logoImage = [System.Drawing.Bitmap]::new($iconFrame)
-$iconFrame.Dispose()
-$iconStream.Dispose()
-$form.Icon = $appIcon
+# 帧图由页面原有 Bloub 引擎导出；原生启动器直接播放，不依赖浏览器或 Node。
+$logoImage = [System.Drawing.Image]::FromFile((Join-Path $projectRoot 'assets\studio-bot-startup.png'))
+$animationClock = [System.Diagnostics.Stopwatch]::StartNew()
 $form.Add_Paint({
     param($sender, $eventArgs)
     $g = $eventArgs.Graphics
@@ -67,7 +59,10 @@ $form.Add_Paint({
     $g.FillPath($iconHalo, $iconHaloPath)
     $iconHalo.Dispose(); $iconHaloPath.Dispose()
     $g.InterpolationMode = 'HighQualityBicubic'
-    $g.DrawImage($logoImage, 32, 89, 72, 72)
+    $frameIndex = [int][Math]::Floor($animationClock.Elapsed.TotalSeconds * 25) % 240
+    $source = [System.Drawing.Rectangle]::new(($frameIndex % 16) * 96, [int][Math]::Floor($frameIndex / 16) * 96, 96, 96)
+    $destination = [System.Drawing.Rectangle]::new(20, 77, 96, 96)
+    $g.DrawImage($logoImage, $destination, $source, [System.Drawing.GraphicsUnit]::Pixel)
     $track = [System.Drawing.SolidBrush]::new([System.Drawing.ColorTranslator]::FromHtml('#30473A'))
     $g.FillRectangle($track, 36, 224, 488, 4)
     $track.Dispose()
@@ -120,7 +115,7 @@ if ($env:H3_STARTUP_PREVIEW_PATH) {
         $form.Close()
         $form.Dispose()
         $logoImage.Dispose()
-        $appIcon.Dispose()
+        $animationClock.Stop()
         Remove-Item Env:\H3_STARTUP_PROGRESS -ErrorAction SilentlyContinue
     }
     return
@@ -173,7 +168,7 @@ try { [void]$form.ShowDialog() } finally {
     $timer.Dispose()
     $form.Dispose()
     $logoImage.Dispose()
-    $appIcon.Dispose()
+    $animationClock.Stop()
     Remove-Item -LiteralPath $progressFile -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\H3_STARTUP_PROGRESS -ErrorAction SilentlyContinue
 }
