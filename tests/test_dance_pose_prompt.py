@@ -45,16 +45,16 @@ class DancePosePromptTests(unittest.TestCase):
         for kind in ('singing', 'dance'):
             text = compose_image_prompt(kind)
             self.assertEqual(text.count('【服装】'), 1)
-            self.assertIn('可自然调整款式', text)
-            self.assertIn('穿着明显过于清凉时', text)
-            self.assertIn('正常露肩、露腰、露腿及短裙造型可以保留', text)
+            self.assertIn('款式可适当调整', text)
+            self.assertIn('领口、下摆与开衩适度', text)
+            self.assertIn('抬手、转身时遮盖稳定', text)
             self.assertNotIn('【唱歌着装】', text)
             self.assertNotIn('【跳舞着装】', text)
             self.assertNotIn('搭配长裤或', text)
         redesign = compose_image_prompt('singing', style_source='redesign')
         self.assertIn('根据歌曲氛围设计自然的发型、服装', redesign)
         self.assertNotIn('保留图一的服装类别', redesign)
-        self.assertIn('穿着明显过于清凉时', redesign)
+        self.assertIn('领口、下摆与开衩适度', redesign)
 
     def test_prompt_omits_redundant_and_overly_rigid_constraints(self):
         redundant = (

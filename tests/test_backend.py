@@ -2483,7 +2483,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("自然精致淡妆", prompt)
         self.assertIn("脸和颈部明暗一致", prompt)
         self.assertIn("手在画外时不补入", prompt)
-        self.assertIn("穿着明显过于清凉时", prompt)
+        self.assertIn("领口、下摆与开衩适度", prompt)
         self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
         # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
         copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
@@ -2587,9 +2587,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【服装】", prompt)
-            self.assertIn("穿着明显过于清凉时", prompt)
-            self.assertIn("使需要遮盖的位置覆盖稳妥、面料不透", prompt)
-            self.assertIn("可自然调整款式", prompt)
+            self.assertIn("领口、下摆与开衩适度", prompt)
+            self.assertIn("面料不透、与肤色有清楚区分", prompt)
+            self.assertIn("款式可适当调整", prompt)
             self.assertNotIn("无需改变正常的露肩", prompt)
         # 只管裸露：姿态、动作、裁切都不许出现在这一段里
         for word in ("摆胯", "腰部波浪", "姿态", "下边缘", "胸线"):
@@ -2686,13 +2686,13 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("index=0", text)          # 分不出高下时的老回退口径不能丢
 
     def test_clothing_flexibility_and_exposure_rule(self) -> None:
-        """参考原穿搭并允许调整，普通露肤无需刻意遮盖。"""
+        """参考原穿搭并允许调整，面料、剪裁及运动时的遮盖保持稳妥。"""
         block = batch_ai.PLATFORM_SAFE_BLOCK
         self.assertIn("参考图一的穿搭风格、配色和整体气质", block)
-        self.assertIn("可自然调整款式", block)
-        self.assertIn("正常露肩、露腰、露腿及短裙造型可以保留", block)
-        self.assertIn("穿着明显过于清凉时", block)
-        self.assertIn("使需要遮盖的位置覆盖稳妥、面料不透", block)
+        self.assertIn("款式可适当调整", block)
+        self.assertIn("抬手、转身时遮盖稳定", block)
+        self.assertIn("领口、下摆与开衩适度", block)
+        self.assertIn("面料不透、与肤色有清楚区分", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertLess(len(prompt), 1400)
