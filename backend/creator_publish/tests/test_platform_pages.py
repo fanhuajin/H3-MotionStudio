@@ -22,8 +22,43 @@ class PlatformPageTests(unittest.TestCase):
             self.pages.ensure()
         opener.assert_not_called()
         launch.assert_not_called()
-        self.assertEqual(activate.call_count, 3)
-        self.assertEqual(ready.call_args_list, [call(p) for p in PAGES])
+        activate.assert_not_called()
+        ready.assert_not_called()
+
+    def test_select_existing_activates_target_in_shared_browser(self):
+        with patch.object(self.pages, "scan", return_value=([self.window], self.found)), \
+             patch.object(self.pages, "activate") as activate, patch.object(self.pages, "wait_ready") as ready:
+            self.pages.select_existing("douyin")
+        activate.assert_called_once_with(*self.found["douyin"])
+        ready.assert_called_once_with("douyin")
+
+    def test_missing_platform_stops_without_opening_or_uploading(self):
+        with patch.object(self.pages, "scan", return_value=([self.window], {})), \
+             patch.object(self.pages, "open_page") as opener:
+            with self.assertRaisesRegex(RuntimeError, "已关闭"):
+                self.pages.select_existing("douyin")
+        opener.assert_not_called()
+
+    def test_activate_clicks_only_target_background_tab(self):
+        tab = Mock(ControlTypeName="TabItemControl", IsOffscreen=False)
+        tab.GetRuntimeId.return_value = (2,)
+        tab.GetSelectionItemPattern.return_value.IsSelected = False
+        tab.BoundingRectangle = NS(left=100, right=300, top=10, bottom=40,
+                                   width=lambda: 200, height=lambda: 30)
+        with patch.object(self.pages, "focus"), patch("platform_pages.chrome_controls", return_value=[tab]), \
+             patch.object(self.pages, "selected", return_value=((2,), 5)):
+            self.pages.activate(self.window, (2,))
+        self.driver.click_at.assert_called_once_with((200, 25))
+        self.driver.keys.assert_not_called()
+
+    def test_activate_already_selected_tab_sends_no_click(self):
+        tab = Mock(ControlTypeName="TabItemControl")
+        tab.GetRuntimeId.return_value = (2,)
+        tab.GetSelectionItemPattern.return_value.IsSelected = True
+        with patch.object(self.pages, "focus"), patch("platform_pages.chrome_controls", return_value=[tab]), \
+             patch.object(self.pages, "selected", return_value=((2,), 5)):
+            self.pages.activate(self.window, (2,))
+        self.driver.click_at.assert_not_called()
 
     def test_only_missing_page_is_opened(self):
         found = {p: v for p, v in self.found.items() if p != "xiaohongshu"}
@@ -61,7 +96,7 @@ class PlatformPageTests(unittest.TestCase):
              patch.object(self.pages, "activate"), patch.object(self.pages, "wait_ready", side_effect=RuntimeError("请登录")), \
              patch.object(self.pages, "open_page") as opener:
             with self.assertRaisesRegex(RuntimeError, "请登录"):
-                self.pages.ensure()
+                self.pages.select_existing("douyin")
         opener.assert_not_called()
 
     def test_management_urls_and_existing_uploads_are_recognized(self):
@@ -91,26 +126,29 @@ class PlatformPageTests(unittest.TestCase):
         self.driver.paste.assert_called_once_with(PAGES["xiaohongshu"])
         ready.assert_called_once_with("xiaohongshu")
 
-    def test_scan_checks_all_tabs_and_stops_at_first_repeated_tab(self):
+    def test_scan_reads_background_tab_titles_without_switching(self):
+        tabs = [Mock(ControlTypeName="TabItemControl", Name=title)
+                for title in ("抖音创作者中心", "创作中心 - 哔哩哔哩")]
+        for index, tab in enumerate(tabs):
+            tab.GetRuntimeId.return_value = (index,)
         with patch.object(self.pages, "windows", return_value=[self.window]), patch.object(self.pages, "focus"), \
-             patch.object(self.pages, "selected", side_effect=[((1,), 2), ((2,), 2), ((1,), 2)]), \
-             patch.object(self.pages, "address", side_effect=[PAGES["douyin"], PAGES["bilibili"]]), \
-             patch.object(self.pages, "next_tab") as advance:
+             patch("platform_pages.chrome_controls", return_value=tabs):
             _, found = self.pages.scan()
         self.assertEqual(set(found), {"douyin", "bilibili"})
-        self.assertEqual(advance.call_count, 2)
+        self.driver.keys.assert_not_called()
 
     def test_duplicate_existing_platforms_are_not_silently_reopened(self):
         with patch.object(self.pages, "windows", return_value=[self.window]), patch.object(self.pages, "focus"), \
-             patch.object(self.pages, "selected", side_effect=[((1,), 2), ((2,), 2)]), \
-             patch.object(self.pages, "address", return_value=PAGES["douyin"]), patch.object(self.pages, "next_tab"):
+             patch("platform_pages.chrome_controls", return_value=[
+                 Mock(ControlTypeName="TabItemControl", Name="抖音创作者中心", GetRuntimeId=lambda: (1,)),
+                 Mock(ControlTypeName="TabItemControl", Name="抖音创作者中心", GetRuntimeId=lambda: (2,))]):
             with self.assertRaisesRegex(RuntimeError, "多个抖音"):
                 self.pages.scan()
 
     def test_existing_login_page_is_reused_without_opening_another_tab(self):
         with patch.object(self.pages, "windows", return_value=[self.window]), patch.object(self.pages, "focus"), \
-             patch.object(self.pages, "selected", return_value=((1,), 1)), \
-             patch.object(self.pages, "address", return_value="https://creator.douyin.com/login"):
+             patch("platform_pages.chrome_controls", return_value=[
+                 Mock(ControlTypeName="TabItemControl", Name="登录 - 抖音创作者中心", GetRuntimeId=lambda: (1,))]):
             _, found = self.pages.scan()
         self.assertIn("douyin", found)
 

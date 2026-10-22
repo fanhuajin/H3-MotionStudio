@@ -89,6 +89,17 @@ class WebWorkerTests(unittest.TestCase):
             process.return_value.parents.return_value = [Mock(pid=-1), Mock(pid=self.queue.state["ownerPid"])]
             self.queue.tick()
 
+    def test_repeated_desktop_checks_reuse_verified_owner_and_detect_exit(self):
+        owner = Mock(pid=self.queue.state["ownerPid"])
+        owner.is_running.side_effect = [True, True, False]
+        with patch("worker.psutil.Process") as process:
+            process.return_value.parents.return_value = [Mock(pid=-1), owner]
+            self.queue.tick()
+            self.queue.tick()
+            with self.assertRaisesRegex(RuntimeError, "已停止"):
+                self.queue.tick()
+            process.return_value.parents.assert_called_once()
+
     @unittest.skipUnless(sys.platform == "win32", "Windows venv launcher regression")
     def test_real_python_child_accepts_backend_through_venv_launcher(self):
         state = self.saved()

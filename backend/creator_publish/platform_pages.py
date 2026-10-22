@@ -15,13 +15,6 @@ LABELS = {"douyin": "抖音", "xiaohongshu": "小红书", "bilibili": "B站"}
 TITLES = {"douyin": "抖音创作者中心", "xiaohongshu": "小红书创作服务平台", "bilibili": "创作中心"}
 
 
-def platform_origin(value):
-    parsed = urlsplit(value)
-    if parsed.scheme != "https":
-        return None
-    return next((p for p, url in PAGES.items() if urlsplit(url).hostname == parsed.hostname), None)
-
-
 def platform_for_url(value):
     parsed = urlsplit(value)
     if parsed.scheme != "https":
@@ -117,53 +110,50 @@ class PlatformPages:
         time.sleep(.2)
         self.driver.check()
 
-    def next_tab(self, window, previous):
-        self.driver.keys("{Ctrl}{Tab}")
-        deadline = self.driver.now() + 5
-        while self.driver.now() < deadline:
-            self.driver.check()
-            selected, _ = self.selected(window)
-            if selected != previous:
-                time.sleep(.2)
-                return
-            time.sleep(.1)
-        raise RuntimeError("浏览器未确认切换标签页，已停止，未新开页面。")
-
     def scan(self):
         found = {}
         windows = self.windows()
         for window in windows:
-            self.focus(window)
-            seen = set()
-            for _ in range(500):
-                selected, count = self.selected(window)
-                if selected in seen:
-                    break
-                seen.add(selected)
-                # 登录跳转或创作平台首页也算已有标签，不能因此再新开同平台页面。
-                platform = platform_origin(self.address(window))
-                if platform:
-                    if platform in found:
-                        raise RuntimeError(f"已存在多个{LABELS[platform]}创作页面，请只保留一个后继续；未再打开页面。")
-                    found[platform] = (window, selected)
-                if count == 1:
-                    break
-                self.next_tab(window, selected)
-            else:
-                raise RuntimeError("浏览器标签过多，无法完整确认已有页面，未新开页面。")
+            # 只读标签栏即可找出后台平台页，不逐页切换来读取地址栏。
+            for tab in chrome_controls(window, self.driver.check):
+                if tab.ControlTypeName != "TabItemControl":
+                    continue
+                matches = [p for p, title in TITLES.items() if title in tab.Name]
+                if len(matches) != 1:
+                    continue
+                platform = matches[0]
+                if platform in found:
+                    raise RuntimeError(f"已存在多个{LABELS[platform]}创作页面，请只保留一个后继续；未再打开页面。")
+                found[platform] = (window, tuple(tab.GetRuntimeId()))
         return windows, found
 
     def activate(self, window, target):
         self.focus(window)
-        seen = set()
-        while True:
-            selected, _ = self.selected(window)
-            if selected == target:
+        tabs = [tab for tab in chrome_controls(window, self.driver.check)
+                if tab.ControlTypeName == "TabItemControl" and tuple(tab.GetRuntimeId()) == target]
+        if len(tabs) != 1:
+            raise RuntimeError("原平台标签页已关闭，已停止发布。")
+        tab = tabs[0]
+        if not tab.GetSelectionItemPattern().IsSelected:
+            rect = tab.BoundingRectangle
+            if rect.width() <= 0 or rect.height() <= 0 or tab.IsOffscreen:
+                raise RuntimeError("目标平台标签页不可见，请展开浏览器标签栏。")
+            self.driver.click_at(((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2))
+        deadline = self.driver.now() + 5
+        while self.driver.now() < deadline:
+            if self.selected(window)[0] == target:
                 return
-            if selected in seen:
-                raise RuntimeError("原平台标签页已关闭，已停止发布。")
-            seen.add(selected)
-            self.next_tab(window, selected)
+            self.driver.check()
+            time.sleep(.1)
+        raise RuntimeError("未确认目标平台标签页，未开始上传。")
+
+    def select_existing(self, platform):
+        """进入发布时重新定位平台标签，避免依赖最后就绪的窗口标题。"""
+        _, found = self.scan()
+        if platform not in found:
+            raise RuntimeError(f"{LABELS[platform]}标签页已关闭，未开始上传。")
+        self.activate(*found[platform])
+        self.wait_ready(platform)
 
     def wait_ready(self, platform):
         deadline = self.driver.now() + 60
@@ -209,10 +199,7 @@ class PlatformPages:
             self.wait_ready("douyin")
             windows, found = self.scan()
         for platform in PAGES:
-            self.notice(f"正在确认{LABELS[platform]}页面…")
-            if platform in found:
-                self.activate(*found[platform])
-                self.wait_ready(platform)
-            else:
+            if platform not in found:
+                self.notice(f"正在打开{LABELS[platform]}页面…")
                 self.open_page(windows[0], platform)
-        self.notice("三个平台页面均已就绪，开始执行发布队列。")
+        self.notice("三个平台标签页已备齐，开始执行发布队列。")

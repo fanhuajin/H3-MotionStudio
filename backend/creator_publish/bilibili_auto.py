@@ -576,20 +576,15 @@ class BilibiliDraft:
         user.GetWindow.restype = wintypes.HWND
         browser = self.window.NativeWindowHandle
         found = []
-        candidates = self.window.GetChildren() + self.uia.GetRootControl().GetChildren()
-        handles = set()
-        for control in candidates:
-            if control.Name not in ("打开", "Open") or control.IsOffscreen:
-                continue
-            handle = control.NativeWindowHandle
-            if not handle or handle in handles:
-                continue
-            handles.add(handle)
+        from browser_page import native_file_dialog_handles
+        for handle in native_file_dialog_handles():
             owner = user.GetWindow(handle, 4)  # GW_OWNER
             seen = set()
             while owner and owner not in seen:
                 if owner == browser:
-                    found.append(control)
+                    control = self.uia.ControlFromHandle(handle)
+                    if control.Name in ("打开", "Open") and not control.IsOffscreen:
+                        found.append(control)
                     break
                 seen.add(owner)
                 owner = user.GetWindow(owner, 4)

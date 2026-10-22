@@ -8,8 +8,13 @@ from bilibili_auto import BilibiliDraft
 class FileDialogTests(unittest.TestCase):
     def draft(self, windows, owners):
         draft = object.__new__(BilibiliDraft)
-        draft.window = NS(NativeWindowHandle=10, GetChildren=lambda: windows)
-        draft.uia = NS(GetRootControl=lambda: NS(GetChildren=lambda: windows))
+        draft.window = NS(NativeWindowHandle=10, GetChildren=Mock(side_effect=AssertionError("browser UIA enumeration")))
+        controls = {w.NativeWindowHandle: w for w in windows}
+        draft.uia = NS(ControlFromHandle=lambda handle: controls[handle],
+                       GetRootControl=Mock(side_effect=AssertionError("desktop UIA enumeration")))
+        patcher = patch("browser_page.native_file_dialog_handles", return_value=list(controls))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         user = NS(GetWindow=Mock(side_effect=lambda handle, flag: owners.get(handle, 0)))
         return draft, user
 
@@ -30,7 +35,6 @@ class FileDialogTests(unittest.TestCase):
     def test_browser_child_dialog_absent_from_desktop_children(self):
         dialog = self.dialog(20)
         draft, user = self.draft([dialog], {20: 10})
-        draft.uia = NS(GetRootControl=lambda: NS(GetChildren=lambda: []))
         with patch("bilibili_auto.ctypes.windll", NS(user32=user)):
             self.assertIs(draft.file_dialog(), dialog)
 

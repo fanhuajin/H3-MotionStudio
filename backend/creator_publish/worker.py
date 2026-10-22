@@ -96,7 +96,13 @@ class WebQueue(MultiQueue):
         # Windows venv python.exe 会经转发进程启动实际解释器，后端可能是祖父进程。
         # 仍要求后端位于存活的父进程链中，避免后端退出后继续操作桌面。
         try:
-            return any(parent.pid == self.state["ownerPid"] for parent in psutil.Process().parents())
+            if not hasattr(self, "_owner_process"):
+                self._owner_process = next(
+                    (parent for parent in psutil.Process().parents() if parent.pid == self.state["ownerPid"]), None,
+                )
+            # UIA 每个节点都会检查停止状态；完整进程链只核对一次。
+            # 保留 Process 对象也会核对创建时间，PID 被复用不能恢复已退出的后端。
+            return self._owner_process is not None and self._owner_process.is_running()
         except psutil.Error:
             return False
 
@@ -146,7 +152,15 @@ def run_queue(state_path, platforms):
             def init(draft, base=base):
                 base.__init__(draft)
                 queue.active_draft = draft
-            queue.adapters[platform] = (type(base.__name__ + "Web", (base,), {"__init__": init}), *rest)
+            def select_browser(draft, platform=platform):
+                # 平台可以在后台标签中；只定位目标标签，不依赖前台标题或遍历整个桌面。
+                PlatformPages(draft, queue.notice.set).select_existing(platform)
+                if platform == "bilibili":
+                    from browser_page import read_browser_url
+                    draft.ensure_upload_page(read_browser_url(draft.uia, draft.window, "创作中心"))
+            queue.adapters[platform] = (type(base.__name__ + "Web", (base,), {
+                "__init__": init, "select_browser": select_browser,
+            }), *rest)
         for item in queue.items.values():
             for p in platforms:
                 if item["states"][p] == "待核对":
@@ -159,7 +173,7 @@ def run_queue(state_path, platforms):
                 category(item["folder"])
                 if item["scheduled"]:
                     select(item["date"], item["hour"])
-        # 先通过原生标签页核对已有页面，只补开缺失项；全部就绪才进入任何上传/发布步骤。
+        # 只读标签栏并补开缺失项；各平台开始上传前再核对对应页面。
         browser = BilibiliDraft()
         queue.active_draft = browser
         browser.on_tick = queue.tick
