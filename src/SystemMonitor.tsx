@@ -26,6 +26,11 @@ type SystemStats = {
 };
 
 const POLL_MS = 2500;
+const MIN_NETWORK_SCALE = 1024 * 1024;
+
+function networkRate(value?: number) {
+  return value != null && Number.isFinite(value) && value >= 0 ? value : null;
+}
 
 function formatBytes(value?: number | null) {
   if (value == null || !Number.isFinite(value)) return "--";
@@ -45,12 +50,12 @@ function toneOf(percent: number) {
   return "normal";
 }
 
-function MeterRow({ label, percent, value, title }: { label: string; percent?: number | null; value: string; title?: string }) {
+function MeterRow({ label, percent, value, title, neutral = false }: { label: string; percent?: number | null; value: string; title?: string; neutral?: boolean }) {
   return (
     <div className="monitor-row" title={title}>
       <span className="monitor-label">{label}</span>
       <span className="monitor-bar">
-        {percent != null && <i className={toneOf(percent)} style={{ width: `${Math.max(2, Math.min(100, percent))}%` }} />}
+        {percent != null && <i className={neutral ? "normal" : toneOf(percent)} style={{ width: `${neutral && percent <= 0 ? 0 : Math.max(2, Math.min(100, percent))}%` }} />}
       </span>
       <b className="monitor-value">{value}</b>
     </div>
@@ -60,6 +65,7 @@ function MeterRow({ label, percent, value, title }: { label: string; percent?: n
 export function SystemMonitor() {
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [offline, setOffline] = useState(false);
+  const [networkScale, setNetworkScale] = useState(MIN_NETWORK_SCALE);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,6 +76,11 @@ export function SystemMonitor() {
         const next = await response.json() as SystemStats;
         if (!cancelled) {
           setStats(next);
+          setNetworkScale((previous) => Math.max(
+            previous,
+            networkRate(next.net?.rxBytesPerSec) ?? 0,
+            networkRate(next.net?.txBytesPerSec) ?? 0,
+          ));
           setOffline(false);
         }
       } catch {
@@ -88,6 +99,9 @@ export function SystemMonitor() {
   const memory = stats?.memory;
   const disks = stats?.disks || [];
   const gpu = stats?.gpu?.[0];
+  const download = networkRate(stats?.net?.rxBytesPerSec);
+  const upload = networkRate(stats?.net?.txBytesPerSec);
+  const networkTitle = `实时网络速度；条长按本次页面采样的收发峰值缩放，当前满格 ${formatBytes(networkScale)}/s（最低标尺 1 MB/s），不代表带宽占用率`;
 
   return (
     <div className={`monitor-card ${offline ? "offline" : ""}`}>
@@ -135,6 +149,20 @@ export function SystemMonitor() {
           ) : (
             <div className="monitor-row monitor-sub"><span className="monitor-label">GPU</span><span className="monitor-bar-static" /><b className="monitor-value">--</b></div>
           )}
+          <MeterRow
+            label="下载"
+            percent={download == null ? null : download / networkScale * 100}
+            value={download == null ? "--" : `${formatBytes(download)}/s`}
+            title={networkTitle}
+            neutral
+          />
+          <MeterRow
+            label="上传"
+            percent={upload == null ? null : upload / networkScale * 100}
+            value={upload == null ? "--" : `${formatBytes(upload)}/s`}
+            title={networkTitle}
+            neutral
+          />
         </div>
       )}
     </div>
