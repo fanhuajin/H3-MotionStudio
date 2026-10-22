@@ -2471,26 +2471,19 @@ class WorkflowPreparationTests(unittest.TestCase):
                     self.assertEqual(_image_provider(), "manual")
 
     def test_batch_ai_image_prompt_carries_review_feedback(self) -> None:
-        """审核修改意见必须进入出图提示词，否则「调整图片」只会改文案、图不动。
-
-        ⚠️ 2026-09-20 起自动出图改走**精简模板**（`COMPACT_IMAGE_PROMPT`）：
-        实测长提示词（6.6k 字，以 `9x16跳舞构图.txt` 开头）会把着装合规要求淹掉，
-        模型照抄图一的低胸镂空蕾丝 → 着装判据不过；精简到 400 字后立刻合规。
-        所以这里**不再断言"以造型提示词文件开头"**，改断言确实是精简模板。
-        """
+        """默认人物图保留参考造型，明确修改意见只在需要改图时追加。"""
         prompt = batch_ai.compose_image_prompt("singing", "video", "", "both")
         self.assertTrue(prompt.startswith("生成一张供视频制作使用的写实单人照片"))
-        self.assertLess(len(prompt), 900, "自动出图必须保持精简")
-        self.assertIn("搭配合适的新发型", prompt)
+        self.assertLess(len(prompt), 1400, "默认模板不应退回堆叠长提示词")
+        self.assertIn("沿用图一的发型", prompt)
         self.assertIn("不必完全复制抽帧", prompt)
-        self.assertIn("图二只提供面部身份", prompt)
+        self.assertIn("图二是唯一的面部身份参考", prompt)
         self.assertNotIn("肤色与年龄感", prompt)
         self.assertNotIn("只以源视频抽帧图一为准", prompt)
         self.assertIn("自然精致淡妆", prompt)
         self.assertIn("脸和颈部明暗一致", prompt)
-        self.assertIn("双臂与躯干边界可辨", prompt)
-        for sensitive in ("乳沟", "事业线", "透视", "裸色", "凸点", "隐私部位"):
-            self.assertNotIn(sensitive, prompt)
+        self.assertIn("手在画外时不补入", prompt)
+        self.assertIn("只有明确非常暴露时才处理", prompt)
         self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
         # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
         copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
@@ -2534,7 +2527,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("图一提供姿态、服装", prompt)
         self.assertNotIn("保留图一的室内或室外属性", prompt)
         self.assertNotIn("参考图一的造型与配色", prompt)
-        self.assertLess(len(prompt), 900)
+        self.assertNotIn("按图一的居家或户外类别", prompt)
+        self.assertLess(len(prompt), 1400)
 
     def test_batch_ai_image_prompt_carries_composition_spec(self) -> None:
         """构图规格取自用户的构图参考图实测值，且必须按画布比例分别注入。"""

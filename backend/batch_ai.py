@@ -32,16 +32,13 @@ SONG_PLACEHOLDER = "《歌曲名》"
 
 # 参考视频模式沿用抽帧的发型与配饰；歌曲重设计模式保留自由搭配。
 REDESIGN_HAIR_BLOCK = (
-    "\n【发型与发饰】根据本次服装的风格、领口、配色和整体气质，搭配协调自然的发型，不限定披发、束发或盘发。"
-    "头发蓬松度适当，发际线、分缝、发束连接和垂落方向真实合理，与画面内可见的肩颈、衣领及手部遮挡关系自然，"
-    "不出现突兀拼接、悬空或穿透。发饰可有可无；使用时款式、材质、颜色和大小与服装协调，数量适度，"
-    "佩戴位置与固定方式可信，不堆叠装饰，不遮挡五官和嘴部。"
+    "\n【发型与发饰】根据服装与歌曲气质搭配自然的发型，披发、束发或盘发均可；"
+    "发饰可有可无，款式与服装协调，数量适度。发束连接、佩戴位置和遮挡关系真实，无悬空或穿透。"
 )
 REFERENCE_APPEARANCE_BLOCK = (
-    "\n【发型与配饰】参考图一可辨认的发型、发色、长度、刘海、分缝及披发或扎发方式，自然适配图二人物的头型与脸型。"
-    "图一主体佩戴的眼镜、发饰、帽子、耳环、项链等配饰应对应保留，款式、颜色、大小和佩戴位置参考图一；"
-    "未佩戴的配饰不凭空添加，模糊或遮挡而无法辨认的细节不臆造。不采用图二的发型与配饰。"
-    "头发与配饰结构真实、固定自然，无悬空、穿透或重复；眼镜自然贴合鼻梁与耳部，保留参考图中透明镜片或墨镜的类型，嘴部清楚可见。"
+    "\n【发型与配饰】沿用图一的发型、发色、长度、刘海、分缝及披发或扎发方式，适配目标人物的头型。"
+    "眼镜、发饰、帽子、耳环、项链按原款式、颜色和位置保留，透明镜片与墨镜不互换。"
+    "未佩戴的配饰不凭空添加，模糊或遮挡而无法辨认的细节不臆造；发束连接和配饰佩戴自然，无悬空或穿透。"
 )
 # 清晰度（禁止模糊）：用户 2026-09-20「生成的图片有的手会模糊 禁止模糊」。
 # 与「手部结构」那条一样**只做提示词约束、不加自动判据**（结构判据在三个视觉模型上都不成立，
@@ -52,12 +49,11 @@ REFERENCE_APPEARANCE_BLOCK = (
 #      （跳舞抽帧几乎必有一只手在动），所以要显式写明"不要照搬参考图的模糊"。
 SHARPNESS_BLOCK = (
     "\n【手部姿态】仅对画面内可见手部，参考图一的肩肘位置和手臂大致朝向，手部姿态自然放松，"
-    "选择与当前动作协调的简单手势，不限定握拳或垂手。避免复杂指法、手指交叉和指尖相触；"
-    "可见手指结构与遮挡合理，不强行展开全部五指；手腕自然，手与脸、嘴保持距离。"
-    "\n【清晰度】脸、头发及画面内可见的手部清晰，可见手指、手腕与袖口无拖影或涂抹。"
-    "若图一的手有拖影，保留手臂大致位置和朝向，按上述简单手势重新安排，不照搬模糊轮廓。"
-    "可见手腕与前臂连接自然，手部的肤色、亮度和皮肤纹理与脸及手臂一致，受同一场景光照；"
-    "袖口纹理及衣肤交界清楚，背景保留可辨认的空间层次。"
+    "使用简单手势，不限定握拳或垂手。避免复杂指法、手指交叉和指尖相触；"
+    "可见手指结构与遮挡合理，不强行展开全部五指，手腕与前臂衔接自然，不遮挡脸和嘴。"
+    "若图一的手有拖影，保留手臂大致位置和朝向，重新画清手部。"
+    "\n【清晰度】脸、头发及画面内可见的手部清晰，无拖影、涂抹或塑料磨皮；袖口纹理及衣肤交界清楚。"
+    "手部的肤色、亮度和皮肤纹理与脸及手臂一致。"
 )
 
 # 背景清理（用户 2026-09-21：「如果抽帧图片背景里有人需要将其他人去掉，现在生成的背景里的人
@@ -76,13 +72,18 @@ SHARPNESS_BLOCK = (
 # ⚠️ 封面**不写这一整段**（用户 2026-09-19：「封面图不需要出现背景规则」），封面只加一句
 #    「不要第二个人」（`COVER_SUBJECT_RULE` / `image_workbench.prompt()` 封面分支）。
 # 指纹跟着走（`compliance_fingerprint()` 已收进 payload）→ **改完必须重启后端**。
-BACKGROUND_CLEAN_BLOCK = (
-    "\n【背景与实拍感】像本人架好手机固定机位拍下的日常表演画面，视角自然，手机和支架不入镜，不做镜子自拍。"
-    "按图一的居家或户外类别重新设计一个协调的同类地点，不照搬原布局。"
-    "居家是整洁、有人居住感的普通住宅，家具适量；户外是小区、公园或庭院，有自然空间层次。"
+BACKGROUND_REALISM_BLOCK = (
+    "像固定手机机位拍下的日常表演，手机和支架不入镜，不做镜子自拍。"
     "只保留主体一人，移除其他人物、镜子及人物倒影、字幕与杂物，原位置补成合理环境。"
-    "人物与可见环境的光向、投影、透视一致；肤色、衣料与环境材质真实，曝光自然。"
-    "人物和背景清楚可辨，不用虚化掩盖杂乱，不加人工散景、电影滤镜或影楼布光，不做豪华样板间。"
+    "人物与环境的光向、投影、透视一致，材质与曝光自然。背景清楚可辨，不用虚化掩盖杂乱，"
+    "不加人工散景、电影滤镜或影楼布光，不做豪华样板间。"
+)
+BACKGROUND_CLEAN_BLOCK = (
+    "\n【背景与实拍感】按图一的居家或户外类别重新设计协调的同类地点，保留光线方向与氛围；"
+    "居家有真实生活感，户外有自然空间层次。" + BACKGROUND_REALISM_BLOCK
+)
+REDESIGN_BACKGROUND_BLOCK = (
+    "\n【背景与实拍感】选择与歌曲氛围协调的日常地点，有自然空间层次。" + BACKGROUND_REALISM_BLOCK
 )
 SINGING_FRAMING_BLOCK = (
     "唱歌以脸部为重点，正脸或轻微侧转，头部自然直立，面部轮廓和嘴部清楚可见；"
@@ -115,10 +116,10 @@ VIDEO_READY_BLOCK = (
 
 # 服装只在这里定义：默认沿用抽帧，明确非常暴露时才做局部遮盖。
 CLOTHING_EXPOSURE_BLOCK = (
+    "普通短裙、短裤、吊带、抹胸、露肩、露腰、腿部露肤和少量上胸露肤照常保留。"
     "只有明确非常暴露时才处理：胸部、臀部或背部大面积裸露，乳沟清晰且裸露面积很大，"
     "透视到隐私部位清晰可见，或隐私部位轮廓过于突出。"
     "仅在对应位置补同色不透明内衬或微调遮盖，其他服装细节不变；拿不准时保持原样。"
-    "普通短裙、短裤、吊带、抹胸、露肩、露腰、腿部露肤和少量上胸露肤不因此调整。"
 )
 PLATFORM_SAFE_BLOCK = (
     "\n【服装】保留图一的服装类别、款式、配色、材质和原有长度；裙子保持裙子，不改成裤子。"
@@ -127,8 +128,7 @@ PLATFORM_SAFE_BLOCK = (
 # 用户主动选择歌曲造型重设计时，保留该模式的设计自由，仅共用暴露处理尺度。
 REDESIGN_SAFE_BLOCK = "\n【服装】" + CLOTHING_EXPOSURE_BLOCK
 
-# 身份约束放在提示词最末尾：图像模型对末尾内容最敏感，而"脸必须和原型图一致"是
-# 用户的硬性要求，任何其他要求（歌曲情绪、构图、反馈）都不得盖过它。
+# 身份要求作为最后一段，明确其优先级；不以此保证模型逐次输出完全一致。
 IDENTITY_PRIORITY_BLOCK = (
     "\n【身份】图二是唯一的面部身份参考；保持其眼形、眼距、鼻形、唇形、脸型及五官相对比例，保留人物辨识度，"
     "不混入图一的脸。不因妆容、表情或灯光改变人物身份；不照搬图二的发型、服装或背景。"
@@ -502,17 +502,23 @@ def compose_prompt(kind: str, style_source: str = "video", song_name: str = "") 
 # 根因：六千字里大量「图像-1 决定服装/造型/妆容/发型」把末尾那 300 字合规要求稀释掉了；
 # 模型按图一原样保留了低胸镂空蕾丝。缩短之后立刻照做，而且身份相似度更高。
 # 2026-09-24 起批量备料、/images 自动出图和复制提示词统一走这份精简模板。
-COMPACT_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一是抽帧，提供造型和场景参考，具体保留项及调整范围如下；图二只提供面部身份。姿态和人物位置可自然调整，不必完全复制抽帧。自然精致淡妆，眉眼与唇色有轻微妆感；柔和提亮面部，保留真实皮肤纹理，脸和颈部明暗一致。
-{compliance}
-{sharpness}
+COMPACT_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片，以图一的主要表演者为造型参考。
 {background}
-【构图】{composition}。{framing}不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
+{compliance}
+{pose}
+{sharpness}
+【妆容】自然精致淡妆，眉眼与唇色略有妆感，保留真实皮肤纹理，脸和颈部明暗一致。
+【构图】{composition}。{framing}
+只输出一张完整照片，不添加文字、标志或边框。"""
 
-REDESIGN_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一只提供画面气质参考，图二只提供面部身份；根据歌曲氛围设计自然的发型、服装与简洁有纵深的背景。姿态和人物位置可自然调整，不必完全复制抽帧。自然精致淡妆，眉眼与唇色有轻微妆感；柔和提亮面部，保留真实皮肤纹理，脸和颈部明暗一致。
-{compliance}
-{sharpness}
+REDESIGN_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片。图一只提供画面气质参考，根据歌曲氛围设计自然的发型、服装与简洁有纵深的背景。
 {background}
-【构图】{composition}。{framing}不添加文字、标志或边框。输出单张图片。{song}{feedback}"""
+{compliance}
+{pose}
+{sharpness}
+【妆容】自然精致淡妆，眉眼与唇色略有妆感，保留真实皮肤纹理，脸和颈部明暗一致。
+【构图】{composition}。{framing}
+只输出一张完整照片，不添加文字、标志或边框。"""
 
 REDESIGN_IDENTITY_BLOCK = IDENTITY_PRIORITY_BLOCK
 
@@ -539,6 +545,7 @@ def compliance_fingerprint() -> str:
             REFERENCE_APPEARANCE_BLOCK,
             REDESIGN_HAIR_BLOCK,
             BACKGROUND_CLEAN_BLOCK,
+            REDESIGN_BACKGROUND_BLOCK,
             SINGING_FRAMING_BLOCK,
             DANCE_FRAMING_BLOCK,
             COMPLIANCE_JUDGE_INSTRUCTION,
@@ -567,30 +574,27 @@ def compose_image_prompt(
 
     - 歌曲信息仍然要进提示词（「图一给造型、歌曲给情绪」这条约定不能丢）；
     - 用户的修改意见仍然要进提示词（否则「调整图片」只会改文案、图不动）；
-    - `IDENTITY_PRIORITY_BLOCK` 仍然放在最末尾（模型对末尾最敏感，脸优先于一切）。
+    - `IDENTITY_PRIORITY_BLOCK` 仍然放在最末尾，明确面部身份的优先级。
     """
     composition = PORTRAIT_COMPOSITION.get(
         ratio or ("4:3" if kind == "singing" else "9:16")
     ) or ""
     redesign = kind == "singing" and style_source == "redesign"
     template = REDESIGN_IMAGE_PROMPT if redesign else COMPACT_IMAGE_PROMPT
-    if kind == "dance":
-        template = template.replace(
-            "姿态和人物位置可自然调整，不必完全复制抽帧。",
-            "【跳舞姿态】默认保持自然站立，身体直立、重心稳定，髋部与双腿呈站姿，"
-            "不坐、不蹲、不跪，不倚坐家具，不添加椅子或凳子。"
-            "参考图一的身体朝向；"
-            "不能因裁切或更换背景改成坐姿。只有用户明确要求坐姿时才例外。",
-        )
+    pose = (
+        "【跳舞姿态】默认保持自然站立，重心稳定，参考图一的身体朝向；"
+        "不坐、不蹲、不跪，不添加椅凳。只有用户明确要求坐姿时才例外。"
+        if kind == "dance"
+        else "【姿态】姿态和人物位置可自然调整，不必完全复制抽帧。"
+    )
     prompt = template.format(
         compliance=(REDESIGN_SAFE_BLOCK if redesign else PLATFORM_SAFE_BLOCK).strip(),
+        pose=pose,
         sharpness=((REDESIGN_HAIR_BLOCK if redesign else REFERENCE_APPEARANCE_BLOCK)
                    + SHARPNESS_BLOCK).strip(),
-        background=BACKGROUND_CLEAN_BLOCK.strip(),
+        background=(REDESIGN_BACKGROUND_BLOCK if redesign else BACKGROUND_CLEAN_BLOCK).strip(),
         composition=composition,
         framing=DANCE_FRAMING_BLOCK if kind == "dance" else SINGING_FRAMING_BLOCK,
-        song="",
-        feedback="",
     )
     title = f"《{song_name}》" if song_name else ""
     if kind == "singing" and title:
@@ -599,7 +603,7 @@ def compose_image_prompt(
             song_block += f"\n歌曲情绪与氛围：{song_mood}"
         song_block += (
             "\n歌曲决定造型、背景氛围与表情。" if redesign
-            else "\n歌曲辅助表情与整体氛围，不据此更换参考服装。"
+            else "\n歌曲辅助表情与整体氛围。"
         )
         prompt += song_block
     text = (feedback or "").strip()

@@ -1,7 +1,17 @@
+import re
 import unittest
 from backend.batch_ai import compose_image_prompt
 
 class DancePosePromptTests(unittest.TestCase):
+    def test_generated_prompts_have_no_duplicate_sections_or_json(self):
+        for kind, source in (('singing', 'video'), ('dance', 'video'), ('singing', 'redesign')):
+            text = compose_image_prompt(kind, style_source=source)
+            sections = re.findall(r'【([^】]+)】', text)
+            self.assertEqual(len(sections), len(set(sections)))
+            self.assertNotRegex(text, r'[{}]|JSON')
+            self.assertLess(len(text), 1400)
+            self.assertEqual(text.count('图二是唯一的面部身份参考'), 1)
+
     def test_video_appearance_follows_frame_without_changing_redesign(self):
         for kind in ('singing', 'dance'):
             text = compose_image_prompt(kind)
