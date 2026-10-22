@@ -2476,14 +2476,14 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertTrue(prompt.startswith("生成一张供视频制作使用的写实单人照片"))
         self.assertLess(len(prompt), 1400, "默认模板不应退回堆叠长提示词")
         self.assertIn("沿用图一的发型", prompt)
-        self.assertIn("不必完全复制抽帧", prompt)
+        self.assertIn("姿态和人物位置可自然调整", prompt)
         self.assertIn("图二是唯一的面部身份参考", prompt)
         self.assertNotIn("肤色与年龄感", prompt)
         self.assertNotIn("只以源视频抽帧图一为准", prompt)
         self.assertIn("自然精致淡妆", prompt)
         self.assertIn("脸和颈部明暗一致", prompt)
         self.assertIn("手在画外时不补入", prompt)
-        self.assertIn("只有明确非常暴露时才处理", prompt)
+        self.assertIn("只有非常暴露时", prompt)
         self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
         # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
         copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
@@ -2587,9 +2587,9 @@ class WorkflowPreparationTests(unittest.TestCase):
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【服装】", prompt)
-            self.assertIn("只有明确非常暴露时才处理", prompt)
-            self.assertIn("补同色不透明内衬或微调遮盖", prompt)
-            self.assertIn("裙子保持裙子，不改成裤子", prompt)
+            self.assertIn("只有非常暴露时", prompt)
+            self.assertIn("适当调整款式或增加遮盖", prompt)
+            self.assertIn("服装可以自然调整", prompt)
             self.assertNotIn("无需改变正常的露肩", prompt)
         # 只管裸露：姿态、动作、裁切都不许出现在这一段里
         for word in ("摆胯", "腰部波浪", "姿态", "下边缘", "胸线"):
@@ -2616,10 +2616,10 @@ class WorkflowPreparationTests(unittest.TestCase):
         block = batch_ai.SHARPNESS_BLOCK
         self.assertIn("脸、头发及画面内可见的手部清晰", block)
         self.assertIn("若图一的手有拖影", block)
-        self.assertIn("保留手臂大致位置和朝向", block)
-        self.assertIn("不限定握拳或垂手", block)
+        self.assertIn("参考图一的肩肘位置和手臂大致朝向", block)
+        self.assertIn("手势简单、结构与遮挡合理", block)
         self.assertNotIn("抬起的手轻松半握", block)
-        self.assertIn("可见手指结构与遮挡合理", block)
+        self.assertIn("手腕与前臂衔接自然", block)
         self.assertIn("肤色、亮度和皮肤纹理与脸及手臂一致", block)
         self.assertIn("袖口纹理及衣肤交界清楚", block)
         for kind in ("dance", "singing"):
@@ -2629,7 +2629,7 @@ class WorkflowPreparationTests(unittest.TestCase):
             # 仍然必须是精简模板（长提示词会把硬要求淹掉，别借这次改动把它拼回去）
             self.assertLess(len(prompt), 1800)
             self.assertIn("【手部姿态】", prompt)
-            self.assertIn("避免复杂指法、手指交叉和指尖相触", prompt)
+            self.assertIn("手势简单、结构与遮挡合理", prompt)
             self.assertNotIn("身体朝向及主要手臂动作", prompt)
             # 清晰度块在身份块之前（脸仍然排在最后）
             self.assertLess(
@@ -2685,19 +2685,20 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("伴舞", text)
         self.assertIn("index=0", text)          # 分不出高下时的老回退口径不能丢
 
-    def test_compliance_only_adjusts_clear_excessive_exposure_locally(self) -> None:
-        """服装类别和款式保留；普通露肤及不确定情况不能触发换装。"""
+    def test_clothing_flexibility_and_exposure_rule(self) -> None:
+        """参考原穿搭并允许调整，普通露肤无需刻意遮盖。"""
         block = batch_ai.PLATFORM_SAFE_BLOCK
-        self.assertIn("保留图一的服装类别、款式、配色、材质和原有长度", block)
-        self.assertIn("只有明确非常暴露时才处理", block)
-        self.assertIn("拿不准时保持原样", block)
-        self.assertIn("普通短裙、短裤、吊带、抹胸、露肩、露腰", block)
-        self.assertIn("仅在对应位置补同色不透明内衬或微调遮盖", block)
+        self.assertIn("参考图一的穿搭风格、配色和整体气质", block)
+        self.assertIn("服装可以自然调整", block)
+        self.assertIn("正常露肩、露腰、露腿、短裙等可以保留", block)
+        self.assertIn("只有非常暴露时", block)
+        self.assertIn("适当调整款式或增加遮盖", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertLess(len(prompt), 1800)
+            self.assertLess(len(prompt), 1400)
             self.assertEqual(prompt.count("【服装】"), 1)
-            self.assertNotIn("可调整款式", prompt)
+            self.assertNotIn("原有长度", prompt)
+            self.assertNotIn("拿不准时保持原样", prompt)
 
     def test_compliance_judge_uses_the_platform_rule_verbatim(self) -> None:
         """出图后的自检也必须按平台三小条判，并显式豁免吊带/露肩/露脐（别再误杀 012/017）。"""

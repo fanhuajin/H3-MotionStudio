@@ -24,14 +24,14 @@ class DancePosePromptTests(unittest.TestCase):
             self.assertIn('图二是唯一的面部身份参考', text)
         redesign = compose_image_prompt('singing', style_source='redesign')
         self.assertIn('根据歌曲氛围设计自然的发型', redesign)
-        self.assertIn('发饰可有可无', redesign)
+        self.assertIn('根据服装与歌曲气质搭配自然的发型和适量配饰', redesign)
         self.assertNotIn('【发型与配饰】', redesign)
 
     def test_dance_requires_standing_at_each_ratio(self):
         for ratio in ('9:16', '4:3'):
             text = compose_image_prompt('dance', ratio=ratio)
-            self.assertIn('默认保持自然站立', text)
-            self.assertIn('不坐、不蹲、不跪', text)
+            self.assertIn('自然站立，重心稳定', text)
+            self.assertNotIn('不坐、不蹲、不跪', text)
             self.assertNotIn('姿态和人物位置可自然调整', text)
             self.assertTrue(text.endswith('不照搬图二的发型、服装或背景。'))
 
@@ -41,20 +41,32 @@ class DancePosePromptTests(unittest.TestCase):
             self.assertIn('姿态和人物位置可自然调整', text)
             self.assertNotIn('【跳舞姿态】', text)
 
-    def test_clothing_is_preserved_with_one_conditional_adjustment_rule(self):
+    def test_clothing_allows_adjustment_without_forcing_conservative_styles(self):
         for kind in ('singing', 'dance'):
             text = compose_image_prompt(kind)
             self.assertEqual(text.count('【服装】'), 1)
-            self.assertIn('裙子保持裙子，不改成裤子', text)
-            self.assertIn('只有明确非常暴露时才处理', text)
-            self.assertIn('拿不准时保持原样', text)
+            self.assertIn('服装可以自然调整', text)
+            self.assertIn('只有非常暴露时', text)
+            self.assertIn('正常露肩、露腰、露腿、短裙等可以保留', text)
             self.assertNotIn('【唱歌着装】', text)
             self.assertNotIn('【跳舞着装】', text)
             self.assertNotIn('搭配长裤或', text)
         redesign = compose_image_prompt('singing', style_source='redesign')
         self.assertIn('根据歌曲氛围设计自然的发型、服装', redesign)
         self.assertNotIn('保留图一的服装类别', redesign)
-        self.assertIn('只有明确非常暴露时才处理', redesign)
+        self.assertIn('只有非常暴露时', redesign)
+
+    def test_prompt_omits_redundant_and_overly_rigid_constraints(self):
+        redundant = (
+            '裙子保持裙子', '不改成裤子', '不必一律', '其他服装细节不变',
+            '拿不准时保持原样', '不限定握拳或垂手', '不强行展开全部五指',
+            '不坐、不蹲、不跪', '只有用户明确要求坐姿', '不做豪华样板间',
+            '不因妆容、表情或灯光改变人物身份',
+        )
+        for kind, source in (('singing', 'video'), ('dance', 'video'), ('singing', 'redesign')):
+            prompt = compose_image_prompt(kind, style_source=source)
+            for phrase in redundant:
+                self.assertNotIn(phrase, prompt)
 
     def test_singing_closeup_does_not_require_offscreen_limbs(self):
         for source in ('video', 'redesign'):

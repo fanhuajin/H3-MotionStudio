@@ -115,7 +115,7 @@ def enrich(prompt: str, report: dict[str, Any] | None) -> str:
     descriptions = "；".join(f"{labels[field]}：{value}" for field, value in observed.items())
     block = (
         "\n【糊脸前的造型记录】" + descriptions + "。"
-        "图一糊脸后不可见的佩戴细节按记录还原；本次修改明确要求更换或移除时，以本次修改为准。"
+        "图一糊脸后不可见的佩戴细节按记录还原。"
     )
     # 身份约束继续放在末尾；与正文参考图分工保持一致。
     head, separator, identity = prompt.rpartition("\n\n【身份】")
