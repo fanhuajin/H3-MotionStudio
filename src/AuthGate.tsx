@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { ArrowRight, Eye, EyeSlash, LockKey, SignOut, SpinnerGap, User, Waves } from "@phosphor-icons/react";
 import { readJson } from "./api";
 import "./login.css";
-import LoginFlow from "./LoginFlow";
+const LiquidEther = lazy(() => import("./vendor/react-bits/LiquidEther"));
+const Antigravity = lazy(() => import("./vendor/react-bits/Antigravity"));
 
 interface AuthState { configured: boolean; authenticated: boolean }
 
@@ -28,7 +29,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [confirm, setConfirm] = useState("");
   const [remember, setRemember] = useState(true);
   const [visible, setVisible] = useState(false);
-  const scene = useRef<HTMLElement>(null);
+  const [experience, setExperience] = useState<"liquid" | "gravity">("liquid");
   const check = async () => {
     setError("");
     try { setAuth(await readJson<AuthState>(fetch("/api/auth/status", { cache: "no-store" }))); }
@@ -58,18 +59,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
     finally { setBusy(false); }
   };
   return <main className="login-shell">
-    <section className="login-art" ref={scene} aria-label="H3 MotionStudio 创作空间" onPointerMove={(event) => {
-      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-      const rect = event.currentTarget.getBoundingClientRect();
-      scene.current?.style.setProperty("--shift-x", `${(event.clientX - rect.left - rect.width / 2) * 0.012}px`);
-      scene.current?.style.setProperty("--shift-y", `${(event.clientY - rect.top - rect.height / 2) * 0.012}px`);
-    }} onPointerLeave={() => { scene.current?.style.setProperty("--shift-x", "0px"); scene.current?.style.setProperty("--shift-y", "0px"); }}>
-      <img className="login-prism" src="/assets/login-prism.png" alt="" />
-      <LoginFlow />
+    <div className="login-live-background" aria-hidden="true"><Suspense fallback={null}>
+      {experience === "liquid" ? <LiquidEther colors={["#5227ff", "#b74dff", "#50cfff"]} intensity={1.3} mouseForce={28} cursorSize={110} autoDemo autoSpeed={.65} autoIntensity={1.5} clickBurst /> : <Antigravity colors={["#8055ff", "#f3adff", "#60caff"]} count={450} magnetRadius={13} ringRadius={9} particleSize={1.4} fieldStrength={12} clickBurst autoAnimate />}
+    </Suspense></div>
+    <section className="login-art" aria-label="H3 MotionStudio 创作空间">
       <div className="login-brand"><Waves weight="duotone" /><div>H3 MotionStudio<span>YOUR PRIVATE CREATIVE SPACE</span></div></div>
-      <div className="login-art-note">用 AI<br />让创意<br />成为影像<span /></div>
-      <div className="login-particles" aria-hidden="true">{Array.from({ length: 22 }, (_, i) => <i key={i} style={{ left: `${(i * 43 + 7) % 100}%`, top: `${(i * 29 + 11) % 100}%`, animationDelay: `${-i * .7}s`, animationDuration: `${8 + i % 6}s` }} />)}</div>
-      <div className="login-manifesto"><h1>让灵感，<br /><em>开始流动。</em></h1><p>H3 MOTIONSTUDIO</p><span /><small>AI 赋能的私人视频创作空间</small></div>
+      <div className="login-manifesto"><p>IMAGINATION IN MOTION</p><h1>灵感无界。<br /><em>即刻发生。</em></h1><small>{experience === "liquid" ? "移动鼠标，搅动灵感。点击，激起涡流。" : "移动鼠标，牵引星群。点击，让粒子散开。"}</small></div>
+      <div className="login-experiences" aria-label="交互场景"><span>探索空间</span><button type="button" aria-pressed={experience === "liquid"} onClick={() => setExperience("liquid")}>01 流体</button><button type="button" aria-pressed={experience === "gravity"} onClick={() => setExperience("gravity")}>02 反重力</button></div>
     </section>
     <section className="login-panel" aria-labelledby="login-title"><div className="login-form-wrap">
       <div className="login-eyebrow"><span /> PRIVATE STUDIO</div>
