@@ -207,7 +207,7 @@ export function PublishRoute() {
     return () => document.removeEventListener("keydown", navigate, true);
   }, [modal, queue, busy]);
 
-  async function action(path: string, body: unknown) {
+  async function action(path: string, body: unknown, close = true) {
     if (busyRef.current) return false;
     busyRef.current = true;
     generation.current++;
@@ -217,6 +217,7 @@ export function PublishRoute() {
       if (!alive.current) return false;
       if (result.items) setQueue(result);
       setActionFeedback(path === "/control/stop" ? "停止指令已接收，正在等待当前操作安全结束…" : "操作已接收，正在同步状态…");
+      if (close) setModal(null);
       return true;
     } catch (failure) {
       if (alive.current) { setError((failure as Error).message); setActionFeedback(""); }
@@ -229,7 +230,7 @@ export function PublishRoute() {
   async function selectPreviewPlatform(item: Work, platform: Platform, checked: boolean) {
     if (busyRef.current) return;
     setPlatformEdit({ id: item.id, platform, checked });
-    await action("/edit", { ids: [item.id], platform, state: checked ? "待发布" : "不发布" });
+    await action("/edit", { ids: [item.id], platform, state: checked ? "待发布" : "不发布" }, false);
     if (alive.current) setPlatformEdit(null);
   }
   async function pickFolders() {
@@ -241,7 +242,7 @@ export function PublishRoute() {
       const result = await api<{ folders: string[] }>("/pick", { directory: directory || queue?.defaultDirectory || "" });
       if (!alive.current || !result.folders.length) return;
       const updated = await api<Queue>("/add", { folders: result.folders });
-      if (alive.current) { setQueue(updated); }
+      if (alive.current) { setQueue(updated); setModal(null); }
     } catch (failure) {
       if (alive.current) setError((failure as Error).message);
     } finally {
@@ -260,7 +261,7 @@ export function PublishRoute() {
       onClick={() => setModal({ kind: "review", id: item.id, platform: p })}>待核对</button>
       : ["已完成", "发布中"].includes(state) ? <span className={`publish-state ${state === "已完成" ? "success" : ""}`}>{state === "已完成" && <CheckCircle />}{state}</span>
       : <select aria-label={`${item.name} ${labels[p]}发布状态`} value={state} disabled={readonly}
-        className={state === "失败" ? "publish-failed" : ""} onChange={event => void action("/edit", { ids: [item.id], platform: p, state: event.target.value })}>
+        className={state === "失败" ? "publish-failed" : ""} onChange={event => void action("/edit", { ids: [item.id], platform: p, state: event.target.value }, false)}>
         {state === "失败" && <option value="失败">失败</option>}<option>待发布</option><option>不发布</option></select>;
   }
   const items = queue?.items ?? [];
@@ -296,8 +297,8 @@ export function PublishRoute() {
           {button("安排时间", () => schedule(selected), readonly || !selected.length)}
           {button("删除记录", () => setModal({ kind: "remove", ids: [...selected] }), readonly || !selected.length, <Trash />)}
           {running ? <>
-            {button(queue.phase === "paused" ? "继续" : "暂停", () => void action(`/control/${queue.phase === "paused" ? "resume" : "pause"}`, {}), busy, queue.phase === "paused" ? <Play /> : <Pause />)}
-            {button("停止发布", () => void action("/control/stop", {}), busy, <Stop />)}
+            {button(queue.phase === "paused" ? "继续" : "暂停", () => void action(`/control/${queue.phase === "paused" ? "resume" : "pause"}`, {}, false), busy, queue.phase === "paused" ? <Play /> : <Pause />)}
+            {button("停止发布", () => void action("/control/stop", {}, false), busy, <Stop />)}
           </> : button("开始 / 继续发布", () => setModal({ kind: "start" }), readonly || !queue.dependenciesReady || !queue.items.some(i => !done(i)), <Play />)}
         </div>
       </section>
@@ -316,7 +317,7 @@ export function PublishRoute() {
             {issue(item) && <details><summary>查看处理信息</summary>{platforms.filter(p => item.details[p]).map(p =>
               <p key={p}>{labels[p]}：{item.details[p]?.error || item.details[p]?.stage || item.states[p]}</p>)}</details>}
           </td>
-          <td><PublishTime item={item} disabled={readonly} save={changes => action("/edit", { ids: [item.id], ...changes })} /></td>
+          <td><PublishTime item={item} disabled={readonly} save={changes => action("/edit", { ids: [item.id], ...changes }, false)} /></td>
           {platforms.map(p => {
             const actual = item.details[p]?.publish_at;
             return <td key={p}>{platformState(item, p)}{actual && <small className="publish-actual" title="北京时间">实际：{formatPublishTime(actual)}</small>}</td>;

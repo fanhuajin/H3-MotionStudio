@@ -572,6 +572,7 @@ export function BatchRoute() {
   const addOpen = activeDialog === "add";
   const [addError, setAddError] = useState("");
   const restoreInputFocus = useRef(true);
+  const [listFocusVersion, setListFocusVersion] = useState(0);
   const listSection = useRef<HTMLElement>(null);
   const inputToggle = useRef<HTMLButtonElement>(null);
   const [settingsFeedback, setSettingsFeedback] = useState<{ error: boolean; text: string } | null>(null);
@@ -803,6 +804,17 @@ export function BatchRoute() {
     }
   };
 
+  useEffect(() => {
+    if (!listFocusVersion) return;
+    const frame = requestAnimationFrame(() => {
+      const list = listSection.current;
+      if (!list) return;
+      list.focus({ preventScroll: true });
+      // 只在成功提交后定位一次；轮询和页内切换不抢走用户的位置。
+      list.scrollIntoView({ block: "start", behavior: "instant" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [listFocusVersion]);
 
   // 「准备任务」：把填好的链接交给后端，并立即开始准备
   // （下载抖音视频 → 生成人物图与发布文案 → 停在等确认）。
@@ -842,7 +854,9 @@ export function BatchRoute() {
       // 失败时不清（catch 里不碰输入框），免得白粘一遍。
       if (singingOn && singingUrls.length) setSinging((current) => current === singing ? "" : current);
       if (danceOn && danceUrls.length) setDance((current) => current === dance ? "" : current);
-
+      restoreInputFocus.current = false;
+      setActiveDialog(null);
+      setListFocusVersion((version) => version + 1);
       // 新建批次也不自动展开任何一条：列表默认全收起，由用户自己点开要看的那条
       // （2026-09-15 用户：「启动页面的时候 列表默认都是收起来的 由我自己点击要查看哪个」）。
       // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
