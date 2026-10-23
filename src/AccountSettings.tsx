@@ -69,12 +69,12 @@ export function AccountSettings({ profile, onSaved, onClose }: {
     </div>
     <div className="studio-dialog-body">
       {tab === "profile" ? <>
-        <div className="account-avatar-editor"><OwnerAvatar profile={profile} /><div><strong>你的个人头像</strong><p>JPG、PNG 或 WebP，最大 2 MB</p><div className="account-avatar-actions"><label className={`studio-button ${busy ? "is-disabled" : ""}`}><Camera />更换头像<input type="file" accept="image/png,image/jpeg,image/webp" disabled={Boolean(busy)} onChange={(event) => {
+        <div className="account-avatar-editor"><OwnerAvatar profile={profile} /><div><p>JPG、PNG 或 WebP，最大 2 MB</p><div className="account-avatar-actions"><label className={`studio-button ${busy ? "is-disabled" : ""}`}><Camera />更换头像<input type="file" accept="image/png,image/jpeg,image/webp" disabled={Boolean(busy)} onChange={(event) => {
           const file = event.target.files?.[0]; event.target.value = "";
           if (!file) return;
           if (file.size > 2 * 1024 * 1024) { setError("头像不能超过 2 MB"); return; }
           void run("avatar", async () => { const body = new FormData(); body.append("file", file); onSaved(await readJson<OwnerProfile>(fetch("/api/auth/avatar", { method: "POST", body }))); setMessage("头像已更新"); });
-        }} /></label>{profile.avatarUrl && <button className="studio-text-button" type="button" disabled={Boolean(busy)} onClick={() => void run("avatar", async () => { onSaved(await readJson<OwnerProfile>(fetch("/api/auth/avatar", { method: "DELETE" }))); setMessage("已恢复默认头像"); })}>移除头像</button>}</div></div></div>
+        }} /></label></div></div></div>
         <form className="account-form" onSubmit={saveProfile}>
           <label>显示名称<input value={displayName} maxLength={64} disabled={Boolean(busy)} onChange={(event) => setDisplayName(event.target.value)} placeholder="你希望如何被称呼" /></label>
           <label>登录账号<input value={username} required maxLength={64} pattern=".*\S.*" autoComplete="username" disabled={Boolean(busy)} onChange={(event) => setUsername(event.target.value)} /><small>修改后，下次使用新账号登录。</small></label>
