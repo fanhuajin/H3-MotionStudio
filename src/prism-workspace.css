@@ -80,18 +80,6 @@
 .prism-workspace .ratio-cards button.selected strong { color: #d6dad7; }
 .prism-workspace .toggle-switch.on, .prism-workspace .toggle-switch[aria-checked=true] { border-color: #afb5b0; background: #939b95; }
 .prism-workspace .url-field:focus-within { border-color: #bcc2bd; box-shadow: 0 0 0 3px #a7afa913; }
-.studio-batch-overview { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin: 0 0 28px; }
-.studio-overview-card { position: relative; overflow: hidden; padding: 18px 18px 14px; border: 1px solid #b2b9b427; border-radius: 13px; background: linear-gradient(140deg, #b5bcb709, transparent 75%), var(--shell-panel); color: var(--shell-copy); text-align: left; cursor: pointer; transition: border-color .2s, background .2s, transform .2s; }
-.studio-overview-card:hover { transform: translateY(-2px); border-color: #c3c8c455; }
-.studio-overview-card[aria-pressed=true] { border-color: #bbc2bd75; background: linear-gradient(130deg, #99a19b1d, #99a19b05), var(--shell-panel); }
-.studio-overview-card > span:first-child { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #b8bab8; }
-.studio-overview-card > span:first-child svg { width: 16px; height: 16px; color: #c0c5c1; }
-.studio-overview-card strong { display: flex; gap: 9px; align-items: baseline; font-size: 30px; font-weight: 550; font-variant-numeric: tabular-nums; padding: 10px 0; }
-.studio-overview-card strong small { font-size: 9px; font-weight: 400; color: var(--shell-faint); }
-.studio-overview-link { display: flex; align-items: center; justify-content: space-between; font-size: 9px; color: #9ea29f; }
-.studio-overview-link svg { width: 12px; height: 12px; }
-.studio-overview-card.exception > span:first-child svg { color: #e2b386; }
-.studio-overview-card.completed > span:first-child svg { color: #82c9b1; }
 .prism-workspace :is(.batch-input-card, .batch-table-card, .batch-detail, .image-workbench-shell, .workspace, .download-card, .download-result-card, .download-history) { border: 1px solid var(--shell-line); border-radius: var(--studio-radius); box-shadow: var(--studio-shadow); background: #181818e8; }
 .prism-workspace :is(.batch-table-card, .image-workbench-shell) { overflow: hidden; }
 .prism-workspace :is(.batch-list-toolbar, .image-workbench-toolbar) { background: #adb3af05; padding: 16px 18px; border-bottom-color: var(--shell-line); }
@@ -211,8 +199,6 @@
 @media (max-width: 1280px) {
   .studio-topbar { padding-inline: 25px; }
   .prism-workspace :is(.batch-page, .image-workbench-page, .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route, .douyin-route) { padding: 28px 25px 45px; }
-  .studio-batch-overview { gap: 9px; }
-  .studio-overview-card { padding: 15px 12px 12px; }
 }
 @media (max-width: 900px) {
   .prism-workspace, .prism-workspace.sidebar-collapsed { display: block; }
@@ -230,11 +216,6 @@
   .prism-workspace .studio-search-trigger :is(span, kbd) { display: none; }
   .studio-topbar { min-height: 58px; padding-inline: 20px; }
   .studio-private-badge { display: none; }
-  .studio-batch-overview { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .studio-overview-link { display: none; }
-  .studio-overview-card > span:first-child { font-size: 10px; gap: 5px; }
-  .studio-overview-card strong { font-size: 25px; padding-bottom: 0; }
-  .studio-overview-card strong small { display: none; }
 }
 @media (max-width: 600px) {
   .studio-topbar { padding-inline: 16px; }
@@ -242,9 +223,6 @@
   .studio-topbar-profile > span:last-child { display: none; }
   .studio-breadcrumb > svg { display: none; }
   .prism-workspace :is(.batch-page, .image-workbench-page, .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route, .douyin-route) { padding: 24px 16px 36px; }
-  .studio-batch-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
-  .studio-overview-card:last-child { grid-column: 1 / -1; }
-  .studio-overview-card strong { font-size: 26px; }
   .prism-workspace .batch-header h1 { font-size: 25px; }
   .prism-workspace .batch-header { flex-wrap: wrap; gap: 14px; }
   .studio-dialog-head { padding: 22px 20px 18px; }
