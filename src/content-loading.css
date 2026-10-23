@@ -1,5 +1,46 @@
-.content-loading{display:flex;align-items:center;justify-content:center;gap:10px;min-height:280px;padding:24px;color:#b6bdb8;font-size:13px;line-height:1.65}
-.content-loading>svg{width:20px;height:20px;flex-shrink:0;animation:content-loading-spin 1s linear infinite}
-.content-loading.is-compact{min-height:80px;padding:16px}
-@keyframes content-loading-spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.content-loading>svg{animation:none}}
+.content-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 280px;
+  padding: 24px;
+  color: var(--shell-muted, #a2a3a3);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.content-loading-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(100%, 420px);
+  padding: 40px 24px 32px;
+  border: 1px solid var(--shell-line, #2c2e31);
+  border-radius: 24px;
+  background: radial-gradient(ellipse at 50% 15%, #b4d4bc12, transparent 65%), var(--shell-panel, #1b1c1e);
+  box-shadow: 0 24px 80px #0002;
+  text-align: center;
+}
+/* Orbit direction references Magic UI; the indicator is indeterminate, per Carbon. */
+.content-loading-orbit { position: relative; display: grid; place-items: center; width: 120px; height: 120px; margin-bottom: 24px; }
+.content-loading-orbit > i { position: absolute; inset: 0; border: 1px solid #b4d4bc20; border-top-color: var(--shell-accent, #b4d4bc); border-radius: 50%; animation: content-loading-spin 3s linear infinite; }
+.content-loading-orbit > i:nth-child(2) { inset: 12px; border-top-color: transparent; border-bottom-color: #b4d4bc80; animation-direction: reverse; animation-duration: 4s; }
+.content-loading-core { display: grid; place-items: center; width: 64px; height: 64px; border: 1px solid #b4d4bc35; border-radius: 20px; background: var(--shell-accent-soft, #b4d4bc17); box-shadow: 0 0 40px #b4d4bc10; color: var(--shell-accent, #b4d4bc); }
+.content-loading-core > svg { width: 26px; height: 26px; margin-left: 3px; }
+.content-loading-copy { display: grid; gap: 8px; min-width: 0; }
+.content-loading-copy .content-loading-brand { color: var(--shell-accent, #b4d4bc); font-size: 10px; letter-spacing: .2em; }
+.content-loading-copy strong { color: var(--shell-copy, #ededed); font-size: 17px; font-weight: 500; overflow-wrap: anywhere; }
+.content-loading-copy > span:last-child { font-size: 12px; }
+.content-loading-track { width: min(100%, 160px); height: 3px; overflow: hidden; margin-top: 28px; border-radius: 3px; background: #b4d4bc16; }
+.content-loading-track > i { display: block; width: 50%; height: 100%; border-radius: inherit; background: linear-gradient(90deg, transparent, var(--shell-accent, #b4d4bc), transparent); animation: content-loading-scan 2s ease-in-out infinite; }
+.content-loading.is-compact { gap: 10px; min-height: 80px; padding: 16px; }
+.content-loading.is-compact > svg { width: 20px; height: 20px; flex-shrink: 0; animation: content-loading-spin 1s linear infinite; }
+@keyframes content-loading-spin { to { transform: rotate(360deg); } }
+@keyframes content-loading-scan { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+@media (max-width: 480px) {
+  .content-loading { padding: 20px; }
+  .content-loading-panel { padding: 32px 20px 28px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .content-loading-orbit > i, .content-loading-track > i, .content-loading.is-compact > svg { animation: none; }
+  .content-loading-track > i { transform: translateX(50%); }
+}
