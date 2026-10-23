@@ -276,48 +276,6 @@ export function ImageWorkbenchRoute() {
     }
   }, []);
 
-  /** 把所有缺图的作品排上队列（后端严格一条一条跑，不并发）。 */
-  /** 停止自动出图队列：正在跑的那一步跑完就停，排队的立刻取消。 */
-  const stopAuto = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const data = await readJson<{ cancelled: number }>(
-        fetch("/api/image-workbench/automatic-stop", { method: "POST" }),
-        "停止失败",
-      );
-      setNotice(`已请求停止：正在跑的那一步会跑完，另有 ${data.cancelled} 条排队已取消。`);
-      await refresh();
-    } catch (error) {
-      setNotice(String((error as Error).message || error));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, refresh]);
-
-  const startAllMissing = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const data = await readJson<{ queued: number; waiting?: number }>(
-        fetch("/api/image-workbench/automatic-all", { method: "POST" }),
-        "一键生成全部失败",
-      );
-      setNotice(
-        data.queued
-          ? `已把 ${data.queued} 条缺图作品排上队列${data.waiting ? `；另有 ${data.waiting} 条等成片后出封面` : ""}。`
-          : data.waiting
-            ? `没有可立即生成的：${data.waiting} 条等成片后检查人物图手部后出封面。`
-            : "没有缺图的作品。",
-      );
-      await refresh();
-    } catch (error) {
-      setNotice(String((error as Error).message || error));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, refresh]);
-
   const copyImage = async (key: keyof WorkItem["assets"], label: string) => {
     if (!item || !item.assets[key]) { setNotice(`还没有${label}。`); return; }
     setBusy(true); setNotice("");
@@ -372,8 +330,6 @@ export function ImageWorkbenchRoute() {
       <header className="image-workbench-head">
         <div><span className="image-workbench-kicker">VISUAL ASSET LIBRARY</span><h1>图片与封面</h1><p>集中管理人物图与封面，按作品补齐发布素材。</p><details className="studio-inline-help"><summary>查看生成规则</summary><p>封面在最终成片交付后生成，以原人物图为参考；生成前检查手部，异常或不确定时使用避手构图。生成结果直接保存。</p></details></div>
         <div className="image-workbench-head-actions">
-          <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
-          {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}
           <div className="image-workbench-stats"><strong>{finished}<small>已全部完成</small></strong><strong>{items.length - finished}<small>待处理</small></strong></div>
         </div>
       </header>
