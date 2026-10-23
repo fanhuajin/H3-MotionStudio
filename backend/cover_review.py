@@ -11,7 +11,7 @@ from typing import Any
 from . import batch_ai
 
 _LOCKS: dict[str, asyncio.Lock] = {}
-VERSION = 2
+VERSION = 3
 
 
 @lru_cache(maxsize=2048)
@@ -30,7 +30,8 @@ def read_report(image: Path, report: Path) -> dict[str, Any] | None:
         digest = fingerprint(image)
         if (result.get("version") == VERSION and result.get("sha256") == digest
                 and result.get("status") in {"reasonable", "no_hands", "unreasonable", "uncertain"}
-                and result.get("fingersCutByFrame") in {"yes", "no", "uncertain"}):
+                and result.get("fingersCutByFrame") in {"yes", "no", "uncertain"}
+                and result.get("handsNearOrOutsideFrame") in {"yes", "no", "uncertain"}):
             return result
     except (OSError, ValueError, AttributeError):
         pass
@@ -59,10 +60,11 @@ async def review(image: Path, report: Path) -> dict[str, Any]:
         try:
             result = await batch_ai.judge_cover_hands(image)
             if (result.get("status") not in {"reasonable", "no_hands", "unreasonable", "uncertain"}
-                    or result.get("fingersCutByFrame") not in {"yes", "no", "uncertain"}):
+                    or result.get("fingersCutByFrame") not in {"yes", "no", "uncertain"}
+                    or result.get("handsNearOrOutsideFrame") not in {"yes", "no", "uncertain"}):
                 raise ValueError("无效检查结果")
         except Exception as exc:
-            result = {"status": "uncertain", "fingersCutByFrame": "uncertain", "reason": f"检查未完成：{str(exc)[:160]}"}
+            result = {"status": "uncertain", "fingersCutByFrame": "uncertain", "handsNearOrOutsideFrame": "uncertain", "reason": f"检查未完成：{str(exc)[:160]}"}
         result = {**result, "sha256": digest, "version": VERSION}
         write_report(report, result)
         return result
@@ -70,4 +72,5 @@ async def review(image: Path, report: Path) -> dict[str, Any]:
 
 def hide_hands(report: dict[str, Any] | None) -> bool:
     return (not report or report.get("status") not in {"reasonable", "no_hands"}
-            or report.get("fingersCutByFrame") != "no")
+            or report.get("fingersCutByFrame") != "no"
+            or report.get("handsNearOrOutsideFrame") != "no")

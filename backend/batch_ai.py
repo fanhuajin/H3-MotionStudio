@@ -1407,7 +1407,8 @@ COVER_HAND_SCHEMA = {
         "status": {"type": "string", "enum": ["reasonable", "no_hands", "unreasonable", "uncertain"]},
         "reason": {"type": "string"},
         "fingersCutByFrame": {"type": "string", "enum": ["yes", "no", "uncertain"]},
-    }, "required": ["status", "reason", "fingersCutByFrame"],
+        "handsNearOrOutsideFrame": {"type": "string", "enum": ["yes", "no", "uncertain"]},
+    }, "required": ["status", "reason", "fingersCutByFrame", "handsNearOrOutsideFrame"],
 }
 
 
@@ -1422,7 +1423,9 @@ async def judge_cover_hands(image: Path) -> dict[str, Any]:
                 "或部分手指延伸到画外，返回 yes，即使可见部分结构正常也一样。逐一检查四条画面边界。"
                 "手指贴近边缘但完整可见、正常弯指、被身体或衣物自然遮挡，以及双手完全不入镜，返回 no；"
                 "不能仅因没有看到五根手指或手臂出画就判 yes。无法确定是否被边缘截断返回 uncertain。"
-                "status 与截断判断独立，reason 同时简述手部结构与边缘截断情况。"
+                "另外检查 handsNearOrOutsideFrame：手臂横伸或抬起并延伸出画面、手掌或手指贴近画面边缘（距边缘不足画面对应边长的5%），返回 yes；即使手指结构合理或画外没有可见手指也一样。"
+                "双臂自然下垂且双手完全位于画面下方，或手部被身体、衣物自然遮挡，不因不可见而返回 yes；其余完整且远离边缘的手部返回 no，无法判断返回 uncertain。"
+                "三项判断相互独立，reason 同时简述手部结构、边缘截断和伸臂出画情况。"
                 "清晰纹理不等于结构正确。明确自然合理返回 reasonable；完全没有可见手掌或手指返回 no_hands；"
                 "明确畸形返回 unreasonable；模糊、遮挡或难以确认结构返回 uncertain。reason 用简短中文说明。"
             )},
@@ -1431,6 +1434,7 @@ async def judge_cover_hands(image: Path) -> dict[str, Any]:
     )
     if (result.get("status") not in {"reasonable", "no_hands", "unreasonable", "uncertain"}
             or result.get("fingersCutByFrame") not in {"yes", "no", "uncertain"}
+            or result.get("handsNearOrOutsideFrame") not in {"yes", "no", "uncertain"}
             or not isinstance(result.get("reason"), str)):
         raise ValueError("封面手部检查结果无效")
     return result

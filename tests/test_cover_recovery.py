@@ -21,7 +21,7 @@ def png():
 class CoverRequestRecoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         judge = patch.object(workbench.batch_ai, "judge_cover_hands", new_callable=AsyncMock,
-                             return_value={"status": "reasonable", "reason": "结构自然", "fingersCutByFrame": "no"})
+                             return_value={"status": "reasonable", "reason": "结构自然", "fingersCutByFrame": "no", "handsNearOrOutsideFrame": "no"})
         judge.start()
         self.addCleanup(judge.stop)
 

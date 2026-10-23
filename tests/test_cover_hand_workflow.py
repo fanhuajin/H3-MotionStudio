@@ -17,6 +17,25 @@ def picture(color="red"):
 
 
 class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_outstretched_arm_uses_no_hands_without_expanding_background(self):
+        for edge in ("yes", "uncertain"):
+            with self.subTest(edge=edge), tempfile.TemporaryDirectory() as raw:
+                folder = Path(raw)
+                (folder / wb.PERSON_NAME).write_bytes(picture())
+                report = {"status": "reasonable", "reason": "手臂横伸出画",
+                          "fingersCutByFrame": "no", "handsNearOrOutsideFrame": edge}
+                async def generate(**kw):
+                    self.assertIn("双臂调整为自然下垂", kw["prompt"])
+                    self.assertIn("不扩展背景", kw["prompt"])
+                    self.assertNotIn("再适量扩展背景", kw["prompt"])
+                    snapshot = json.loads((kw["output_path"].parent / "request.json").read_text(encoding="utf-8"))
+                    self.assertTrue(snapshot["failureFallback"])
+                    kw["output_path"].write_bytes(picture("blue"))
+                with patch.object(batch_ai, "judge_cover_hands", new_callable=AsyncMock, return_value=report) as judge, patch.object(batch_image, "generate_candidate_image", side_effect=generate), patch.object(wb, "save_upload"):
+                    for stage in ("bilibili", "douyin"):
+                        await wb._generate_cover(folder, stage, "dance")
+                self.assertEqual(judge.await_count, 1)
+
     async def test_each_decision_uses_only_original_person_and_correct_framing(self):
         for status in ("reasonable", "no_hands", "unreasonable", "uncertain", "error"):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as raw:
@@ -29,7 +48,7 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     if image.name == "reference.png":
                         if status == "error":
                             raise RuntimeError("offline")
-                        return {"status": status, "reason": "输入判断", "fingersCutByFrame": "no"}
+                        return {"status": status, "reason": "输入判断", "fingersCutByFrame": "no", "handsNearOrOutsideFrame": "no"}
                     return {"status": "no_hands", "reason": "封面无手"}
                 async def generate(**kw):
                     seen.append(kw)
@@ -77,7 +96,7 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     snapshot = json.loads((kw["output_path"].parent / "request.json").read_text(encoding="utf-8"))
                     self.assertEqual(bool(snapshot.get("failureFallback")), cut != "no")
                     kw["output_path"].write_bytes(picture("blue"))
-                report = {"status": "reasonable", "reason": "边缘判断", "fingersCutByFrame": cut}
+                report = {"status": "reasonable", "reason": "边缘判断", "fingersCutByFrame": cut, "handsNearOrOutsideFrame": "no"}
                 with patch.object(batch_ai, "judge_cover_hands", new_callable=AsyncMock, return_value=report) as judge, patch.object(batch_image, "generate_candidate_image", side_effect=generate), patch.object(wb, "save_upload"):
                     for stage in ("bilibili", "douyin"):
                         await wb._generate_cover(folder, stage, "dance")
@@ -93,8 +112,8 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as raw:
             image, report = Path(raw) / "p.png", Path(raw) / "review.json"
             image.write_bytes(picture())
-            report.write_text(json.dumps({"version": 1, "sha256": cover_review.fingerprint(image), "status": "reasonable", "reason": "旧规则"}), encoding="utf-8")
-            with patch.object(batch_ai, "judge_cover_hands", new_callable=AsyncMock, return_value={"status": "reasonable", "reason": "截指", "fingersCutByFrame": "yes"}) as judge:
+            report.write_text(json.dumps({"version": 2, "sha256": cover_review.fingerprint(image), "status": "reasonable", "reason": "旧规则", "fingersCutByFrame": "no"}), encoding="utf-8")
+            with patch.object(batch_ai, "judge_cover_hands", new_callable=AsyncMock, return_value={"status": "reasonable", "reason": "截指", "fingersCutByFrame": "yes", "handsNearOrOutsideFrame": "no"}) as judge:
                 result = await cover_review.review(image, report)
             judge.assert_awaited_once()
             self.assertTrue(cover_review.hide_hands(result))
@@ -106,7 +125,7 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
             image.write_bytes(picture())
             async def judge(_):
                 await asyncio.sleep(0)
-                return {"status": "reasonable", "reason": "自然", "fingersCutByFrame": "no"}
+                return {"status": "reasonable", "reason": "自然", "fingersCutByFrame": "no", "handsNearOrOutsideFrame": "no"}
             with patch.object(batch_ai, "judge_cover_hands", side_effect=judge) as check:
                 await asyncio.gather(*(cover_review.review(image, report) for _ in range(3)))
                 self.assertEqual(check.await_count, 1)
@@ -204,7 +223,7 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as raw:
             image = Path(raw) / "p.png"
             image.write_bytes(picture())
-            with patch.object(batch_ai, "_chat_structured", new_callable=AsyncMock, return_value={"status": "reasonable", "reason": "自然", "fingersCutByFrame": "no"}) as chat:
+            with patch.object(batch_ai, "_chat_structured", new_callable=AsyncMock, return_value={"status": "reasonable", "reason": "自然", "fingersCutByFrame": "no", "handsNearOrOutsideFrame": "no"}) as chat:
                 await batch_ai.judge_cover_hands(image)
                 text = chat.call_args.kwargs["content"][0]["text"]
                 self.assertIn("肩、肘", text)

@@ -291,19 +291,19 @@ def prompt(folder: Path, stage: str, kind: str = "singing", *, hand_report: dict
     )
     framing = (
         avoid_hands_crop +
-        "若参考图的手或手臂举到胸前、肩旁或脸旁，不得仅靠裁切隐藏；将双臂调整为自然下垂，双手及手腕完全位于画面下边缘之外。"
+        "若参考图的手臂横伸出画，或手或手臂举到胸前、肩旁或脸旁，不得仅靠裁切隐藏；将双臂调整为自然下垂，双手及手腕完全位于画面下边缘之外。"
         "自然补全原先被手或手臂遮挡的衣服、背景及必要的人物轮廓，不改变人物五官身份；"
         "不残留手指、手腕、截断手掌或突兀的手臂，不得只删除手掌而留下断臂。"
         if failure_fallback or cover_review.hide_hands(report) else
         "保留原图人物的脸部五官、发型、发饰、表情、视线、姿态、服装、背景与光线，保持人物原有比例和位置，不重新摆姿势。"
         "原图中已经可见的手臂、双手和手指保持原样，不改变动作、位置、形态和遮挡关系，不重画已有手部。"
-        "适配画幅时优先向人物旁边扩展背景，形成连续的文字留白。"
-        "适配画幅只扩展背景，不扩展人物肢体，不补画原图画外的手掌或手指。"
+        "在目标画幅内安排文字留白，不扩展背景，不缩小人物来增加留白。"
+        "不扩展人物肢体，不补画原图画外的手掌或手指。"
         "不得出现空袖口、手腕突然截断、双手消失或新增手臂，不得只删除手掌而留下断臂。"
         "仍处于最终画幅之外，或因双手背在身后、被身体或衣物自然遮挡而不可见的手部，保持原有遮挡关系，无需补出或强行展示，不为露出双手改变姿态。"
-        "不为排字删除、遮盖或改变人物及手部；留白不足时优先移动文字、换行或缩小字号，再适量扩展背景。"
+        "不为排字删除、遮盖或改变人物及手部；留白不足时优先移动文字、换行或缩小字号，不通过扩展背景增加留白。"
     )
-    return f"""仅以这张原人物图为参考制作 {ratio} 封面。{framing}只将下列文字自然融入画面。
+    return f"""仅以这张原人物图为参考制作 {ratio} 封面。{framing}不扩展背景，不为增加文字空间拉远或缩小人物。只将下列文字自然融入画面。
 标题：{title}
 简介：{introduction}
 标题采用自然有手写感的毛笔字，重点词用协调的颜色突出，搭配少量自然笔触或手绘下划线；简介用清楚易读的小字轻量融入画面，不使用厚重边框。文字准确完整，不重复，不改写标题与简介。
@@ -680,8 +680,9 @@ async def _generate_cover(
                 base_prompt = prompt(folder, stage, kind, hand_report=report)
                 snapshot = {"reference": frozen.name, "prompt": base_prompt,
                             "handReview": report, "ratio": "4:3" if stage == "bilibili" else "3:4"}
-                # 截指输入首次就使用备用构图，失败后不再重复同一备用付费请求。
-                if report.get("fingersCutByFrame") in {"yes", "uncertain"}:
+                # 截指或伸臂贴边输入首次使用备用构图，失败后不重复同一备用付费请求。
+                if (report.get("fingersCutByFrame") in {"yes", "uncertain"}
+                        or report.get("handsNearOrOutsideFrame") in {"yes", "uncertain"}):
                     snapshot["failureFallback"] = True
                 temporary = inputs.with_suffix(".tmp")
                 temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
