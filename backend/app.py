@@ -838,8 +838,6 @@ async def create_batch(request: BatchCreateRequest):
     urls = singing + dance
     if not urls:
         raise HTTPException(400, "请至少填写一条抖音链接")
-    if len(urls) > 50:
-        raise HTTPException(400, "一次最多处理 50 条链接")
     invalid = next((url for url in urls if not is_douyin_url(url)), None)
     if invalid:
         raise HTTPException(400, f"不是有效的抖音链接：{invalid[:80]}")

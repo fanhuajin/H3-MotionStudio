@@ -400,9 +400,6 @@ def item_key(kind: str, url: str) -> str:
     return f"{kind}:{url_key(url)}"
 
 
-# 一个批次（含随时追加）最多多少条视频
-MAX_BATCH_ITEMS = 50
-
 # 能「重新开始」的条目状态：只有已经跑完一轮的（失败 / 已跳过 / 已出片）。
 # 正在出片的必须先「取消」，已删除的不能复活，还没出片的本来就会跑、不需要重开。
 RETRYABLE_ITEM_STATUSES = {"failed", "skipped", "completed"}
@@ -574,9 +571,6 @@ def append_batch_items(
             fresh.append((kind, url))
         if not fresh:
             return
-        live = sum(1 for item in items if item.get("status") != "deleted")
-        if live + len(fresh) > MAX_BATCH_ITEMS:
-            raise ValueError(f"一个批次最多 {MAX_BATCH_ITEMS} 条视频")
         next_index = max((int(item.get("index") or 0) for item in items), default=0)
         kind_starts: dict[str, int] = {}
         for item in items:

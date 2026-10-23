@@ -557,15 +557,54 @@ class WorkflowPreparationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 batch_worker.append_batch_items("b1", [], [])
 
-            # 单批上限
-            full = new_batch_state([f"https://v.douyin.com/s{i}" for i in range(50)], [])
-            stub.state = full
-            with self.assertRaises(ValueError):
-                batch_worker.append_batch_items("b1", ["https://v.douyin.com/one-more"], [])
-
         paths = {getattr(route, "path", "") for route in app.routes}
         self.assertIn("/api/batches/{batch_id}/items", paths)           # 随时追加
         self.assertIn("/api/batches/{batch_id}/items/{item_id}", paths)  # 删除单条
+
+    def test_append_batch_accepts_more_than_fifty_items(self) -> None:
+        from backend import batch_worker
+
+        state = new_batch_state([f"https://v.douyin.com/s{i}" for i in range(50)], [])
+
+        def mutate(_batch_id, mutator):
+            mutator(state)
+            return state
+
+        with patch.object(batch_worker, "batch_store") as store:
+            store.get.return_value = state
+            store.mutate.side_effect = mutate
+            result = batch_worker.append_batch_items(
+                "b1", [f"https://v.douyin.com/extra{i}" for i in range(60)], []
+            )
+
+        self.assertEqual(result["added"], 60)
+        self.assertEqual(state["total"], 110)
+        self.assertEqual([item["index"] for item in state["items"]], list(range(1, 111)))
+
+    def test_create_batch_accepts_more_than_fifty_links(self) -> None:
+        from backend import app as app_module
+
+        urls = [f"https://www.douyin.com/video/{7000000000000000000 + i}" for i in range(60)]
+        state = {}
+
+        def create(payload):
+            state.update(payload)
+
+        def update(_batch_id, **changes):
+            state.update(changes)
+            return state
+
+        with patch.object(app_module, "batch_store") as store:
+            store.active.return_value = None
+            store.create.side_effect = create
+            store.update.side_effect = update
+            result = asyncio.run(app_module.create_batch(
+                app_module.BatchCreateRequest(singingUrls=urls)
+            ))
+
+        self.assertEqual(result["total"], 60)
+        self.assertEqual([item["url"] for item in result["items"]], urls)
+        self.assertEqual(result["status"], "queued")
 
     def test_append_endpoint_queues_without_auto_start(self) -> None:
         """追加只排队：跑完 / 暂停的批次都不会因为「加任务」被自动跑起来。"""
