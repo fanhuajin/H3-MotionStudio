@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
-import { CaretRight, ClosedCaptioning, DownloadSimple, Gauge, ImageSquare, Keyboard, ListChecks, MagnifyingGlass, MagnifyingGlassPlus, MicrophoneStage, MusicNotes, PersonSimpleRun, SidebarSimple, Sparkle, X } from "@phosphor-icons/react";
+import { CaretRight, ClosedCaptioning, DownloadSimple, Gauge, ImageSquare, Keyboard, ListChecks, MagnifyingGlass, MagnifyingGlassPlus, MicrophoneStage, MusicNotes, PersonSimpleRun, SidebarSimple, X } from "@phosphor-icons/react";
 import { AccountSettings, OwnerAvatar } from "./AccountSettings";
 import type { OwnerProfile } from "./AccountSettings";
 import { LogoutButton } from "./AuthGate";
@@ -90,7 +90,7 @@ export function StudioShell({ path, onNavigate, onCloseProject, children }: {
       </div>
     </aside>
     <div className="studio-main-shell">
-      <header className="studio-topbar"><div className="studio-breadcrumb"><button type="button" className="studio-icon-button studio-sidebar-toggle" aria-label={collapsed ? "展开侧栏" : "收起侧栏"} aria-expanded={!collapsed} onClick={toggle}><SidebarSimple /></button><span className="studio-breadcrumb-root">创作空间</span><CaretRight /><strong>{active.label}</strong></div><div className="studio-topbar-actions"><span className="studio-private-badge"><Sparkle />个人工作台</span><button className="studio-topbar-profile" type="button" aria-busy={profileLoading} disabled={profileLoading} onClick={openAccount} aria-label="打开账户设置"><OwnerAvatar profile={profile} /><span>{profileLoading ? "正在加载…" : profile?.displayName || "我的账户"}</span></button></div></header>
+      <header className="studio-topbar"><div className="studio-breadcrumb"><button type="button" className="studio-icon-button studio-sidebar-toggle" aria-label={collapsed ? "展开侧栏" : "收起侧栏"} aria-expanded={!collapsed} onClick={toggle}><SidebarSimple /></button><span className="studio-breadcrumb-root">创作空间</span><CaretRight /><strong>{active.label}</strong></div><div className="studio-topbar-actions"><button className="studio-topbar-profile" type="button" aria-busy={profileLoading} disabled={profileLoading} onClick={openAccount} aria-label="打开账户设置"><OwnerAvatar profile={profile} /><span>{profileLoading ? "正在加载…" : profile?.displayName || "我的账户"}</span></button></div></header>
       <div className="route-stage" key={path} id="studio-main" tabIndex={-1}>{children}</div>
     </div>
     <dialog ref={command} className="studio-dialog studio-command" aria-labelledby="command-title" onClick={(event) => { if (event.target === event.currentTarget) command.current?.close(); }}>
