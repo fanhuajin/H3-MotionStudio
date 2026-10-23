@@ -100,6 +100,12 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(remote.post("/api/auth/setup", json=self.credentials).status_code, 403)
         remote.close()
 
+    def test_six_character_password_can_setup_and_login(self):
+        credentials = {**self.credentials, "password": "abc123"}
+        self.assertEqual(self.client.post("/api/auth/setup", json=credentials).status_code, 200)
+        self.client.post("/api/auth/logout")
+        self.assertEqual(self.client.post("/api/auth/login", json=credentials).status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

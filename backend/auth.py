@@ -22,7 +22,7 @@ COOKIE = "h3_session"
 
 class Credentials(BaseModel):
     username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=12, max_length=256)
+    password: str = Field(min_length=6, max_length=256)
     remember: bool = False
 
 
