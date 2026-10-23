@@ -2483,7 +2483,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("自然精致淡妆", prompt)
         self.assertIn("脸和颈部明暗一致", prompt)
         self.assertIn("手在画外时不补入", prompt)
-        self.assertIn("领口、下摆与开衩适度", prompt)
+        self.assertIn("腰腹与背部完整遮盖", prompt)
         self.assertNotIn(batch_ai.compose_prompt("singing", "video")[:40], prompt)
         # 只调文案时不应把反馈写进出图提示词（那条路径本来就不重新出图）
         copy_prompt = batch_ai.compose_image_prompt("singing", "video", "换背景", "copy")
@@ -2539,17 +2539,17 @@ class WorkflowPreparationTests(unittest.TestCase):
 
         dance = batch_ai.compose_image_prompt("dance")
         self.assertIn("9:16", dance)
-        self.assertIn("约 12%", dance)           # 跳舞参考实测：发际线距上边缘
-        self.assertIn("34%", dance)
+        self.assertIn("保持自然头身比例", dance)  # 不再用脸高比例挤压大腿裁切
+        self.assertNotIn("34%", dance)
         self.assertNotIn("50%~55%", dance)
 
         # 批量里每条能单独改比例：显式传入的比例必须压过类型默认值
         singing_portrait = batch_ai.compose_image_prompt("singing", ratio="9:16")
-        self.assertIn("约 12%", singing_portrait)
+        self.assertIn("下边缘切至大腿上部", singing_portrait)
         self.assertNotIn("0%~1%", singing_portrait)
         dance_landscape = batch_ai.compose_image_prompt("dance", ratio="4:3")
         self.assertIn("0%~1%", dance_landscape)
-        self.assertNotIn("约 12%", dance_landscape)
+        self.assertNotIn("下边缘切至大腿上部", dance_landscape)
 
     def test_batch_ratio_endpoint_and_candidate_image_note(self) -> None:
         """条目比例接口存在；候选图与新比例不符时给出人话提示。"""
@@ -2583,11 +2583,11 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("图二是唯一的面部身份参考", batch_ai.compose_image_prompt("dance"))
 
     def test_platform_compliance_block_is_in_every_image_prompt(self) -> None:
-        """普通露肤保留，只有明确非常暴露才允许局部处理。"""
+        """两类人物图共用覆盖底线，不限定具体款式。"""
         for kind in ("singing", "dance"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【服装】", prompt)
-            self.assertIn("领口、下摆与开衩适度", prompt)
+            self.assertIn("腰腹与背部完整遮盖", prompt)
             self.assertIn("面料不透、与肤色有清楚区分", prompt)
             self.assertIn("款式可适当调整", prompt)
             self.assertNotIn("无需改变正常的露肩", prompt)
@@ -2621,7 +2621,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertNotIn("抬起的手轻松半握", block)
         self.assertIn("手腕与前臂衔接自然", block)
         self.assertIn("肤色、亮度和皮肤纹理与脸及手臂一致", block)
-        self.assertIn("袖口纹理及衣肤交界清楚", block)
+        self.assertIn("衣物纹理及衣肤交界清楚", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
             self.assertIn("【清晰度】", prompt)
@@ -2690,8 +2690,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         block = batch_ai.PLATFORM_SAFE_BLOCK
         self.assertIn("参考图一的穿搭风格、配色和整体气质", block)
         self.assertIn("款式可适当调整", block)
-        self.assertIn("抬手、转身时遮盖稳定", block)
-        self.assertIn("领口、下摆与开衩适度", block)
+        self.assertIn("覆盖要求优先于参考图及造型修改意见", block)
+        self.assertIn("腰腹与背部完整遮盖", block)
         self.assertIn("面料不透、与肤色有清楚区分", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)

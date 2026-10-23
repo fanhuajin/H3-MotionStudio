@@ -598,8 +598,8 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("【服装】", person)
         self.assertIn(batch_ai.CLOTHING_EXPOSURE_BLOCK, person)
         self.assertIn("面料不透、与肤色有清楚区分", person)
-        self.assertIn("剪裁自然合身并留有活动余量", person)
-        self.assertIn("抬手、转身时遮盖稳定", person)
+        self.assertIn("剪裁留自然余量", person)
+        self.assertIn("抬手、转身和弯腰时", person)
         self.assertIn("自然精致淡妆", person)
         self.assertIn("【背景与实拍感】", person)
         self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内

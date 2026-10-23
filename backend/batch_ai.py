@@ -48,9 +48,9 @@ REFERENCE_APPEARANCE_BLOCK = (
 #      （跳舞抽帧几乎必有一只手在动），所以要显式写明"不要照搬参考图的模糊"。
 SHARPNESS_BLOCK = (
     "\n【手部姿态】仅对画面内可见手部，参考图一的肩肘位置和手臂大致朝向，手部姿态自然放松，"
-    "手势简单、结构与遮挡合理，手腕与前臂衔接自然，不遮挡脸和嘴。"
+    "手势简单、结构与遮挡合理，可见手指数量、连接和关节方向合理，无粘连；手腕与前臂衔接自然，不遮挡脸和嘴；手在画外时不补入。"
     "若图一的手有拖影，重新画清手部。"
-    "\n【清晰度】脸、头发及画面内可见的手部清晰，无拖影、涂抹或塑料磨皮；袖口纹理及衣肤交界清楚。"
+    "\n【清晰度】脸、头发及画面内可见的手部清晰，无拖影、涂抹或塑料磨皮；衣物纹理及衣肤交界清楚。"
     "手部的肤色、亮度和皮肤纹理与脸及手臂一致。"
 )
 
@@ -85,7 +85,7 @@ REDESIGN_BACKGROUND_BLOCK = (
 )
 SINGING_FRAMING_BLOCK = (
     "唱歌以脸部为重点，正脸或轻微侧转，头部自然直立，面部轮廓和嘴部清楚可见；"
-    "只要求画面内可见的肩颈与衣物轮廓清楚。不为展示双手或双臂拉远镜头，手在画外时不补入。"
+    "肩颈与衣物轮廓清楚，不为展示双手、双臂或服装覆盖范围拉远镜头。"
 )
 DANCE_FRAMING_BLOCK = (
     "画面内可见的手臂与躯干边界清楚，人物周围留足活动空地；"
@@ -114,14 +114,20 @@ VIDEO_READY_BLOCK = (
 
 # 偏稳妥的制作要求，关注面料、剪裁及运动时的遮盖，不代表平台过审保证。
 CLOTHING_EXPOSURE_BLOCK = (
-    "面料不透、与肤色有清楚区分，剪裁自然合身并留有活动余量；"
-    "领口、下摆与开衩适度，抬手、转身时遮盖稳定，兼顾美观与活动便利。"
+    "以下覆盖要求优先于参考图及造型修改意见：胸前有衣物覆盖，腰腹与背部完整遮盖；"
+    "面料不透、与肤色有清楚区分，强光下仍不透；剪裁留自然余量，不紧绷勾勒身体细节。"
+    "不用内衣式、镂空或仅靠薄纱遮盖的款式。"
 )
 PLATFORM_SAFE_BLOCK = (
     "\n【服装】参考图一的穿搭风格、配色和整体气质，款式可适当调整。"
     + CLOTHING_EXPOSURE_BLOCK
 )
-# 用户主动选择歌曲造型重设计时，保留该模式的设计自由，仅共用暴露处理尺度。
+SINGING_CLOTHING_BLOCK = "领口稳妥，抬手、转身时遮盖稳定。"
+DANCE_CLOTHING_BLOCK = (
+    "\n【跳舞着装】服装便于活动，下摆与开衩稳妥；抬手、转身和弯腰时，"
+    "腰腹、胸前及臀部仍有完整覆盖。不夸张胸臀比例。"
+)
+# 歌曲造型重设计保留设计自由，共用覆盖要求。
 REDESIGN_SAFE_BLOCK = "\n【服装】" + CLOTHING_EXPOSURE_BLOCK
 
 # 身份要求作为最后一段，明确其优先级；不以此保证模型逐次输出完全一致。
@@ -495,7 +501,7 @@ def compose_prompt(kind: str, style_source: str = "video", song_name: str = "") 
 #   · 同一份长提示词、只把 input_fidelity 降到 low → **仍不合规**（领口改高了，但紫蕾丝内衬近肤色
 #     命中"透视"），相似度 88 —— 说明**不是** fidelity 的锅；
 #   · 精简到 400 字 → **合规**（高领长袖 + 不透明内衬，三条一条没中），相似度 85。
-# 根因：六千字里大量「图像-1 决定服装/造型/妆容/发型」把末尾那 300 字合规要求稀释掉了；
+# 当时的判断：六千字里大量「图像-1 决定服装/造型/妆容/发型」把末尾那 300 字合规要求稀释掉了；
 # 模型按图一原样保留了低胸镂空蕾丝。缩短之后立刻照做，而且身份相似度更高。
 # 2026-09-24 起批量备料、/images 自动出图和复制提示词统一走这份精简模板。
 COMPACT_IMAGE_PROMPT = """生成一张供视频制作使用的写实单人照片，以图一的主要表演者为造型参考。
@@ -537,6 +543,9 @@ def compliance_fingerprint() -> str:
         (
             PLATFORM_SAFE_BLOCK,
             REDESIGN_SAFE_BLOCK,
+            DANCE_CLOTHING_BLOCK,
+            SINGING_CLOTHING_BLOCK,
+            *PORTRAIT_COMPOSITION.values(),
             SHARPNESS_BLOCK,
             REFERENCE_APPEARANCE_BLOCK,
             REDESIGN_HAIR_BLOCK,
@@ -565,8 +574,8 @@ def compose_image_prompt(
 ) -> str:
     """自动出图提示词 = **精简模板**（造型基准 + 着装合规 + 清晰度 + 背景清理 + 构图 + 出片可用性 + 身份）。
 
-    为什么要精简（用户 2026-09-20 追问「是我的提示词太长了吗」→ 实测就是太长）：
-    647/6628 字的实测对照见 `COMPACT_IMAGE_PROMPT` 上方注释。**别再改成拼长提示词**。
+    保持精简，避免重复要求和互相争抢的参考规则：
+    历史对照见 `COMPACT_IMAGE_PROMPT` 上方注释；只说明当次输入的表现，不代表通用字数阈值。
 
     - 歌曲信息仍然要进提示词（「图一给造型、歌曲给情绪」这条约定不能丢）；
     - 用户的修改意见仍然要进提示词（否则「调整图片」只会改文案、图不动）；
@@ -577,16 +586,26 @@ def compose_image_prompt(
     ) or ""
     redesign = kind == "singing" and style_source == "redesign"
     template = REDESIGN_IMAGE_PROMPT if redesign else COMPACT_IMAGE_PROMPT
+    clothing = (REDESIGN_SAFE_BLOCK if redesign else PLATFORM_SAFE_BLOCK).strip()
+    if kind == "dance":
+        clothing += DANCE_CLOTHING_BLOCK
+    else:
+        clothing += SINGING_CLOTHING_BLOCK
     pose = (
         "【跳舞姿态】自然站立，重心稳定，参考图一的身体朝向。"
         if kind == "dance"
-        else "【姿态】姿态和人物位置可自然调整。"
+        else "【姿态】在既定构图内，姿态和人物位置可自然调整。"
     )
+    # 重设计模式的图一只提供气质，不再要求保留源图肩肘和手臂方向。
+    sharpness = SHARPNESS_BLOCK
+    if redesign:
+        sharpness = sharpness.replace("参考图一的肩肘位置和手臂大致朝向，", "")
+        sharpness = sharpness.replace("若图一的手有拖影，重新画清手部。", "")
     prompt = template.format(
-        compliance=(REDESIGN_SAFE_BLOCK if redesign else PLATFORM_SAFE_BLOCK).strip(),
+        compliance=clothing,
         pose=pose,
         sharpness=((REDESIGN_HAIR_BLOCK if redesign else REFERENCE_APPEARANCE_BLOCK)
-                   + SHARPNESS_BLOCK).strip(),
+                   + sharpness).strip(),
         background=(REDESIGN_BACKGROUND_BLOCK if redesign else BACKGROUND_CLEAN_BLOCK).strip(),
         composition=composition,
         framing=DANCE_FRAMING_BLOCK if kind == "dance" else SINGING_FRAMING_BLOCK,
@@ -603,7 +622,7 @@ def compose_image_prompt(
         prompt += song_block
     text = (feedback or "").strip()
     if text and mode in {"image", "both"}:
-        prompt += f"\n【本次修改】{text}"
+        prompt += f"\n【本次修改】{text}\n本次修改替代前文同类造型或构图要求；服装覆盖与面部身份要求仍须遵守。"
     return prompt + "\n\n" + (REDESIGN_IDENTITY_BLOCK if redesign else IDENTITY_PRIORITY_BLOCK).strip()
 
 

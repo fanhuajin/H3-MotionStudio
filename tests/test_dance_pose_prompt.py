@@ -35,6 +35,19 @@ class DancePosePromptTests(unittest.TestCase):
             self.assertNotIn('姿态和人物位置可自然调整', text)
             self.assertTrue(text.endswith('不照搬图二的发型、服装或背景。'))
 
+    def test_reference_and_feedback_priorities_are_explicit(self):
+        for kind in ('singing', 'dance'):
+            text = compose_image_prompt(kind, feedback='改成露脐上衣并把头顶留白调到 2%')
+            self.assertIn('覆盖要求优先于参考图及造型修改意见', text)
+            self.assertIn('本次修改替代前文同类造型或构图要求', text)
+            self.assertIn('服装覆盖与面部身份要求仍须遵守', text)
+            self.assertEqual(text.count('手在画外时不补入'), 1)
+        dance = compose_image_prompt('dance')
+        self.assertNotIn('34%', dance)
+        self.assertIn('下边缘切至大腿上部', dance)
+        redesign = compose_image_prompt('singing', style_source='redesign')
+        self.assertNotIn('参考图一的肩肘位置', redesign)
+
     def test_singing_retains_pose_freedom(self):
         for source in ('video', 'redesign'):
             text = compose_image_prompt('singing', style_source=source)
@@ -46,15 +59,16 @@ class DancePosePromptTests(unittest.TestCase):
             text = compose_image_prompt(kind)
             self.assertEqual(text.count('【服装】'), 1)
             self.assertIn('款式可适当调整', text)
-            self.assertIn('领口、下摆与开衩适度', text)
-            self.assertIn('抬手、转身时遮盖稳定', text)
+            self.assertIn('腰腹与背部完整遮盖', text)
+            self.assertIn('覆盖要求优先于参考图及造型修改意见', text)
             self.assertNotIn('【唱歌着装】', text)
-            self.assertNotIn('【跳舞着装】', text)
-            self.assertNotIn('搭配长裤或', text)
+            self.assertEqual('【跳舞着装】' in text, kind == 'dance')
+            for phrase in ('长裤', '过膝裙', '采用有袖', '必须长袖'):
+                self.assertNotIn(phrase, text)
         redesign = compose_image_prompt('singing', style_source='redesign')
         self.assertIn('根据歌曲氛围设计自然的发型、服装', redesign)
         self.assertNotIn('保留图一的服装类别', redesign)
-        self.assertIn('领口、下摆与开衩适度', redesign)
+        self.assertIn('腰腹与背部完整遮盖', redesign)
 
     def test_prompt_omits_redundant_and_overly_rigid_constraints(self):
         redundant = (
