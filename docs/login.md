@@ -8,8 +8,8 @@
 
 忘记密码时，在项目目录运行 `.venv/Scripts/python.exe -m backend.auth_admin`，在终端交互输入新密码。重置会撤销全部登录会话，不改任务或作品。
 
-登录页使用 CareerCompass 的四个几何角色（MIT，源码及声明位于 `src/vendor/careercompass/`），支持眼球跟随、随机眨眼、账号聚焦互动、密码聚焦回避与显示密码时偶尔偷看。装饰组件只接收密码长度、显隐和焦点状态，不接收密码文本。
+登录页恢复黑紫玻璃 H 视觉，图片位于 `public/assets/login-prism.png`。左上角紫色立体 H 通过 CSS 图片窗口直接呈现用户参考图的对应区域，保留原形与渐变；参考图保存在 `public/assets/login-brand-reference.png`。Three.js 只计算流动的照明：光带高光沿上、下光轨穿行，玻璃内部高光流转。原图坐标完全不随时间改变，没有形变、纹理位移、旋转或缩放动画。几何角色、星空背景与流体探索源码已移除，历史提交可恢复。
 
-Three.js 按需加载，背景提供缓慢轨道、漂浮线框几何体、星点、鼠标视差和点击波纹。离开登录页释放 GPU 资源和角色计时器，后台标签暂停背景渲染；减少动态效果时停用背景动画及角色跟随和眨眼，WebGL 不可用时保留静态底色与正常表单。此前玻璃海报与流体探索方案已移除，可从 Git 历史回退。
+背景标签暂停渲染，离开登录页释放纹理、几何、材质和监听器；减少动态效果时显示静态画面，WebGL 不可用时直接显示原始图片。登录、密码与会话规则不变。
 
 界面结构参考 MIT 项目 Shadcn Admin（https://github.com/satnaing/shadcn-admin），动效方向参考 Magic UI（https://github.com/magicuidesign/magicui）；本次没有复制其源码或整体替换现有框架。

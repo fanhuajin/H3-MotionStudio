@@ -1,10 +1,9 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { ArrowRight, Eye, EyeSlash, LockKey, SignOut, SpinnerGap, User, Waves } from "@phosphor-icons/react";
+import { ArrowRight, Eye, EyeSlash, LockKey, SignOut, SpinnerGap, User } from "@phosphor-icons/react";
 import { readJson } from "./api";
 import "./login.css";
-import { AnimatedCharacters } from "./vendor/careercompass/animated-characters";
-const LoginSpace = lazy(() => import("./LoginSpace"));
+const LoginPrism = lazy(() => import("./LoginPrism"));
 
 interface AuthState { configured: boolean; authenticated: boolean }
 
@@ -29,7 +28,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [confirm, setConfirm] = useState("");
   const [remember, setRemember] = useState(true);
   const [visible, setVisible] = useState(false);
-  const [focusedField, setFocusedField] = useState("");
   const check = async () => {
     setError("");
     try { setAuth(await readJson<AuthState>(fetch("/api/auth/status", { cache: "no-store" }))); }
@@ -59,22 +57,18 @@ export function AuthGate({ children }: { children: ReactNode }) {
     finally { setBusy(false); }
   };
   return <main className="login-shell">
-    <div className="login-live-background" aria-hidden="true"><Suspense fallback={null}>
-      <LoginSpace />
-    </Suspense></div>
-    <div className="login-brand"><Waves weight="duotone" /><div>H3 MotionStudio<span>YOUR PRIVATE CREATIVE SPACE</span></div></div>
-    <div className="login-content">
     <section className="login-art" aria-label="H3 MotionStudio 创作空间">
-      <div className="login-cast-wrap" aria-hidden="true"><div className="geometry-cast" data-state={focusedField.startsWith("login-pass") || focusedField === "login-confirm" ? "private" : focusedField === "login-user" ? "curious" : "idle"}>
-        <AnimatedCharacters isTyping={focusedField === "login-user"} showPassword={visible} passwordLength={password.length} passwordFocused={focusedField === "login-password" || focusedField === "login-confirm"} />
-      </div><div className="login-cast-floor" /></div>
-      <div className="login-manifesto"><p>MEET YOUR CREATIVE CREW</p><h1>好创意，<em>不孤单。</em></h1><small>你的创作搭子，已经就位。</small></div>
+      <img className="login-prism" src="/assets/login-prism.png" alt="" />
+      <Suspense fallback={null}><LoginPrism /></Suspense>
+      <div className="login-brand"><span className="login-mark" aria-hidden="true" /><div>H3 MotionStudio<span>YOUR PRIVATE CREATIVE SPACE</span></div></div>
+      <div className="login-art-note">用 AI<br />让创意<br />成为影像<span /></div>
+      <div className="login-manifesto"><h1>让灵感，<br /><em>开始流动。</em></h1><p>H3 MOTIONSTUDIO</p><span /><small>AI 赋能的私人视频创作空间</small></div>
     </section>
     <section className="login-panel" aria-labelledby="login-title"><div className="login-form-wrap">
       <div className="login-eyebrow"><span /> PRIVATE STUDIO</div>
       <h2 id="login-title">{setup ? "开启创作空间" : "欢迎回来"}</h2>
       <p className="login-subtitle">{setup ? "创建你的专属管理员账号" : "登录你的创作工作台"}</p>
-      {!auth ? <div className="login-connecting" role="status">{error ? <><p role="alert">{error}</p><button type="button" onClick={() => void check()}>重新连接 <ArrowRight /></button></> : <><SpinnerGap className="login-spinner" /> 正在连接创作空间</>}</div> : <form onSubmit={submit} onFocusCapture={(event) => setFocusedField(event.target.id)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setFocusedField(""); }}>
+      {!auth ? <div className="login-connecting" role="status">{error ? <><p role="alert">{error}</p><button type="button" onClick={() => void check()}>重新连接 <ArrowRight /></button></> : <><SpinnerGap className="login-spinner" /> 正在连接创作空间</>}</div> : <form onSubmit={submit}>
         <label htmlFor="login-user">账号</label><div className="login-input"><User /><input id="login-user" name="username" autoComplete="username" required maxLength={64} value={username} onChange={(event) => setUsername(event.target.value)} disabled={busy} /></div>
         <label htmlFor="login-password">密码</label><div className="login-input"><LockKey /><input id="login-password" name="password" type={visible ? "text" : "password"} autoComplete={setup ? "new-password" : "current-password"} required minLength={6} maxLength={256} placeholder={setup ? "设置至少 6 位密码" : "输入你的密码"} value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} /><button type="button" aria-label={visible ? "隐藏密码" : "显示密码"} aria-pressed={visible} onClick={() => setVisible(!visible)}>{visible ? <EyeSlash /> : <Eye />}</button></div>
         {setup && <><label htmlFor="login-confirm">确认密码</label><div className="login-input"><LockKey /><input id="login-confirm" type={visible ? "text" : "password"} autoComplete="new-password" required minLength={6} maxLength={256} placeholder="再次输入密码" value={confirm} onChange={(event) => setConfirm(event.target.value)} disabled={busy} /></div><p className="login-setup-note">首次设置请在本机完成，账号仅供你个人使用。</p></>}
@@ -84,6 +78,5 @@ export function AuthGate({ children }: { children: ReactNode }) {
       </form>}
       <p className="login-footnote"><LockKey /> 只属于你的灵感与作品</p>
     </div><span className="login-panel-footer">H3 MOTIONSTUDIO · PERSONAL EDITION</span></section>
-    </div>
   </main>;
 }
