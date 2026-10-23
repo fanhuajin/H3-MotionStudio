@@ -1,0 +1,143 @@
+/* Content presentation shared by all nine workspaces.
+ * References: shadcn/ui blocks, satnaing/shadcn-admin, Carbon data-table guidelines.
+ * Local CSS only; navigation, task state and media composition remain independent.
+ */
+.prism-workspace .route-stage {
+  --content-surface: #1b1d1e;
+  --content-inset: #151718;
+  --content-hover: #ffffff05;
+  --content-line: #34383a;
+  --content-muted: #a6afaa;
+  --content-radius: 12px;
+  color: #e5eae7;
+  font-size: 13px;
+  line-height: 1.65;
+  animation: none;
+}
+.prism-workspace .route-stage :is(.batch-page, .image-workbench-page, .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route, .douyin-route) {
+  max-width: 1600px;
+  padding: 28px 32px 48px;
+}
+.prism-workspace .route-stage :is(.workspace, .input-panel, .execution-panel, .field-block, .result-details, .image-workbench-main, .image-workbench-actions) { min-width: 0; }
+
+/* Forms and execution use separate surfaces instead of a large nested frame. */
+.prism-workspace .route-stage .workspace { grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr); align-items: start; gap: 24px; min-height: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
+.prism-workspace .route-stage :is(.input-panel, .execution-panel) { padding: 24px; border: 1px solid var(--content-line); border-radius: var(--content-radius); background: var(--content-surface); }
+.prism-workspace .route-stage .field-block { margin-bottom: 24px; }
+.prism-workspace .route-stage .field-block + .field-block { padding-top: 22px; border-top: 1px solid #ffffff0c; }
+.prism-workspace .route-stage .field-block:last-child { margin-bottom: 0; }
+.prism-workspace .route-stage .field-heading { gap: 12px; margin-bottom: 12px; }
+.prism-workspace .route-stage :is(.field-heading h2, .panel-heading h2) { color: #e5eae7; font-size: 14px; font-weight: 600; line-height: 1.6; }
+.prism-workspace .route-stage :is(.field-heading h2 em, .field-heading > span, .field-note, .action-hint, .panel-heading span) { color: var(--content-muted); font-size: 12px; line-height: 1.7; }
+.prism-workspace .route-stage .field-heading h2 > span { color: #a0b5a7; font-size: 12px; font-variant-numeric: tabular-nums; }
+.prism-workspace .route-stage .panel-heading { flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+.prism-workspace .route-stage .panel-heading > svg { width: 19px; height: 19px; color: var(--shell-accent); }
+.prism-workspace .route-stage :is(.ratio-cards, .mode-cards) { gap: 8px; }
+.prism-workspace .route-stage :is(.ratio-cards button, .mode-cards button) { min-width: 0; padding: 12px; border-radius: 8px; border-color: var(--content-line); background: var(--content-inset); box-shadow: none; }
+.prism-workspace .route-stage :is(.ratio-cards button.selected, .mode-cards button.selected) { border-color: #abcbb480; background: #a7c9af0d; box-shadow: none; }
+.prism-workspace .route-stage :is(.ratio-cards strong, .mode-cards strong) { font-size: 12px; font-weight: 550; }
+.prism-workspace .route-stage :is(.ratio-cards button > span, .mode-cards button > span) { color: var(--content-muted); font-size: 11px; line-height: 1.65; }
+.prism-workspace .route-stage :is(.source-card, .simple-upload, .empty-upload, .url-field, .recent-choice, .prompt-area, .field-block textarea) { border-color: var(--content-line); border-radius: 8px; background: var(--content-inset); }
+.prism-workspace .route-stage :is(.prompt-area, .field-block textarea, .batch-input-grid textarea) { font-size: 13px; line-height: 1.75; }
+.prism-workspace .route-stage :is(.source-card, .recent-choice) { box-shadow: none; }
+.prism-workspace .route-stage .recent-choice { padding: 12px; }
+
+/* Buttons: restrained secondary actions, one clear primary action per task. */
+.prism-workspace .route-stage :is(.primary-action, .download-action, .image-generate-stage) { min-height: 40px; border-radius: 8px; font-size: 13px; font-weight: 550; box-shadow: none; }
+.prism-workspace .route-stage :is(.batch-add-toggle, .batch-secondary, .result-button, .image-action-grid button) { border-radius: 7px; font-size: 12px; font-weight: 500; box-shadow: none; }
+.prism-workspace .route-stage :is(.batch-list-toolbar, .publish-toolbar, .video-file-toolbar) .batch-add-toggle { min-height: 34px; height: 34px; }
+.prism-workspace .route-stage :is(button, a, input, textarea, select, summary):focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 3px; }
+.prism-workspace .route-stage :is(button, a):not(:disabled) { transition-property: background-color, border-color, color; }
+
+/* Task lists share a quiet header, aligned actions and readable rows. */
+.prism-workspace .route-stage :is(.batch-table-card, .publish-table-wrap, .video-file-table-wrap) { border: 1px solid var(--content-line); border-radius: var(--content-radius); background: var(--content-surface); box-shadow: none; }
+.prism-workspace .route-stage :is(.batch-list-toolbar, .image-workbench-toolbar) { padding: 14px 16px; background: #ffffff02; border-bottom-color: var(--content-line); }
+.prism-workspace .route-stage :is(.batch-tabs, .image-workbench-filter, .image-stage-tabs) { gap: 4px; }
+.prism-workspace .route-stage .batch-tab { min-height: 34px; padding-inline: 12px; font-size: 12px; border-radius: 7px; }
+.prism-workspace .route-stage .batch-tab.active { color: #e2eee5; background: #abcbb414; border-color: #abcbb42b; }
+.prism-workspace .route-stage .batch-tab i { min-width: 18px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+.prism-workspace .route-stage :is(.batch-table thead th, .publish-table th, .video-file-queue th) { padding-block: 11px; background: #ffffff02; color: var(--content-muted); font-size: 11px; font-weight: 500; letter-spacing: 0; border-bottom-color: var(--content-line); }
+.prism-workspace .route-stage :is(.batch-table td, .publish-table td, .video-file-queue td) { padding-top: 14px; padding-bottom: 14px; border-bottom-color: #ffffff0c; font-size: 12px; }
+.prism-workspace .route-stage :is(.batch-row:hover, .publish-table tbody tr:hover td, .video-file-queue tbody tr:hover) { background: var(--content-hover); }
+.prism-workspace .route-stage :is(.batch-task-title strong, .publish-work strong, .video-file-queue td strong) { font-weight: 550; color: #e2e8e4; }
+.prism-workspace .route-stage :is(.batch-row.selected, .video-file-queue tr:has(input:checked)) { background: #abcbb40b; }
+.prism-workspace .route-stage :is(.publish-notice, .batch-alert, .service-notice) { border-radius: 9px; box-shadow: none; font-size: 12px; line-height: 1.7; }
+.prism-workspace .route-stage .publish-notice { padding: 16px; margin-bottom: 18px; background: var(--content-surface); border-color: var(--content-line); }
+.prism-workspace .route-stage .video-file-toolbar { gap: 8px; margin: 12px 0; }
+.prism-workspace .route-stage .video-file-toolbar > span { flex-basis: 100%; order: 3; font-size: 11px; }
+.prism-workspace .route-stage .video-file-toolbar > button:last-child { margin-left: auto; }
+
+/* Execution stays a timeline. Only actual status carries semantic colour. */
+.prism-workspace .route-stage .pipeline { padding: 8px 10px 8px 0; border: 1px solid var(--content-line); border-radius: 9px; background: var(--content-inset); }
+.prism-workspace .route-stage .pipeline-card { margin-block: 4px; border-color: #ffffff0c; border-radius: 7px; background: #ffffff03; box-shadow: none; }
+.prism-workspace .route-stage .node-name { font-size: 12px; font-weight: 500; }
+.prism-workspace .route-stage .node-detail { font-size: 11px; }
+.prism-workspace .route-stage .rail-icon { box-shadow: none; }
+.prism-workspace .route-stage .state-completed .rail-icon { color: #1d3022; background: #b4d4bc; border-color: #b4d4bc; }
+.prism-workspace .route-stage .status-chip { border-radius: 5px; font-size: 11px; }
+.prism-workspace .route-stage .state-completed .status-chip { color: #bad9c2; border-color: #96bd9f40; background: #96bd9f0c; }
+.prism-workspace .route-stage .log-panel { border-color: var(--content-line); border-radius: 8px; background: var(--content-inset); }
+
+/* Results put media first, with metadata and actions below rather than squeezed beside it. */
+.prism-workspace .route-stage .result-panel { margin-top: 24px; padding: 16px; border-color: var(--content-line); border-radius: 9px; background: var(--content-inset); }
+.prism-workspace .route-stage .result-heading { align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.prism-workspace .route-stage .result-heading h3 { font-size: 14px; font-weight: 600; }
+.prism-workspace .route-stage .result-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.prism-workspace .route-stage .result-video { min-width: 0; border-radius: 8px; overflow: hidden; background: #0b0c0d; }
+.prism-workspace .route-stage .result-video video { display: block; width: 100%; max-height: 65dvh; object-fit: contain; }
+.prism-workspace .route-stage .result-details { padding: 0; }
+.prism-workspace .route-stage .result-details dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; margin-block: 14px; }
+.prism-workspace .route-stage .result-details dl > div { min-width: 0; }
+
+/* Image workbench: clear list / preview / tools, without changing image aspect or crop. */
+.prism-workspace .route-stage .image-workbench-shell { grid-template-columns: 240px minmax(0, 1fr); min-height: 620px; border-color: var(--content-line); border-radius: var(--content-radius); background: var(--content-surface); box-shadow: none; }
+.prism-workspace .route-stage .image-workbench-list { border-right-color: var(--content-line); background: var(--content-inset); }
+.prism-workspace .route-stage .image-workbench-list-head { min-height: 54px; padding: 12px; }
+.prism-workspace .route-stage .image-workbench-items { padding: 6px; }
+.prism-workspace .route-stage .image-workbench-items > button { margin-block: 2px; padding: 11px 9px; border-radius: 7px; }
+.prism-workspace .route-stage .image-workbench-items > button.active { border-color: #abcbb447; background: #abcbb40e; }
+.prism-workspace .route-stage .image-workbench-content { gap: 20px; }
+.prism-workspace .route-stage .image-workbench-preview { background: #101213; border-color: var(--content-line); border-radius: 9px; }
+.prism-workspace .route-stage .image-workbench-actions { font-size: 12px; line-height: 1.7; }
+.prism-workspace .route-stage .image-stage-tabs button { border-radius: 8px; box-shadow: none; }
+.prism-workspace .route-stage .image-stage-tabs button.active { border-color: #abcbb466; background: #abcbb40f; }
+
+/* Small tools and empty/loading states use the same surfaces without extra sections. */
+.prism-workspace .route-stage .douyin-route.douyin-tool { max-width: 960px; }
+.prism-workspace .route-stage :is(.douyin-tool .download-card, .douyin-tool-result) { border-color: var(--content-line); border-radius: var(--content-radius); background: var(--content-surface); box-shadow: none; }
+.prism-workspace .route-stage :is(.batch-empty, .publish-empty, .video-file-empty, .queue-empty, .result-empty) { color: var(--content-muted); font-size: 12px; line-height: 1.8; }
+.prism-workspace .route-stage .content-loading { color: var(--content-muted); font-size: 13px; }
+
+/* Portal dialogs are outside route-stage, but belong to the same content system. */
+:is(.batch-settings-dialog, .batch-modal, .publish-dialog, .studio-dialog) { border-color: #414744; border-radius: 12px; background: #1b1d1e; box-shadow: 0 24px 80px #0006; }
+:is(.studio-dialog-head, .account-tabs, .batch-settings-header, .batch-settings-footer) { background: #1b1d1e; border-color: #34383a; }
+:is(.batch-settings-dialog, .batch-modal, .publish-dialog, .studio-dialog) :is(input:not([type=checkbox]), textarea, select) { border-color: #414744; border-radius: 7px; background: #151718; }
+:is(.batch-settings-dialog, .batch-modal, .publish-dialog, .studio-dialog) :is(button, a, input, textarea, select, summary):focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 3px; }
+
+@media (max-width: 1350px) {
+  .prism-workspace .route-stage .workspace { grid-template-columns: minmax(0, 1fr); }
+  .prism-workspace .route-stage .image-workbench-content { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  .prism-workspace .route-stage :is(.batch-page, .image-workbench-page, .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route, .douyin-route) { padding: 22px 20px 36px; }
+  .prism-workspace .route-stage .workspace { gap: 18px; }
+  .prism-workspace .route-stage :is(.input-panel, .execution-panel) { padding: 20px; }
+}
+@media (max-width: 760px) {
+  .prism-workspace .route-stage .image-workbench-shell { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .prism-workspace .route-stage .image-workbench-list { border-right: 0; border-bottom: 1px solid var(--content-line); }
+  .prism-workspace .route-stage .image-workbench-items { max-height: 220px; }
+  .prism-workspace .route-stage .image-workbench-preview { height: 440px; }
+}
+@media (max-width: 600px) {
+  .prism-workspace .route-stage :is(.batch-page, .image-workbench-page, .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route, .douyin-route) { padding: 18px 14px 28px; }
+  .prism-workspace .route-stage :is(.input-panel, .execution-panel) { padding: 16px; }
+  .prism-workspace .route-stage .source-grid { grid-template-columns: minmax(0, 1fr); }
+  .prism-workspace .route-stage :is(.field-heading, .result-heading) { flex-wrap: wrap; }
+  .prism-workspace .route-stage .result-details dl { grid-template-columns: minmax(0, 1fr); }
+  .prism-workspace .route-stage .result-panel { padding: 12px; }
+  .prism-workspace .route-stage .image-workbench-preview { height: 360px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .prism-workspace .route-stage :is(button, a) { transition: none; }
+}

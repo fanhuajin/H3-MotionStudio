@@ -5,6 +5,7 @@ import { AuthGate } from "./AuthGate";
 import "./styles.css";
 import "./studio-theme.css";
 import "./prism-workspace.css";
+import "./workspace-content.css";
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
