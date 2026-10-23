@@ -1608,12 +1608,13 @@ body {
 .batch-kind.dance { border: 1px solid rgba(194, 195, 196, .34); color: #d5d6d7; background: rgba(172, 173, 174, .12); }
 .batch-item-source { display: block; max-width: 520px; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #969798; font-size: 10px; }
 .batch-status-cell small { display: block; margin-top: 3px; color: var(--shell-muted); font-size: 9px; }
-.batch-status-cell .batch-elapsed { display: inline-flex; align-items: center; gap: 4px; margin: 5px 0 0 8px; color: var(--shell-accent); font-size: 10px; }
+.batch-status-line { display: inline-flex; align-items: center; }
+.batch-status-cell .batch-elapsed { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 0 8px; color: var(--shell-accent); font-size: 10px; }
 /* 列表行里的 H3 分段 / 二采分段进度：与右侧「时间」同色（青色），一眼能看出跑到第几段。
    这一行是「状态徽章 + H3 分段 + 时间」并排：徽章自带 8px 右内边距，这里补 6px
    （徽章→分段 14px，把状态和进度分开）；「分段→时间」保持 8px —— 这两块是同一组进度信息，
    贴紧一点才好看（2026-09-19 用户先要「间隔加下」，把两处都拉到 14px 后指出时间那处「太大了」）。 */
-.batch-status-cell .batch-seg { display: inline-flex; align-items: center; gap: 4px; margin: 4px 0 0 6px; color: var(--shell-accent); font-size: 10px; }
+.batch-status-cell .batch-seg { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 0 6px; color: var(--shell-accent); font-size: 10px; }
 .batch-status-cell .batch-elapsed svg { width: 11px; height: 11px; color: var(--shell-accent); }
 .batch-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid #424344; border-radius: 999px; color: #b0b1b2; background: rgba(26, 27, 28, .8); font-size: 10px; white-space: nowrap; }
 .batch-status.awaiting_review { border-color: rgba(167, 139, 250, .45); color: var(--shell-accent); }

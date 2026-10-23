@@ -2067,6 +2067,7 @@ export function BatchRoute() {
                             )}
                           </td>
                           <td className="batch-status-cell">
+                            <div className="batch-status-line">
                             <span className={`batch-status ${item.status}`}>
                               {itemZoneStatus(item)}
                               {/* 进度直接在列表这一行显示，不用点开（2026-09-15 用户：「除了时间
@@ -2105,6 +2106,7 @@ export function BatchRoute() {
                               && (itemIsRendering(item) || item.id === batch?.currentItemId) && (
                                 <small className="batch-elapsed"><Timer weight="fill" />{itemRenderText(item)}</small>
                               )}
+                            </div>
                           </td>
                           <td className="batch-ratio-cell">{itemRatio(item)}</td>
                           <td className="batch-ops-cell" onClick={(event) => event.stopPropagation()}>
