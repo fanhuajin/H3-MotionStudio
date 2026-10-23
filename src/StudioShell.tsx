@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
-import { CaretRight, ClosedCaptioning, DownloadSimple, ImageSquare, Keyboard, ListChecks, MagnifyingGlass, MagnifyingGlassPlus, MicrophoneStage, MusicNotes, PersonSimpleRun, SidebarSimple, Sparkle, X } from "@phosphor-icons/react";
+import { CaretRight, ClosedCaptioning, DownloadSimple, Gauge, ImageSquare, Keyboard, ListChecks, MagnifyingGlass, MagnifyingGlassPlus, MicrophoneStage, MusicNotes, PersonSimpleRun, SidebarSimple, Sparkle, X } from "@phosphor-icons/react";
 import { AccountSettings, OwnerAvatar } from "./AccountSettings";
 import type { OwnerProfile } from "./AccountSettings";
 import { LogoutButton } from "./AuthGate";
@@ -79,10 +79,10 @@ export function StudioShell({ path, onNavigate, onCloseProject, children }: {
     <a href="#studio-main" className="studio-skip-link">跳到工作区</a>
     <aside className="app-sidebar" onClick={onNavigate}>
       <div className="sidebar-top"><a className="sidebar-brand" href="/batch" aria-label="H3 MotionStudio 首页"><span className="studio-brand-mark" aria-hidden="true" /><span className="studio-brand-copy"><strong>MotionStudio</strong><small>PERSONAL CREATIVE STUDIO</small></span></a></div>
-      <button className="studio-search-trigger" type="button" aria-label="搜索工作区，快捷键 Ctrl K" onClick={() => { setSearch(""); command.current?.showModal(); }}><MagnifyingGlass /><span>搜索工作区</span><kbd>⌘ / Ctrl K</kbd></button>
-      <nav className="sidebar-navigation" aria-label="工作台导航">{sections.map((section) => <div className="studio-nav-section" key={section.label}><p className="sidebar-section-label">{section.label}</p>{section.items.map((item) => <a key={item.path} href={item.path} title={item.label} aria-label={item.label} aria-current={active.path === item.path ? "page" : undefined} className={`sidebar-nav-item ${active.path === item.path ? "active" : ""}`}><item.icon weight={active.path === item.path ? "duotone" : "regular"} /><span className="studio-nav-label">{item.label}</span>{active.path === item.path && <CaretRight className="studio-nav-caret" />}</a>)}</div>)}</nav>
+      <button className="studio-search-trigger" type="button" title="搜索工作区（Ctrl K）" aria-label="搜索工作区，快捷键 Ctrl K" onClick={() => { setSearch(""); command.current?.showModal(); }}><MagnifyingGlass /><span>搜索工作区</span><kbd>Ctrl K</kbd></button>
+      <nav className="sidebar-navigation" aria-label="工作台导航">{sections.map((section) => <div className="studio-nav-section" key={section.label}><p className="sidebar-section-label">{section.label}</p>{section.items.map((item) => <a key={item.path} href={item.path} title={item.label} aria-label={item.label} aria-current={active.path === item.path ? "page" : undefined} className={`sidebar-nav-item ${active.path === item.path ? "active" : ""}`}><item.icon aria-hidden="true" weight="regular" /><span className="studio-nav-label">{item.label}</span></a>)}</div>)}</nav>
       <div className="sidebar-system">
-        {!collapsed && <details className="studio-runtime"><summary>设备状态<span>查看资源</span></summary><SystemMonitor /></details>}
+        {!collapsed && <details className="studio-runtime"><summary><Gauge aria-hidden="true" /><span>资源监控</span><CaretRight aria-hidden="true" /></summary><SystemMonitor embedded /></details>}
         <button type="button" className="studio-owner-card" aria-label={profile ? "打开个人资料与账号设置" : "重新加载账户资料"} onClick={openAccount}><OwnerAvatar profile={profile} /><span className="studio-profile-copy"><strong>{profile?.displayName || "我的账户"}</strong><small>{profile ? "个人创作空间" : "正在连接账户"}</small></span><CaretRight /></button>
         {profileError && <p className="studio-account-error" role="status">{profileError} <button onClick={() => void loadProfile()}>重试</button></p>}
         <div className="sidebar-service-row"><LogoutButton /><CloseProjectButton onAccepted={onCloseProject} /></div>

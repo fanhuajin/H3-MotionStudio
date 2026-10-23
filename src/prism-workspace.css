@@ -18,41 +18,58 @@
   --studio-shadow: 0 12px 50px #0002;
 }
 .prism-workspace { grid-template-columns: 244px minmax(0, 1fr); min-height: 100dvh; background: var(--shell-bg); }
-.prism-workspace .app-sidebar { height: 100dvh; min-height: 0; position: sticky; top: 0; padding: 28px 16px 16px; border-right: 1px solid var(--shell-line); background: linear-gradient(165deg, #22222280, transparent 34%), #141414; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #434343 transparent; }
-.prism-workspace .sidebar-top { padding: 0 9px 27px; }
+.prism-workspace .app-sidebar { height: 100dvh; min-height: 0; position: sticky; top: 0; padding: 20px 12px 12px; border-right: 1px solid var(--shell-line); background: #151617; overflow: hidden; display: flex; flex-direction: column; }
+.prism-workspace .sidebar-top { padding: 0 10px 20px; }
 .prism-workspace .sidebar-brand { gap: 10px; margin: 0; text-decoration: none; }
-.studio-brand-mark { display: block; width: 40px; height: 48px; flex: 0 0 40px; background: url('/assets/login-brand-reference.png') -55px -38px / 1487px 1058px no-repeat; mix-blend-mode: screen; }
+.studio-brand-mark { display: block; width: 32px; height: 38px; flex: 0 0 32px; background: url('/assets/login-brand-reference.png') -44px -30.4px / 1189.6px 846.4px no-repeat; mix-blend-mode: screen; }
 .studio-brand-copy { display: grid; gap: 5px; }
-.studio-brand-copy strong { font-size: 17px; letter-spacing: -.4px; }
+.prism-workspace .studio-brand-copy strong { font-size: 16px; font-weight: 600; letter-spacing: -.4px; }
 .studio-brand-copy small { font-size: 7px; letter-spacing: 1.7px; color: var(--shell-muted); }
-.studio-search-trigger { display: flex; align-items: center; width: 100%; min-height: 40px; gap: 8px; margin-bottom: 27px; padding: 0 10px; border: 1px solid #d1d6d224; border-radius: 9px; color: var(--shell-muted); background: #ffffff03; font-size: 11px; cursor: pointer; }
+.studio-search-trigger { display: flex; flex-shrink: 0; align-items: center; width: 100%; min-height: 36px; gap: 8px; margin-bottom: 22px; padding: 0 10px; border: 1px solid var(--shell-line); border-radius: 7px; color: #b1b5b2; background: #1c1e1d; font-size: 12px; cursor: pointer; }
 .studio-search-trigger svg { width: 16px; height: 16px; flex-shrink: 0; }
-.studio-search-trigger kbd { margin-left: auto; color: #9ea29f; font: inherit; font-size: 9px; }
-.studio-nav-section + .studio-nav-section { margin-top: 25px; }
-.prism-workspace .sidebar-section-label { margin: 0 12px 9px; font-size: 10px; letter-spacing: 1px; color: #a5a7a5; }
-.prism-workspace .sidebar-navigation { display: block; }
-.prism-workspace .sidebar-nav-item { grid-template-columns: 20px minmax(0, 1fr) 14px; min-height: 42px; padding: 0 12px; margin: 4px 0; border: 1px solid transparent; border-radius: 9px; color: #b0b2b0; font-size: 12px; transition: background .2s, border-color .2s, color .2s; }
-.prism-workspace .sidebar-nav-item:hover { background: #a9b0ab0c; color: #f1f3f2; transform: none; }
-.prism-workspace .sidebar-nav-item.active { color: #eceeed; border-color: #c5cbc72e; background: linear-gradient(100deg, #9aa39c26, #9aa39c08); box-shadow: inset 2px 0 #bac0bb, 0 4px 20px #0001; }
+.studio-search-trigger kbd { margin-left: auto; padding: 2px 4px; border: 1px solid #383c39; border-radius: 4px; color: #a2a9a4; font: inherit; font-size: 9px; line-height: 1.3; white-space: nowrap; }
+.studio-nav-section + .studio-nav-section { margin-top: 22px; }
+.prism-workspace .sidebar-section-label { margin: 0 0 6px; padding: 0 12px; font-size: 11px; font-weight: 500; line-height: 20px; letter-spacing: .02em; color: #929b95; }
+.prism-workspace .sidebar-navigation { display: block; flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 2px; scrollbar-width: thin; scrollbar-color: #3c413d transparent; }
+.prism-workspace .sidebar-navigation::-webkit-scrollbar { width: 4px; }
+.prism-workspace .sidebar-navigation::-webkit-scrollbar-thumb { border-radius: 99px; background: #4a504b; }
+.prism-workspace .sidebar-navigation::-webkit-scrollbar-track { background: transparent; }
+.prism-workspace .sidebar-nav-item { position: relative; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; min-height: 38px; padding: 0 12px; margin: 3px 0; border: 0; border-radius: 7px; color: #b5bcb7; font-size: 13px; font-weight: 400; transition: background .15s, color .15s; }
+.prism-workspace .sidebar-nav-item:hover:not(.muted) { background: #ffffff08; color: #f1f3f2; transform: none; }
+.prism-workspace .sidebar-nav-item.active { color: #e1eee4; background: #b4d4bc12; font-weight: 550; box-shadow: none; }
+.prism-workspace .sidebar-nav-item.active::before { content: ""; position: absolute; left: 0; top: 11px; bottom: 11px; width: 3px; border-radius: 3px; background: var(--shell-accent); }
 .prism-workspace .sidebar-nav-item > svg { width: 18px; height: 18px; }
-.prism-workspace .sidebar-nav-item .studio-nav-caret { width: 12px; height: 12px; color: #b3b7b4; }
-.prism-workspace .sidebar-system { margin-top: 30px; border-top: 1px solid var(--shell-line); padding-top: 16px; }
-.studio-runtime { margin-bottom: 18px; padding: 0 6px; font-size: 11px; }
-.studio-runtime > summary { display: flex; justify-content: space-between; color: var(--shell-muted); cursor: pointer; min-height: 28px; align-items: center; }
-.studio-runtime > summary span { font-size: 9px; color: #9a9f9b; }
-.studio-runtime .monitor-card { padding: 12px 0 0; }
-.studio-owner-card { display: flex; gap: 10px; align-items: center; width: 100%; padding: 11px 10px; border: 1px solid #aab0ac22; border-radius: 12px; background: #ffffff03; color: var(--shell-copy); cursor: pointer; text-align: left; }
-.studio-owner-card > svg { width: 13px; height: 13px; margin-left: auto; color: var(--shell-muted); }
+.prism-workspace .sidebar-nav-item > svg { color: #9fa9a2; animation: none; }
+.prism-workspace .sidebar-nav-item.active > svg { color: var(--shell-accent); }
+.prism-workspace .sidebar-nav-item:focus-visible, .studio-search-trigger:focus-visible, .studio-runtime > summary:focus-visible { outline: 2px solid var(--shell-accent); outline-offset: -2px; }
+.prism-workspace .sidebar-system { flex: 0 0 auto; margin-top: 16px; border-top: 0; padding-top: 0; }
+.studio-runtime { margin-bottom: 8px; padding: 0; border: 1px solid var(--shell-line); border-radius: 9px; background: #191b1a; font-size: 11px; overflow: hidden; }
+.studio-runtime > summary { display: flex; align-items: center; gap: 8px; min-height: 36px; margin: 0; padding: 0 12px; color: #b5bcb7; font-size: 11px; font-weight: 500; list-style: none; cursor: pointer; }
+.studio-runtime > summary::-webkit-details-marker { display: none; }
+.studio-runtime > summary > svg:first-child { width: 15px; height: 15px; color: #9fa9a2; }
+.studio-runtime > summary > svg:last-child { width: 11px; height: 11px; margin-left: auto; color: var(--shell-faint); transition: transform .15s; }
+.studio-runtime[open] > summary > svg:last-child { transform: rotate(90deg); }
+.prism-workspace .studio-runtime .monitor-card { max-height: min(220px, 28dvh); overflow-y: auto; padding: 4px 12px 12px; scrollbar-width: thin; scrollbar-color: #414942 transparent; }
+.prism-workspace .studio-runtime .monitor-card:focus-visible { outline: 2px solid var(--shell-accent); outline-offset: -2px; border-radius: 6px; }
+.prism-workspace .studio-runtime .monitor-title { margin-bottom: 8px; }
+.prism-workspace .studio-runtime .monitor-grid { gap: 7px; }
+.prism-workspace .studio-runtime .monitor-row { grid-template-columns: 40px minmax(20px, 1fr) 66px; gap: 7px; min-height: 13px; }
+.prism-workspace .studio-runtime .monitor-label { color: #9da79f; font-size: 10px; }
+.prism-workspace .studio-runtime .monitor-value { color: #c1cac3; font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 500; }
+.prism-workspace .studio-runtime :is(.monitor-bar, .monitor-bar-static) { height: 4px; }
 .owner-avatar { display: inline-flex; width: 34px; height: 34px; flex: 0 0 34px; align-items: center; justify-content: center; overflow: hidden; border-radius: 11px; border: 1px solid #dbdedc38; background: #6c726d; color: #f7f8f7; font-size: 15px; font-weight: 600; }
 .owner-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.studio-owner-card { display: flex; gap: 10px; align-items: center; width: 100%; padding: 11px 10px; border: 1px solid #aab0ac22; border-radius: 12px; background: #ffffff03; color: var(--shell-copy); cursor: pointer; text-align: left; }
+.studio-owner-card > svg { width: 13px; height: 13px; margin-left: auto; color: var(--shell-muted); }
 .studio-profile-copy { min-width: 0; display: grid; gap: 4px; }
 .studio-profile-copy strong { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .studio-profile-copy small { font-size: 10px; color: var(--shell-muted); }
-.prism-workspace .sidebar-service-row { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 9px; }
-.prism-workspace .auth-logout button, .prism-workspace .project-close-button { display: flex; align-items: center; gap: 6px; justify-content: center; width: 100%; margin: 0; padding: 7px 3px; min-height: 32px; height: auto; border: 0; background: none; color: var(--shell-muted); font-size: 10px; }
-.prism-workspace .auth-logout button:hover, .prism-workspace .project-close-button:hover { color: var(--shell-copy); background: #b9c0bb0b; }
+.prism-workspace .sidebar-service-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+.prism-workspace .sidebar-service-row :is(.auth-logout button, .project-close-button) { display: flex; align-items: center; gap: 6px; justify-content: center; width: 100%; margin: 0; padding: 7px 3px; min-height: 34px; height: auto; border: 1px solid var(--shell-line); border-radius: 7px; background: transparent; color: #a7b0a9; font-size: 11px; }
+.prism-workspace .sidebar-service-row :is(.auth-logout button, .project-close-button):hover:not(:disabled) { color: var(--shell-copy); background: #ffffff06; }
+.prism-workspace .sidebar-service-row :is(.auth-logout button, .project-close-button):focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 2px; }
 .prism-workspace .auth-logout svg, .prism-workspace .project-close-button svg { width: 14px; height: 14px; }
-.prism-workspace .sidebar-system footer { display: flex; align-items: center; gap: 6px; padding-left: 10px; margin-top: 17px; font-size: 8px; letter-spacing: 1.3px; color: var(--shell-faint); }
+.prism-workspace .sidebar-system footer { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 0 0; margin: 0; font-size: 8px; letter-spacing: 1.3px; color: var(--shell-faint); }
 .studio-edition-dot { width: 4px; height: 4px; border-radius: 50%; background: #b9c0bb; }
 .studio-main-shell { min-width: 0; background: radial-gradient(ellipse at 35% 0%, #646c660d, transparent 52%), var(--shell-bg); }
 .studio-topbar { position: sticky; top: 0; z-index: 25; min-height: 72px; padding: 0 36px; display: flex; align-items: center; justify-content: space-between; gap: 20px; background: #0e0e0edb; backdrop-filter: blur(20px); border-bottom: 1px solid #b4b9b516; }
@@ -190,12 +207,12 @@
 .studio-skip-link:focus { top: 10px; }
 .prism-workspace.sidebar-collapsed { grid-template-columns: 80px minmax(0, 1fr); }
 .sidebar-collapsed .app-sidebar { padding-inline: 12px; }
-.sidebar-collapsed .sidebar-top { padding: 0 0 24px 6px; }
+.sidebar-collapsed .sidebar-top { padding: 0 0 20px 12px; }
 .sidebar-collapsed :is(.studio-brand-copy, .studio-nav-label, .sidebar-section-label, .studio-nav-caret, .studio-search-trigger span, .studio-search-trigger kbd, .studio-profile-copy, .studio-owner-card > svg, .sidebar-system footer, .sidebar-service-row) { display: none; }
 .sidebar-collapsed .studio-search-trigger { justify-content: center; }
 .sidebar-collapsed .sidebar-nav-item { display: flex; justify-content: center; padding: 0; }
 .sidebar-collapsed .studio-owner-card { padding: 8px 0; justify-content: center; }
-.sidebar-collapsed .studio-nav-section + .studio-nav-section { border-top: 1px solid var(--shell-line); padding-top: 17px; margin-top: 17px; }
+.sidebar-collapsed .studio-nav-section + .studio-nav-section { border-top: 1px solid var(--shell-line); padding-top: 12px; margin-top: 12px; }
 @media (max-width: 1280px) {
   .studio-topbar { padding-inline: 25px; }
   .prism-workspace :is(.batch-page, .image-workbench-page, .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route, .douyin-route) { padding: 28px 25px 45px; }
@@ -205,14 +222,14 @@
   .prism-workspace .app-sidebar { height: auto; position: relative; padding: 15px 18px 10px; border-right: 0; border-bottom: 1px solid var(--shell-line); overflow: visible; }
   .prism-workspace .sidebar-top { padding: 0 0 10px; }
   .prism-workspace .sidebar-brand { display: inline-flex; }
-  .prism-workspace .studio-brand-mark { height: 44px; }
+  .prism-workspace .studio-brand-mark { height: 38px; }
   .prism-workspace .studio-brand-copy { display: grid; }
-  .prism-workspace .sidebar-navigation { display: flex; overflow-x: auto; gap: 3px; padding-bottom: 2px; }
+  .prism-workspace .sidebar-navigation { display: flex; flex: 0 0 auto; overflow-x: auto; overflow-y: visible; gap: 3px; padding-bottom: 2px; }
   .prism-workspace .studio-nav-section { display: contents; }
-  .prism-workspace .sidebar-nav-item { display: flex; flex: 0 0 auto; min-height: 38px; padding: 0 11px; margin: 0; font-size: 11px; white-space: nowrap; }
+  .prism-workspace .sidebar-nav-item { display: flex; flex: 0 0 auto; min-height: 44px; padding: 0 11px; margin: 0; font-size: 12px; white-space: nowrap; }
   .prism-workspace .studio-nav-label { display: inline; }
   .prism-workspace :is(.sidebar-section-label, .studio-nav-caret, .sidebar-system, .studio-sidebar-toggle) { display: none; }
-  .prism-workspace .studio-search-trigger { position: absolute; top: 20px; right: 22px; width: 38px; margin: 0; justify-content: center; }
+  .prism-workspace .studio-search-trigger { position: absolute; top: 13px; right: 18px; width: 44px; min-height: 44px; margin: 0; justify-content: center; }
   .prism-workspace .studio-search-trigger :is(span, kbd) { display: none; }
   .studio-topbar { min-height: 58px; padding-inline: 20px; }
   .studio-private-badge { display: none; }

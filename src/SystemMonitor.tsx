@@ -63,7 +63,7 @@ function MeterRow({ label, percent, value, title, neutral = false }: { label: st
   );
 }
 
-export function SystemMonitor() {
+export function SystemMonitor({ embedded = false }: { embedded?: boolean }) {
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [offline, setOffline] = useState(false);
   const [networkScale, setNetworkScale] = useState(MIN_NETWORK_SCALE);
@@ -105,8 +105,9 @@ export function SystemMonitor() {
   const networkTitle = `实时网络速度；条长按本次页面采样的收发峰值缩放，当前满格 ${formatBytes(networkScale)}/s（最低标尺 1 MB/s），不代表带宽占用率`;
 
   return (
-    <div className={`monitor-card ${offline ? "offline" : ""}`}>
-      <div className="monitor-title"><span /> 资源占用 {offline && <em>服务未连接</em>}</div>
+    <div className={`monitor-card ${offline ? "offline" : ""}`} role={embedded ? "region" : undefined}
+      aria-label={embedded ? "系统资源占用" : undefined} tabIndex={embedded ? 0 : undefined}>
+      {(!embedded || offline) && <div className="monitor-title"><span /> 资源占用 {offline && <em>服务未连接</em>}</div>}
       {!stats && !offline && <ContentLoading compact label="正在读取系统状态…" />}
       {stats && (
         <div className="monitor-grid">
