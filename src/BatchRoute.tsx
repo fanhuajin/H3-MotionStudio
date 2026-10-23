@@ -517,7 +517,7 @@ function BatchDialog({ id, title, subtitle, description, icon, trigger, restoreF
       if (restoreFocus?.current !== false) trigger.current?.focus({ preventScroll: true });
     };
   }, [trigger, restoreFocus]);
-  return createPortal(<dialog ref={dialogRef} id={id} className={`batch-settings-dialog ${className}`}
+  return createPortal(<dialog closedby="closerequest" ref={dialogRef} id={id} className={`batch-settings-dialog ${className}`}
     aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`}
     onCancel={(event) => { event.preventDefault(); onClose(); }}
     onKeyDown={(event) => {
@@ -528,11 +528,6 @@ function BatchDialog({ id, title, subtitle, description, icon, trigger, restoreF
       const first = controls[0], last = controls[controls.length - 1];
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    }}
-    onClick={(event) => {
-      if (event.target !== event.currentTarget) return;
-      const bounds = event.currentTarget.getBoundingClientRect();
-      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();
     }}>
     <header className="batch-settings-header">
       <span className="batch-modal-icon" aria-hidden="true">{icon}</span>
@@ -577,7 +572,6 @@ export function BatchRoute() {
   const addOpen = activeDialog === "add";
   const [addError, setAddError] = useState("");
   const restoreInputFocus = useRef(true);
-  const [listFocusVersion, setListFocusVersion] = useState(0);
   const listSection = useRef<HTMLElement>(null);
   const inputToggle = useRef<HTMLButtonElement>(null);
   const [settingsFeedback, setSettingsFeedback] = useState<{ error: boolean; text: string } | null>(null);
@@ -809,17 +803,6 @@ export function BatchRoute() {
     }
   };
 
-  useEffect(() => {
-    if (!listFocusVersion) return;
-    const frame = requestAnimationFrame(() => {
-      const list = listSection.current;
-      if (!list) return;
-      list.focus({ preventScroll: true });
-      // 只在成功提交后定位一次；轮询和页内切换不抢走用户的位置。
-      list.scrollIntoView({ block: "start", behavior: "instant" });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [listFocusVersion]);
 
   // 「准备任务」：把填好的链接交给后端，并立即开始准备
   // （下载抖音视频 → 生成人物图与发布文案 → 停在等确认）。
@@ -859,9 +842,7 @@ export function BatchRoute() {
       // 失败时不清（catch 里不碰输入框），免得白粘一遍。
       if (singingOn && singingUrls.length) setSinging((current) => current === singing ? "" : current);
       if (danceOn && danceUrls.length) setDance((current) => current === dance ? "" : current);
-      restoreInputFocus.current = false;
-      setActiveDialog(null);
-      setListFocusVersion((version) => version + 1);
+
       // 新建批次也不自动展开任何一条：列表默认全收起，由用户自己点开要看的那条
       // （2026-09-15 用户：「启动页面的时候 列表默认都是收起来的 由我自己点击要查看哪个」）。
       // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
@@ -2163,21 +2144,15 @@ export function BatchRoute() {
       )}
 
       {/* 页内确认框（不用 window.confirm）：深色壳子里的同风格弹框，把「影响哪几条」摊开，
-          危险操作用红色确认键、Esc / 点遮罩 = 取消（2026-09-15 用户：「弹出框的效果样式改下」）。 */}
+          危险操作用红色确认键、Esc / 取消按钮 = 取消（2026-09-15 用户：「弹出框的效果样式改下」）。 */}
       {imagePreview && <ImageViewer key={imagePreview} src={imagePreview} label="候选人物图" onClose={() => setImagePreview(null)} />}
       {videoPreview && (
-        <dialog
+        <dialog closedby="closerequest"
           ref={videoDialog}
           className="batch-video-dialog"
           aria-labelledby="batch-video-title"
           onCancel={() => setVideoPreview(null)}
           onClose={() => setVideoPreview(null)}
-          onClick={(event) => {
-            if (event.target !== event.currentTarget) return;
-            const bounds = event.currentTarget.getBoundingClientRect();
-            if (event.clientX < bounds.left || event.clientX > bounds.right
-              || event.clientY < bounds.top || event.clientY > bounds.bottom) setVideoPreview(null);
-          }}
         >
           <div className="batch-video-header">
             <h2 id="batch-video-title">{videoPreview.title}</h2>
@@ -2301,9 +2276,6 @@ export function BatchRoute() {
         <div
           className="batch-modal-backdrop"
           role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) answerConfirm(false);
-          }}
         >
           <div
             className={`batch-modal ${confirmAsk.tone}`}

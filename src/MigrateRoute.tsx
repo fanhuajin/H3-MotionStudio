@@ -861,10 +861,10 @@ export function MigrateRoute() {
       </main>
 
       {lightboxImage && (
-        <div className="lightbox" role="dialog" aria-modal="true" aria-label="参考图大图预览" onClick={() => setLightboxImage(null)}>
+        <div className="lightbox" role="dialog" aria-modal="true" aria-label="参考图大图预览">
           <button className="lightbox-close" onClick={() => setLightboxImage(null)} aria-label="关闭预览"><X weight="bold" /></button>
           <img src={lightboxImage} alt="人物参考图大图" onClick={(event) => event.stopPropagation()} />
-          <p className="lightbox-hint" onClick={(event) => event.stopPropagation()}>人物参考图 · 点击空白处或按 Esc 关闭</p>
+          <p className="lightbox-hint" onClick={(event) => event.stopPropagation()}>人物参考图 · 点击关闭按钮或按 Esc 关闭</p>
         </div>
       )}
     </div>
