@@ -60,9 +60,8 @@ export function AccountSettings({ profile, onSaved, onClose }: {
       setMessage("密码已更新，其他登录会话已退出");
     });
   };
-  return <dialog className="studio-dialog account-dialog" ref={dialog} aria-labelledby="account-title"
-    onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}
-    onClick={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+  return <dialog className="studio-dialog account-dialog" ref={dialog} aria-labelledby="account-title" closedby="closerequest"
+    onCancel={(event) => { event.preventDefault(); if (!busy) onClose(); }}>
     <div className="studio-dialog-head"><div><p className="studio-eyebrow">YOUR ACCOUNT</p><h2 id="account-title">账户设置</h2></div><button className="studio-icon-button" type="button" aria-label="关闭账户设置" autoFocus disabled={Boolean(busy)} onClick={onClose}><X /></button></div>
     <div className="account-tabs" role="group" aria-label="账户设置分类">
       <button type="button" aria-pressed={tab === "profile"} disabled={Boolean(busy)} onClick={() => { setTab("profile"); setError(""); setMessage(""); }}><User />个人资料</button>
