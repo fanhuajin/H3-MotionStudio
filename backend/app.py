@@ -426,6 +426,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="H3 MotionStudio", version="0.1.0", lifespan=lifespan)
+from .auth import AuthMiddleware, router as auth_router
+app.add_middleware(AuthMiddleware)
+app.include_router(auth_router)
 app.include_router(publish_router)
 app.include_router(project_shutdown_router)
 

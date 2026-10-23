@@ -1,67 +1,20 @@
-# Product Design QA
+# 登录页视觉检查
 
-Date: 2026-09-03
+参考：用户选定 `exec-8ff45ffd-a34a-4f0b-bcbc-2203056abcbc.png`，黑紫玻璃 H、左侧艺术区与右侧表单。
 
-## Comparison target
+实现证据：`docs/design/login-desktop.png`、`docs/design/login-mobile.png`，本机独立预览服务 15112。未启动生产应用生命周期，未重启现有后端、提交生成或修改真实账号。
 
-- Source visual truth path (global shell): `D:\project\H3-MotionStudio\design\douzy-shell-reference.png`
-- Source visual truth path (generation workspace content): `D:\project\H3-MotionStudio\design\reference-ui.png`
-- Implementation URL: `http://127.0.0.1:8111/douyin`
-- Implementation screenshot path: Codex task transcript, CUA in-app browser tab 2 final desktop capture
-- Additional implementation captures: Codex task transcript, CUA in-app browser tab 3 desktop capture and tab 2 compact-panel capture
-- State: dark theme; downloader service connected; Cookie not configured; one failed historical task visible
+## 检查与修正
 
-## Viewport and normalization
+- 桌面：保留 61% 艺术区 / 39% 表单布局，账号、密码、显示密码、记住登录与登录按钮可见，无横向溢出。品牌按产品名统一为 H3 MotionStudio。
+- 窄屏：390×844 预览下单列表单完整，装饰背景降暗；没有横向溢出。设备缩放后的 CSS 可视宽度约 355px。
+- 密码显隐按钮实测可切换，使用标签、自动填充属性、键盘焦点样式。真实账号设置留给用户；账号与会话流程由隔离自动化测试验证。
+- 动效第一版只含原图和粒子；用户要求明显流动后，加入 Three.js 三维光轨、沿轨移动的光点、背景纹理折射与浮动、鼠标视差、表单与文字入场。
+- 动画初始时间可能为负，造成曲线取点异常，已归零修正。修正后控制台未新增错误；旧版本错误记录保留在浏览器历史日志中。
+- 后台页暂停渲染，卸载时释放几何、材质、纹理、监听与画布；减少动态效果时固定画面，WebGL 不可用时保留原图。
 
-- Source shell pixels: 1600 × 1000 at the supplied raster density.
-- Final desktop implementation capture: 1900 × 895 JPEG; browser CSS viewport 2253 × 896; device pixel ratio 1.375.
-- Additional compact implementation capture: 1150 × 647 JPEG; browser CSS viewport 1164 × 654; device pixel ratio 1.375.
-- Narrow panel rendering capture: 520 × 662 JPEG.
-- Normalization: full-view captures were compared fit-to-width. The source is an art-direction target rather than a pixel-identical product screen, so Douzy branding, mascot art, TikTok platform tabs, and account/licensing controls are intentionally not copied.
+## 边界
 
-## Full-view comparison evidence
-
-- Fonts and typography: both use a heavy white Chinese display headline, small tracked cyan eyebrow text, muted gray helper copy, and compact controls. The implementation uses the project's system-font stack to preserve Chinese rendering and matching optical hierarchy.
-- Spacing and layout rhythm: the desktop implementation preserves the fixed narrow sidebar, centered content column, large hero-to-card gap, thin rounded panels, and generous lower-page whitespace. At the narrow breakpoint the sidebar becomes a compact top navigation with no clipped controls.
-- Colors and visual tokens: the implementation matches the source's near-black indigo canvas, slightly lighter panel fill, low-contrast violet borders, cyan focus/primary accents, and muted secondary text. Failure states use restrained rose while retaining text and icon labels.
-- Image quality and asset fidelity: source mascot and Douzy logo assets are intentionally excluded because this is H3 MotionStudio, not a Douzy clone. Product controls use the existing Phosphor icon library; no placeholder or improvised CSS illustration is present.
-- Copy and content: TikTok-specific copy is correctly localized to 抖音, and the page exposes supported URL types, service/Cookie readiness, recent task state, output path, and completed-video access.
-
-## Focused region comparison evidence
-
-- Download card: input/button proportions, cyan border emphasis, label hierarchy, radius, and helper line match the source visual language while adding real recognition feedback.
-- Navigation shell: active route uses cyan outline and glow; secondary entries and system status retain the source's subdued density.
-- Error/task states: invalid input produces an accessible alert; failed jobs remain textually distinguishable and the Cookie warning explains the current external dependency.
-
-## Findings
-
-- No actionable P0, P1, or P2 mismatch remains.
-- P3: the reference mascot would add personality, but copying it would conflict with H3 MotionStudio branding and was intentionally omitted.
-
-## Comparison history
-
-- Iteration 1: the initial implementation still targeted port 8011, which is reserved by Windows on this machine. Fixed all backend launcher, development script, proxy, and documentation references to 8111; post-fix evidence shows both routes and all tested API endpoints loading successfully.
-- Iteration 2: the visible narrow capture confirmed responsive stacking and no clipped controls. The hidden desktop capture confirmed the fixed sidebar, hero, card, notice, and task list proportions against the source shell.
-
-## Primary interactions and runtime checks
-
-- Route navigation between `/` and `/douyin`: passed.
-- Invalid URL validation and accessible error alert: passed.
-- Valid Douyin URL recognition state: passed.
-- Downloader status and job-list loading: passed.
-- Browser login launch, waiting, automatic Cookie save, and ready states: passed.
-- Real download using the supplied `modal_id` link: passed; MP4 preview and local-download action rendered.
-- Browser console errors: none.
-- TypeScript typecheck: passed.
-- Backend tests: 9 passed.
-- Production build and Sites packaging tests: passed.
-
-## Implementation checklist
-
-- [x] Shared reference-led desktop shell across both routes.
-- [x] Separate generation and Douyin routes.
-- [x] Real downloader service status, submission, polling, history, media lookup, and output-path UI.
-- [x] Desktop and narrow responsive validation.
-- [x] No actionable P0/P1/P2 visual issues.
+本次完成登录入口和后端保护；登录后的旧工作区尚未整体改版。静态玻璃素材经过着色器变形，未制作可自由旋转的玻璃 H 三维模型。构建存在资源包超过 500kB 的提示，Three.js 已独立按需加载。
 
 final result: passed

@@ -20,6 +20,9 @@ export class ApiError extends Error {
 export async function readJson<T>(input: Response | Promise<Response>, fallback = "请求失败"): Promise<T> {
   const response = await input;
   const status = response.status;
+  if (status === 401 && !response.url.includes("/api/auth/")) {
+    window.dispatchEvent(new Event("h3:unauthorized"));
+  }
   if (!response.ok) {
     let raw = "";
     try {

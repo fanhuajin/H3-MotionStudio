@@ -27,6 +27,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { BatchRoute } from "./BatchRoute";
+import { LogoutButton } from "./AuthGate";
 import { PublishRoute } from "./PublishRoute";
 import { DouyinRoute } from "./DouyinRoute";
 import { readJson, readJsonOrNull } from "./api";
@@ -1030,6 +1031,7 @@ export function App() {
           <p className="sidebar-section-label">系统</p>
           <SystemMonitor />
           <div className="sidebar-service-row">
+            <LogoutButton />
             <CloseProjectButton onAccepted={() => setProjectClosing(true)} />
           </div>
           <footer>H3 MOTIONSTUDIO <span>V0.2.0</span></footer>
