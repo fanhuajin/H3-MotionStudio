@@ -8,6 +8,8 @@
 
 忘记密码时，在项目目录运行 `.venv/Scripts/python.exe -m backend.auth_admin`，在终端交互输入新密码。重置会撤销全部登录会话，不改任务或作品。
 
-登录页按选定玻璃 H 参考设计实现，背景资产位于 `public/assets/login-prism.png`。Three.js 按需加载，在装饰图上渲染三维轨道、沿轨道运动的光点和高光着色器；离开登录页释放资源，后台标签暂停渲染，减少动态效果时使用静态画面，WebGL 不可用时保留原图。
+登录页使用 CareerCompass 的四个几何角色（MIT，源码及声明位于 `src/vendor/careercompass/`），支持眼球跟随、随机眨眼、账号聚焦互动、密码聚焦回避与显示密码时偶尔偷看。装饰组件只接收密码长度、显隐和焦点状态，不接收密码文本。
+
+Three.js 按需加载，背景提供缓慢轨道、漂浮线框几何体、星点、鼠标视差和点击波纹。离开登录页释放 GPU 资源和角色计时器，后台标签暂停背景渲染；减少动态效果时停用背景动画及角色跟随和眨眼，WebGL 不可用时保留静态底色与正常表单。此前玻璃海报与流体探索方案已移除，可从 Git 历史回退。
 
 界面结构参考 MIT 项目 Shadcn Admin（https://github.com/satnaing/shadcn-admin），动效方向参考 Magic UI（https://github.com/magicuidesign/magicui）；本次没有复制其源码或整体替换现有框架。
