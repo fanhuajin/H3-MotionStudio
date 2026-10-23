@@ -1,6 +1,7 @@
 import asyncio
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -11,7 +12,7 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
 
     """封面不等待视频交付，使用原人物图并在后台完成。"""
 
-    async def test_prep_starts_background_covers_without_video(self):
+    async def test_prep_does_not_start_covers(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             with patch.object(batch_worker, "_item", return_value={"status": "pending"}), patch.object(
@@ -23,7 +24,59 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             ), patch.object(batch_worker, "spawn_item_covers") as spawn:
                 await batch_worker._run_prep("batch", "item")
             prepare.assert_awaited()
-            spawn.assert_called_once_with("batch", "item", folder)
+            spawn.assert_not_called()
+
+    async def test_only_current_video_starts_its_cover_after_submission(self):
+        await self._check_video_cover_trigger("submitted")
+
+    async def test_waiting_for_pipeline_does_not_start_covers(self):
+        await self._check_video_cover_trigger("waiting")
+
+    async def test_failed_video_submission_does_not_start_covers(self):
+        await self._check_video_cover_trigger("failed")
+
+    async def _check_video_cover_trigger(self, scenario):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            folder = Path(directory)
+            source = folder / "source.mp4"
+            source.write_bytes(b"source")
+            item = {"id": "current", "status": "confirmed", "kind": "singing",
+                    "forceRender": True, "sourcePath": str(source)}
+            stack.enter_context(patch.object(batch_worker, "_item", return_value=item))
+            stack.enter_context(patch.object(batch_worker, "_set_item"))
+            stack.enter_context(patch.object(batch_worker, "full_auto_enabled", return_value=True))
+            stack.enter_context(patch.object(batch_worker, "_recorded_publish_folder", return_value=folder))
+            stack.enter_context(patch.object(batch_worker.batch_store, "get", return_value={}))
+            stack.enter_context(patch.object(batch_worker.batch_store, "add_item_log"))
+            stack.enter_context(patch.object(batch_worker.batch_store, "set_item_milestone"))
+            stack.enter_context(patch.object(batch_worker, "ensure_publish_images", new_callable=AsyncMock))
+            spawn = stack.enter_context(patch.object(batch_worker, "spawn_item_covers"))
+
+            async def wait(*_args):
+                spawn.assert_not_called()
+                if scenario == "waiting":
+                    raise asyncio.CancelledError
+
+            async def post(*_args):
+                spawn.assert_not_called()
+                if scenario == "failed":
+                    raise RuntimeError("submission failed")
+                return {"id": "video-current"}
+
+            async def watch(*_args):
+                spawn.assert_called_once_with("batch-current", "current", folder)
+                # Stop while the video is still running: its cover has already started.
+                raise asyncio.CancelledError
+
+            stack.enter_context(patch.object(batch_worker, "_wait_for_free_pipeline", side_effect=wait))
+            stack.enter_context(patch.object(batch_worker, "_post_video_job", side_effect=post))
+            stack.enter_context(patch.object(batch_worker, "_watch_child", side_effect=watch))
+            expected = RuntimeError if scenario == "failed" else asyncio.CancelledError
+            with self.assertRaises(expected):
+                await batch_worker._process_confirmed("batch-current", "current")
+            if scenario != "submitted":
+                spawn.assert_not_called()
+            batch_worker._BATCH_VIDEO_LOCKS.pop("batch-current", None)
 
     async def test_cover_reference_falls_back_to_person_image(self):
         with tempfile.TemporaryDirectory() as directory:

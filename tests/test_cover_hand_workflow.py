@@ -191,14 +191,14 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 update.assert_not_called()
                 self.assertIn("视频不受影响", str(log.call_args))
 
-    async def test_legacy_prep_record_starts_background_cover_before_video(self):
+    async def test_legacy_prep_record_does_not_start_covers(self):
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             (folder / wb.PERSON_NAME).write_bytes(picture())
             (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
             with patch.object(worker, "full_auto_enabled", return_value=True), patch.object(worker, "_item", return_value={}), patch.object(worker, "_covers_ready", return_value=False), patch.object(worker, "_recorded_publish_folder", return_value=folder), patch.object(worker, "spawn_item_covers") as generate:
                 await worker._finish_prep_covers("b", "i")
-                generate.assert_called_once_with("b", "i", folder)
+                generate.assert_not_called()
 
     async def test_model_prompt_and_validation(self):
         with tempfile.TemporaryDirectory() as raw:

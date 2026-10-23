@@ -1700,7 +1700,7 @@ async def _prepare_review(
 
 
 async def _run_prep(batch_id: str, item_id: str) -> None:
-    """下载、预审、人物图与文案落盘后，封面转后台生成。
+    """下载、预审、人物图与文案落盘；封面等轮到本条开始出片再生成。
 
     备料完成后留在等待区，按逐条手动安排继续出片，不等封面。
     """
@@ -1722,12 +1722,7 @@ async def _run_prep(batch_id: str, item_id: str) -> None:
     feedback = str(refreshed.get("revisionFeedback") or "")
     mode = str(refreshed.get("revisionMode") or "both")
     await _prepare_review(batch_id, item_id, feedback=feedback, mode=mode)
-    # 人物图与文案已落盘即可出封面，不等待视频，也不阻塞下一条备料。
-    if full_auto_enabled():
-        item = _item(batch_id, item_id)
-        spawn_item_covers(
-            batch_id, item_id, _recorded_publish_folder(item) or _existing_publish_folder(item)
-        )
+    # 备料阶段不生成封面；仅当前条目提交视频任务后启动对应封面。
 
 
 def _covers_ready(item: dict[str, Any]) -> bool:
@@ -1770,7 +1765,7 @@ def resume_failed_item_with_complete_images(folder: Path) -> dict[str, str] | No
 
 
 async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
-    """兼容旧 coverOnlyPrep 记录；人物图与文案齐备即可生成封面。"""
+    """兼容旧 coverOnlyPrep 记录，只检查备料，不提前生成封面。"""
     item = _item(batch_id, item_id)
     if not full_auto_enabled():
         return
@@ -1785,7 +1780,7 @@ async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
         raise RuntimeError("人物图尚未落入发布目录，无法完成备料")
     if not (folder / "发布文案.txt").is_file():
         raise RuntimeError("发布文案尚未落盘，无法完成备料")
-    spawn_item_covers(batch_id, item_id, folder)
+
 
 
 def _adopt_previous_work(batch_id: str, item_id: str) -> bool:
@@ -2395,7 +2390,7 @@ async def _prepare_review_work(
                 f"图二（身份参考）{IDENTITY_PATH}。",
             )
 
-    # API 封面由 `_run_prep` 在素材齐备后转后台；桌面端老入口仍只供显式调用。
+    # API 封面由 `_process_confirmed` 在本条视频提交后转后台；桌面端老入口只供显式调用。
     #
     # **自动放行出片**：默认也已关闭（图片自动化的一部分）——上传人物图后停在
     # 「等待你的确认」，点「确认并出片」才走视频链路。想恢复自动放行：`H3_AUTO_CONFIRM=1`。
@@ -2622,7 +2617,7 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
 
 
 # 【2026-10-18】封面不再挡下一条视频：中转站出封面是**纯外部等待**（实测 60~100 秒/张），
-# 人物图与文案齐备后即在后台生成，不阻塞备料与出片；视频交付后仍补缺失封面。
+# 当前条目提交视频任务后在后台生成对应封面；视频交付后仍补缺失封面。
 # `H3_COVER_BLOCKING=1` 可以回到旧的「等封面做完再走下一条」语义。
 # 封面采用中转站原图，不做本地放大；后台补封面不再为放大排队占用 GPU。
 _BG_COVER_TASKS: set[asyncio.Task] = set()
@@ -2662,7 +2657,7 @@ def spawn_item_covers(batch_id: str, item_id: str, folder: Path | None) -> bool:
 
     task.add_done_callback(finished)
     try:
-        batch_store.add_item_log(batch_id, item_id, "人物图与文案已就绪，封面在后台生成（不等待视频完成）。")
+        batch_store.add_item_log(batch_id, item_id, "当前条目的封面在后台生成（不等待视频完成，不提前生成其他条目封面）。")
     except Exception:  # noqa: BLE001 - 批次/条目刚被删掉时只当没日志，别再抛回去
         pass
     return True
@@ -4393,6 +4388,13 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
         batch_store.add_item_log(batch_id, item_id, "已确认候选结果，开始执行视频生成单链路。")
         video_job = await _post_video_job(batch_id, item_id)
         _set_item(batch_id, item_id, videoJobId=video_job["id"], childJob=video_job)
+        # 已轮到本条并成功提交视频任务，才并行生成这一条的封面。
+        if full_auto_enabled():
+            current = _item(batch_id, item_id)
+            spawn_item_covers(
+                batch_id, item_id,
+                _recorded_publish_folder(current) or _existing_publish_folder(current),
+            )
         video_job = await _watch_child(batch_id, item_id, video_job["id"], "video")
         batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
         _set_item(batch_id, item_id, stage="deliver", childJob=None)
