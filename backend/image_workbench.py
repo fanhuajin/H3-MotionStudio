@@ -187,7 +187,7 @@ def list_items() -> list[dict[str, Any]]:
             "kind": infer_kind(folder),
             "automation": AUTOMATIONS.get(_folder_id(folder)),
             "hasVideo": has_video,
-            "canCover": bool(person and has_video),
+            "canCover": bool(person and (folder / "发布文案.txt").is_file()),
             "coverReview": cover_review.read_report(person, folder / ".h3-cover-hands.json") if person else None,
             "assets": {
                 "frame": _meta(frame), "identity": _meta(IDENTITY_PATH), "person": _meta(person),
@@ -619,9 +619,7 @@ async def _generate_person(
 async def _generate_cover(
     folder: Path, stage: str, kind: str, *, allow_uncertain_retry: bool = False
 ) -> None:
-    """视频交付后，用原人物图检查手部并生成封面；旧付费任务保持原输入续取。"""
-    if not (folder / "最终成片.mp4").is_file():
-        raise RuntimeError("这条还没有最终成片；请先出片，或手动上传封面。")
+    """用原人物图检查手部并生成封面，不等待成片；旧付费任务保持原输入续取。"""
     key = (str(folder.resolve()).lower(), stage)
     existing = _COVER_INFLIGHT.get(key)
     if existing is not None:
@@ -758,10 +756,8 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                         stage: str | None = None) -> None:
     """自动出图。`stage` 给定就**只跑那一步**（用户在页面上单独点某一张）。
 
-    stage ∈ {None(整条), "person", "bilibili", "douyin"}；封面改成出片后生成：
-    参考原人物图，先检查手部再决定保留原构图或避手半身构图。整条自动
-    在没有成片时会跳过封面，只补人物图；单点封面则明确报错，让用户先出片或
-    手动上传封面。页面据 `canCover` 置灰。
+    stage ∈ {None(整条), "person", "bilibili", "douyin"}。
+    人物图与文案齐备后即可生成封面，先检查原人物图手部再决定构图。
     """
     folder = resolve_folder(folder_id)
     kind = infer_kind(folder)
@@ -773,7 +769,6 @@ async def run_automatic(folder_id: str, *, force: bool = False,
     async with _AUTO_LOCK:
         try:
             person_score = -1
-            skipped_covers = False
             for step in steps:
                 # 用户点了「停止」：正在跑的那一步跑完就停，后面的步骤不再开始。
                 if _stop_requested():
@@ -792,11 +787,6 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                     continue
                 if not force and (folder / COVER_NAMES[step]).is_file():
                     continue
-                if not (folder / "最终成片.mp4").is_file():
-                    if stage is None:
-                        skipped_covers = True
-                        continue
-                    raise RuntimeError("这条还没有最终成片；请先出片，或手动上传封面。")
                 _set_auto(folder_id, status="running", stage=step,
                           message=f"正在检查人物图手部并生成{label}（异常或不确定时改为不露手半身构图）", kind=kind)
                 with batch_image.report_request_status(
@@ -807,11 +797,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                         # 单步重做才允许越过未知结果保护；已有任务仍只续取。
                         allow_uncertain_retry=bool(force and stage == step),
                     )
-            done = (
-                "人物图已完成；封面等成片后检查人物图手部再生成"
-                if skipped_covers else
-                ("人物图与封面已自动补齐" if not stage else "已完成生成")
-            )
+            done = "人物图与封面已自动补齐" if not stage else "已完成生成"
             if stage in (None, "person") and person_score >= 0:
                 done += f"（人物图相似度 {person_score}/100）"
             note = _PERSON_NOTES.pop(folder_id, "")
@@ -836,11 +822,7 @@ def start_automatic(folder_id: str, *, force: bool = False,
 
 
 def start_all_missing() -> dict[str, int]:
-    """一键补齐：缺人物图的排队；缺封面的只有人物图与最终成片齐备才排队。
-
-    2026-10-18 起封面必须等成片后检查人物图手部后生成：还没出片的作品只补人物图，
-    封面计入 `waiting`，等出片后自动或手动补。
-    """
+    """一键补齐人物图与封面；已有素材不重做，无需等待成片。"""
     _clear_stop()  # 一键生成 = 新的一轮意图
     queued = 0
     waiting = 0

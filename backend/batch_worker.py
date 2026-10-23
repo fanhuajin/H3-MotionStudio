@@ -1700,7 +1700,7 @@ async def _prepare_review(
 
 
 async def _run_prep(batch_id: str, item_id: str) -> None:
-    """下载、预审、人物图与文案落盘；封面等视频交付后检查原人物图再生成。
+    """下载、预审、人物图与文案落盘后，封面转后台生成。
 
     备料完成后留在等待区，按逐条手动安排继续出片，不等封面。
     """
@@ -1722,7 +1722,12 @@ async def _run_prep(batch_id: str, item_id: str) -> None:
     feedback = str(refreshed.get("revisionFeedback") or "")
     mode = str(refreshed.get("revisionMode") or "both")
     await _prepare_review(batch_id, item_id, feedback=feedback, mode=mode)
-    # 不再调用 `_finish_prep_covers()`：封面改到出片交付之后（见 `_finish_item_covers`）。
+    # 人物图与文案已落盘即可出封面，不等待视频，也不阻塞下一条备料。
+    if full_auto_enabled():
+        item = _item(batch_id, item_id)
+        spawn_item_covers(
+            batch_id, item_id, _recorded_publish_folder(item) or _existing_publish_folder(item)
+        )
 
 
 def _covers_ready(item: dict[str, Any]) -> bool:
@@ -1736,8 +1741,7 @@ def _covers_ready(item: dict[str, Any]) -> bool:
 def _prep_assets_ready(item: dict[str, Any]) -> bool:
     """备料是否已齐：人物图 + 发布文案落进发布目录。
 
-    **封面不算备料条件**（2026-10-18 用户要求：人物图之后先不出封面，等成片出来再从
-    视频抽帧出）——所以这里不再看两张封面，出片可以立即放行。
+    封面在后台生成，不计入备料条件，出片可以立即放行。
     """
     folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
     return bool(folder and folder.is_dir() and publish_published_image(folder)
@@ -1766,7 +1770,7 @@ def resume_failed_item_with_complete_images(folder: Path) -> dict[str, str] | No
 
 
 async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
-    """兼容旧 coverOnlyPrep 记录；最终成片未交付时不生成封面。"""
+    """兼容旧 coverOnlyPrep 记录；人物图与文案齐备即可生成封面。"""
     item = _item(batch_id, item_id)
     if not full_auto_enabled():
         return
@@ -1779,25 +1783,9 @@ async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
         folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
     if folder is None or publish_published_image(folder) is None:
         raise RuntimeError("人物图尚未落入发布目录，无法完成备料")
-    if not (folder / "最终成片.mp4").is_file():
-        return  # 旧 coverOnlyPrep 记录也不能提前生成封面。
     if not (folder / "发布文案.txt").is_file():
         raise RuntimeError("发布文案尚未落盘，无法完成备料")
-    retry_authorized = bool(item.get("retryMissingCovers"))
-    if retry_authorized:
-        _set_item(batch_id, item_id, retryMissingCovers=False)
-    batch_store.set_item_milestone(
-        batch_id, item_id, "prepare", status="running", progress=None, currentNode="正在准备封面"
-    )
-    cover_errors = await _generate_covers_via_api(
-        batch_id, item_id, folder, allow_uncertain_retry=retry_authorized
-    )
-    if not _covers_ready(_item(batch_id, item_id)):
-        detail = f"：{cover_errors[0]}" if cover_errors else ""
-        raise RuntimeError(f"封面未全部生成{detail}；已保留现有文件")
-    batch_store.set_item_milestone(
-        batch_id, item_id, "prepare", status="completed", progress=100, currentNode="两张封面已齐全"
-    )
+    spawn_item_covers(batch_id, item_id, folder)
 
 
 def _adopt_previous_work(batch_id: str, item_id: str) -> bool:
@@ -2407,9 +2395,7 @@ async def _prepare_review_work(
                 f"图二（身份参考）{IDENTITY_PATH}。",
             )
 
-    # 封面自动化（ChatGPT 桌面端那条老路）也**不在备料阶段触发**：2026-10-18 起封面统一
-    # 改到出片交付之后、检查人物图手部再出（见 `_finish_item_covers`）。`_maybe_spawn_covers`
-    # 保留给显式调用，不再在备料里自动发。
+    # API 封面由 `_run_prep` 在素材齐备后转后台；桌面端老入口仍只供显式调用。
     #
     # **自动放行出片**：默认也已关闭（图片自动化的一部分）——上传人物图后停在
     # 「等待你的确认」，点「确认并出片」才走视频链路。想恢复自动放行：`H3_AUTO_CONFIRM=1`。
@@ -2418,7 +2404,7 @@ async def _prepare_review_work(
 
 
 def _auto_confirm_prepared_item(batch_id: str, item_id: str) -> None:
-    """新备料和复用素材共用自动确认；封面不再拦出片（出片后才检查人物图手部并出封面）。"""
+    """新备料和复用素材共用自动确认；后台封面不拦出片。"""
     if not _cgi_auto_confirm():
         return
     fresh = _item(batch_id, item_id)
@@ -2504,9 +2490,7 @@ def spawn_api_covers(
 ) -> bool:
     """【全自动】用**中转站**出这条的两张封面（后台任务，与出片并行）。
 
-    时机（2026-10-18 调整）：**成片交付之后**才出封面 —— 由 `_finish_item_covers()` 在
-    `_deliver()` 之后调用，检查原人物图手部后再出图。此前封面在备料阶段生成，
-    参考图是人物图，人物图手指画坏时封面也跟着坏（用户 2026-10-18 反馈）。
+    人物图与发布文案齐备即可生成，检查原人物图手部后再出图，不等待成片。
     `only_missing=True`：两张封面都在就直接返回，不白跑（重新开始时避免重复出图）。
     `force=True`：**已存在的封面也要重出**（人物图被换掉时必须这样，见 `adopt_published_portrait`）。
     返回是否真的排上了任务。**不是** ChatGPT 桌面端那条路（那条仍归 `H3_AUTO_CHATGPT_COVER`）。
@@ -2518,7 +2502,7 @@ def spawn_api_covers(
     folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
     if folder is None or not folder.is_dir():
         return False
-    if not (folder / "最终成片.mp4").is_file() or publish_published_image(folder) is None:
+    if publish_published_image(folder) is None:
         return False
     if not (folder / "发布文案.txt").is_file():
         return False
@@ -2551,8 +2535,6 @@ async def _generate_covers_via_api(
     """
     from . import image_workbench
 
-    if not (folder / "最终成片.mp4").is_file():
-        return ["封面等待最终成片成功交付"]
     item = _item(batch_id, item_id)
     kind = str(item.get("kind") or "singing")
     errors: list[str] = []
@@ -2598,7 +2580,7 @@ async def _generate_covers_via_api(
 
 
 async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) -> None:
-    """出片交付之后：检查人物图手部，再生成两张封面。
+    """素材齐备后：检查人物图手部，再生成两张封面。
 
     封面失败只写日志，不把已经完成的视频判失败；缺的那张之后可在 `/images` 页面补。
     除取消外**不向上抛错**，避免 runner 把已完成的条目误判成失败。
@@ -2612,7 +2594,7 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
             return
         if _covers_ready(item):
             return
-        if not (folder / "最终成片.mp4").is_file():
+        if publish_published_image(folder) is None or not (folder / "发布文案.txt").is_file():
             return
         retry_authorized = bool(item.get("retryMissingCovers"))
         if retry_authorized:
@@ -2625,23 +2607,23 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
         detail = f"：{errors[0]}" if errors else ""
         batch_store.add_item_log(
             batch_id, item_id,
-            f"封面未全部生成{detail}；视频已完成，可稍后在图片页（/images）补齐封面。",
+            f"封面未全部生成{detail}；不影响视频，可稍后在图片页（/images）补齐封面。",
         )
     except asyncio.CancelledError:
         raise
     except Exception as error:      # noqa: BLE001 - 封面步骤异常绝不能把已完成视频拉成失败
-        logger.warning("出片后的封面步骤异常（忽略）：%s", error, exc_info=True)
+        logger.warning("后台封面步骤异常（忽略）：%s", error, exc_info=True)
         try:
             batch_store.add_item_log(
-                batch_id, item_id, f"出片后的封面步骤异常（视频不受影响）：{error}"
+                batch_id, item_id, f"后台封面步骤异常（视频不受影响）：{error}"
             )
         except Exception:           # noqa: BLE001
             pass
 
 
 # 【2026-10-18】封面不再挡下一条视频：中转站出封面是**纯外部等待**（实测 60~100 秒/张），
-# 把它串在出片链路上只会让整批每条都多等 2~4 分钟。现在交付完就标完成、放行下一条视频，
-# 封面丢到后台补；`H3_COVER_BLOCKING=1` 可以回到旧的「等封面做完再走下一条」语义。
+# 人物图与文案齐备后即在后台生成，不阻塞备料与出片；视频交付后仍补缺失封面。
+# `H3_COVER_BLOCKING=1` 可以回到旧的「等封面做完再走下一条」语义。
 # 封面采用中转站原图，不做本地放大；后台补封面不再为放大排队占用 GPU。
 _BG_COVER_TASKS: set[asyncio.Task] = set()
 _BG_COVER_KEYS: set[tuple[str, str]] = set()
@@ -2680,7 +2662,7 @@ def spawn_item_covers(batch_id: str, item_id: str, folder: Path | None) -> bool:
 
     task.add_done_callback(finished)
     try:
-        batch_store.add_item_log(batch_id, item_id, "视频已交付，封面转到后台补（不挡下一条视频）。")
+        batch_store.add_item_log(batch_id, item_id, "人物图与文案已就绪，封面在后台生成（不等待视频完成）。")
     except Exception:  # noqa: BLE001 - 批次/条目刚被删掉时只当没日志，别再抛回去
         pass
     return True
@@ -2714,8 +2696,6 @@ def _maybe_spawn_covers(batch_id: str, item_id: str, *, only_missing: bool = Fal
     if not folder:
         return False
     publish_folder = Path(folder)
-    if publish_folder is None or not (publish_folder / "最终成片.mp4").is_file():
-        return False
     image = cover_reference_image(item, publish_folder)
     copy = publish_folder / "发布文案.txt"
     if image is None or not copy.is_file():

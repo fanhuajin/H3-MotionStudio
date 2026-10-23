@@ -21,7 +21,6 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
         for status in ("reasonable", "no_hands", "unreasonable", "uncertain", "error"):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as raw:
                 folder = Path(raw)
-                (folder / "最终成片.mp4").write_bytes(b"video")
                 person = folder / wb.PERSON_NAME
                 person.write_bytes(picture())
                 (folder / "封面人物图.png").write_bytes(b"obsolete")
@@ -71,7 +70,6 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
         for cut in ("yes", "uncertain", "no"):
             with self.subTest(cut=cut), tempfile.TemporaryDirectory() as raw:
                 folder = Path(raw)
-                (folder / "最终成片.mp4").write_bytes(b"video")
                 (folder / wb.PERSON_NAME).write_bytes(picture())
                 seen = []
                 async def generate(**kw):
@@ -132,19 +130,18 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((folder / wb.COVER_NAMES["bilibili"]).read_bytes(), picture("blue"))
             self.assertFalse((folder / ".h3-bilibili-review.json").exists())
 
-    async def test_no_video_blocks_all_api_entry_points_even_with_legacy_frame(self):
+    async def test_no_video_allows_batch_api_entry_point(self):
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             (folder / wb.PERSON_NAME).write_bytes(picture())
-            (folder / "封面人物图.png").write_bytes(picture())
-            with patch.object(batch_ai, "judge_cover_hands", new_callable=AsyncMock) as judge, patch.object(batch_image, "generate_candidate_image", new_callable=AsyncMock) as generate:
-                with self.assertRaisesRegex(RuntimeError, "最终成片"):
-                    await wb._generate_cover(folder, "bilibili", "dance")
-                self.assertEqual(await worker._generate_covers_via_api("b", "i", folder), ["封面等待最终成片成功交付"])
-                judge.assert_not_awaited()
-                generate.assert_not_awaited()
-            with patch.object(worker, "_item", return_value={}), patch.object(worker, "_recorded_publish_folder", return_value=folder):
-                self.assertFalse(worker.spawn_api_covers("b", "i"))
+            (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+            with patch.object(worker, "_item", return_value={}), patch.object(
+                worker, "_set_item"
+            ), patch.object(worker.batch_store, "add_item_log"), patch.object(
+                wb, "_generate_cover", new_callable=AsyncMock
+            ) as generate:
+                self.assertEqual(await worker._generate_covers_via_api("b", "i", folder), [])
+                self.assertEqual(generate.await_count, 2)
 
     async def test_background_has_no_frame_or_gpu_step(self):
         with tempfile.TemporaryDirectory() as raw, patch.object(worker, "full_auto_enabled", return_value=True), patch.object(worker, "cover_blocking", return_value=False), patch.object(worker, "spawn_item_covers") as spawn:
@@ -187,19 +184,21 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_cover_failure_never_reverts_completed_video(self):
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
-            (folder / "最终成片.mp4").write_bytes(b"video")
+            (folder / wb.PERSON_NAME).write_bytes(picture())
+            (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
             with patch.object(worker, "full_auto_enabled", return_value=True), patch.object(worker, "_item", return_value={"status": "completed"}), patch.object(worker, "_covers_ready", return_value=False), patch.object(worker, "_generate_covers_via_api", side_effect=RuntimeError("relay offline")), patch.object(worker, "_set_item") as update, patch.object(worker.batch_store, "add_item_log") as log:
                 await worker._finish_item_covers("b", "i", folder)
                 update.assert_not_called()
                 self.assertIn("视频不受影响", str(log.call_args))
 
-    async def test_legacy_prep_record_cannot_generate_cover_before_video(self):
+    async def test_legacy_prep_record_starts_background_cover_before_video(self):
         with tempfile.TemporaryDirectory() as raw:
             folder = Path(raw)
             (folder / wb.PERSON_NAME).write_bytes(picture())
-            with patch.object(worker, "full_auto_enabled", return_value=True), patch.object(worker, "_item", return_value={}), patch.object(worker, "_covers_ready", return_value=False), patch.object(worker, "_recorded_publish_folder", return_value=folder), patch.object(worker, "_generate_covers_via_api", new_callable=AsyncMock) as generate:
+            (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+            with patch.object(worker, "full_auto_enabled", return_value=True), patch.object(worker, "_item", return_value={}), patch.object(worker, "_covers_ready", return_value=False), patch.object(worker, "_recorded_publish_folder", return_value=folder), patch.object(worker, "spawn_item_covers") as generate:
                 await worker._finish_prep_covers("b", "i")
-                generate.assert_not_awaited()
+                generate.assert_called_once_with("b", "i", folder)
 
     async def test_model_prompt_and_validation(self):
         with tempfile.TemporaryDirectory() as raw:
