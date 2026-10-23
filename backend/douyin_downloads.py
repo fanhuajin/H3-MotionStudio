@@ -1,11 +1,12 @@
-"""独立下载页的后台任务，沿用批量制作的直连优先策略。"""
+"""单次下载工具：直连优先、REST 兜底，仅临时保留本次结果。"""
 
 import asyncio
+import mimetypes
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from .douyin_mirror import upsert_jobs
 from .douyin_preview import ensure_download_playable
 from .douyin_service import douyin_service
 from .settings import env_value
@@ -13,6 +14,32 @@ from .store import now_iso
 
 
 tasks: dict[str, asyncio.Task] = {}
+_jobs: dict[str, dict[str, Any]] = {}
+_finished: dict[str, float] = {}
+
+
+def _prune() -> None:
+    # 仅为当前结果的播放/保存链接暂存，不写下载历史，也不删除视频文件。
+    for job_id, finished in list(_finished.items()):
+        if time.monotonic() - finished > 7200 or len(_finished) > 20:
+            _finished.pop(job_id, None)
+            _jobs.pop(job_id, None)
+
+
+def get_job(job_id: str) -> dict[str, Any] | None:
+    _prune()
+    job = _jobs.get(job_id)
+    return dict(job) if job else None
+
+
+def _file_result(path: Path, aweme_id: str) -> dict[str, Any]:
+    path = path.resolve()
+    return {
+        "awemeId": aweme_id, "filename": path.name, "path": str(path),
+        "size": path.stat().st_size,
+        "mediaType": mimetypes.guess_type(path.name)[0] or "video/mp4",
+        "playableReady": True,
+    }
 
 
 def submit(url: str) -> dict[str, Any]:
@@ -21,7 +48,8 @@ def submit(url: str) -> dict[str, Any]:
         "status": "pending", "created_at": now_iso(),
         "total": 1, "success": 0, "failed": 0, "skipped": 0, "error": None,
     }
-    upsert_jobs([job])
+    _prune()
+    _jobs[job["job_id"]] = job
     task = asyncio.create_task(_run(job))
     tasks[job["job_id"]] = task
     task.add_done_callback(lambda _: tasks.pop(job["job_id"], None))
@@ -32,14 +60,13 @@ async def _run(job: dict[str, Any]) -> None:
     from . import batch_worker
 
     job.update(status="running", started_at=now_iso())
-    upsert_jobs([job])
     direct_failure = None
     try:
         rest_only = (env_value("H3_DOUYIN_DIRECT") or "").strip().lower() in {"0", "false", "off", "no"}
         if not rest_only:
             try:
-                await batch_worker._fetch_source_direct(job)
-                job.update(status="success", success=1)
+                source, aweme_id, _ = await batch_worker._fetch_source_direct(job)
+                job.update(status="success", success=1, downloadResult=_file_result(source, aweme_id))
                 return
             except Exception as exc:
                 direct_failure = exc
@@ -57,8 +84,8 @@ async def _run(job: dict[str, Any]) -> None:
             reason = await asyncio.to_thread(batch_worker._park_truncated_source, source)
             if reason:
                 raise RuntimeError(reason)
-            await ensure_download_playable(source, str(result["awemeId"]))
-            job.update(status="success", success=1)
+            source = await ensure_download_playable(source, str(result["awemeId"]))
+            job.update(status="success", success=1, downloadResult=_file_result(source, str(result["awemeId"])))
         except Exception as exc:
             detail = batch_worker.douyin_download_failure_note(direct_failure, exc)
             detail = detail.replace("在批量里点「重新开始」重试本条", "在下载页重新提交链接")
@@ -70,4 +97,5 @@ async def _run(job: dict[str, Any]) -> None:
         job.update(status="failed", failed=1, error=str(exc))
     finally:
         job["finished_at"] = now_iso()
-        upsert_jobs([job])
+        _finished[job["job_id"]] = time.monotonic()
+        _prune()

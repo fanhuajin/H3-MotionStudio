@@ -312,12 +312,12 @@ IDLE_STOP_SECONDS = 60.0
 
 
 async def _douyin_housekeeping() -> None:
-    """Mirror jobs, normalize completed videos, stop the service when idle.
+    """Stop the download service when idle without revisiting old files.
 
     Runs only while the download service is already connected, so it never
     starts that service on its own. After download activity has been idle for
-    ``IDLE_STOP_SECONDS`` it terminates the service to release its memory;
-    jobs already mirrored stay visible and playable from disk.
+    ``IDLE_STOP_SECONDS`` it terminates the service to release its memory.
+    Current download workers validate and normalize their own output files.
     """
     while True:
         try:
@@ -329,22 +329,12 @@ async def _douyin_housekeeping() -> None:
             except DouyinServiceError:
                 payload = {"jobs": []}
             live = payload.get("jobs", []) if isinstance(payload, dict) else []
-            mirror_upsert(live)
             active = any(
                 isinstance(job, dict) and job.get("status") in ("pending", "running")
                 for job in live
             )
             if active:
                 douyin_service.mark_activity()
-            for job in live:
-                if not isinstance(job, dict) or job.get("status") != "success":
-                    continue
-                result = douyin_service.result_for(job)
-                if result:
-                    schedule_download_playable(
-                        Path(result["path"]),
-                        str(result.get("awemeId") or ""),
-                    )
             spawned = douyin_service.process is not None
             if spawned and not active and douyin_service.idle_seconds() > IDLE_STOP_SECONDS:
                 logger.info("下载任务已结束且暂无操作，停止抖音下载服务以释放内存")
@@ -3096,11 +3086,14 @@ async def job_input(job_id: str, kind: str):
 
 
 async def _resolve_job(job_id: str) -> dict[str, Any] | None:
-    """Live job from the downloader service, falling back to the mirror.
+    """Current in-memory download, then legacy service/mirror lookups.
 
     Read paths never start the (memory-heavy) service: when it is offline or
     does not know the job anymore, the persisted mirror answers instead.
     """
+    current = douyin_downloads.get_job(job_id)
+    if current:
+        return current
     if job_id.startswith("direct-"):
         cached = mirror_get_job(job_id)
         if not cached:
@@ -3133,8 +3126,7 @@ async def douyin_download(request: DouyinDownloadRequest):
         raise HTTPException(400, "当前只支持抖音链接")
     job = douyin_downloads.submit(url)
     douyin_service.mark_activity()
-    # Normalized payload: completed jobs (e.g. already downloaded) come back
-    # with result and mediaUrl, and preview conversion starts immediately.
+    # 本次任务按编号查询，完成后直接附带视频预览与保存链接。
     return douyin_job_payload(job)
 
 
@@ -3189,14 +3181,22 @@ async def douyin_login_cancel():
     return payload
 
 
+def _douyin_result(job: dict[str, Any]) -> dict[str, Any] | None:
+    if job.get("downloadResult"):
+        return job["downloadResult"]
+    if job.get("status") in {"success", "completed"}:
+        return douyin_service.result_for(job)
+    return None
+
+
 def douyin_job_payload(job: dict[str, Any]) -> dict[str, Any]:
-    result = douyin_service.result_for(job)
+    result = _douyin_result(job)
     job_id = str(job.get("job_id") or "")
     status = "completed" if job.get("status") == "success" else job.get("status")
     playable_ready = False
     if result:
         source = Path(result["path"])
-        playable_ready = playable_download_path(source) is not None
+        playable_ready = bool(result.get("playableReady")) or playable_download_path(source) is not None
         if not playable_ready:
             schedule_download_playable(source, str(result.get("awemeId") or ""))
     return {
@@ -3267,12 +3267,14 @@ async def douyin_job_media(job_id: str, download: bool = Query(False)):
     job = await _resolve_job(job_id)
     if not job:
         raise HTTPException(404, "任务不存在")
-    result = douyin_service.result_for(job)
+    result = _douyin_result(job)
     if not result:
         raise HTTPException(404, "下载文件尚未生成")
     source = Path(result["path"])
-    path = await ensure_download_playable(source, str(result["awemeId"]))
-    if playable_download_path(path) is None:
+    if not source.is_file():
+        raise HTTPException(404, "下载文件已被移动或删除，请重新下载")
+    path = source if result.get("playableReady") else await ensure_download_playable(source, str(result["awemeId"]))
+    if not result.get("playableReady") and playable_download_path(path) is None:
         raise HTTPException(500, "视频兼容格式转换失败，请检查 ffmpeg")
     media_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
     return FileResponse(path, media_type=media_type, filename=path.name if download else None)

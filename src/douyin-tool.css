@@ -1,0 +1,26 @@
+.prism-workspace .douyin-route.douyin-tool{max-width:960px;padding-top:32px}
+.douyin-tool .download-card{margin-top:0;padding:24px}
+.douyin-tool h1{margin:0;font-size:22px;font-weight:600;letter-spacing:-.4px}
+.douyin-tool-note{margin:10px 0 22px;color:var(--shell-muted);font-size:13px;line-height:1.7}
+.douyin-tool-progress{display:flex;align-items:center;gap:8px;margin:16px 0 0;color:var(--shell-accent);font-size:12px}
+.douyin-tool-progress svg{width:16px;height:16px}
+.douyin-tool-error{display:flex;align-items:flex-start;gap:10px;margin-top:20px;padding:14px;border:1px solid #865e4b80;border-radius:9px;background:#c57f4410;color:#e2b69e;font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.douyin-tool-error>svg{width:18px;height:18px;flex-shrink:0;margin-top:2px}
+.douyin-tool-error p{margin:4px 0 10px}
+.douyin-tool :is(.douyin-tool-error,.douyin-tool-login) button{padding:7px 10px;border:1px solid var(--shell-line-strong);border-radius:6px;background:transparent;color:var(--shell-copy);font:inherit;cursor:pointer}
+.douyin-tool-login{margin-top:16px;font-size:12px;color:var(--shell-muted)}
+.douyin-tool-login>div{display:flex;gap:8px}
+.douyin-tool-result{margin-top:20px;padding:18px;border:1px solid var(--shell-line);border-radius:16px;background:var(--shell-panel)}
+.douyin-tool-success{display:flex;align-items:center;gap:8px;margin-bottom:14px;color:var(--shell-accent);font-size:13px}
+.douyin-tool-success svg{width:20px;height:20px}
+.douyin-tool-success>span{margin-left:auto;color:var(--shell-muted);font-size:12px}
+.douyin-tool-preview-note{display:flex;align-items:center;gap:8px;margin:0 0 12px;color:var(--shell-muted);font-size:12px;line-height:1.7}
+.douyin-tool-preview-note svg{width:16px;height:16px;flex-shrink:0}
+.douyin-tool-result video{display:block;width:100%;max-height:65dvh;min-height:200px;border-radius:9px;background:#090a0b;object-fit:contain}
+.douyin-tool-file{display:flex;align-items:center;gap:18px;justify-content:space-between;margin-top:16px;font-size:12px}
+.douyin-tool-file>div{min-width:0;overflow-wrap:anywhere}
+.douyin-tool-file p{margin:6px 0 0;color:var(--shell-muted);line-height:1.7}
+.douyin-tool-file .result-download-link{flex-shrink:0;margin:0}
+.douyin-tool button:disabled{opacity:.5;cursor:default}
+.douyin-tool :is(button,a):focus-visible{outline:2px solid var(--shell-accent);outline-offset:3px}
+@media(max-width:600px){.douyin-tool .download-card{padding:18px}.douyin-tool-file{flex-direction:column;align-items:stretch}.douyin-tool-file .result-download-link{justify-content:center}.douyin-tool-result{padding:14px}.douyin-tool-result video{min-height:160px}}
