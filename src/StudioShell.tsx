@@ -32,6 +32,7 @@ export function StudioShell({ path, onNavigate, onCloseProject, children }: {
 }) {
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("h3:sidebar-collapsed") === "true"; } catch { return false; } });
   const [profile, setProfile] = useState<OwnerProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(true);
   const [profileError, setProfileError] = useState("");
   const [settings, setSettings] = useState(false);
   const [search, setSearch] = useState("");
@@ -41,9 +42,11 @@ export function StudioShell({ path, onNavigate, onCloseProject, children }: {
   const active = destinations.find((item) => item.path === path) || destinations[0];
   const matches = destinations.filter((item) => `${item.label} ${item.description} ${item.keywords}`.toLowerCase().includes(search.trim().toLowerCase()));
   const loadProfile = async () => {
+    setProfileLoading(true);
     setProfileError("");
     try { setProfile(await readJson<OwnerProfile>(fetch("/api/auth/me", { cache: "no-store" }))); }
     catch { setProfileError("账户资料暂时无法加载"); }
+    finally { setProfileLoading(false); }
   };
   useEffect(() => { void loadProfile(); }, []);
   useEffect(() => {
@@ -87,7 +90,7 @@ export function StudioShell({ path, onNavigate, onCloseProject, children }: {
       </div>
     </aside>
     <div className="studio-main-shell">
-      <header className="studio-topbar"><div className="studio-breadcrumb"><button type="button" className="studio-icon-button studio-sidebar-toggle" aria-label={collapsed ? "展开侧栏" : "收起侧栏"} aria-expanded={!collapsed} onClick={toggle}><SidebarSimple /></button><span className="studio-breadcrumb-root">创作空间</span><CaretRight /><strong>{active.label}</strong></div><div className="studio-topbar-actions"><span className="studio-private-badge"><Sparkle />个人工作台</span><button className="studio-topbar-profile" type="button" onClick={openAccount} aria-label="打开账户设置"><OwnerAvatar profile={profile} /><span>{profile?.displayName || "我的账户"}</span></button></div></header>
+      <header className="studio-topbar"><div className="studio-breadcrumb"><button type="button" className="studio-icon-button studio-sidebar-toggle" aria-label={collapsed ? "展开侧栏" : "收起侧栏"} aria-expanded={!collapsed} onClick={toggle}><SidebarSimple /></button><span className="studio-breadcrumb-root">创作空间</span><CaretRight /><strong>{active.label}</strong></div><div className="studio-topbar-actions"><span className="studio-private-badge"><Sparkle />个人工作台</span><button className="studio-topbar-profile" type="button" aria-busy={profileLoading} disabled={profileLoading} onClick={openAccount} aria-label="打开账户设置"><OwnerAvatar profile={profile} /><span>{profileLoading ? "正在加载…" : profile?.displayName || "我的账户"}</span></button></div></header>
       <div className="route-stage" key={path} id="studio-main" tabIndex={-1}>{children}</div>
     </div>
     <dialog ref={command} className="studio-dialog studio-command" aria-labelledby="command-title" onClick={(event) => { if (event.target === event.currentTarget) command.current?.close(); }}>

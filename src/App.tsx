@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import {
@@ -350,6 +351,7 @@ function MotionStudioRoute() {
   const [cameraPrompt, setCameraPrompt] = useState(() => readDraft()?.cameraPrompt || "");
   const [useRvc, setUseRvc] = useState<boolean>(() => readDraft()?.useRvc ?? true);
   const [useUpscale, setUseUpscale] = useState<boolean>(() => readDraft()?.useUpscale ?? true);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [job, setJob] = useState<JobState | null>(demoMode ? DEMO_JOB : null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -558,10 +560,10 @@ function MotionStudioRoute() {
         setJob(latest);
         if (["queued", "running"].includes(latest.status)) connectJob(latest.id);
       }
-      void restoreInputs(latest);
+      return restoreInputs(latest);
     }).catch(() => {
       if (!cancelled) setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。");
-    });
+    }).finally(() => { if (!cancelled) setInitialLoading(false); });
     return () => {
       cancelled = true;
       socketRef.current?.close();
@@ -643,6 +645,8 @@ function MotionStudioRoute() {
     if (!value) return "--";
     return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
   }, [job?.output?.completedAt]);
+
+  if (initialLoading) return <ContentLoading />;
 
   return (
     <div className="motion-route">

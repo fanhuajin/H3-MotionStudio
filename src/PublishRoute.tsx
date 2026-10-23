@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { CheckCircle, FolderOpen, Pause, Play, Plus, Stop, Trash, X } from "@phosphor-icons/react";
 import "./publish.css";
@@ -288,7 +289,7 @@ export function PublishRoute() {
       {queue && <span className="batch-status-pill">{running ? queue.phase === "paused" ? "已暂停" : "发布中" : completed ? "已全部完成" : "等待安排"} · 已处理 {queue.items.filter(done).length}/{queue.items.length}</span>}
     </header>
     {error && !modal && <p className="publish-error" role="alert">{error} {button("重新同步", () => void load(), busy)}</p>}
-    {!queue ? <p role="status">正在读取发布队列…</p> : <>
+    {!queue ? (error ? null : <ContentLoading label="正在读取发布队列…" />) : <>
       <section className="publish-notice">
         <div className="publish-notice-text" role="status"><strong>{queue.notice}</strong>
           {actionFeedback && <span>{queue.phase === "idle" && actionFeedback.startsWith("停止指令") ? "发布已停止。" : actionFeedback}</span>}

@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowsClockwise, Power, SpinnerGap, X } from "@phosphor-icons/react";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
@@ -46,6 +47,8 @@ function kindLabel(job: AppJobSummary) {
 
 export function QueuePanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [payload, setPayload] = useState<QueuePayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -58,10 +61,13 @@ export function QueuePanel({ open, onClose }: { open: boolean; onClose: () => vo
   const load = useCallback(async () => {
     try {
       const response = await fetch("/api/comfy/queue", { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) throw new Error("无法读取队列");
       setPayload(await response.json() as QueuePayload);
+      setLoadError("");
     } catch {
-      // 服务未就绪时保留旧数据
+      setLoadError("队列暂时无法加载");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -152,10 +158,11 @@ export function QueuePanel({ open, onClose }: { open: boolean; onClose: () => vo
     <div className="queue-popover">
       <div className="queue-popover-head">
         <strong>任务队列</strong>
-        <span className={payload?.connected ? "ok" : ""}>{payload?.connected ? "ComfyUI 已连接" : "ComfyUI 未运行"}</span>
+        <span className={payload?.connected ? "ok" : ""}>{payload?.connected ? "ComfyUI 已连接" : loading ? "正在连接…" : loadError || "ComfyUI 未运行"}</span>
         <button onClick={onClose} aria-label="关闭"><X weight="bold" /></button>
       </div>
 
+      {loading ? <ContentLoading compact label="正在读取任务队列…" /> : !payload && loadError ? <div role="alert">{loadError}<button type="button" onClick={() => { setLoading(true); void load(); }}>重新加载</button></div> : <>
           <div className="queue-section">
             <p className="queue-section-title">当前应用任务</p>
             {app ? (
@@ -224,6 +231,7 @@ export function QueuePanel({ open, onClose }: { open: boolean; onClose: () => vo
               </button>
             )}
           </div>
+      </>}
     </div>
   );
 }

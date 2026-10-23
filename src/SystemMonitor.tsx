@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useEffect, useState } from "react";
 
 type GpuStat = {
@@ -106,7 +107,7 @@ export function SystemMonitor() {
   return (
     <div className={`monitor-card ${offline ? "offline" : ""}`}>
       <div className="monitor-title"><span /> 资源占用 {offline && <em>服务未连接</em>}</div>
-      {!stats && !offline && <div className="monitor-empty">采集中…</div>}
+      {!stats && !offline && <ContentLoading compact label="正在读取系统状态…" />}
       {stats && (
         <div className="monitor-grid">
           <MeterRow

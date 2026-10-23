@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowSquareOut,
@@ -118,6 +119,7 @@ function JobIcon({ status }: { status: DouyinJob["status"] }) {
 }
 
 export function DouyinRoute() {
+  const [initialLoading, setInitialLoading] = useState(true);
   const [url, setUrl] = useState("");
   const [service, setService] = useState<DouyinServiceStatus | null>(null);
   const [jobs, setJobs] = useState<DouyinJob[]>([]);
@@ -185,9 +187,11 @@ export function DouyinRoute() {
   }, []);
 
   useEffect(() => {
-    void loadStatus();
-    void loadJobs();
-    void loadLoginStatus();
+    let cancelled = false;
+    void Promise.all([loadStatus(), loadJobs(), loadLoginStatus()]).finally(() => {
+      if (!cancelled) setInitialLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [loadJobs, loadLoginStatus, loadStatus]);
 
   useEffect(() => {
@@ -261,6 +265,8 @@ export function DouyinRoute() {
   const loginActive = login?.state === "opening" || login?.state === "waiting";
   const taskError = activeJob?.status === "failed" ? activeJob.error : null;
   const visibleError = error || taskError || (login?.state === "error" ? login.error || login.message : null);
+
+  if (initialLoading) return <ContentLoading label="正在加载下载任务…" />;
 
   return (
     <main className="douyin-route">

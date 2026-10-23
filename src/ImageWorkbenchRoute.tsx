@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRememberedTab } from "./useRememberedTab";
@@ -139,6 +140,7 @@ export function ImageWorkbenchRoute() {
   const [kind, setKind] = useState<"singing" | "dance" | null>(null);
   const [filter, setFilter] = useRememberedTab("h3-motionstudio:image-filter-tab:v1", ["pending", "all"] as const, "pending");
   const [busy, setBusy] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(cachedItems.length === 0);
   const [notice, setNotice] = useState("");
   const [viewer, setViewer] = useState<{ src: string; label: string } | null>(null);
   /** 每条自动化任务的本地开始时刻（后端不给百分比，就显示「已用 N 秒」避免看着像卡死）。 */
@@ -157,7 +159,7 @@ export function ImageWorkbenchRoute() {
     return refreshInFlight.current;
   }, []);
 
-  useEffect(() => { refresh().catch((error) => setNotice(String(error.message || error))); }, [refresh]);
+  useEffect(() => { refresh().catch((error) => setNotice(String(error.message || error))).finally(() => setInitialLoading(false)); }, [refresh]);
   const item = items.find((row) => row.id === selectedId) || null;
   useEffect(() => { cachedSelectedId = selectedId; }, [selectedId]);
   const previewVersions = item ? STAGES.map(({ id }) => item.assets[id]?.version || item.assets[id]?.bytes || "").join(":") : "";
@@ -362,6 +364,8 @@ export function ImageWorkbenchRoute() {
   }, [busy, item, stage, chosenKind]);
 
   const stageAsset = item?.assets[stage];
+  if (initialLoading) return <ContentLoading label="正在加载图片与封面…" />;
+
   return (
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}

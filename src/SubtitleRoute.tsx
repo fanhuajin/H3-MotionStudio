@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRememberedTab } from "./useRememberedTab";
 import {
@@ -121,9 +122,12 @@ export function SubtitleRoute() {
 
   const [mode, setMode] = useRememberedTab("h3-motionstudio:subtitle-source-tab:v1", ["upload", "recent"] as const, "upload");
   const [file, setFile] = useState<File | null>(null);
+  const [recentLoading, setRecentLoading] = useState(true);
+  const [recentError, setRecentError] = useState("");
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [recentPick, setRecentPick] = useState<{ jobId: string; key: string; label: string } | null>(null);
   const [song, setSong] = useState("");
+  const [initialLoading, setInitialLoading] = useState(true);
   const [job, setJob] = useState<JobState | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -148,9 +152,11 @@ export function SubtitleRoute() {
   const picked = recent.find((item) => item.id === recentPick?.jobId) || null;
 
   const loadRecent = useCallback(async () => {
+    setRecentLoading(true);
+    setRecentError("");
     try {
       const response = await fetch("/api/jobs/recent", { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) throw new Error("读取最近任务失败");
       const payload = await response.json() as RecentPayload;
       // 已经带字幕的成片（字幕任务本身）不再作为输入：往字幕版上再烧一遍只会叠字
       const jobs = (payload.jobs || []).filter(
@@ -163,7 +169,9 @@ export function SubtitleRoute() {
         return first ? { jobId: jobs[0].id, key: "final", label: first.label } : null;
       });
     } catch {
-      // 忽略：服务未就绪
+      setRecentError("最近任务暂时无法加载，请重试。");
+    } finally {
+      setRecentLoading(false);
     }
   }, []);
 
@@ -200,7 +208,7 @@ export function SubtitleRoute() {
         if (latest.songName) setSong(latest.songName);
         if (["waiting", "queued", "running", "cancelling"].includes(latest.status)) connectJob(latest.id);
       })
-      .catch(() => setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。"));
+      .catch(() => setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。")).finally(() => { if (!cancelled) setInitialLoading(false); });
     return () => {
       cancelled = true;
       socketRef.current?.close();
@@ -381,6 +389,8 @@ export function SubtitleRoute() {
     }
   };
 
+  if (initialLoading) return <ContentLoading />;
+
   return (
     <div className="subtitle-route">
       <header className="route-hero">
@@ -468,7 +478,7 @@ export function SubtitleRoute() {
               </div>
             ) : (
               <div className="recent-pick">
-                {recent.length === 0 ? (
+                {recentLoading ? <ContentLoading compact label="正在加载最近任务…" /> : recentError ? <div role="alert">{recentError}<button type="button" onClick={() => void loadRecent()}>重新加载</button></div> : recent.length === 0 ? (
                   <p className="queue-empty">暂无可加字幕的最终成片（先完成一单歌曲生成，或改用上传本地视频）</p>
                 ) : (
                   recent.slice(0, 6).map((item) => {

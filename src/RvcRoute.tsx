@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRememberedTab } from "./useRememberedTab";
 import {
@@ -140,8 +141,11 @@ export function RvcRoute() {
 
   const [mode, setMode] = useRememberedTab("h3-motionstudio:rvc-source-tab:v1", ["upload", "recent"] as const, "upload");
   const [file, setFile] = useState<File | null>(null);
+  const [recentLoading, setRecentLoading] = useState(true);
+  const [recentError, setRecentError] = useState("");
   const [recent, setRecent] = useState<RecentItem[]>([]);
   const [recentPick, setRecentPick] = useState<{ jobId: string; key: string; label: string } | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [job, setJob] = useState<JobState | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -159,9 +163,11 @@ export function RvcRoute() {
   const milestones = job?.milestones?.length ? job.milestones : SKELETON_MILESTONES;
 
   const loadRecent = useCallback(async () => {
+    setRecentLoading(true);
+    setRecentError("");
     try {
       const response = await fetch("/api/jobs/recent", { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) throw new Error("读取最近任务失败");
       const payload = await response.json() as RecentPayload;
       // 只列出带成片的任务；默认优先选「原版成片」（未被 RVC 转换过的原始人声）
       const jobs = (payload.jobs || []).filter((item) => item.media.length > 0 && item.kind !== "rvc");
@@ -178,7 +184,9 @@ export function RvcRoute() {
         return first ? { jobId: jobs[0].id, key: first.key, label: first.label } : null;
       });
     } catch {
-      // 忽略：服务未就绪
+      setRecentError("最近任务暂时无法加载，请重试。");
+    } finally {
+      setRecentLoading(false);
     }
   }, []);
 
@@ -217,7 +225,7 @@ export function RvcRoute() {
         setJob(latest);
         if (["waiting", "queued", "running", "cancelling"].includes(latest.status)) connectJob(latest.id);
       })
-      .catch(() => setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。"));
+      .catch(() => setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。")).finally(() => { if (!cancelled) setInitialLoading(false); });
     return () => {
       cancelled = true;
       socketRef.current?.close();
@@ -340,6 +348,8 @@ export function RvcRoute() {
       }).format(new Date(job.output.completedAt))
     : "--";
 
+  if (initialLoading) return <ContentLoading />;
+
   return (
     <div className="rvc-route">
       <header className="route-hero">
@@ -427,7 +437,7 @@ export function RvcRoute() {
               </div>
             ) : (
               <div className="recent-pick">
-                {recent.length === 0 ? (
+                {recentLoading ? <ContentLoading compact label="正在加载最近任务…" /> : recentError ? <div role="alert">{recentError}<button type="button" onClick={() => void loadRecent()}>重新加载</button></div> : recent.length === 0 ? (
                   <p className="queue-empty">暂无可转换的历史成片（先完成一单歌曲/迁移任务）</p>
                 ) : (
                   recent.slice(0, 6).map((item) => (

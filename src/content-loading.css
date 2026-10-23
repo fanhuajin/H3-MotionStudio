@@ -1,0 +1,5 @@
+.content-loading{display:flex;align-items:center;justify-content:center;gap:10px;min-height:280px;padding:24px;color:#b6bdb8;font-size:13px;line-height:1.65}
+.content-loading>svg{width:20px;height:20px;flex-shrink:0;animation:content-loading-spin 1s linear infinite}
+.content-loading.is-compact{min-height:80px;padding:16px}
+@keyframes content-loading-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.content-loading>svg{animation:none}}

@@ -1,3 +1,4 @@
+import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowsClockwise,
@@ -296,6 +297,7 @@ export function MigrateRoute() {
   const [videoPrompt, setVideoPrompt] = useState(draft?.videoPrompt ?? "person");
   const [imagePrompt, setImagePrompt] = useState(draft?.imagePrompt ?? "person");
 
+  const [initialLoading, setInitialLoading] = useState(true);
   const [job, setJob] = useState<JobState | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -523,10 +525,10 @@ export function MigrateRoute() {
         setJob(latest);
         if (["queued", "running"].includes(latest.status)) connectJob(latest.id);
       }
-      void restoreInputs(latest);
+      return restoreInputs(latest);
     }).catch(() => {
       if (!cancelled) setLocalError("本地服务尚未启动，启动后页面会自动连接任务系统。");
-    });
+    }).finally(() => { if (!cancelled) setInitialLoading(false); });
     return () => {
       cancelled = true;
       socketRef.current?.close();
@@ -601,6 +603,8 @@ export function MigrateRoute() {
   const resultCaption = job?.finalReady
     ? (job.useUpscale === false ? "最终成片已完成" : "最终成片已完成 · 4× 高清")
     : "原版视频已保留";
+
+  if (initialLoading) return <ContentLoading />;
 
   return (
     <div className="migrate-route">
