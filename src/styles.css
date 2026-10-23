@@ -1493,12 +1493,13 @@ body {
 .batch-settings-dialog .batch-shutdown-row small { color: #a9b5af; font-size: 12px; line-height: 1.65; }
 .batch-settings-rule { display: flex; align-items: flex-start; gap: 7px; margin: 14px 0 0; color: #9fafA6; font-size: 11px; line-height: 1.7; }
 .batch-settings-rule svg { flex-shrink: 0; width: 15px; height: 15px; margin-top: 2px; color: var(--shell-accent); }
-.batch-settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-shrink: 0; padding: 14px 20px; border-top: 1px solid var(--shell-line); background: rgba(20, 25, 22, .6); }
+.batch-settings-footer { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 14px; flex-shrink: 0; padding: 14px 20px; border-top: 1px solid var(--shell-line); background: rgba(20, 25, 22, .6); }
+.batch-settings-footer > .batch-settings-feedback { margin-right: auto; }
 .batch-settings-feedback { display: flex; align-items: center; gap: 6px; color: #a9bfb3; font-size: 11px; line-height: 1.6; }
 .batch-settings-feedback.error { color: #ffb1be; }
 .batch-settings-dialog button:focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 3px; }
 @media (max-width: 480px) {
-  .batch-add-dialog .batch-settings-footer { flex-direction: column; align-items: stretch; gap: 10px; }
+  .batch-add-dialog .batch-settings-footer { gap: 10px; }
   .batch-monitor-toolbar .batch-entry-actions { margin-left: 0; }
   .batch-settings-header { padding: 16px; }
   .batch-settings-scroll { padding: 0 16px 16px; }
