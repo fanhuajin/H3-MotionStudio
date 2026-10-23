@@ -62,8 +62,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
     <div className="login-live-background" aria-hidden="true"><Suspense fallback={null}>
       <LoginSpace />
     </Suspense></div>
+    <div className="login-brand"><Waves weight="duotone" /><div>H3 MotionStudio<span>YOUR PRIVATE CREATIVE SPACE</span></div></div>
+    <div className="login-content">
     <section className="login-art" aria-label="H3 MotionStudio 创作空间">
-      <div className="login-brand"><Waves weight="duotone" /><div>H3 MotionStudio<span>YOUR PRIVATE CREATIVE SPACE</span></div></div>
       <div className="login-cast-wrap" aria-hidden="true"><div className="geometry-cast" data-state={focusedField.startsWith("login-pass") || focusedField === "login-confirm" ? "private" : focusedField === "login-user" ? "curious" : "idle"}>
         <AnimatedCharacters isTyping={focusedField === "login-user"} showPassword={visible} passwordLength={password.length} passwordFocused={focusedField === "login-password" || focusedField === "login-confirm"} />
       </div><div className="login-cast-floor" /></div>
@@ -83,5 +84,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
       </form>}
       <p className="login-footnote"><LockKey /> 只属于你的灵感与作品</p>
     </div><span className="login-panel-footer">H3 MOTIONSTUDIO · PERSONAL EDITION</span></section>
+    </div>
   </main>;
 }
