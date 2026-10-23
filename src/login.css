@@ -1,5 +1,9 @@
 .login-shell{min-height:100dvh;display:grid;grid-template-columns:61% 39%;background:#0c0d15;color:#f4f3fa;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;color-scheme:dark}
 .login-shell *{box-sizing:border-box}
+.auth-pending{min-height:100dvh;display:grid;place-items:center;background:#0c0d15;color-scheme:dark}
+.auth-pending .login-connecting{min-height:0;padding:24px;text-align:center}
+.auth-pending .login-connecting button{margin:auto}
+.auth-pending button:focus-visible{outline:2px solid #c4a5ff;outline-offset:4px}
 .login-art{position:relative;min-height:100dvh;overflow:hidden;background:#030308;isolation:isolate}
 .login-brand{position:absolute;top:40px;left:6%;display:flex;gap:14px;align-items:center;font-size:23px;font-weight:600;letter-spacing:-.6px}
 .login-brand>svg{width:40px;height:40px;color:#b69aff}

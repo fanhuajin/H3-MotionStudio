@@ -50,6 +50,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [auth?.authenticated, check]);
   if (auth?.authenticated) return <>{children}</>;
+  // 初次会话检查完成前不挂载登录页，避免已登录用户刷新时闪出登录画面。
+  if (!auth) return <main className="auth-pending">
+    <div className="login-connecting" role="status" aria-busy={!error}>
+      {error ? <><p role="alert">{error}</p><button type="button" onClick={() => void check()}>重新连接 <ArrowRight /></button></> : "正在连接创作空间"}
+    </div>
+  </main>;
   const setup = auth !== null && !auth.configured;
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -75,14 +81,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
       <div className="login-eyebrow"><span /> PRIVATE STUDIO</div>
       <h2 id="login-title">{setup ? "开启创作空间" : "欢迎回来"}</h2>
       <p className="login-subtitle">{setup ? "创建你的专属管理员账号" : "登录你的创作工作台"}</p>
-      {!auth ? <div className="login-connecting" role="status">{error ? <><p role="alert">{error}</p><button type="button" onClick={() => void check()}>重新连接 <ArrowRight /></button></> : <><SpinnerGap className="login-spinner" /> 正在连接创作空间</>}</div> : <form onSubmit={submit}>
+      <form onSubmit={submit}>
         <label htmlFor="login-user">账号</label><div className="login-input"><User /><input id="login-user" name="username" autoComplete="username" required maxLength={64} value={username} onChange={(event) => setUsername(event.target.value)} disabled={busy} /></div>
         <label htmlFor="login-password">密码</label><div className="login-input"><LockKey /><input id="login-password" name="password" type={visible ? "text" : "password"} autoComplete={setup ? "new-password" : "current-password"} required minLength={6} maxLength={256} placeholder={setup ? "设置至少 6 位密码" : "输入你的密码"} value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} /><button type="button" aria-label={visible ? "隐藏密码" : "显示密码"} aria-pressed={visible} onClick={() => setVisible(!visible)}>{visible ? <EyeSlash /> : <Eye />}</button></div>
         {setup && <><label htmlFor="login-confirm">确认密码</label><div className="login-input"><LockKey /><input id="login-confirm" type={visible ? "text" : "password"} autoComplete="new-password" required minLength={6} maxLength={256} placeholder="再次输入密码" value={confirm} onChange={(event) => setConfirm(event.target.value)} disabled={busy} /></div><p className="login-setup-note">首次设置请在本机完成，账号仅供你个人使用。</p></>}
         <label className="login-remember"><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} disabled={busy} /><span>记住登录</span><small>30 天</small></label>
         {error && <p className="login-error" role="alert">{error}</p>}
         <button className="login-submit" type="submit" disabled={busy}><span>{busy ? "正在进入" : setup ? "创建并进入工作台" : "登录"}</span>{busy ? <SpinnerGap className="login-spinner" /> : <ArrowRight />}</button>
-      </form>}
+      </form>
       <p className="login-footnote"><LockKey /> 只属于你的灵感与作品</p>
     </div><span className="login-panel-footer">H3 MOTIONSTUDIO · PERSONAL EDITION</span></section>
   </main>;
