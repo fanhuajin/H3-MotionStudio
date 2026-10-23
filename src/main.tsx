@@ -7,6 +7,7 @@ import "./studio-theme.css";
 import "./prism-workspace.css";
 import "./workspace-content.css";
 import "./loading-transition.css";
+import "./modal-scroll.css";
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

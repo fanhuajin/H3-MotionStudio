@@ -1,0 +1,11 @@
+/* Lock both viewport axes while any modal is open; nested dialogs keep the lock. */
+html:has(dialog:modal, [aria-modal="true"]:not(dialog)),
+body:has(dialog:modal, [aria-modal="true"]:not(dialog)) {
+  overflow: hidden;
+}
+
+/* Scrollable dialog content must not pass boundary scrolling to the page. */
+dialog:modal,
+[aria-modal="true"] {
+  overscroll-behavior: contain;
+}
