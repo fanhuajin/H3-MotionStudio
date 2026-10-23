@@ -366,7 +366,7 @@ export function ImageWorkbenchRoute() {
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">第三方图片接口</span><h1>图片封面</h1><p>封面仍等视频成功后生成，直接使用原人物图：手部合理且手指未被画面边缘截断时保留构图，截指、异常或无法判断时改为不露手半身构图；封面生成后直接保存。</p></div>
+        <div><span className="image-workbench-kicker">VISUAL ASSET LIBRARY</span><h1>图片与封面</h1><p>集中管理人物图与封面，按作品补齐发布素材。</p><details className="studio-inline-help"><summary>查看生成规则</summary><p>封面在最终成片交付后生成，以原人物图为参考；生成前检查手部，异常或不确定时使用避手构图。生成结果直接保存。</p></details></div>
         <div className="image-workbench-head-actions">
           <button className="primary" onClick={startAllMissing} disabled={busy}>一键生成全部缺图</button>
           {autoLive && <button className="danger" onClick={stopAuto} disabled={busy}>停止（队列 {items.filter((row) => AUTO_LIVE.includes(row.automation?.status || "")).length} 条）</button>}

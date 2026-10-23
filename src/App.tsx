@@ -6,19 +6,12 @@ import {
   CaretUp,
   Check,
   Circle,
-  ClosedCaptioning,
   DownloadSimple,
   Eye,
   FileText,
   FilmSlate,
   Graph,
   Info,
-  ImageSquare,
-  ListChecks,
-  MagnifyingGlassPlus,
-  MicrophoneStage,
-  MusicNotes,
-  PersonSimpleRun,
   Play,
   SpinnerGap,
   Timer,
@@ -27,7 +20,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { BatchRoute } from "./BatchRoute";
-import { LogoutButton } from "./AuthGate";
+import { StudioShell } from "./StudioShell";
 import { PublishRoute } from "./PublishRoute";
 import { DouyinRoute } from "./DouyinRoute";
 import { readJson, readJsonOrNull } from "./api";
@@ -36,10 +29,8 @@ import { ImageWorkbenchRoute } from "./ImageWorkbenchRoute";
 import { QueuePanel } from "./QueuePanel";
 import { RvcRoute } from "./RvcRoute";
 import { SubtitleRoute } from "./SubtitleRoute";
-import { SystemMonitor } from "./SystemMonitor";
 import { TaskTabStatus } from "./TaskTabStatus";
-import { WorkspaceBot } from "./WorkspaceBot";
-import { CloseProjectButton, ProjectClosingScreen } from "./CloseProject";
+import { ProjectClosingScreen } from "./CloseProject";
 import { UpScaleRoute } from "./UpScaleRoute";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import type { AppConfig, JobState, Milestone, MilestoneStatus } from "./types";
@@ -957,91 +948,15 @@ export function App() {
   const isUpscaleRoute = path === "/upscale";
   const isRvcRoute = path === "/rvc";
   const isSubtitleRoute = path === "/subtitle";
-  const isBatchRoute = path === "/batch";
   const isSingingRoute = path === "/singing";
   const isImagesRoute = path === "/images";
   const isDouyinRoute = path === "/douyin";
   const isPublishRoute = path === "/publish";
-  // 影动生成工作台根路径 `/`：进入默认选择「批量制作」（2026-09 用户：「启动项目的时候
-  // 进入影动生成默认选择批量制作」）；歌曲生成独立到 `/singing`。
-  const isWorkspaceRoute = path === "";
 
-  return (
-    <div className="desktop-app-shell">
-      <TaskTabStatus />
-      <aside className="app-sidebar" onClick={navigateWorkspace}>
-        <div className="sidebar-top">
-          <p className="sidebar-kicker">创作工作台</p>
-          <a className="sidebar-brand" href="/" aria-label="H3 MotionStudio 首页">
-            <WorkspaceBot key={path || "/batch"} path={path} />
-            <strong>MotionStudio</strong>
-          </a>
-        </div>
-
-        <nav className="sidebar-navigation" aria-label="工作台导航">
-          <p className="sidebar-section-label">创作工具</p>
-          <a className={isBatchRoute || isWorkspaceRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/batch">
-            <ListChecks />
-            <span>批量制作</span>
-            {(isBatchRoute || isWorkspaceRoute) && <i />}
-          </a>
-          <a className={isImagesRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/images">
-            <ImageSquare weight={isImagesRoute ? "fill" : "regular"} />
-            <span>图片封面</span>
-            {isImagesRoute && <i />}
-          </a>
-          <a className={isSingingRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/singing">
-            <MusicNotes weight="fill" />
-            <span>歌曲生成</span>
-            {isSingingRoute && <i />}
-          </a>
-          <a className={isMigrateRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/migrate">
-            <PersonSimpleRun />
-            <span>动作迁移</span>
-            {isMigrateRoute && <i />}
-          </a>
-          <a className={isUpscaleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/upscale">
-            <MagnifyingGlassPlus />
-            <span>二采放大</span>
-            {isUpscaleRoute && <i />}
-          </a>
-          <a className={isRvcRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/rvc">
-            <MicrophoneStage />
-            <span>音色转换</span>
-            {isRvcRoute && <i />}
-          </a>
-          <a className={isSubtitleRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/subtitle">
-            <ClosedCaptioning />
-            <span>生成字幕</span>
-            {isSubtitleRoute && <i />}
-          </a>
-          <a className={isDouyinRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/douyin" aria-current={isDouyinRoute ? "page" : undefined}>
-            <DownloadSimple />
-            <span>抖音下载</span>
-            {isDouyinRoute && <i />}
-          </a>
-          <a className={isPublishRoute ? "sidebar-nav-item active" : "sidebar-nav-item"} href="/publish" aria-current={isPublishRoute ? "page" : undefined}>
-            <ListChecks />
-            <span>批量发布</span>
-            {isPublishRoute && <i />}
-          </a>
-        </nav>
-
-        <div className="sidebar-system">
-          <p className="sidebar-section-label">系统</p>
-          <SystemMonitor />
-          <div className="sidebar-service-row">
-            <LogoutButton />
-            <CloseProjectButton onAccepted={() => setProjectClosing(true)} />
-          </div>
-          <footer>H3 MOTIONSTUDIO <span>V0.2.0</span></footer>
-        </div>
-      </aside>
-
-      <div className="route-stage" key={path}>
-        {/* 路由只负责切换工作区；各业务组件继续独立管理请求、表单和任务状态。 */}
-        {isPublishRoute ? <PublishRoute /> : isDouyinRoute ? <DouyinRoute /> : isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
-      </div>
-    </div>
-  );
+  return <>
+    <TaskTabStatus />
+    <StudioShell path={path} onNavigate={navigateWorkspace} onCloseProject={() => setProjectClosing(true)}>
+      {isPublishRoute ? <PublishRoute /> : isDouyinRoute ? <DouyinRoute /> : isImagesRoute ? <ImageWorkbenchRoute /> : isMigrateRoute ? <MigrateRoute /> : isSingingRoute ? <MotionStudioRoute /> : isUpscaleRoute ? <UpScaleRoute /> : isRvcRoute ? <RvcRoute /> : isSubtitleRoute ? <SubtitleRoute /> : <BatchRoute />}
+    </StudioShell>
+  </>;
 }

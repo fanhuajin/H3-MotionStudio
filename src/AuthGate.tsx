@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { ArrowRight, Eye, EyeSlash, LockKey, SignOut, SpinnerGap, User } from "@phosphor-icons/react";
 import { readJson } from "./api";
@@ -28,11 +28,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [confirm, setConfirm] = useState("");
   const [remember, setRemember] = useState(true);
   const [visible, setVisible] = useState(false);
-  const check = async () => {
+  const check = useCallback(async () => {
     setError("");
     try { setAuth(await readJson<AuthState>(fetch("/api/auth/status", { cache: "no-store" }))); }
     catch { setError("暂时无法连接登录服务，请确认后端已更新并启动。"); }
-  };
+  }, []);
   useEffect(() => {
     void check();
     const logout = () => { setPassword(""); setConfirm(""); setAuth((state) => state ? { ...state, authenticated: false } : null); };
@@ -41,7 +41,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
     const refresh = () => { if (document.visibilityState === "visible") void check(); };
     document.addEventListener("visibilitychange", refresh);
     return () => { window.removeEventListener("h3:logout", logout); window.removeEventListener("h3:unauthorized", logout); document.removeEventListener("visibilitychange", refresh); };
-  }, []);
+  }, [check]);
+  useEffect(() => {
+    if (!auth?.authenticated) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void check();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [auth?.authenticated, check]);
   if (auth?.authenticated) return <>{children}</>;
   const setup = auth !== null && !auth.configured;
   const submit = async (event: FormEvent) => {

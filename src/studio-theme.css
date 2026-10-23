@@ -1,6 +1,5 @@
-/* 视觉层集中管理密度和层级；业务状态色、媒体比例及表单行为由原组件保留。
- * 布局参考 shadcn/ui 的轻边框与 InvokeAI 的工具侧栏，不引入新的组件依赖。
- * https://github.com/shadcn-ui/ui · https://github.com/invoke-ai/InvokeAI
+/* 基础组件的密度、层级和动效；当前 Prism 工作区视觉由 prism-workspace.css 统一。
+ * 业务状态色、媒体比例及表单行为由原组件保留，常用表面色复用共享变量。
  */
 :root {
   font-size: 14px;
@@ -10,7 +9,7 @@
 .studio-bot { flex: 0 0 auto; overflow: visible; transition: color 420ms ease; }
 .studio-bot * { vector-effect: none; }
 .sidebar-brand > .studio-bot { margin: -4px; }
-.studio-loading { display: flex; align-items: center; gap: 12px; color: var(--shell-muted); --bot-paper: #141516; }
+.studio-loading { display: flex; align-items: center; gap: 12px; color: var(--shell-muted); --bot-paper: var(--shell-bg); }
 .batch-page { position: relative; }
 .batch-content { display: contents; }
 .batch-sync-notice { position: absolute; top: 10px; right: clamp(24px, 3.2vw, 52px); display: flex; align-items: center; gap: 7px; color: var(--shell-muted); font-size: 11px; }
@@ -53,7 +52,7 @@
 .batch-row.selected { box-shadow: inset 2px 0 0 var(--shell-accent); }
 :is(.node-progress, .queue-job-bar, .batch-progress-bar) > :is(span, i), progress { transition: width 600ms var(--studio-ease); }
 .batch-step.completed .batch-step-icon { animation: studio-icon-in 260ms var(--studio-ease); }
-:is(.image-auto-progress, .image-auto-done, .image-auto-failed) { align-items: center; --bot-paper: #191a1c; }
+:is(.image-auto-progress, .image-auto-done, .image-auto-failed) { align-items: center; --bot-paper: var(--shell-panel); }
 .image-auto-progress > .studio-bot, .image-auto-done > .studio-bot, .image-auto-failed > .studio-bot { margin-block: -8px; }
 .batch-switch i::after { transition: left 240ms var(--studio-ease), background-color 200ms; }
 @media (prefers-reduced-motion: reduce) {
@@ -75,7 +74,7 @@ button, a, input, textarea, select {
 
 ::selection {
   color: var(--shell-copy);
-  background: #405b49;
+  background: var(--shell-accent-soft);
 }
 
 :is(button, a, input, textarea, select, [tabindex]):focus-visible {
@@ -101,7 +100,7 @@ textarea::placeholder, input::placeholder {
   padding: 30px 16px 18px;
   overflow-y: auto;
   border-color: var(--shell-line);
-  background: #191a1c;
+  background: var(--shell-panel);
 }
 
 .sidebar-top {
@@ -124,10 +123,10 @@ textarea::placeholder, input::placeholder {
   height: 32px;
   display: grid;
   place-items: center;
-  border: 1px solid #48584c;
+  border: 1px solid var(--shell-line-strong);
   border-radius: 9px;
   color: var(--shell-accent);
-  background: #28352c;
+  background: var(--shell-accent-soft);
   background-clip: border-box;
   font-size: 16px;
   font-style: normal;
@@ -157,7 +156,7 @@ textarea::placeholder, input::placeholder {
 
 .sidebar-nav-item:hover:not(.muted) {
   color: var(--shell-copy);
-  background: #242628;
+  background: var(--shell-panel-soft);
 }
 
 .sidebar-nav-item.active {
@@ -287,7 +286,7 @@ textarea::placeholder, input::placeholder {
   padding: 14px;
   border-color: var(--shell-line-strong);
   border-radius: 7px;
-  background: #161719;
+  background: var(--studio-inset);
   color: var(--shell-copy);
   font-size: 13px;
   line-height: 1.85;
@@ -352,20 +351,20 @@ textarea::placeholder, input::placeholder {
 }
 
 .batch-switch.on {
-  border-color: #405747;
+  border-color: var(--shell-line-strong);
   color: var(--shell-accent);
   background: var(--shell-accent-soft);
 }
 
 .batch-switch.on i {
-  background: #405747;
+  background: var(--shell-line-strong);
 }
 
 .batch-primary, .download-action,
 .image-workbench-head-actions button.primary {
   border-color: var(--shell-accent);
   background: var(--shell-accent);
-  color: #17231b;
+  color: var(--studio-inset);
   font-weight: 600;
   box-shadow: none;
 }
@@ -404,19 +403,19 @@ textarea::placeholder, input::placeholder {
 
 .batch-tab.active {
   border-color: transparent;
-  background: #303532;
+  background: var(--shell-line);
   color: var(--shell-accent);
 }
 
 .batch-tab.active i {
   color: var(--shell-accent);
-  background: #3e4941;
+  background: var(--shell-line-strong);
 }
 
 .batch-table th {
   padding: 12px 16px;
   color: var(--shell-muted);
-  background: #191a1c;
+  background: var(--shell-panel);
   font-size: 11px;
   font-weight: 500;
 }
@@ -437,7 +436,7 @@ textarea::placeholder, input::placeholder {
 
 .pipeline {
   padding: 10px 10px 10px 0;
-  background: #17181a;
+  background: var(--studio-inset);
 }
 
 .pipeline-card {

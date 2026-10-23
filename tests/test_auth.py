@@ -1,4 +1,6 @@
 import tempfile
+import io
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -105,6 +107,71 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/auth/setup", json=credentials).status_code, 200)
         self.client.post("/api/auth/logout")
         self.assertEqual(self.client.post("/api/auth/login", json=credentials).status_code, 200)
+
+    def test_profile_is_private_and_persists_after_new_store(self):
+        self.assertEqual(self.client.get("/api/auth/me").status_code, 401)
+        self.client.post("/api/auth/setup", json=self.credentials)
+        response = self.client.patch("/api/auth/me", json={"username": "creator", "displayName": "创作人", "bio": "唱歌与舞蹈"})
+        self.assertEqual(response.status_code, 200)
+        result = response.json()
+        self.assertEqual(result["displayName"], "创作人")
+        self.assertNotIn("digest", result)
+        self.assertNotIn("salt", result)
+        self.assertEqual(auth.AuthStore(self.store.path).profile()["bio"], "唱歌与舞蹈")
+        self.client.post("/api/auth/logout")
+        self.assertEqual(self.client.post("/api/auth/login", json=self.credentials).status_code, 401)
+        self.assertEqual(self.client.post("/api/auth/login", json={**self.credentials, "username": "creator"}).status_code, 200)
+
+    def test_password_rotation_requires_current_and_revokes_previous_sessions(self):
+        self.client.post("/api/auth/setup", json=self.credentials)
+        old_token = self.client.cookies.get(auth.COOKIE)
+        other_token, _ = self.store.issue(True)
+        bad = self.client.post("/api/auth/password", json={"currentPassword": "wrong-password", "newPassword": "new-secret"})
+        self.assertEqual(bad.status_code, 401)
+        self.assertTrue(self.store.valid(old_token))
+        response = self.client.post("/api/auth/password", json={"currentPassword": self.credentials["password"], "newPassword": "new-secret"})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.store.valid(old_token))
+        self.assertFalse(self.store.valid(other_token))
+        self.assertTrue(self.client.get("/api/auth/status").json()["authenticated"])
+        self.assertEqual(self.client.get("/api/auth/me").json()["sessionCount"], 1)
+        self.assertEqual(self.client.post("/api/auth/login", json={**self.credentials, "password": "new-secret"}).status_code, 200)
+
+    def test_avatar_normalization_removal_and_invalid_upload(self):
+        from PIL import Image
+        self.client.post("/api/auth/setup", json=self.credentials)
+        image = io.BytesIO()
+        Image.new("RGB", (12, 8), "purple").save(image, "JPEG")
+        response = self.client.post("/api/auth/avatar", files={"file": ("avatar.jpg", image.getvalue(), "image/jpeg")})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(response.json()["avatarUrl"])
+        avatar = self.client.get("/api/auth/avatar")
+        self.assertEqual(avatar.headers["content-type"], "image/png")
+        self.assertEqual(Image.open(io.BytesIO(avatar.content)).size, (256, 256))
+        self.assertEqual(self.client.post("/api/auth/avatar", files={"file": ("bad.svg", b"<svg/>", "image/svg+xml")}).status_code, 422)
+        self.assertEqual(self.client.post("/api/auth/avatar", files={"file": ("big.png", b"0" * (2 * 1024 * 1024 + 1), "image/png")}).status_code, 413)
+        self.assertIsNone(self.client.delete("/api/auth/avatar").json()["avatarUrl"])
+        self.assertEqual(self.client.get("/api/auth/avatar").status_code, 404)
+
+    def test_logout_all_invalidates_every_session(self):
+        self.client.post("/api/auth/setup", json=self.credentials)
+        other, _ = self.store.issue(True)
+        self.assertEqual(self.client.post("/api/auth/logout-all").status_code, 200)
+        self.assertFalse(self.store.valid(other))
+        self.assertFalse(self.client.get("/api/auth/status").json()["authenticated"])
+
+    def test_existing_account_schema_migrates_without_changing_credentials(self):
+        salt = "ab" * 16
+        digest = self.store.digest(self.credentials["password"], salt)
+        connection = sqlite3.connect(self.store.path)
+        connection.execute("CREATE TABLE owner (id INTEGER PRIMARY KEY, username TEXT NOT NULL, salt TEXT NOT NULL, digest TEXT NOT NULL)")
+        connection.execute("INSERT INTO owner VALUES (1, ?, ?, ?)", ("admin", salt, digest))
+        connection.commit()
+        connection.close()
+        result = self.store.profile()
+        self.assertEqual(result["username"], "admin")
+        self.assertIsNone(result["avatarUrl"])
+        self.assertEqual(self.client.post("/api/auth/login", json=self.credentials).status_code, 200)
 
 
 if __name__ == "__main__":

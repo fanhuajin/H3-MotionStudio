@@ -1862,6 +1862,11 @@ export function BatchRoute() {
         )}
       </header>
 
+      {batch && <section className="studio-batch-overview" aria-label="本批任务概览">{TABS.map((tab) => {
+        const Icon = tab.id === "completed" ? Check : tab.id === "exception" ? WarningCircle : tab.id === "render" ? Play : tab.id === "archive" ? Timer : ListChecks;
+        return <button type="button" key={tab.id} className={`studio-overview-card ${tab.id}`} aria-pressed={activeTab === tab.id} onClick={() => switchTab(tab.id)}><span><Icon />{tab.label}</span><strong>{tabCount(tab.id)}<small>条任务</small></strong><span className="studio-overview-link">查看任务 <ArrowClockwise /></span></button>;
+      })}</section>}
+
       {!batch && <section className="batch-monitor-toolbar" aria-label="任务操作"><div className="batch-toolbar-summary"><strong>开始第一批制作</strong><small>添加视频链接，准备素材后逐条出片</small></div>{renderQueueActions()}</section>}
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import hmac
 import secrets
 import sqlite3
@@ -11,7 +12,7 @@ from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response, UploadFile, File
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
@@ -31,12 +32,27 @@ class AuthStore:
         self.path = path
         self.lock = threading.Lock()
         self.failures: dict[str, list[float]] = {}
+        self._schema_lock = threading.Lock()
+        self._schema_ready = False
 
     def connect(self):
         connection = sqlite3.connect(self.path, timeout=10)
-        connection.execute("CREATE TABLE IF NOT EXISTS owner (id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL, salt TEXT NOT NULL, digest TEXT NOT NULL)")
-        connection.execute("CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, expires REAL NOT NULL)")
-        connection.commit()
+        if not self._schema_ready:
+            with self._schema_lock:
+                if not self._schema_ready:
+                    try:
+                        connection.execute("BEGIN IMMEDIATE")
+                        connection.execute("CREATE TABLE IF NOT EXISTS owner (id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL, salt TEXT NOT NULL, digest TEXT NOT NULL)")
+                        connection.execute("CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, expires REAL NOT NULL)")
+                        columns = {row[1] for row in connection.execute("PRAGMA table_info(owner)")}
+                        for name, declaration in {"display_name": "TEXT NOT NULL DEFAULT ''", "bio": "TEXT NOT NULL DEFAULT ''", "avatar": "BLOB"}.items():
+                            if name not in columns:
+                                connection.execute(f"ALTER TABLE owner ADD COLUMN {name} {declaration}")
+                        connection.commit()
+                        self._schema_ready = True
+                    except Exception:
+                        connection.close()
+                        raise
         return connection
 
     def configured(self):
@@ -52,7 +68,7 @@ class AuthStore:
         digest = self.digest(credentials.password, salt)
         with closing(self.connect()) as connection, connection:
             try:
-                connection.execute("INSERT INTO owner VALUES (1, ?, ?, ?)", (credentials.username.strip(), salt, digest))
+                connection.execute("INSERT INTO owner (id, username, salt, digest) VALUES (1, ?, ?, ?)", (credentials.username.strip(), salt, digest))
             except sqlite3.IntegrityError:
                 raise HTTPException(409, "管理员已创建，请登录") from None
 
@@ -90,6 +106,43 @@ class AuthStore:
     def revoke(self, token: str):
         with closing(self.connect()) as connection, connection:
             connection.execute("DELETE FROM sessions WHERE token=?", (hashlib.sha256(token.encode()).hexdigest(),))
+
+    def profile(self):
+        with closing(self.connect()) as connection:
+            row = connection.execute("SELECT username, display_name, bio, avatar FROM owner WHERE id=1").fetchone()
+            count = connection.execute("SELECT count(*) FROM sessions WHERE expires>?", (time.time(),)).fetchone()[0]
+        if not row:
+            raise HTTPException(409, "请先创建管理员")
+        return {"username": row[0], "displayName": row[1] or row[0], "bio": row[2], "avatarUrl": f"/api/auth/avatar?v={hashlib.sha256(row[3]).hexdigest()[:12]}" if row[3] else None, "sessionCount": count}
+
+    def save_profile(self, username: str, display_name: str, bio: str):
+        with closing(self.connect()) as connection, connection:
+            connection.execute("UPDATE owner SET username=?, display_name=?, bio=? WHERE id=1", (username, display_name, bio))
+        return self.profile()
+
+    def save_avatar(self, data: bytes | None):
+        with closing(self.connect()) as connection, connection:
+            connection.execute("UPDATE owner SET avatar=? WHERE id=1", (data,))
+        return self.profile()
+
+    def change_password(self, current: str, password: str, client: str):
+        # Reuse login throttling; a stolen session alone must not authorize a password change.
+        with closing(self.connect()) as connection:
+            row = connection.execute("SELECT username, digest FROM owner WHERE id=1").fetchone()
+        if not row:
+            raise HTTPException(409, "请先创建管理员")
+        self.login(Credentials(username=row[0], password=current), client)
+        salt = secrets.token_hex(16)
+        digest = self.digest(password, salt)
+        with closing(self.connect()) as connection, connection:
+            changed = connection.execute("UPDATE owner SET salt=?, digest=? WHERE id=1 AND digest=?", (salt, digest, row[1]))
+            if changed.rowcount != 1:
+                raise HTTPException(409, "密码刚刚发生变化，请重新登录后操作")
+            connection.execute("DELETE FROM sessions")
+
+    def revoke_all(self):
+        with closing(self.connect()) as connection, connection:
+            connection.execute("DELETE FROM sessions")
 
 
 store = AuthStore(DATA_DIR / "auth.db")
@@ -161,5 +214,78 @@ def login(credentials: Credentials, request: Request, response: Response):
 @router.post("/logout")
 def logout(request: Request, response: Response):
     store.revoke(request.cookies.get(COOKIE, ""))
+    response.delete_cookie(COOKIE, path="/")
+    return {"authenticated": False}
+
+
+class ProfileUpdate(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    displayName: str = Field(default="", max_length=64)
+    bio: str = Field(default="", max_length=200)
+
+
+class PasswordUpdate(BaseModel):
+    currentPassword: str = Field(min_length=6, max_length=256)
+    newPassword: str = Field(min_length=6, max_length=256)
+
+
+@router.get("/me")
+def me(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return store.profile()
+
+
+@router.patch("/me")
+def update_me(payload: ProfileUpdate):
+    if not payload.username.strip():
+        raise HTTPException(422, "账号不能为空")
+    return store.save_profile(payload.username.strip(), payload.displayName.strip(), payload.bio.strip())
+
+
+@router.post("/password")
+def password(payload: PasswordUpdate, request: Request, response: Response):
+    store.change_password(payload.currentPassword, payload.newPassword, request.client.host if request.client else "unknown")
+    # All previous sessions are revoked; rotate this browser into a new session.
+    return session_response(Credentials(username="owner", password=payload.newPassword), request, response)
+
+
+@router.get("/avatar")
+def avatar():
+    with closing(store.connect()) as connection:
+        row = connection.execute("SELECT avatar FROM owner WHERE id=1").fetchone()
+    if not row or not row[0]:
+        raise HTTPException(404, "尚未设置头像")
+    return Response(row[0], media_type="image/png", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@router.post("/avatar")
+async def upload_avatar(file: UploadFile = File(...)):
+    from PIL import Image, ImageOps, UnidentifiedImageError
+    try:
+        data = await file.read(2 * 1024 * 1024 + 1)
+    finally:
+        await file.close()
+    if len(data) > 2 * 1024 * 1024:
+        raise HTTPException(413, "头像不能超过 2 MB")
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format not in {"PNG", "JPEG", "WEBP"} or image.width * image.height > 16_000_000:
+                raise ValueError("unsupported image")
+            normalized = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGBA"), (256, 256))
+            output = io.BytesIO()
+            normalized.save(output, format="PNG")
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
+        raise HTTPException(422, "请选择有效的 PNG、JPG 或 WebP 图片") from None
+    return store.save_avatar(output.getvalue())
+
+
+@router.delete("/avatar")
+def delete_avatar():
+    return store.save_avatar(None)
+
+
+@router.post("/logout-all")
+def logout_all(response: Response):
+    store.revoke_all()
     response.delete_cookie(COOKIE, path="/")
     return {"authenticated": False}
