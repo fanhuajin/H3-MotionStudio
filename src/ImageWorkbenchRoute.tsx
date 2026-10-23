@@ -322,13 +322,13 @@ export function ImageWorkbenchRoute() {
   }, [busy, item, stage, chosenKind]);
 
   const stageAsset = item?.assets[stage];
-  if (initialLoading) return <ContentLoading label="正在加载图片与封面…" />;
+  if (initialLoading) return <ContentLoading label="正在加载图片封面…" />;
 
   return (
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
       <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">VISUAL ASSET LIBRARY</span><h1>图片与封面</h1><p>集中管理人物图与封面，按作品补齐发布素材。</p><details className="studio-inline-help"><summary>查看生成规则</summary><p>封面在最终成片交付后生成，以原人物图为参考；生成前检查手部，异常或不确定时使用避手构图。生成结果直接保存。</p></details></div>
+        <div><span className="image-workbench-kicker">VISUAL ASSET LIBRARY</span><h1>图片封面</h1><p>集中管理人物图与封面，按作品补齐发布素材。</p><details className="studio-inline-help"><summary>查看生成规则</summary><p>封面在最终成片交付后生成，以原人物图为参考；生成前检查手部，异常或不确定时使用避手构图。生成结果直接保存。</p></details></div>
         <div className="image-workbench-head-actions">
           <div className="image-workbench-stats"><strong>{finished}<small>已全部完成</small></strong><strong>{items.length - finished}<small>待处理</small></strong></div>
         </div>

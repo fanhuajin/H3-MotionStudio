@@ -11,7 +11,7 @@ import { readJson } from "./api";
 const sections = [
   { label: "创作中心", items: [
     { path: "/batch", label: "批量制作", icon: ListChecks, description: "管理备料、出片与制作队列", keywords: "queue batch" },
-    { path: "/images", label: "图片与封面", icon: ImageSquare, description: "人物图、封面与发布素材", keywords: "image cover" },
+    { path: "/images", label: "图片封面", icon: ImageSquare, description: "人物图、封面与发布素材", keywords: "image cover" },
     { path: "/singing", label: "歌曲生成", icon: MusicNotes, description: "从演唱参考制作唱歌视频", keywords: "singing music" },
     { path: "/migrate", label: "动作迁移", icon: PersonSimpleRun, description: "将参考动作迁移到人物", keywords: "dance motion" },
   ] },
