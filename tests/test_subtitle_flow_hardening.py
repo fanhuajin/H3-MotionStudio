@@ -183,7 +183,7 @@ class PublishBatchScanTests(unittest.TestCase):
         """批量端点、暂停、继续都已注册到 FastAPI。"""
         import backend.app as app
 
-        paths = [route.path for route in app.app.routes]
+        paths = [route.path for route in app.app.routes if hasattr(route, "path")]
         self.assertIn("/api/jobs/subtitle/publish-batch", paths)
         self.assertIn("/api/jobs/{job_id}/pause", paths)
         self.assertIn("/api/jobs/{job_id}/resume", paths)

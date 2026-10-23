@@ -1,0 +1,23 @@
+.video-file-queue{min-width:0;color:inherit}
+.video-file-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
+.video-file-toolbar>span{flex:1;color:#a7aea9;font-size:12px;line-height:1.65}
+.video-file-queue .batch-add-toggle{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:34px;padding:7px 12px;border:1px solid #4b5b50;border-radius:8px;background:transparent;color:#d0dfd3;font-size:12px;cursor:pointer}
+.video-file-queue .batch-add-toggle:disabled,.video-file-remove:disabled{opacity:.45;cursor:default}
+.video-file-queue .batch-add-toggle:not(:disabled):hover{background:#c5ddcd12;border-color:#90aa97}
+.video-file-queue button svg{width:16px;height:16px}
+.video-file-table-wrap{overflow-x:auto;border:1px solid #353c37;border-radius:10px}
+.video-file-queue table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}
+.video-file-queue th,.video-file-queue td{padding:11px 10px;border-bottom:1px solid #303631;vertical-align:middle}
+.video-file-queue th{font-weight:500;color:#a7aea9;background:#ffffff03}
+.video-file-queue tr:last-child td{border-bottom:0}
+.video-file-queue td:first-child,.video-file-queue th:first-child{width:34px}
+.video-file-queue td strong{display:block;font-weight:500;overflow-wrap:anywhere;min-width:90px}
+.video-file-queue td small{display:block;margin-top:4px;color:#9ba69e;line-height:1.65;overflow-wrap:anywhere}
+.video-file-queue td:last-child{white-space:nowrap}
+.video-file-queue input[type=checkbox]{width:16px;height:16px;accent-color:#b7d0be;cursor:pointer}
+.video-file-queue input:disabled{cursor:default}
+.video-file-remove{display:grid;place-items:center;width:30px;height:30px;background:transparent;border:1px solid #48554b;border-radius:7px;color:#c2cbc5;cursor:pointer}
+.video-file-error,.video-file-queue td small.video-file-error{color:#e8afa1;font-size:12px;line-height:1.65}
+.video-file-empty{padding:24px 12px;border:1px dashed #47504a;border-radius:10px;text-align:center;font-size:12px;color:#a7aea9;line-height:1.8}
+.video-file-queue button:focus-visible,.video-file-queue input:focus-visible{outline:2px solid #c1dac8;outline-offset:3px}
+@media(max-width:700px){.video-file-toolbar>span{flex-basis:100%;order:3}.video-file-queue td,.video-file-queue th{padding:9px 7px}}

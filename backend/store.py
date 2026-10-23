@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -216,10 +217,29 @@ class JobStore:
                 ).fetchone()
         return json.loads(row["state_json"]) if row else None
 
+    def latest_file_queue(self, kind: str) -> list[dict[str, Any]]:
+        """恢复最近一次本地文件队列，包括已结束和等待中的条目。"""
+        with self._lock, closing(self._connect()) as connection:
+            rows = connection.execute(
+                """SELECT state_json FROM jobs
+                WHERE json_extract(state_json, '$.fileQueueId') = (
+                    SELECT json_extract(state_json, '$.fileQueueId') FROM jobs
+                    WHERE json_extract(state_json, '$.kind') = ?
+                    AND json_extract(state_json, '$.fileQueueId') IS NOT NULL
+                    ORDER BY created_at DESC LIMIT 1
+                ) ORDER BY json_extract(state_json, '$.fileQueueIndex')""",
+                (kind,),
+            ).fetchall()
+        return [json.loads(row["state_json"]) for row in rows]
+
     def active(self) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
+            # 文件队列预先登记所有 queued；正在处理的文件应优先于其后面的待处理条目。
             row = connection.execute(
-                "SELECT state_json FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1"
+                "SELECT state_json FROM jobs WHERE status IN ('queued', 'running') "
+                "ORDER BY CASE WHEN status = 'running' "
+                "AND json_extract(state_json, '$.fileQueueId') IS NOT NULL THEN 0 ELSE 1 END, "
+                "created_at DESC LIMIT 1"
             ).fetchone()
         return json.loads(row["state_json"]) if row else None
 

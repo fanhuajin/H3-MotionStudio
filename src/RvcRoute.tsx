@@ -1,3 +1,4 @@
+import { VideoFileQueue } from "./VideoFileQueue";
 import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRememberedTab } from "./useRememberedTab";
@@ -10,16 +11,12 @@ import {
   DownloadSimple,
   Eye,
   FileText,
-  FilmSlate,
   Graph,
   Info,
   MicrophoneStage,
-  Pause,
   Play,
   SpinnerGap,
-  UploadSimple,
   WarningCircle,
-  X,
 } from "@phosphor-icons/react";
 import { QueuePanel } from "./QueuePanel";
 import { readJsonOrNull } from "./api";
@@ -136,11 +133,9 @@ function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number;
 }
 
 export function RvcRoute() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   const [mode, setMode] = useRememberedTab("h3-motionstudio:rvc-source-tab:v1", ["upload", "recent"] as const, "upload");
-  const [file, setFile] = useState<File | null>(null);
   const [recentLoading, setRecentLoading] = useState(true);
   const [recentError, setRecentError] = useState("");
   const [recent, setRecent] = useState<RecentItem[]>([]);
@@ -157,7 +152,6 @@ export function RvcRoute() {
   // 一键批量转音色（kind === "rvc_batch"）：跑着/暂停时占用这条链路，单条 UI 让位
   const isBatch = job?.kind === "rvc_batch";
   const batchBusy = Boolean(isBatch && job && ["queued", "running", "paused"].includes(job.status));
-  const batchQueued = Boolean(isBatch && job?.status === "queued");
   const tickNow = useNowTick(jobActive);
   const totalElapsedMs = elapsedMs(job?.startedAt || job?.createdAt, job?.finishedAt, tickNow);
   const milestones = job?.milestones?.length ? job.milestones : SKELETON_MILESTONES;
@@ -245,25 +239,7 @@ export function RvcRoute() {
     if (mode === "recent") void loadRecent();
   }, [mode, loadRecent]);
 
-  const pickFile = (nextFile: File | null) => {
-    if (!nextFile) return;
-    const allowed = [".mp4", ".mov", ".mkv", ".webm"];
-    const suffix = nextFile.name.slice(nextFile.name.lastIndexOf(".")).toLowerCase();
-    if (!nextFile.type.startsWith("video/") && !allowed.includes(suffix)) {
-      setLocalError("请选择 MP4、MOV、MKV 或 WebM 视频文件。");
-      return;
-    }
-    setFile(nextFile);
-    setRecentPick(null);
-    setLocalError(null);
-  };
-
   const submit = async () => {
-    if (mode === "upload" && !file) {
-      setLocalError("请先选择要做音色转换的视频。");
-      fileInputRef.current?.click();
-      return;
-    }
     if (mode === "recent" && !recentPick) {
       setLocalError("暂无可转换的历史任务成片。");
       return;
@@ -271,7 +247,6 @@ export function RvcRoute() {
     setSubmitting(true);
     setLocalError(null);
     const form = new FormData();
-    if (mode === "upload" && file) form.append("video", file);
     if (mode === "recent" && recentPick) {
       form.append("source_job_id", recentPick.jobId);
       form.append("source_key", recentPick.key);
@@ -286,24 +261,6 @@ export function RvcRoute() {
       setLocalError(error instanceof Error ? error.message : "任务创建失败");
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  /** 一键批量转音色：给发布成品里所有缺音色版的唱歌成片逐条转（后端串行、已存在的不重复）。 */
-  const startBatch = async () => {
-    if (batchBusy) return;
-    setBatchSubmitting(true);
-    setLocalError(null);
-    try {
-      const response = await fetch("/api/jobs/rvc/publish-batch", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || "一键批量启动失败");
-      setJob(payload);
-      connectJob(payload.id);
-    } catch (error) {
-      setLocalError(error instanceof Error ? error.message : "一键批量启动失败");
-    } finally {
-      setBatchSubmitting(false);
     }
   };
 
@@ -366,76 +323,31 @@ export function RvcRoute() {
 
       <main className="workspace">
         <section className="input-panel" aria-label="音色转换设置">
-          {/* 一键批量放最上面（与字幕页同一套交互，用户 2026-09-20 要的链条：
-              最终成片 → 音色版 → 字幕版） */}
-          <div className="field-block">
-            <div className="field-heading"><h2><span>⚡</span> 一键批量 <em>（发布成品里的唱歌成片）</em></h2></div>
-            <div className="subtitle-batch-row">
-              <button className="primary-action batch-action" onClick={startBatch} disabled={batchSubmitting || batchBusy}>
-                {batchSubmitting ? <SpinnerGap className="spin" /> : <MicrophoneStage weight="fill" />}
-                {batchSubmitting ? "正在扫描…" : "一键批量转换音色"}
-              </button>
-              <span className="action-hint">
-                扫 发布成品\singing，给还没有 <code>最终成片_音色版.mp4</code> 的成片逐条转音色；
-                原声母版并存，已经有了的不重复转换。开跑前会先等出片空档（不跟出片抢显卡）。
-              </span>
-            </div>
-            {isBatch && (
-              <p className="field-note">
-                {job?.currentNodeTitle || "等待开始"}
-                {job?.rvcQueue?.length
-                  ? ` · 共 ${job.rvcQueue.length} 条 · 成功 ${job.rvcDone ?? 0} · 失败 ${job.rvcFailed ?? 0}`
-                  : ""}
-              </p>
-            )}
-            {batchBusy && (
-              <div className="subtitle-batch-controls">
-                {job?.status === "running" && (
-                  <button className="ghost-action" onClick={pauseBatch} disabled={batchSubmitting}>
-                    <Pause weight="fill" /> 暂停（当前这条跑完即停）
-                  </button>
-                )}
-                {job?.status === "paused" && (
-                  <button className="secondary-action" onClick={resumeBatch} disabled={batchSubmitting}>
-                    <Play weight="fill" /> 继续转换
-                  </button>
-                )}
-              </div>
-            )}
-            {isBatch && !batchBusy && (job?.rvcFailed ?? 0) > 0 && (
-              <p className="field-note">
-                本次有 {job?.rvcFailed} 条没成功。再点一次上面的按钮即可 —— 它会重扫发布目录，
-                只补还缺 <code>最终成片_音色版.mp4</code> 的那几条。
-              </p>
-            )}
-          </div>
+          {isBatch && <div className="field-block">
+            <p className="field-note">{job?.currentNodeTitle || "历史批量任务"}</p>
+            {batchBusy && <div className="subtitle-batch-controls">
+              {job?.status === "running" && <button className="ghost-action" onClick={pauseBatch} disabled={batchSubmitting}>暂停（当前条完成后）</button>}
+              {job?.status === "paused" && <button className="secondary-action" onClick={resumeBatch} disabled={batchSubmitting}>继续任务</button>}
+            </div>}
+          </div>}
           <div className="field-block">
             <div className="field-heading"><h2><span>1.</span> 输入视频</h2></div>
             <div className="ratio-cards" role="radiogroup" aria-label="输入来源">
               <button type="button" role="radio" aria-checked={mode === "upload"} className={mode === "upload" ? "selected" : ""} onClick={() => setMode("upload")}>
-                <strong>上传本地视频</strong><span>MP4 / MOV / MKV / WebM</span>
+                <strong>选择本地视频</strong><span>MP4 / MOV / MKV / WebM</span>
               </button>
               <button type="button" role="radio" aria-checked={mode === "recent"} className={mode === "recent" ? "selected" : ""} onClick={() => setMode("recent")}>
                 <strong>从最近任务选</strong><span>原版成片 / 最终成片</span>
               </button>
             </div>
 
-            {mode === "upload" ? (
-              <div className="upload-simple-row">
-                <input ref={fileInputRef} className="visually-hidden" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mkv" onChange={(event) => pickFile(event.target.files?.[0] || null)} />
-                {file ? (
-                  <div className="simple-file">
-                    <FilmSlate weight="fill" />
-                    <div><strong>{file.name}</strong><span>{formatBytes(file.size)}</span></div>
-                    <button onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }} aria-label="移除视频" title="移除视频"><X weight="bold" /></button>
-                  </div>
-                ) : (
-                  <button className="simple-upload" onClick={() => fileInputRef.current?.click()}>
-                    <UploadSimple /> 点击选择视频
-                  </button>
-                )}
-              </div>
-            ) : (
+            <div hidden={mode !== "upload"}>
+              <VideoFileQueue kind="rvc" disabled={submitting || jobActive || batchBusy} onView={next => {
+                setJob(next);
+                if (["queued", "running", "waiting"].includes(next.status)) connectJob(next.id);
+              }} />
+            </div>
+            {mode === "recent" && (
               <div className="recent-pick">
                 {recentLoading ? <ContentLoading compact label="正在加载最近任务…" /> : recentError ? <div role="alert">{recentError}<button type="button" onClick={() => void loadRecent()}>重新加载</button></div> : recent.length === 0 ? (
                   <p className="queue-empty">暂无可转换的历史成片（先完成一单歌曲/迁移任务）</p>
@@ -485,10 +397,12 @@ export function RvcRoute() {
             </div>
           )}
 
-          <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
-            {submitting || jobActive ? <SpinnerGap className="spin" /> : <MicrophoneStage weight="fill" />}
-            {submitting ? "正在创建任务…" : jobActive ? "音色转换运行中" : "开始音色转换"}
-          </button>
+          {mode === "recent" && (
+            <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
+              {submitting || jobActive ? <SpinnerGap className="spin" /> : <MicrophoneStage weight="fill" />}
+              {submitting ? "正在创建任务…" : jobActive ? "音色转换运行中" : "开始音色转换"}
+            </button>
+          )}
           <p className="field-note">输出保留原视频画面与帧率，只替换人声音色；最终成片标记为 <code>最终版.mp4</code>。</p>
         </section>
 

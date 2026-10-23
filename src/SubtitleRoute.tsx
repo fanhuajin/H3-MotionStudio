@@ -1,3 +1,4 @@
+import { VideoFileQueue } from "./VideoFileQueue";
 import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRememberedTab } from "./useRememberedTab";
@@ -10,17 +11,13 @@ import {
   DownloadSimple,
   Eye,
   FileText,
-  FilmSlate,
   FolderOpen,
   Graph,
   Info,
-  Pause,
   Play,
   SpinnerGap,
   Subtitles,
-  UploadSimple,
   WarningCircle,
-  X,
 } from "@phosphor-icons/react";
 import { QueuePanel } from "./QueuePanel";
 import { readJsonOrNull } from "./api";
@@ -117,11 +114,9 @@ function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number;
 }
 
 export function SubtitleRoute() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   const [mode, setMode] = useRememberedTab("h3-motionstudio:subtitle-source-tab:v1", ["upload", "recent"] as const, "upload");
-  const [file, setFile] = useState<File | null>(null);
   const [recentLoading, setRecentLoading] = useState(true);
   const [recentError, setRecentError] = useState("");
   const [recent, setRecent] = useState<RecentItem[]>([]);
@@ -228,25 +223,7 @@ export function SubtitleRoute() {
     if (mode === "recent") void loadRecent();
   }, [mode, loadRecent]);
 
-  const pickFile = (nextFile: File | null) => {
-    if (!nextFile) return;
-    const allowed = [".mp4", ".mov", ".mkv", ".webm"];
-    const suffix = nextFile.name.slice(nextFile.name.lastIndexOf(".")).toLowerCase();
-    if (!nextFile.type.startsWith("video/") && !allowed.includes(suffix)) {
-      setLocalError("请选择 MP4、MOV、MKV 或 WebM 视频文件。");
-      return;
-    }
-    setFile(nextFile);
-    setRecentPick(null);
-    setLocalError(null);
-  };
-
   const submit = async () => {
-    if (mode === "upload" && !file) {
-      setLocalError("请先选择要加字幕的成片。");
-      fileInputRef.current?.click();
-      return;
-    }
     if (mode === "recent" && !recentPick) {
       setLocalError("暂无可加字幕的历史任务成片。");
       return;
@@ -254,7 +231,6 @@ export function SubtitleRoute() {
     setSubmitting(true);
     setLocalError(null);
     const form = new FormData();
-    if (mode === "upload" && file) form.append("video", file);
     if (mode === "recent" && recentPick) {
       form.append("source_job_id", recentPick.jobId);
       form.append("source_key", recentPick.key);
@@ -336,24 +312,6 @@ export function SubtitleRoute() {
     }
   };
 
-  /** 一键批量：给发布成品里所有缺字幕版的唱歌视频逐条生成字幕（后端串行，已存在的不重复）。 */
-  const startBatch = async () => {
-    if (jobActive) return;
-    setBatchSubmitting(true);
-    setLocalError(null);
-    try {
-      const response = await fetch("/api/jobs/subtitle/publish-batch", { method: "POST" });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || "一键批量启动失败");
-      setJob(payload);
-      connectJob(payload.id);
-    } catch (error) {
-      setLocalError(error instanceof Error ? error.message : "一键批量启动失败");
-    } finally {
-      setBatchSubmitting(false);
-    }
-  };
-
   /** 暂停一键批量：当前这条跑完即停（剪映识别进行到一半没法安全打断）。 */
   const pauseBatch = async () => {
     if (!job) return;
@@ -412,71 +370,32 @@ export function SubtitleRoute() {
 
       <main className="workspace">
         <section className="input-panel" aria-label="生成字幕设置">
-          {/* 一键批量放最上面：这是这个页面最常用的入口（用户 2026-09-19：「一键批量 放到最上边」） */}
+          {isBatch && <div className="field-block">
+            <p className="field-note">{job?.currentNodeTitle || "历史批量任务"}</p>
+            {batchBusy && <div className="subtitle-batch-controls">
+              {job?.status === "running" && <button className="ghost-action" onClick={pauseBatch} disabled={batchSubmitting}>暂停（当前条完成后）</button>}
+              {job?.status === "paused" && <button className="secondary-action" onClick={resumeBatch} disabled={batchSubmitting}>继续任务</button>}
+              <button className="ghost-action" onClick={cancelRun} disabled={batchSubmitting}>取消任务</button>
+            </div>}
+          </div>}
           <div className="field-block">
-            <div className="field-heading"><h2><span>⚡</span> 一键批量 <em>（发布成品里的唱歌视频）</em></h2></div>
-            <div className="subtitle-batch-row">
-              <button className="primary-action batch-action" onClick={startBatch} disabled={batchSubmitting || batchBusy || Boolean(job && jobActive)}>
-                {batchSubmitting ? <SpinnerGap className="spin" /> : <Subtitles weight="fill" />}
-                {batchSubmitting ? "正在扫描…" : "一键给所有唱歌视频生成字幕"}
-              </button>
-              <span className="action-hint">
-                扫描 E:\AI_Exports\H3-MotionStudio\发布成品，给缺字幕版的唱歌视频逐条生成；
-                已经出过字幕版的不重复生成。
-              </span>
-            </div>
-            {batchBusy && (
-              <div className="subtitle-batch-controls">
-                {job?.status === "running" && (
-                  <button className="ghost-action" onClick={pauseBatch} disabled={batchSubmitting}>
-                    <Pause weight="fill" /> 暂停（当前这条跑完即停）
-                  </button>
-                )}
-                {job?.status === "paused" && (
-                  <button className="secondary-action" onClick={resumeBatch} disabled={batchSubmitting}>
-                    <Play weight="fill" /> 继续生成
-                  </button>
-                )}
-                {["paused", "running"].includes(job?.status || "") && (
-                  <button className="ghost-action" onClick={cancelRun}>取消</button>
-                )}
-              </div>
-            )}
-            {isBatch && job?.status !== "running" && job?.status !== "paused" && (job?.subtitleFailed ?? 0) > 0 && (
-              <p className="field-note">
-                本次有 {job?.subtitleFailed} 条没成功（大多是剪映被关掉或崩了）。再点一次上面的按钮即可 ——
-                它会重扫发布根，只补还缺 `最终成片_字幕版.mp4` 的那几条。
-              </p>
-            )}
-          </div>
-
-          <div className="field-block">
-            <div className="field-heading"><h2><span>1.</span> 输入成片 <em>（要加字幕的那一条）</em></h2></div>
+            <div className="field-heading"><h2><span>1.</span> 输入视频</h2></div>
             <div className="ratio-cards" role="radiogroup" aria-label="输入来源">
               <button type="button" role="radio" aria-checked={mode === "upload"} className={mode === "upload" ? "selected" : ""} onClick={() => setMode("upload")}>
-                <strong>上传本地视频</strong><span>MP4 / MOV / MKV / WebM</span>
+                <strong>选择本地视频</strong><span>MP4 / MOV / MKV / WebM</span>
               </button>
               <button type="button" role="radio" aria-checked={mode === "recent"} className={mode === "recent" ? "selected" : ""} onClick={() => setMode("recent")}>
                 <strong>从最近任务选</strong><span>直接给该任务的最终成片加字幕</span>
               </button>
             </div>
 
-            {mode === "upload" ? (
-              <div className="upload-simple-row">
-                <input ref={fileInputRef} className="visually-hidden" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mkv" onChange={(event) => pickFile(event.target.files?.[0] || null)} />
-                {file ? (
-                  <div className="simple-file">
-                    <FilmSlate weight="fill" />
-                    <div><strong>{file.name}</strong><span>{formatBytes(file.size)}</span></div>
-                    <button onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }} aria-label="移除视频" title="移除视频"><X weight="bold" /></button>
-                  </div>
-                ) : (
-                  <button className="simple-upload" onClick={() => fileInputRef.current?.click()}>
-                    <UploadSimple /> 点击选择视频
-                  </button>
-                )}
-              </div>
-            ) : (
+            <div hidden={mode !== "upload"}>
+              <VideoFileQueue kind="subtitle" disabled={submitting || jobActive || batchBusy} song={song} onView={next => {
+                setJob(next);
+                if (["queued", "running", "waiting"].includes(next.status)) connectJob(next.id);
+              }} />
+            </div>
+            {mode === "recent" && (
               <div className="recent-pick">
                 {recentLoading ? <ContentLoading compact label="正在加载最近任务…" /> : recentError ? <div role="alert">{recentError}<button type="button" onClick={() => void loadRecent()}>重新加载</button></div> : recent.length === 0 ? (
                   <p className="queue-empty">暂无可加字幕的最终成片（先完成一单歌曲生成，或改用上传本地视频）</p>
@@ -523,6 +442,7 @@ export function SubtitleRoute() {
               placeholder="留空也可以：系统会拿剪映识别出的歌词去反查官方歌词"
             />
             <p className="field-note">
+              {mode === "upload" && <>歌名会用于本次全部所选视频；不同歌曲请留空，让系统逐条识别。<br /></>}
               填了歌名会优先按歌名找官方歌词；留空则用识别出的歌词反查。两条路都找不到时，
               字幕文字与时间轴都用剪映识别结果，不会因此失败。
             </p>
@@ -564,10 +484,12 @@ export function SubtitleRoute() {
 
           {!batchBusy && (
             <>
-              <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
-                {submitting || jobActive ? <SpinnerGap className="spin" /> : <Subtitles weight="fill" />}
-                {submitting ? "正在创建任务…" : queued ? "已排队，轮到自动开始" : jobActive ? "生成字幕任务运行中" : "开始生成字幕"}
-              </button>
+              {mode === "recent" && (
+                <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
+                  {submitting || jobActive ? <SpinnerGap className="spin" /> : <Subtitles weight="fill" />}
+                  {submitting ? "正在创建任务…" : queued ? "已排队，轮到自动开始" : jobActive ? "生成字幕任务运行中" : "开始生成字幕"}
+                </button>
+              )}
               {jobActive && (
                 <div className="subtitle-actions">
                   <button className="ghost-action" onClick={cancelRun}>取消这一次</button>

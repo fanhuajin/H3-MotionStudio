@@ -1,3 +1,4 @@
+import { VideoFileQueue } from "./VideoFileQueue";
 import { ContentLoading } from "./ContentLoading";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRememberedTab } from "./useRememberedTab";
@@ -16,9 +17,7 @@ import {
   MagnifyingGlassPlus,
   Play,
   SpinnerGap,
-  UploadSimple,
   WarningCircle,
-  X,
 } from "@phosphor-icons/react";
 import { QueuePanel } from "./QueuePanel";
 import { readJsonOrNull } from "./api";
@@ -128,11 +127,9 @@ function PipelineRow({ step, index, liveNow }: { step: Milestone; index: number;
 }
 
 export function UpScaleRoute() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<WebSocket | null>(null);
 
   const [mode, setMode] = useRememberedTab("h3-motionstudio:upscale-source-tab:v1", ["upload", "recent"] as const, "upload");
-  const [file, setFile] = useState<File | null>(null);
   const [recentLoading, setRecentLoading] = useState(true);
   const [recentError, setRecentError] = useState("");
   const [recent, setRecent] = useState<RecentItem[]>([]);
@@ -214,25 +211,7 @@ export function UpScaleRoute() {
     if (mode === "recent") void loadRecent();
   }, [mode, loadRecent]);
 
-  const pickFile = (nextFile: File | null) => {
-    if (!nextFile) return;
-    const allowed = [".mp4", ".mov", ".mkv", ".webm"];
-    const suffix = nextFile.name.slice(nextFile.name.lastIndexOf(".")).toLowerCase();
-    if (!nextFile.type.startsWith("video/") && !allowed.includes(suffix)) {
-      setLocalError("请选择 MP4、MOV、MKV 或 WebM 视频文件。");
-      return;
-    }
-    setFile(nextFile);
-    setRecentPick(null);
-    setLocalError(null);
-  };
-
   const submit = async () => {
-    if (mode === "upload" && !file) {
-      setLocalError("请先选择要放大的视频。");
-      fileInputRef.current?.click();
-      return;
-    }
     if (mode === "recent" && !recentPick) {
       setLocalError("暂无可放大的历史任务成片。");
       return;
@@ -240,7 +219,6 @@ export function UpScaleRoute() {
     setSubmitting(true);
     setLocalError(null);
     const form = new FormData();
-    if (mode === "upload" && file) form.append("video", file);
     if (mode === "recent" && recentPick) {
       form.append("source_job_id", recentPick.jobId);
       form.append("source_key", recentPick.key);
@@ -282,29 +260,20 @@ export function UpScaleRoute() {
             <div className="field-heading"><h2><span>1.</span> 输入视频</h2></div>
             <div className="ratio-cards" role="radiogroup" aria-label="输入来源">
               <button type="button" role="radio" aria-checked={mode === "upload"} className={mode === "upload" ? "selected" : ""} onClick={() => setMode("upload")}>
-                <strong>上传本地视频</strong><span>MP4 / MOV / MKV / WebM</span>
+                <strong>选择本地视频</strong><span>MP4 / MOV / MKV / WebM</span>
               </button>
               <button type="button" role="radio" aria-checked={mode === "recent"} className={mode === "recent" ? "selected" : ""} onClick={() => setMode("recent")}>
                 <strong>从最近任务选</strong><span>直接放大该任务的最终成片</span>
               </button>
             </div>
 
-            {mode === "upload" ? (
-              <div className="upload-simple-row">
-                <input ref={fileInputRef} className="visually-hidden" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.mkv" onChange={(event) => pickFile(event.target.files?.[0] || null)} />
-                {file ? (
-                  <div className="simple-file">
-                    <FilmSlate weight="fill" />
-                    <div><strong>{file.name}</strong><span>{formatBytes(file.size)}</span></div>
-                    <button onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }} aria-label="移除视频" title="移除视频"><X weight="bold" /></button>
-                  </div>
-                ) : (
-                  <button className="simple-upload" onClick={() => fileInputRef.current?.click()}>
-                    <UploadSimple /> 点击选择视频
-                  </button>
-                )}
-              </div>
-            ) : (
+            <div hidden={mode !== "upload"}>
+              <VideoFileQueue kind="upscale" disabled={submitting || jobActive} onView={next => {
+                setJob(next);
+                if (["queued", "running", "waiting"].includes(next.status)) connectJob(next.id);
+              }} />
+            </div>
+            {mode === "recent" && (
               <div className="recent-pick">
                 {recentLoading ? <ContentLoading compact label="正在加载最近任务…" /> : recentError ? <div role="alert">{recentError}<button type="button" onClick={() => void loadRecent()}>重新加载</button></div> : recent.length === 0 ? (
                   <p className="queue-empty">暂无可放大的最终成片（先完成一单歌曲/迁移任务）</p>
@@ -345,10 +314,12 @@ export function UpScaleRoute() {
             </div>
           )}
 
-          <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
-            {submitting || jobActive ? <SpinnerGap className="spin" /> : <MagnifyingGlassPlus weight="fill" />}
-            {submitting ? "正在创建任务…" : jobActive ? "放大任务运行中" : "开始 VOSR2 二采"}
-          </button>
+          {mode === "recent" && (
+            <button className="primary-action" onClick={submit} disabled={submitting || jobActive}>
+              {submitting || jobActive ? <SpinnerGap className="spin" /> : <MagnifyingGlassPlus weight="fill" />}
+              {submitting ? "正在创建任务…" : jobActive ? "放大任务运行中" : "开始 VOSR2 二采"}
+            </button>
+          )}
           <p className="field-note">使用 VOSR2 放大，输出按视频比例收至 1080p 标准档。</p>
         </section>
 

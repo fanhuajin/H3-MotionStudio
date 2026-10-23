@@ -2162,10 +2162,17 @@ async def create_upscale_job(
     source_job_id: str = Form(""),
     source_key: str = Form("final"),
 ):
+    return await _prepare_upscale_job(video, source_job_id, source_key)
+
+
+async def _prepare_upscale_job(
+    video: UploadFile | None, source_job_id: str, source_key: str,
+    *, enqueue: bool = True,
+):
     """独立二采放大：上传视频或引用最近任务成片，固定 4× 放大后收 1080p 档。"""
     # 与 `POST /api/jobs` 同一条口径（等待中的 rvc_batch 不占显卡、不该挡住出片）。
     active = gpu_holder()
-    if active:
+    if enqueue and active:
         raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
     if video is None and not source_job_id:
         raise HTTPException(400, "请上传视频或选择最近任务成片")
@@ -2263,7 +2270,8 @@ async def create_upscale_job(
         "promptIds": {},
     }
     store.create(state)
-    spawn(run_upscale_job(job_id))
+    if enqueue:
+        spawn(run_upscale_job(job_id))
     return state
 
 
@@ -2278,9 +2286,16 @@ async def create_rvc_job(
     source_job_id: str = Form(""),
     source_key: str = Form("original"),
 ):
+    return await _prepare_rvc_job(video, source_job_id, source_key)
+
+
+async def _prepare_rvc_job(
+    video: UploadFile | None, source_job_id: str, source_key: str,
+    *, enqueue: bool = True,
+):
     """独立 RVC 音色转换：上传视频或引用最近任务成片，转换为默认音色后输出最终版。"""
     active = store.active()
-    if active:
+    if enqueue and active:
         raise HTTPException(409, f"已有任务正在运行：{active['id'][:8]}")
     if video is None and not source_job_id:
         raise HTTPException(400, "请上传视频或选择最近任务成片")
@@ -2357,7 +2372,8 @@ async def create_rvc_job(
         "promptIds": {},
     }
     store.create(state)
-    spawn(run_rvc_job(job_id))
+    if enqueue:
+        spawn(run_rvc_job(job_id))
     return state
 
 
@@ -2375,6 +2391,14 @@ async def create_subtitle_job(
     source_key: str = Form("final"),
     song_name: str = Form(""),
 ):
+    return await _prepare_subtitle_job(video, source_job_id, source_key, song_name)
+
+
+async def _prepare_subtitle_job(
+    video: UploadFile | None, source_job_id: str, source_key: str,
+    song_name: str,
+    *, enqueue: bool = True,
+):
     """生成字幕任务：上传/选择成片 → 剪映「识别歌词」拿时间轴 → 官方歌词逐句核对文字
 
     （时间轴一字不动）→ ffmpeg + libass 按剪映手书观感烧录出字幕版成片。
@@ -2389,7 +2413,7 @@ async def create_subtitle_job(
     # 同一时间只留一条字幕任务（页面在跑时按钮本来就是禁用的，这里防接口直连）。
     # 单条与「一键批量」共用同一把互斥：剪映一次只能占一条。
     _busy_subtitle = _active_subtitle_job()
-    if _busy_subtitle:
+    if enqueue and _busy_subtitle:
         raise HTTPException(
             409, f"已有一条「生成字幕」任务在跑或排队：{_busy_subtitle['id'][:8]}"
         )
@@ -2477,8 +2501,59 @@ async def create_subtitle_job(
         "promptIds": {},
     }
     store.create(state)
-    spawn(run_subtitle_job(job_id))
+    if enqueue:
+        spawn(run_subtitle_job(job_id))
     return state
+
+
+_file_queue_submit_lock = asyncio.Lock()
+_FILE_QUEUE_KINDS = {"upscale", "rvc", "subtitle"}
+
+
+@app.get("/api/jobs/file-queue/{kind}")
+async def get_file_queue(kind: str):
+    if kind not in _FILE_QUEUE_KINDS:
+        raise HTTPException(404, "未知的后期工具")
+    return {"jobs": store.latest_file_queue(kind)}
+
+
+@app.post("/api/jobs/file-queue/{kind}")
+async def create_file_queue(
+    kind: str, videos: list[UploadFile] = File(...), song_name: str = Form(""),
+):
+    from .file_queue import run_file_queue
+
+    if kind not in _FILE_QUEUE_KINDS:
+        raise HTTPException(404, "未知的后期工具")
+    if not videos or any(Path(video.filename or "").suffix.lower() not in VIDEO_UPLOAD_SUFFIXES for video in videos):
+        raise HTTPException(400, "请选择 MP4、MOV、MKV 或 WebM 视频")
+    async with _file_queue_submit_lock:
+        active = _active_subtitle_job() if kind == "subtitle" else store.active()
+        if active:
+            raise HTTPException(409, f"已有任务正在运行或排队：{active['id'][:8]}")
+        queue_id = uuid.uuid4().hex
+        jobs = []
+        try:
+            for index, video in enumerate(videos):
+                if kind == "subtitle":
+                    state = await _prepare_subtitle_job(video, "", "final", song_name, enqueue=False)
+                elif kind == "rvc":
+                    state = await _prepare_rvc_job(video, "", "original", enqueue=False)
+                else:
+                    state = await _prepare_upscale_job(video, "", "final", enqueue=False)
+                jobs.append(state)
+                jobs[-1] = store.update(state["id"], fileQueueId=queue_id, fileQueueIndex=index)
+        except BaseException:
+            # 全部备好才开跑；上传失败时不留下无人执行却阻塞新提交的 queued。
+            for state in jobs:
+                store.update(state["id"], status="interrupted", errorSummary="文件队列创建未完成，请重新选择文件提交。")
+            raise
+        finally:
+            for video in videos:
+                await video.close()
+        runner = {"upscale": run_upscale_job, "rvc": run_rvc_job, "subtitle": run_subtitle_job}[kind]
+        spawn(run_file_queue([state["id"] for state in jobs], store, runner))
+        return {"jobs": jobs}
 
 
 @app.post("/api/jobs/subtitle/publish-batch")
@@ -2702,6 +2777,11 @@ async def retry_subtitle_job(job_id: str):
         raise HTTPException(404, "任务不存在")
     if (state.get("kind") or "") != "subtitle":
         raise HTTPException(400, "只有「生成字幕」任务支持重新开始")
+    if state.get("fileQueueId") and any(
+        row["id"] != job_id and row.get("kind") == "subtitle"
+        for row in store.active_all()
+    ):
+        raise HTTPException(409, "文件队列仍有其他字幕任务，请等队列结束后再重新开始。")
     source = Path(str(state.get("subtitleSource") or ""))
     if not source.is_file():
         raise HTTPException(400, "源成片已不在任务目录里，请重新选择视频再提交")
@@ -2848,9 +2928,8 @@ async def cancel_job(job_id: str):
     state = store.get(job_id)
     if not state:
         raise HTTPException(404, "任务不存在")
-    if state.get("status") == "waiting":
-        # 「生成字幕」在排队（还没拿到 pipeline_lock）：直接收尾即可，
-        # **绝不能**走下面那条路 —— 它会把正在跑的出片任务的中断逻辑也一起触发。
+    if state.get("status") == "waiting" or (state.get("fileQueueId") and state.get("status") == "queued"):
+        # 尚未开始的字幕或文件队列条目直接收尾，不能触发其它任务的中断逻辑。
         store.update(
             job_id,
             status="cancelled",
@@ -2863,7 +2942,7 @@ async def cancel_job(job_id: str):
             errorDetail=None,
             finishedAt=now_iso(),
         )
-        store.add_log(job_id, "已取消：还在排队、没有开始识别，也没有动正在跑的出片任务。")
+        store.add_log(job_id, "已取消：该文件尚未开始处理，没有中断其它正在运行的任务。")
         return store.get(job_id)
     if state.get("status") == "paused":
         # 暂停中的任务（目前只有「一键批量加字幕」）：没有任何东西在跑，直接收尾即可。
