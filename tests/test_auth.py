@@ -7,6 +7,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
 from backend import auth
+from backend.project_shutdown import router as project_router
 
 
 class AuthTests(unittest.TestCase):
@@ -18,6 +19,8 @@ class AuthTests(unittest.TestCase):
         app = FastAPI()
         app.add_middleware(auth.AuthMiddleware)
         app.include_router(auth.router)
+
+        app.include_router(project_router)
 
         @app.get("/api/private")
         def private():
@@ -52,6 +55,13 @@ class AuthTests(unittest.TestCase):
         self.assertFalse(self.store.valid(token))
         self.assertEqual(self.client.get("/api/private").status_code, 401)
         self.assertEqual(self.client.post("/api/auth/login", json=self.credentials).status_code, 200)
+
+    def test_launcher_health_check_does_not_require_login(self):
+        response = self.client.get("/api/system/project-status")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"running": True})
+        self.assertEqual(self.client.get("/api/private").status_code, 401)
+        self.assertEqual(self.client.post("/api/system/close-project").status_code, 401)
 
     def test_cross_origin_setup_and_authenticated_mutation_rejected(self):
         headers = {"Origin": "https://evil.example"}

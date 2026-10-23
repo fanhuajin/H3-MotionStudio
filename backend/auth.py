@@ -113,7 +113,9 @@ class AuthMiddleware:
         if scope["type"] not in {"http", "websocket"}:
             return await self.app(scope, receive, send)
         path = scope.get("path", "")
-        protected = path.startswith("/api/") and path not in {"/api/auth/status", "/api/auth/login", "/api/auth/setup"}
+        # The desktop launcher probes this boolean-only endpoint before a user can log in.
+        public_paths = {"/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/system/project-status"}
+        protected = path.startswith("/api/") and path not in public_paths
         protected = protected or path in {"/docs", "/redoc", "/openapi.json", "/assets/fixed-reference.png"}
         request = Request(scope) if scope["type"] == "http" else None
         from starlette.requests import HTTPConnection
