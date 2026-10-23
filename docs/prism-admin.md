@@ -2,7 +2,7 @@
 
 ## 范围
 
-保持已选定的玻璃 H 登录页，将相同的黑紫色、浅紫操作色、玻璃面板和轻微光感延伸到全部九个工作区：批量制作、图片与封面、歌曲生成、动作迁移、二采放大、音色转换、生成字幕、抖音下载、批量发布。
+保持已选定的玻璃 H 登录页，内部按用户最新要求恢复炭灰底色、低饱和灰绿色操作色，保留玻璃面板和轻微光感，覆盖全部九个工作区：批量制作、图片与封面、歌曲生成、动作迁移、二采放大、音色转换、生成字幕、抖音下载、批量发布。
 
 `StudioShell` 统一分组侧栏、折叠偏好、顶部路径导航、账户入口与 Ctrl/Cmd+K 功能搜索。窄屏保留全部入口并横向滚动，账户设置通过顶部头像进入。设备监控按需展开，关闭项目与退出登录保留独立语义。
 
@@ -25,7 +25,7 @@
 - shadcn/ui（约 12.6 万星）：https://github.com/shadcn-ui/ui ，官方侧栏与后台示例：https://ui.shadcn.com/docs/components/sidebar 、https://ui.shadcn.com/examples/dashboard 。借鉴侧栏分组、面包屑、搜索和账户入口。
 - Shadcn Admin（约 1.5 万星，MIT）：https://github.com/satnaing/shadcn-admin 。借鉴 Vite/React 后台的信息组织、表格工具栏和响应式导航。
 - Magic UI（约 2.2 万星，MIT）：https://github.com/magicuidesign/magicui 。借鉴克制的紫色光感和交互反馈；本次未复制组件源码。
-- UI UX Pro Max（约 13.9 万星，MIT）：https://github.com/nextlevelbuilder/ui-ux-pro-max-skill 。已安装到本机技能目录，读取了技能与交互规范，使用 `admin dashboard dark glass` 查询。采用匹配的 Glassmorphism 方向、状态反馈、键盘和响应式要求，不采用落地页营销结构或偏离用户紫色主题的自动配色。
+- UI UX Pro Max（约 13.9 万星，MIT）：https://github.com/nextlevelbuilder/ui-ux-pro-max-skill 。已安装到本机技能目录，读取了技能与交互规范，使用 `admin dashboard dark glass` 查询。采用匹配的 Glassmorphism 方向、状态反馈、键盘和响应式要求，不采用落地页营销结构；内部配色以用户确认的原灰绿色主题为准，登录页继续保留紫色。
 
 具体视觉常量和布局位于 `src/prism-workspace.css`，登录页的独立图形与光效仍由 `src/login.css`、`LoginPrism` 管理。
 
