@@ -1,0 +1,24 @@
+/* Reserve the document scrollbar before async content makes the page taller.
+ * References: web.dev/optimize-cls and MDN scrollbar-gutter.
+ */
+html { scrollbar-gutter: stable; }
+
+/* Keep the loading state in the same viewport as the destination workspace. */
+.prism-workspace .route-stage > .content-loading {
+  min-height: calc(100dvh - 72px);
+}
+
+/* Fade only the mounted page (or the publish page after its initial loader).
+ * Polling, row updates and nested loaders must not restart the page animation.
+ * No transform: menus, dialogs and fixed controls retain their coordinates.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .prism-workspace .route-stage > :not(.content-loading, .batch-loading-page):not(:has(> .batch-content > .content-loading)) {
+    animation: workspace-content-reveal 200ms ease-out;
+  }
+}
+
+@keyframes workspace-content-reveal {
+  from { opacity: .25; }
+  to { opacity: 1; }
+}
