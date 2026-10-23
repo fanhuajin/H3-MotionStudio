@@ -10,3 +10,6 @@
 .project-closed-screen svg { width: 38px; height: 38px; color: #a9c6af; }
 .project-closed-screen h1 { margin: 18px 0 10px; font-size: 24px; }
 .project-closed-screen p { color: #99aa9d; font-size: 13px; line-height: 1.7; }
+.project-closed-screen .project-start-button { min-height: 44px; margin-top: 12px; border-color: #53685a; color: #cbd7ce; }
+.project-closed-screen .project-start-button svg { width: 16px; height: 16px; }
+.project-closed-screen .project-start-button:focus-visible { outline-color: #a9c6af; }
