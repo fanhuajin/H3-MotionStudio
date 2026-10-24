@@ -33,6 +33,7 @@ from . import douyin_downloads
 from . import image_workbench
 from . import rvc_batch
 from . import batch_worker
+from . import link_history
 from .duration_policy import validate_dance_duration
 from .rvc_batch import (
     BATCH_MILESTONES as RVC_BATCH_MILESTONES,
@@ -846,10 +847,19 @@ async def create_batch(request: BatchCreateRequest):
         dance_ratio = normalize_batch_ratio(request.danceRatio, "dance")
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
-    state = new_batch_state(singing, dance, singing_ratio, dance_ratio, request.shutdownOnComplete, request.autoRender, request.shutdownAfterPrep)
-    if not state["items"]:
-        raise HTTPException(400, "唱歌和跳舞填写了相同链接，重复链接已从两边去掉；请填写不同的链接")
-    batch_store.create(state)
+    with link_history.transaction() as known:
+        fresh_singing = [url for url in singing if url not in known]
+        fresh_dance = [url for url in dance if url not in known]
+        historical_duplicates = len(urls) - len(fresh_singing) - len(fresh_dance)
+        state = new_batch_state(
+            fresh_singing, fresh_dance, singing_ratio, dance_ratio,
+            request.shutdownOnComplete, request.autoRender, request.shutdownAfterPrep,
+        )
+        if not state["items"]:
+            raise HTTPException(400, "没有可添加的新链接：链接已在历史记录中，或唱歌和跳舞填写了相同链接")
+        batch_store.create(state)
+        known.update(item["url"] for item in state["items"])
+    duplicate_note = f"（过滤 {historical_duplicates} 条历史重复链接）" if historical_duplicates else ""
     batch_store.prune_history(state["id"])
     if request.shutdownOnComplete or request.shutdownAfterPrep:
         # 开关在建批次时就已经打开：立刻挂上看护任务（批次跑完那一刻才真的排关机）
@@ -857,12 +867,12 @@ async def create_batch(request: BatchCreateRequest):
     if request.autoStart:
         # 点「加入队列」直接开跑：预热 ComfyUI 后按队列逐条准备（下载 → 出图/文案 → 等确认）
         return _resume_batch(
-            state["id"], f"已加入队列 {len(state['items'])} 条，正在下载并生成人物图与发布文案。"
+            state["id"], f"已加入队列 {len(state['items'])} 条{duplicate_note}，正在下载并生成人物图与发布文案。"
         )
     # 只入队（API 用）：等用户点「开跑」
     return batch_store.update(
         state["id"],
-        notice=f"已把 {len(state['items'])} 条任务加入队列，点「开跑」后开始处理。",
+        notice=f"已把 {len(state['items'])} 条任务加入队列{duplicate_note}，点「开跑」后开始处理。",
     )
 
 
@@ -891,8 +901,8 @@ async def start_batch(batch_id: str):
 async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest):
     """随时给已有批次追加任务（用户 2026-09-10：「可以让我随时添加新的任务」）。
 
-    批次完成、失败、暂停、等审核时都能加：新条目排在队尾，已删除的同链接可以再加，
-    未删除的重复链接自动跳过。只有「已取消」的批次不能复活，需要新建批次。
+    批次完成、失败、暂停、等审核时都能加：新条目排在队尾，历史相同链接自动过滤，
+    删除任务不清除链接记录。只有「已取消」的批次不能复活，需要新建批次。
     """
     state = _batch_or_404(batch_id)
     if state.get("status") == "cancelled":
@@ -903,16 +913,25 @@ async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest
     if invalid:
         raise HTTPException(400, f"不是有效的抖音链接：{invalid[:80]}")
     try:
-        result = append_batch_items(
-            batch_id, singing, dance, request.singingRatio, request.danceRatio
-        )
+        with link_history.transaction() as known:
+            fresh_singing = [url for url in singing if url not in known]
+            fresh_dance = [url for url in dance if url not in known]
+            historical_duplicates = (
+                len(singing) + len(dance) - len(fresh_singing) - len(fresh_dance)
+            )
+            result = append_batch_items(
+                batch_id, fresh_singing, fresh_dance, request.singingRatio, request.danceRatio
+            )
+            known.update(
+                item["url"] for item in result["state"].get("items") or [] if item.get("url")
+            )
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     added = int(result.get("added") or 0)
-    duplicates = int(result.get("duplicates") or 0)
+    duplicates = int(result.get("duplicates") or 0) + historical_duplicates
     note = f"已加入 {added} 条新任务，已排到队尾。"
     if duplicates:
-        note += f"（过滤 {duplicates} 条重复链接，含唱歌与跳舞两边相同的链接）"
+        note += f"（过滤 {duplicates} 条重复链接，含历史及唱歌与跳舞两边相同的链接）"
     if not added:
         return batch_store.update(batch_id, notice=note)
     state = batch_store.get(batch_id) or state

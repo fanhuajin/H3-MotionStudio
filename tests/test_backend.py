@@ -411,6 +411,15 @@ class FullAutoImageTests(unittest.TestCase):
 
 
 class WorkflowPreparationTests(unittest.TestCase):
+    def setUp(self):
+        from backend import link_history
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        history = patch.object(link_history, "DATA_DIR", Path(directory.name))
+        history.start()
+        self.addCleanup(history.stop)
+
     def test_batch_state_is_serial_and_requires_review_before_video(self) -> None:
         singing = "https://v.douyin.com/song"
         dance = "https://www.douyin.com/video/123"

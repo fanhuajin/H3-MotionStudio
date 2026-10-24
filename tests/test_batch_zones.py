@@ -10,6 +10,15 @@ from backend import app, batch_worker
 
 
 class BatchZoneTests(unittest.TestCase):
+    def setUp(self):
+        from backend import link_history
+
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        history = patch.object(link_history, "DATA_DIR", Path(directory.name))
+        history.start()
+        self.addCleanup(history.stop)
+
     def test_cross_kind_duplicate_is_removed_from_both_lists(self):
         shared = "https://v.douyin.com/shared"
         state = batch_worker.new_batch_state(
