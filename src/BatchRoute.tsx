@@ -234,6 +234,11 @@ interface BatchState {
   items: BatchItem[];
 }
 
+interface SubmissionResult {
+  added: number;
+  duplicates: { kind: "singing" | "dance"; inputIndex: number; url: string; reason: string }[];
+}
+
 /**
  * 已经排好的自动关机（`GET /api/system/shutdown`）。
  *
@@ -573,6 +578,7 @@ export function BatchRoute() {
   const settingsOpen = activeDialog === "settings";
   const addOpen = activeDialog === "add";
   const [addError, setAddError] = useState("");
+  const [addResult, setAddResult] = useState<SubmissionResult | null>(null);
   const restoreInputFocus = useRef(true);
   const [listFocusVersion, setListFocusVersion] = useState(0);
   const listSection = useRef<HTMLElement>(null);
@@ -826,10 +832,17 @@ export function BatchRoute() {
   // 「准备任务」：把填好的链接交给后端，并立即开始准备
   // （下载抖音视频 → 生成人物图与发布文案 → 停在等确认）。
   // 暂停中的批次尊重暂停，只入队不偷跑。
+  const showTaskList = () => {
+    restoreInputFocus.current = false;
+    setActiveDialog(null);
+    setListFocusVersion((version) => version + 1);
+  };
+
   const prepare = async () => {
     setBusyAction("start");
     setError("");
     setAddError("");
+    setAddResult(null);
     // 报错信息要带上具体端点，所以在外层先声明（catch 里还要用）
     let target = "/api/batches";
     try {
@@ -852,18 +865,31 @@ export function BatchRoute() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (!response.ok) throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
-      const state = await readJson<BatchState>(response, append ? "加入队列失败" : "创建队列失败");
+      if (!response.ok) {
+        const failure = await response.clone().json().catch(() => null) as {
+          detail?: { message?: string; submission?: SubmissionResult };
+        } | null;
+        if (failure?.detail?.submission) {
+          setAddResult(failure.detail.submission);
+          setAddError(failure.detail.message || "没有新增任务，请核对重复清单。");
+          return;
+        }
+        throw new Error(await responseMessage(response, append ? "加入队列失败" : "创建队列失败"));
+      }
+      const state = await readJson<BatchState & { submission?: SubmissionResult }>(response, append ? "加入队列失败" : "创建队列失败");
       acceptBatchState(state);
+      const result = state.submission;
+      setAddResult(result ?? null);
+      // 全部重复时保留原输入和窗口；有成功条目才清空已提交的草稿。
+      if (result?.added === 0) return;
       // 链接已经进队列了，输入框清空，直接粘下一批就行
       // （2026-09-15 用户：「准备任务点击之后清空现有的歌曲视频链接和跳舞视频链接」）。
       // 只清**这次真的提交了**的那一类：开关关着的那一类不参与入队，原样留着不动。
       // 失败时不清（catch 里不碰输入框），免得白粘一遍。
       if (singingOn && singingUrls.length) setSinging((current) => current === singing ? "" : current);
       if (danceOn && danceUrls.length) setDance((current) => current === dance ? "" : current);
-      restoreInputFocus.current = false;
-      setActiveDialog(null);
-      setListFocusVersion((version) => version + 1);
+      // 有重复项时留在添加窗口展示清单，用户看完后再返回任务列表。
+      if (!result?.duplicates.length) showTaskList();
       // 新建批次也不自动展开任何一条：列表默认全收起，由用户自己点开要看的那条
       // （2026-09-15 用户：「启动页面的时候 列表默认都是收起来的 由我自己点击要查看哪个」）。
       // 一条都没新增（全被判重过滤）时必须说清楚，否则点了看起来像没反应
@@ -2165,7 +2191,8 @@ export function BatchRoute() {
         onClose={() => setActiveDialog(null)} className="batch-add-dialog"
         description={batch && batch.status !== "cancelled" ? "链接将追加到当前队列，重复链接自动跳过；关闭窗口会保留尚未提交的输入。" : "选择视频类型并粘贴链接，提交后开始准备人物图与发布文案；关闭窗口会保留输入。"}
         footer={<>
-          <p className="batch-settings-feedback">{busyAction === "start" ? "正在加入队列…" : "关闭保留草稿 · 提交成功后返回任务列表"}</p>
+          <p className="batch-settings-feedback">{busyAction === "start" ? "正在加入队列…" : "关闭保留草稿 · 重复链接会逐条列出"}</p>
+          {addResult && <button type="button" className="batch-secondary" onClick={showTaskList}>查看任务列表</button>}
           <button type="button" className="batch-primary small" disabled={!canStart || !loaded || busyAction === "start"} onClick={prepare}>
             {busyAction === "start" ? <SpinnerGap className="spin" /> : <Play weight="fill" />}准备任务（{splitUrls(singing).length + splitUrls(dance).length} 条）
           </button>
@@ -2218,6 +2245,18 @@ export function BatchRoute() {
         </div>
 
         {addError && <div className="batch-alert" role="alert"><WarningCircle />{addError}</div>}
+        <div role="status" aria-live="polite">
+          {addResult && <p className="batch-settings-feedback">本次新增 {addResult.added} 条，跳过 {addResult.duplicates.length} 条重复链接。</p>}
+        </div>
+        {Boolean(addResult?.duplicates.length) && <section className="batch-duplicate-results" aria-label="重复链接清单">
+          <strong>以下链接未重复添加</strong>
+          <ol>
+            {addResult!.duplicates.map((item) => <li key={`${item.kind}-${item.inputIndex}`}>
+              <div><b>{item.kind === "singing" ? "歌曲" : "跳舞"}输入第 {item.inputIndex} 条</b><span>{item.reason}</span></div>
+              <span className="batch-duplicate-url">{item.url}</span>
+            </li>)}
+          </ol>
+        </section>}
         <p className="batch-settings-rule"><ListChecks />先备料，再逐条出片；出片与关机策略可在工具栏的「运行设置」中调整。</p>
       </BatchDialog>}
       {settingsOpen && <BatchDialog id="batch-running-settings-dialog" title="运行设置" subtitle="批量制作 · 运行策略"

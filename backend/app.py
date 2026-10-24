@@ -855,8 +855,15 @@ async def create_batch(request: BatchCreateRequest):
             fresh_singing, fresh_dance, singing_ratio, dance_ratio,
             request.shutdownOnComplete, request.autoRender, request.shutdownAfterPrep,
         )
+        submission = {
+            "added": len(state["items"]),
+            "duplicates": link_history.duplicate_details(singing, dance, known),
+        }
         if not state["items"]:
-            raise HTTPException(400, "没有可添加的新链接：链接已在历史记录中，或唱歌和跳舞填写了相同链接")
+            raise HTTPException(400, {
+                "message": "没有可添加的新链接，请核对下方重复清单。",
+                "submission": submission,
+            })
         batch_store.create(state)
         known.update(item["url"] for item in state["items"])
     duplicate_note = f"（过滤 {historical_duplicates} 条历史重复链接）" if historical_duplicates else ""
@@ -866,14 +873,14 @@ async def create_batch(request: BatchCreateRequest):
         ensure_shutdown_watcher()
     if request.autoStart:
         # 点「加入队列」直接开跑：预热 ComfyUI 后按队列逐条准备（下载 → 出图/文案 → 等确认）
-        return _resume_batch(
+        return {**_resume_batch(
             state["id"], f"已加入队列 {len(state['items'])} 条{duplicate_note}，正在下载并生成人物图与发布文案。"
-        )
+        ), "submission": submission}
     # 只入队（API 用）：等用户点「开跑」
-    return batch_store.update(
+    return {**batch_store.update(
         state["id"],
         notice=f"已把 {len(state['items'])} 条任务加入队列{duplicate_note}，点「开跑」后开始处理。",
-    )
+    ), "submission": submission}
 
 
 @app.get("/api/batches/{batch_id}")
@@ -914,6 +921,7 @@ async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest
         raise HTTPException(400, f"不是有效的抖音链接：{invalid[:80]}")
     try:
         with link_history.transaction() as known:
+            duplicate_rows = link_history.duplicate_details(singing, dance, known, state.get("items"))
             fresh_singing = [url for url in singing if url not in known]
             fresh_dance = [url for url in dance if url not in known]
             historical_duplicates = (
@@ -929,17 +937,18 @@ async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest
         raise HTTPException(400, str(error)) from error
     added = int(result.get("added") or 0)
     duplicates = int(result.get("duplicates") or 0) + historical_duplicates
+    submission = {"added": added, "duplicates": duplicate_rows}
     note = f"已加入 {added} 条新任务，已排到队尾。"
     if duplicates:
         note += f"（过滤 {duplicates} 条重复链接，含历史及唱歌与跳舞两边相同的链接）"
     if not added:
-        return batch_store.update(batch_id, notice=note)
+        return {**batch_store.update(batch_id, notice=note), "submission": submission}
     state = batch_store.get(batch_id) or state
     if request.autoStart and state.get("status") != "paused" and not state.get("pauseRequested"):
         # 点「加入队列」直接开跑：预热 ComfyUI 后按队列顺序准备（下载 → 出图/文案 → 等确认）
-        return _resume_batch(batch_id, f"{note} 正在下载并生成人物图与发布文案。")
+        return {**_resume_batch(batch_id, f"{note} 正在下载并生成人物图与发布文案。"), "submission": submission}
     # 没启动过 / 暂停中的批次只入队，不因为「加任务」就把流程跑起来
-    return _wake_batch(batch_id, note)
+    return {**_wake_batch(batch_id, note), "submission": submission}
 
 
 @app.post("/api/batches/{batch_id}/pause")

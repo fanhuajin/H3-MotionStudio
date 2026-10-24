@@ -68,11 +68,17 @@ class LinkHistoryTests(unittest.TestCase):
             store.update.side_effect = lambda key, **values: values
             response = asyncio.run(app.create_batch(app.BatchCreateRequest(danceUrls=[old, fresh])))
             self.assertIn("过滤 1 条历史重复", response["notice"])
+            self.assertEqual(response["submission"], {
+                "added": 1,
+                "duplicates": [{"kind": "dance", "inputIndex": 1, "url": old, "reason": "历史已有"}],
+            })
             self.assertEqual([item["url"] for item in store.create.call_args.args[0]["items"]], [fresh])
             store.create.reset_mock()
             with self.assertRaises(HTTPException) as caught:
                 asyncio.run(app.create_batch(app.BatchCreateRequest(singingUrls=[fresh])))
             self.assertEqual(caught.exception.status_code, 400)
+            self.assertEqual(caught.exception.detail["submission"]["added"], 0)
+            self.assertEqual(caught.exception.detail["submission"]["duplicates"][0]["url"], fresh)
             store.create.assert_not_called()
 
     def test_append_blocks_deleted_link_but_accepts_distinct_short_link(self):
@@ -102,9 +108,12 @@ class LinkHistoryTests(unittest.TestCase):
             ))
             self.assertEqual([item["url"] for item in response["items"]], [fresh])
             self.assertIn("过滤 1 条重复", response["notice"])
+            self.assertEqual(response["submission"]["duplicates"][0]["url"], old)
             state["items"].clear()
-            asyncio.run(app.append_batch_items_endpoint(state["id"], app.BatchAppendRequest(danceUrls=[fresh])))
+            response = asyncio.run(app.append_batch_items_endpoint(state["id"], app.BatchAppendRequest(danceUrls=[fresh])))
             self.assertEqual(state["items"], [])
+            self.assertEqual(response["submission"]["added"], 0)
+            self.assertEqual(response["submission"]["duplicates"][0]["url"], fresh)
 
     def test_cross_kind_rejection_does_not_remember_unaccepted_link(self):
         url = "https://v.douyin.com/shared"
@@ -124,3 +133,23 @@ class LinkHistoryTests(unittest.TestCase):
                 asyncio.run(app.create_batch(app.BatchCreateRequest(danceUrls=[url])))
         with link_history.transaction() as known:
             self.assertNotIn(url, known)
+
+    def test_details_identify_input_positions_and_all_duplicate_reasons(self):
+        old = "https://v.douyin.com/old"
+        shared = "https://v.douyin.com/shared"
+        current = "https://v.douyin.com/current"
+        fresh = "https://v.douyin.com/new"
+        details = link_history.duplicate_details(
+            [old, shared, fresh, fresh + "/?from=share", current], [shared], {old},
+            [{"url": current, "status": "confirmed"}],
+        )
+        self.assertEqual(
+            [(item["kind"], item["inputIndex"], item["url"], item["reason"]) for item in details],
+            [
+                ("singing", 1, old, "历史已有"),
+                ("singing", 2, shared, "唱歌与跳舞重复，两边均未添加"),
+                ("singing", 4, fresh + "/?from=share", "本次输入重复，已保留前一条"),
+                ("singing", 5, current, "当前队列已有"),
+                ("dance", 1, shared, "唱歌与跳舞重复，两边均未添加"),
+            ],
+        )

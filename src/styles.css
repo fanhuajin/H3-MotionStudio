@@ -1476,6 +1476,11 @@ body {
 .batch-add-dialog .batch-input-grid label { min-width: 0; }
 .batch-add-dialog .batch-input-grid textarea { min-height: 150px; max-height: 32dvh; }
 .batch-add-dialog .batch-settings-footer button { flex-shrink: 0; }
+.batch-duplicate-results { margin-top: 12px; padding: 12px; border: 1px solid var(--shell-line-strong); border-radius: 8px; font-size: 12px; line-height: 1.65; }
+.batch-duplicate-results ol { max-height: 240px; overflow-y: auto; margin: 8px 0 0; padding-left: 24px; }
+.batch-duplicate-results li + li { margin-top: 10px; }
+.batch-duplicate-results li > div { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.batch-duplicate-url { display: block; overflow-wrap: anywhere; user-select: text; }
 .batch-settings-dialog::backdrop { background: rgba(9, 10, 11, .76); backdrop-filter: blur(5px); }
 .batch-settings-header { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 20px 20px 16px; }
 .batch-settings-header p { margin: 0 0 4px; color: #9eb4aa; font-size: 11px; }

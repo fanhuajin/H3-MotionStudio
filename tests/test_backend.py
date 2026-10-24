@@ -1927,16 +1927,17 @@ class WorkflowPreparationTests(unittest.TestCase):
         """
         source = (Path(__file__).parents[1] / "src" / "BatchRoute.tsx").read_text(encoding="utf-8")
         # 拿到批次状态之后清空（= 只有成功才清；失败走 catch，不碰输入框）
-        self.assertIn('if (singingOn && singingUrls.length) setSinging("");', source)
-        self.assertIn('if (danceOn && danceUrls.length) setDance("");', source)
+        self.assertIn('if (singingOn && singingUrls.length) setSinging((current) => current === singing ? "" : current);', source)
+        self.assertIn('if (danceOn && danceUrls.length) setDance((current) => current === dance ? "" : current);', source)
         # 旧行为（提交后保留输入框内容）不许回来
         rendered = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
         rendered = re.sub(r"^\s*//.*$", "", rendered, flags=re.M)
         self.assertNotIn("输入框内容保留", rendered)
-        # 清空必须在 setBatch(state) 之后、catch 之前
+        # 全部重复不能清空；成功后也不能清掉请求期间的新编辑。
         body = source[source.index("const prepare = async () => {"):source.index("const call = async (action: string")]
-        self.assertLess(body.index("setBatch(state);"), body.index('setSinging("");'))
-        self.assertLess(body.index('setSinging("");'), body.index("} catch (reason) {"))
+        self.assertLess(body.index("acceptBatchState(state);"), body.index('setSinging((current)'))
+        self.assertLess(body.index("if (result?.added === 0) return;"), body.index('setSinging((current)'))
+        self.assertLess(body.index('setSinging((current)'), body.index("} catch (reason) {"))
 
     def test_batch_table_endpoints_are_registered(self) -> None:
         """后台表格化的批量接口（重排序 + 批量确认/重新开始/跳过/删除）必须都注册在 app 上。"""
