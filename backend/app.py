@@ -3329,6 +3329,25 @@ def image_workbench_items():
     return {"items": image_workbench.list_items()}
 
 
+class ImageModelRequest(BaseModel):
+    model: str
+
+
+@app.get("/api/image-settings")
+def get_image_settings():
+    return {"model": image_workbench.batch_image.model()}
+
+
+@app.put("/api/image-settings")
+def put_image_settings(payload: ImageModelRequest):
+    from .image_model_settings import save_model
+
+    try:
+        return {"model": save_model(payload.model)}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/image-workbench/{folder_id}/asset/{key}")
 def image_workbench_asset(folder_id: str, key: str, v: str = "", preview: bool = False):
     try:

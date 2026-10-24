@@ -4,6 +4,10 @@
 
 ## 配置（注册表优先，进程环境里的旧值会被覆盖）
 
+图片模型可在「图片封面」页顶部选择或输入，点击「保存模型」后立即用于人物图、封面及批量制作的新请求。
+选择保存在 `data/image-model.json`，优先于 `H3_BATCH_IMAGE_MODEL`，重启后保留；未保存时继续使用原环境配置。
+模型名须由当前中转站支持，页面不会发起付费请求探测模型。已提交任务续取时沿用检查点中的原模型。
+
 `H3_BATCH_IMAGE_BASE_URL=https://img.yeelo.fun/v1`、`H3_BATCH_IMAGE_API_KEY`（私有）、
 `H3_BATCH_IMAGE_MODEL=gpt-image-2`、`H3_BATCH_IMAGE_MODE=multi`、`H3_BATCH_IMAGE_FIELD=image`、
 `H3_BATCH_IMAGE_QUALITY=auto`。这六项在 `settings._REGISTRY_FIRST_KEYS` 里，改注册表后

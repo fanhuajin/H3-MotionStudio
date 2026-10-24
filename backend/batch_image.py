@@ -46,6 +46,7 @@ REQUEST_TIMEOUT = 900.0
 # 异步接口只在提交阶段等待接单回执；同步出图及已接单任务仍有独立的长等待。
 SUBMIT_TIMEOUT = 120.0
 _STATUS_REPORTER: ContextVar[Callable[[str], None] | None] = ContextVar("image_status_reporter", default=None)
+_REQUEST_MODEL: ContextVar[str] = ContextVar("image_request_model", default="")
 
 
 @contextmanager
@@ -148,7 +149,12 @@ def api_key() -> str:
 
 
 def model() -> str:
-    return env_value("H3_BATCH_IMAGE_MODEL") or ("gpt-image-2" if is_yeelo() else "gpt-image-2.5-sunburst")
+    from .image_model_settings import selected_model
+
+    return (
+        _REQUEST_MODEL.get() or selected_model() or env_value("H3_BATCH_IMAGE_MODEL")
+        or ("gpt-image-2" if is_yeelo() else "gpt-image-2.5-sunburst")
+    )
 
 
 def configured() -> bool:
@@ -763,6 +769,20 @@ async def _resolve_task(response: httpx.Response, output_path: Path, fingerprint
 
 
 async def _submit_or_resume(data: dict[str, str], files: list, output_path: Path) -> httpx.Response:
+    # 已付费任务只续取原模型；异步隔离也避免保存设置影响正在提交的请求。
+    checkpoint = _task_checkpoint(output_path)
+    request_model = data["model"]
+    if checkpoint.is_file():
+        record = json.loads(checkpoint.read_text(encoding="utf-8"))
+        request_model = record.get("model") or request_model
+    token = _REQUEST_MODEL.set(request_model)
+    try:
+        return await _submit_or_resume_request(dict(data, model=request_model), files, output_path)
+    finally:
+        _REQUEST_MODEL.reset(token)
+
+
+async def _submit_or_resume_request(data: dict[str, str], files: list, output_path: Path) -> httpx.Response:
     digest = hashlib.sha256(json.dumps(data, sort_keys=True).encode())
     for field, (name, content, mime) in files:
         digest.update(field.encode())
