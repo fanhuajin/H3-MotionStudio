@@ -5,10 +5,10 @@
   gap: 10px;
   padding: 12px 16px;
   margin-bottom: 14px;
-  border: 1px solid var(--studio-border, #34443e);
+  border: 1px solid var(--shell-line, #2c2e31);
   border-radius: 12px;
-  background: var(--studio-panel, #18221e);
-  color: var(--studio-text, #dbe6df);
+  background: #181818;
+  color: var(--shell-copy, #ededed);
   font-size: 12px;
 }
 .image-model-settings input {
@@ -16,12 +16,25 @@
   max-width: 360px;
   min-width: 0;
   padding: 8px 10px;
-  border: 1px solid var(--studio-border, #34443e);
+  border: 1px solid var(--shell-line-strong, #3a3d40);
   border-radius: 8px;
-  background: transparent;
+  background: var(--studio-inset, #161616);
   color: inherit;
   font: inherit;
 }
 .image-model-settings small, .image-model-settings p { flex-basis: 100%; margin: 0; line-height: 1.65; }
-.image-model-settings small { opacity: .75; }
+.image-model-settings small { color: var(--shell-muted, #a2a3a3); }
+.image-model-settings .studio-button {
+  border-color: var(--shell-line-strong, #3a3d40);
+  background: #202020;
+  color: var(--shell-copy, #ededed);
+}
+.image-model-settings .studio-button:hover:not(:disabled) {
+  border-color: #626262;
+  background: #292929;
+}
+.image-model-settings :is(input, button):focus-visible {
+  outline: 2px solid #bcbcbc;
+  outline-offset: 2px;
+}
 .image-model-settings [role="alert"] { color: #efbc7b; }
