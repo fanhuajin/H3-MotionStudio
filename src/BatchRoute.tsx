@@ -930,9 +930,9 @@ export function BatchRoute() {
     if (ok) await itemCallFor(item, "complete");
   };
 
-  /** 批量操作：勾选后一次确认 / 跳过 / 删除（后端逐个校验，出片仍一条一条来）。 */
+  /** 批量操作：勾选后批量重新开始 / 删除（后端逐个校验，出片仍一条一条来）。 */
   const batchOp = async (
-    action: "confirm-many" | "retry-many" | "skip-many" | "delete-many",
+    action: "retry-many" | "delete-many",
     ask?: ConfirmAsk,
   ) => {
     if (!batch || selectedIds.size === 0) return;
@@ -1268,16 +1268,10 @@ export function BatchRoute() {
     });
   };
   const selectedItems = visibleItems.filter((item) => selectedIds.has(item.id));
-  const anyConfirmable = selectedItems.some(
-    (item) => item.status === "awaiting_review" && Boolean(item.ai?.reference_image_path),
-  );
   // 能批量「重新开始」的只有已经跑完一轮的（失败 / 等待区 / 已出片），
   // 跟单条「重试 / 重新开始」按钮同一条规则。
   const anyRestartable = selectedItems.some((item) =>
     ["failed", "skipped", "completed"].includes(item.status),
-  );
-  const anySkippable = selectedItems.some(
-    (item) => !["completed", "skipped", "deleted"].includes(item.status),
   );
   const anyDeletable = selectedItems.some((item) => item.status !== "deleted");
 
@@ -1921,16 +1915,6 @@ export function BatchRoute() {
               <div className="batch-bulk-bar">
                 <span>已选 {selectedIds.size} 条</span>
                 {activeTab !== "render" && activeTab !== "completed" && <>
-                {activeTab !== "archive" && (
-                <button
-                  className="batch-primary small"
-                  disabled={!anyConfirmable || Boolean(busyAction)}
-                  onClick={() => void batchOp("confirm-many")}
-                  title={anyConfirmable ? "一次放行所有已勾选的待确认条目（缺候选图的不会放行）" : "勾选里没有可确认的条目（需待确认且有候选图）"}
-                >
-                  <Check weight="bold" />确认并出片
-                </button>
-                )}
                 <button
                   disabled={Boolean(busyAction) || (activeTab === "archive" ? prepBlocked || !selectedItems.some(TAB_MATCH.archive) : !anyRestartable)}
                   onClick={() => activeTab === "archive"
@@ -1953,29 +1937,6 @@ export function BatchRoute() {
                   {activeTab === "archive" ? <><Play />开始出片</> : <><ArrowClockwise />重新开始</>}
                 </button>
                 </>}
-                {activeTab !== "completed" && activeTab !== "archive" && (
-                <button
-                  className="batch-warning"
-                  disabled={!anySkippable || Boolean(busyAction)}
-                  onClick={() =>
-                    void batchOp(
-                      "skip-many",
-                      // 勾选里没有正在出片的条目时，跳过不动任何已生成的内容，直接执行不弹提示。
-                      selectedItems.some(renderingNow)
-                        ? {
-                          title: `跳过选中的 ${selectedIds.size} 条？`,
-                          detail: "正在出片的会先安全取消（已生成到一半的进度作废），成片已生成的会保留。",
-                          items: selectedItems.map((item) => `第 ${itemNumber(item)} 条 · ${itemTitle(item)}`),
-                          confirmLabel: "跳过这 " + selectedIds.size + " 条",
-                          tone: "warning",
-                        }
-                        : undefined,
-                    )
-                  }
-                >
-                  <X />跳过
-                </button>
-                )}
                 <button
                   className="danger"
                   disabled={!anyDeletable || Boolean(busyAction)}
