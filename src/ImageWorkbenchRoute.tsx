@@ -399,9 +399,9 @@ export function ImageWorkbenchRoute() {
                 ] as const).map(({ key, label, caption, missing }) => <figure key={key} className="image-copy-surface">
                   {item.assets[key] ? <AssetPreview src={assetUrl(item, key)} label={label}
                     onView={() => setViewer({ src: assetUrl(item, key), label })} /> : <div>{missing}</div>}
-                  <figcaption><span>{caption}</span><div className="image-reference-controls">{item.assets[key] && <CopyImageButton label={label} busy={busy} onCopy={() => void copyImage(key, label)} />}{key === "frame" && <button type="button" className="image-replace-frame" disabled={busy || !item.assets.frame || AUTO_LIVE.includes(item.automation?.status || "")}
+                  <figcaption><span>{caption}</span><div className="image-reference-controls">{key === "frame" && <button type="button" className="image-replace-frame" disabled={busy || !item.assets.frame || AUTO_LIVE.includes(item.automation?.status || "")}
                     title="从原视频另选服装覆盖更完整的新画面，只更换参考抽帧；会调用视觉接口挑选"
-                    onClick={() => void replaceFrame()}>{replacingFrame ? <SpinnerGap className="spin" /> : <ArrowClockwise />}{replacingFrame ? "正在选帧…" : "更换抽帧"}</button>}</div></figcaption>
+                    onClick={() => void replaceFrame()}>{replacingFrame ? <SpinnerGap className="spin" /> : <ArrowClockwise />}{replacingFrame ? "正在选帧…" : "更换抽帧"}</button>}{item.assets[key] && <CopyImageButton label={label} busy={busy} onCopy={() => void copyImage(key, label)} />}</div></figcaption>
                 </figure>)}</div>}
                 {stage !== "person" && <div className="image-reference-pair image-reference-single" aria-label="封面参考图片">
                   <figure className="image-copy-surface">
