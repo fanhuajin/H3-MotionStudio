@@ -2688,7 +2688,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         （路人/观众/伴舞/镜面倒影）会被照抄进成图，而且画得很怪；原来只在【出片可用性】里带了
         一句「不要……路人」，被淹没了。所以升级成一个独立的硬要求块，并**收进口径指纹**。
         口径：① 其他人**全部去掉**、只留图像-2 本人一个；② 2026-09-24 用户选择 B，
-        保留室内外属性、光线与氛围，允许重布置更好看的同类场景；
+        保留室内外属性、光线与氛围，必须换成另一处同类地点；
         ③ **不许用重度虚化糊掉**杂乱背景（那是"藏"不是"清"，而且背景一糊 ComfyUI 就没有可依据的
         空间结构）。
         """
@@ -2696,7 +2696,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("只保留主体一人", block)
         self.assertIn("移除其他人物、镜子及人物倒影、字幕与杂物", block)
         self.assertIn("原位置补成合理环境", block)
-        self.assertIn("按图一的居家或户外类别重新设计", block)
+        self.assertIn("按图一的居家或户外类别重新设计另一处同类地点", block)
         self.assertIn("不用虚化掩盖杂乱", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
@@ -2711,6 +2711,15 @@ class WorkflowPreparationTests(unittest.TestCase):
         local = batch_ai.compliance_fingerprint()
         with patch.object(batch_ai, "BACKGROUND_CLEAN_BLOCK", block + "\n再干净一点"):
             self.assertNotEqual(batch_ai.compliance_fingerprint(), local)
+
+    def test_image_prompts_require_a_different_location(self) -> None:
+        for kind, style in (("dance", "video"), ("singing", "video"), ("singing", "redesign")):
+            with self.subTest(kind=kind, style=style):
+                prompt = batch_ai.compose_image_prompt(kind, style)
+                self.assertIn("必须替换图一原背景", prompt)
+                self.assertIn("空间布局与主要陈设或景物组合应明显不同", prompt)
+                self.assertIn("不只清理杂物、换色或虚化", prompt)
+                self.assertLess(prompt.index("必须替换图一原背景"), prompt.index("【服装】"))
 
     def test_frame_picker_also_avoids_bystanders(self) -> None:
         """挑抽帧那一步要一并挑「背景里没有其他人」的帧（同一次视觉调用，不多花钱）。
