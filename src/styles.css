@@ -1951,14 +1951,6 @@ body {
 .image-stage-tabs strong,.image-stage-tabs small { display: block; }
 .image-stage-tabs strong { color: #dcddde; font-size: 11px; }
 .image-stage-tabs small { margin-top: 3px; color: #7b7c7d; font-size: 9px; }
-.prism-workspace .image-workbench-page .image-workbench-title h2 { color: var(--shell-copy); }
-.prism-workspace .image-workbench-page :is(.image-workbench-title small, .image-stage-tabs small) { color: var(--shell-muted); }
-.prism-workspace .image-workbench-page .image-auto-controls > span { color: var(--shell-muted); border-color: var(--shell-line-strong); background: #202020; }
-.prism-workspace .image-workbench-page .image-auto-controls button { color: var(--shell-copy); border-color: var(--shell-line-strong); background: #202020; }
-.prism-workspace .image-workbench-page .image-auto-controls button:hover:not(:disabled) { border-color: #626262; background: #292929; }
-.prism-workspace .image-workbench-page .image-stage-tabs button.active { color: var(--shell-copy); border-color: #626262; background: #252525; }
-.prism-workspace .image-workbench-page .image-stage-tabs button.active i { color: var(--shell-copy); border-color: #858585; }
-.prism-workspace .image-workbench-page :is(.image-stage-tabs button, .image-auto-controls button):focus-visible { outline: 2px solid #bcbcbc; outline-offset: 2px; }
 .image-workbench-content { display: grid; grid-template-columns: minmax(360px,.95fr) minmax(380px,1.05fr); gap: 14px; }
 .image-workbench-preview { position: relative; min-height: 520px; overflow: hidden; display: grid; place-items: center; border: 1px solid var(--shell-line-strong); border-radius: 10px; background: var(--shell-bg); }
 .image-workbench-preview img { width: 100%; height: 100%; max-height: 600px; object-fit: contain; }
