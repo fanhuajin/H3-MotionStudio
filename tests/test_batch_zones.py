@@ -176,12 +176,14 @@ class WaitingQueueTests(unittest.TestCase):
              patch.object(batch_worker, "_set_item") as mark, \
              patch.object(batch_worker, "restart_item_to_run") as restart, \
              patch.object(app, "deliver_review_materials") as deliver, \
+             patch.object(batch_worker, "assign_render_numbers") as number, \
              patch.object(app.batch_store, "update"), \
              patch.object(app, "_resume_batch", return_value=state):
             asyncio.run(app.start_batch_render("batch", app.BatchItemIdsRequest(itemIds=["a", "b"])))
         self.assertEqual([call.args[1] for call in mark.call_args_list], ["a", "b"])
         restart.assert_called_once_with("batch", "b")
         self.assertEqual([call.args[1] for call in deliver.call_args_list], ["a", "b"])
+        number.assert_called_once_with("batch", ["a", "b"])
 
     def test_removed_auto_render_cannot_be_enabled(self):
         with patch.object(app, "_batch_or_404", return_value={}), patch.object(app.batch_store, "update") as update:

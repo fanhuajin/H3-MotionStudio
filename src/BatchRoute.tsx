@@ -158,8 +158,10 @@ interface ChildJob {
 interface BatchItem {
   id: string;
   index: number;
-  /** 类型内编号（唱歌/跳舞各自从 001 起，发布目录名用它）；老条目没有这个字段 */
+  /** 原备料类型内编号；未分配出片号的旧条目也用它作兜底。 */
   kindIndex?: number;
+  /** 进入出片区后分配的连续编号；此前仍展示备料序号。 */
+  renderIndex?: number;
   kind: "singing" | "dance";
   url: string;
   /** 本条视频的画布比例：歌曲默认 4:3、跳舞默认 9:16，可逐条改 */
@@ -326,9 +328,9 @@ function styleSourceLabel(value?: string): string {
  * 两个字段各自更新就会出现两个标题。后端读取时已把 `item.title` 同步成 `ai.title`，
  * 这里再兜一层，保证同一屏永远不会出现两个不同的标题。
  */
-/** 任务序号：与发布目录/发布成品里的编号一致（类型内编号，001 起）；老条目没有 kindIndex 时退回全局 index。 */
+/** 出片序号与发布目录一致；未安排的任务仍展示原备料序号。 */
 function itemNumber(item: BatchItem): number {
-  return Number(item.kindIndex || item.index || 0);
+  return Number(item.renderIndex || item.kindIndex || item.index || 0);
 }
 
 /** 列表里显示的序号：补足三位，和发布目录名（`027_跳舞_…`）对得上。 */
@@ -662,7 +664,12 @@ export function BatchRoute() {
     return [...items].sort((a, b) => (KIND_RANK[a.kind] ?? 9) - (KIND_RANK[b.kind] ?? 9));
   }, [batch]);
   // 当前标签下显示的条目；展开的详情行也只在当前标签里渲染。
-  const filteredItems = useMemo(() => visibleItems.filter(TAB_MATCH[activeTab]), [visibleItems, activeTab]);
+  const filteredItems = useMemo(() => {
+    const rows = visibleItems.filter(TAB_MATCH[activeTab]);
+    return activeTab === "render"
+      ? rows.sort((a, b) => (KIND_RANK[a.kind] ?? 9) - (KIND_RANK[b.kind] ?? 9) || itemNumber(a) - itemNumber(b))
+      : rows;
+  }, [visibleItems, activeTab]);
   const previewItems = useMemo(
     () => visibleItems.filter((item) => item.status === "completed" && hasFinalVideo(item)),
     [visibleItems],

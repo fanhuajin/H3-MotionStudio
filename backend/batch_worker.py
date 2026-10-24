@@ -3497,7 +3497,8 @@ def _ideal_publish_folder(item: dict[str, Any]) -> Path:
     aweme_id = str(item.get("awemeId") or item.get("id"))
     base_name = _safe_name(str(ai.get("song_name") or ai.get("title") or item.get("title") or "作品"))
     label = kind_label(str(item.get("kind") or ""))
-    number = int(item.get("kindIndex") or item.get("index") or 0)
+    # 新任务按进入出片区时的连续编号；旧任务保留原类型内编号。
+    number = int(item.get("renderIndex") or item.get("kindIndex") or item.get("index") or 0)
     stem = (
         f"{number:03d}_{label}_{base_name}_{aweme_id}"
         if label
@@ -3855,6 +3856,37 @@ def _write_publish_frame(folder: Path, frame: Path | None) -> Path | None:
 
 def _publish_materials_allowed(item: dict[str, Any]) -> bool:
     return bool(item.get("renderQueued") or item.get("status") == "completed" or item.get("videoJobId"))
+
+
+def assign_render_numbers(batch_id: str, item_ids: list[str]) -> None:
+    """进入出片区才占号；已有编号和目录保留，删除备料任务不占出片号。"""
+    wanted = set(item_ids)
+
+    def assign(state: dict[str, Any]) -> None:
+        counters = dict(state.get("renderCounters") or {})
+        items = state.get("items") or []
+        for row in items:
+            kind = str(row.get("kind") or "")
+            number = int(row.get("renderIndex") or 0)
+            # 兼容此前已经安排出片/交付的任务，冻结原目录编号。
+            folder = _recorded_publish_folder(row)
+            if not number and (_publish_materials_allowed(row) or (folder and folder.is_dir())):
+                prefix = folder.name.split("_", 1)[0] if folder and folder.is_dir() else ""
+                number = int(prefix) if prefix.isdigit() else int(row.get("kindIndex") or row.get("index") or 0)
+                row["renderIndex"] = number
+            counters[kind] = max(int(counters.get(kind) or 0), number)
+        for row in items:
+            if row.get("id") not in wanted or row.get("renderIndex"):
+                continue
+            kind = str(row.get("kind") or "")
+            existing = _existing_publish_folder(row)
+            prefix = existing.name.split("_", 1)[0] if existing else ""
+            number = int(prefix) if prefix.isdigit() else int(counters.get(kind) or 0) + 1
+            row["renderIndex"] = number
+            counters[kind] = max(int(counters.get(kind) or 0), number)
+        state["renderCounters"] = counters
+
+    batch_store.mutate(batch_id, assign)
 
 
 def _prepared_material_folder(item: dict[str, Any]) -> Path | None:
@@ -4510,7 +4542,8 @@ def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
     **出片优先** —— 只要有一条已经备好，就立刻交给 GPU，别让它去等备料。
     类型优先级两边一致（用户 2026-09-20：「如果有唱歌和跳舞的视频，跳舞优先」）。
     """
-    for item in _priority_sorted(state.get("items") or []):
+    numbered = sorted(state.get("items") or [], key=lambda row: int(row.get("renderIndex") or row.get("kindIndex") or row.get("index") or 0))
+    for item in _priority_sorted(numbered):
         if str(item.get("status")) == "confirmed" and item.get("renderQueued", False):
             return item
     return None

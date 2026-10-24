@@ -31,6 +31,7 @@ class DeferredPublishFolderTests(unittest.TestCase):
                  patch.object(worker, "_item_frame", return_value=None), \
                  patch.object(app, "_batch_or_404", return_value=state), \
                  patch.object(app.batch_store, "update"), \
+                 patch.object(worker.batch_store, "mutate", side_effect=lambda b, change: change(state)), \
                  patch.object(app, "_resume_batch", return_value=state):
                 for row in rows:
                     result = worker.deliver_review_materials("batch", row["id"])

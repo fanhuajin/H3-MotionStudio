@@ -971,6 +971,8 @@ async def start_batch_render(batch_id: str, request: BatchItemIdsRequest | None 
     for row in candidates:
         if row.get("status") == "skipped":
             batch_worker.restart_item_to_run(batch_id, row["id"])
+    batch_worker.assign_render_numbers(batch_id, [row["id"] for row in candidates])
+    for row in candidates:
         batch_worker._set_item(batch_id, row["id"], renderQueued=True)
         await asyncio.to_thread(deliver_review_materials, batch_id, row["id"])
     batch_store.update(batch_id, autoRender=False, renderRequested=True, shutdownAfterPrep=False)
