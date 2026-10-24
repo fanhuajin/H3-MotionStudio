@@ -4412,6 +4412,9 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
             )
             return
 
+        # 只整理轮到的这一条，避免安排出片的 HTTP 请求等待整批素材复制。
+        await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
+
         # ② 单链路排队：**先等其它任务把全局流水线让出来**。等待期间条目保持「已确认」。
         await _wait_for_free_pipeline(batch_id, item_id)
         current = _item(batch_id, item_id)

@@ -8915,6 +8915,13 @@ class BatchSingleVideoQueueTests(unittest.TestCase):
     保持「已确认」，轮到它了才切状态；排队期间被取消的条目**绝不许再提交出片**。
     """
 
+    def setUp(self):
+        from backend import batch_worker
+
+        materials = patch.object(batch_worker, "deliver_review_materials")
+        self.materials = materials.start()
+        self.addCleanup(materials.stop)
+
     class _Stub:
         def __init__(self, state: dict):
             self.state = state
@@ -8976,6 +8983,7 @@ class BatchSingleVideoQueueTests(unittest.TestCase):
             seen["status_when_submitting"] = next(
                 item["status"] for item in state["items"] if item["id"] == item_id
             )
+            self.materials.assert_called_once_with("b1", item_id)
             raise _Stop
 
         async def noop(*_args, **_kwargs):
@@ -9089,6 +9097,7 @@ class BatchSingleVideoQueueTests(unittest.TestCase):
 
                 self.assertEqual(order, ["submit-i1", "watch-i1"])
                 self.assertEqual(state["items"][1]["status"], "confirmed")
+                self.materials.assert_called_once_with("b1", "i1")
 
                 release_first.set()
                 await asyncio.wait_for(asyncio.gather(first, second), timeout=2)
@@ -9099,6 +9108,7 @@ class BatchSingleVideoQueueTests(unittest.TestCase):
             batch_worker._BATCH_VIDEO_LOCKS.pop("b1", None)
 
         self.assertLess(order.index("complete-i1"), order.index("submit-i2"), order)
+        self.assertEqual([call.args[1] for call in self.materials.call_args_list], ["i1", "i2"])
         self.assertEqual(state["items"][0]["status"], "completed")
         self.assertEqual(state["items"][1]["status"], "completed")
 

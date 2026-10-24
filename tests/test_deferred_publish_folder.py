@@ -42,6 +42,10 @@ class DeferredPublishFolderTests(unittest.TestCase):
                     worker._expose_failed_item_in_image_workbench("batch", row["id"])
                 self.assertFalse((root / "publish").exists())
                 asyncio.run(app.start_batch_render("batch", app.BatchItemIdsRequest(itemIds=["a"])))
+                self.assertFalse((root / "publish").exists())
+                self.assertTrue(rows[0]["renderQueued"])
+                # 排队响应不复制素材；视频 runner 轮到本条时才正式落盘。
+                worker.deliver_review_materials("batch", "a")
                 folder = Path(rows[0]["outputs"]["folder"])
                 self.assertTrue((folder / "人物图.png").is_file())
                 self.assertTrue((folder / "发布文案.txt").is_file())

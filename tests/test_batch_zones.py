@@ -182,7 +182,7 @@ class WaitingQueueTests(unittest.TestCase):
             asyncio.run(app.start_batch_render("batch", app.BatchItemIdsRequest(itemIds=["a", "b"])))
         self.assertEqual([call.args[1] for call in mark.call_args_list], ["a", "b"])
         restart.assert_called_once_with("batch", "b")
-        self.assertEqual([call.args[1] for call in deliver.call_args_list], ["a", "b"])
+        deliver.assert_not_called()
         number.assert_called_once_with("batch", ["a", "b"])
 
     def test_removed_auto_render_cannot_be_enabled(self):
