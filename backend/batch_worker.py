@@ -863,10 +863,12 @@ def _adopt_published_image_for_restart(
 
 
 def uncertain_person_checkpoints(batch_id: str, item_id: str) -> list[Path]:
-    """只找人物图链路留下的结果未知标记，不触碰已有图片或检查结果。"""
+    """找人物图链路的请求标记和任务记录，不触碰已有图片。"""
     work = DATA_DIR / "batches" / batch_id / item_id
     return sorted(work.glob("candidate_r*_attempt*.png.request-pending")) + sorted(
         work.glob("candidate_r*_attempt*.png.judge-pending")
+    ) + sorted(
+        work.glob("candidate_r*_attempt*.png.relay-task.json")
     )
 
 
@@ -2528,6 +2530,9 @@ async def _generate_covers_via_api(
     kind = str(item.get("kind") or "singing")
     errors: list[str] = []
     async with _COVER_LOCK:
+        if _item(batch_id, item_id).get("retryMissingCovers"):
+            allow_uncertain_retry = True
+            _set_item(batch_id, item_id, retryMissingCovers=False)
         try:
             for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
                 if not force and any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):

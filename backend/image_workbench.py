@@ -662,12 +662,12 @@ async def _generate_cover(
                     f"上一次{stage}封面请求已提交但结果未确认；为避免重复扣费，本次没有自动重发。"
                     "请核对中转站后台后，在图片工作台明确点击这一步重做"
                 )
-        # 已有任务 ID 或落盘原图时始终先恢复，单步重做也不丢弃可续取的已付费结果。
-        if allow_uncertain_retry and not ready and not checkpoint.is_file():
-            import shutil
-            shutil.rmtree(work)
+        # 用户主动重试允许新请求；旧任务和冻结输入先归档，已下载原图仍直接保存。
+        if allow_uncertain_retry and not ready:
+            work.rename(work.with_name(f"{work.name}.previous-unknown-{uuid.uuid4().hex[:8]}"))
             work.mkdir()
-            marker.unlink(missing_ok=True)
+            if marker.is_file():
+                marker.rename(marker.with_name(f"{marker.name}.previous-unknown-{uuid.uuid4().hex[:8]}"))
         if not ready:
             if not inputs.is_file():
                 if checkpoint.is_file():

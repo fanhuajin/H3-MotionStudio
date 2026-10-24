@@ -24,6 +24,8 @@ class ManualRetryImageTests(unittest.TestCase):
                         work.mkdir(parents=True)
                         marker = work / "candidate_r0_attempt1.png.request-pending"
                         marker.write_text("submitted", encoding="utf-8")
+                        task = work / "candidate_r0_attempt1.png.relay-task.json"
+                        task.write_text('{"taskId":"old-paid-task"}', encoding="utf-8")
                         with patch.object(api, "batch_store", store), patch.object(batch_worker, "batch_store", store), patch.object(batch_worker, "DATA_DIR", root), patch.object(batch_worker, "_adopt_published_image_for_restart", return_value=None), patch.object(batch_worker, "_sync_publish_images"), patch.object(api, "_resume_batch", side_effect=lambda *args: store.get(state["id"])):
                             if status != "failed":
                                 with self.assertRaises(ValueError):
@@ -39,5 +41,6 @@ class ManualRetryImageTests(unittest.TestCase):
                         self.assertTrue(row["retryMissingCovers"])
                         self.assertFalse(marker.exists())
                         archived = list(work.glob("*.previous-unknown-*"))
-                        self.assertEqual(len(archived), 1)
-                        self.assertEqual(archived[0].read_text(encoding="utf-8"), "submitted")
+                        self.assertFalse(task.exists())
+                        self.assertEqual(len(archived), 2)
+                        self.assertIn("submitted", [path.read_text(encoding="utf-8") for path in archived])

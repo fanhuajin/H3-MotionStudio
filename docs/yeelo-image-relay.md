@@ -7,6 +7,7 @@
 图片模型可在「图片封面」页顶部选择或输入，点击「保存模型」后立即用于人物图、封面及批量制作的新请求。
 选择保存在 `data/image-model.json`，优先于 `H3_BATCH_IMAGE_MODEL`，重启后保留；未保存时继续使用原环境配置。
 模型名须由当前中转站支持，页面不会发起付费请求探测模型。已提交任务续取时沿用检查点中的原模型。
+用户主动点击单条或批量「重新开始」时，未成功的人物图和封面请求会归档旧任务记录后重新提交，采用当前模型，可能产生新费用；已有图片沿用。自动恢复仍续取原任务，不自动重发。
 
 `H3_BATCH_IMAGE_BASE_URL=https://img.yeelo.fun/v1`、`H3_BATCH_IMAGE_API_KEY`（私有）、
 `H3_BATCH_IMAGE_MODEL=gpt-image-2`、`H3_BATCH_IMAGE_MODE=multi`、`H3_BATCH_IMAGE_FIELD=image`、

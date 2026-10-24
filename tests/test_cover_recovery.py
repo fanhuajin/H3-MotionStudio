@@ -126,11 +126,36 @@ class CoverRequestRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(batch_image._task_checkpoint(work / "bilibili.png").is_file())
                 reference.write_bytes(b"changed reference")
                 prompt.return_value = "changed prompt"
-                await workbench._generate_cover(folder, "bilibili", "dance", allow_uncertain_retry=True)
+                await workbench._generate_cover(folder, "bilibili", "dance")
             self.assertEqual(calls, ["POST", "GET", "GET"])
             self.assertEqual((folder / "B站4x3.png").read_bytes(), payload)
             self.assertFalse(work.exists())
             self.assertFalse((folder / ".h3-bilibili-request-pending").exists())
+
+    async def test_explicit_retry_archives_old_task_and_submits_fresh_request(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / workbench.PERSON_NAME).write_bytes(png())
+            work = folder / ".h3-bilibili-work"
+            work.mkdir()
+            checkpoint = batch_image._task_checkpoint(work / "bilibili.png")
+            checkpoint.write_text('{"taskId":"failed-old-task"}', encoding="utf-8")
+            (work / "request.json").write_text('{"prompt":"old"}', encoding="utf-8")
+            async def generate(**kwargs):
+                self.assertFalse(checkpoint.exists())
+                self.assertEqual(kwargs["prompt"], "fresh prompt")
+                kwargs["output_path"].write_bytes(png())
+            with patch.object(batch_image, "generate_candidate_image", side_effect=generate) as request, \
+                 patch.object(workbench, "prompt", return_value="fresh prompt"), \
+                 patch.object(workbench.cover_review, "review", new_callable=AsyncMock, return_value={}), \
+                 patch.object(worker, "mark_publish_copy_locked"), \
+                 patch.object(worker, "resume_failed_item_with_complete_images", return_value=None):
+                await workbench._generate_cover(folder, "bilibili", "dance", allow_uncertain_retry=True)
+            request.assert_awaited_once()
+            archived = list(folder.glob(".h3-bilibili-work.previous-unknown-*"))
+            self.assertEqual(len(archived), 1)
+            self.assertIn("failed-old-task", (archived[0] / checkpoint.name).read_text())
+            self.assertTrue((folder / "B站4x3.png").is_file())
 
     async def test_save_failure_and_cancellation_preserve_recoverable_files(self):
         for mode in ("save", "cancel"):
