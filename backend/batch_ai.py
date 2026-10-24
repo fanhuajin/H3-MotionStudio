@@ -16,6 +16,7 @@ import json
 import mimetypes
 import os
 import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -670,6 +671,10 @@ COPY_SOURCE_FIRST_RULE = (
     "- **正向合规优先于沿用原文**：标题、简介、标签均采用健康、友善、积极的表达。"
     "禁止暴力威胁、自伤自杀、仇恨辱骂、低俗性暗示及危险挑战；"
     "包括「来杀我」「杀了我」「要命」「想死」「弄死」等夸张玩梗也不使用。"
+    "禁止未成年人性化、幼态性暗示或把年龄当作吸引点；"
+    "发布文案不使用「萝莉／蘿莉、正太、幼女、幼男、幼齿／幼齒、loli、shota」等人设词，"
+    "也不沿用「都说萝莉有三好」这类梗。不能只替换敏感字、谐音或宣称已成年，"
+    "必须舍弃原有暗示，围绕音乐、舞蹈、节奏与心情重新表述；正常甜美、可爱风格可以保留。"
     "原文或原标签含此类表达时，改写为与音乐、舞蹈、快乐、成长有关的正向文案，不能照抄；\n"
     "- **原视频的文案与标签是本次文案的第一来源**：先看「原作品描述」与「原标签」，"
     "**能沿用就直接沿用**（原描述的那句话、原标签的那些词都优先保留），"
@@ -1114,12 +1119,21 @@ DISALLOWED_COPY_MARKERS = (
     "杀", "自残", "自伤", "自尽", "自刎", "想死", "去死", "找死", "弄死", "死吧",
     "要命", "索命", "毙", "砍", "血腥", "血洗", "虐待", "跳楼", "割腕", "轻生",
     "滚蛋", "傻逼", "傻b", "煞笔", "贱人", "废物", "色情", "淫", "约炮", "裸聊",
+    "萝莉", "蘿莉", "正太", "幼女", "幼男", "幼齿", "幼齒",
 )
 
 
 def has_disallowed_copy(text: Any) -> bool:
-    normalized = re.sub(r"[\W_]+", "", str(text or "").casefold())
-    return any(marker in normalized for marker in DISALLOWED_COPY_MARKERS)
+    value = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    normalized = re.sub(r"[\W_]+", "", value)
+    # 本项目的发布文案限制比政策禁词更保守；普通校园、童年主题不单独拦截。
+    minor_context = any(word in normalized for word in ("未成年", "小学生", "初中生", "幼童", "儿童", "小女孩", "小男孩", "未满18", "幼态", "幼態"))
+    sexual_context = any(word in normalized for word in ("性感", "诱惑", "誘惑", "挑逗", "情趣", "擦边", "擦邊", "福利姬"))
+    return (
+        any(marker in normalized for marker in DISALLOWED_COPY_MARKERS)
+        or bool(re.search(r"(?<![a-z])(?:loli(?:con)?|shota(?:con)?)(?![a-z])", value))
+        or (minor_context and sexual_context)
+    )
 
 
 # 互动喊话 / 向观众提问：**用户明确不要**（2026-09-13 用户指着自动生成的简介说

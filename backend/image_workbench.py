@@ -271,6 +271,8 @@ def prompt(folder: Path, stage: str, kind: str = "singing", *, hand_report: dict
     ratio = "4:3 横版" if stage == "bilibili" else "3:4 竖版"
     title = _copy_field(copy, "标题") or _title(copy, folder.name)
     introduction = _copy_field(copy, "简介")
+    if batch_ai.has_disallowed_copy(title) or batch_ai.has_disallowed_copy(introduction):
+        raise ValueError("发布标题或简介含不适合发布的表达，请先修改发布文案后再生成封面；未提交新图片请求")
     person = _first(folder, PERSON_NAME)
     report = hand_report or (cover_review.read_report(person, folder / ".h3-cover-hands.json") if person else None)
     # B站恢复脸部突出的近景；抖音继续沿用当前拉远半身构图。
