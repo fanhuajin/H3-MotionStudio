@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useRememberedTab } from "./useRememberedTab";
 import { StudioBot } from "./StudioBot";
 import {
-  Check, ClipboardText, ImageSquare, Minus, Plus, SpinnerGap, WarningCircle, X,
+  ArrowClockwise, Check, ClipboardText, ImageSquare, Minus, Plus, SpinnerGap, WarningCircle, X,
 } from "@phosphor-icons/react";
 import { readJson } from "./api";
 import { PreviewImage } from "./PreviewImage";
@@ -141,6 +141,7 @@ export function ImageWorkbenchRoute() {
   const [kind, setKind] = useState<"singing" | "dance" | null>(null);
   const [filter, setFilter] = useRememberedTab("h3-motionstudio:image-filter-tab:v1", ["pending", "all"] as const, "pending");
   const [busy, setBusy] = useState(false);
+  const [replacingFrame, setReplacingFrame] = useState(false);
   const [initialLoading, setInitialLoading] = useState(cachedItems.length === 0);
   const [notice, setNotice] = useState("");
   const [viewer, setViewer] = useState<{ src: string; label: string } | null>(null);
@@ -265,6 +266,21 @@ export function ImageWorkbenchRoute() {
     }
   }, [busy, refresh]);
 
+  const replaceFrame = async () => {
+    if (!item || busy) return;
+    setBusy(true); setReplacingFrame(true);
+    setNotice("正在从原视频另选服装覆盖更完整的画面…");
+    try {
+      const result = await readJson<{ message: string }>(fetch(`/api/image-workbench/${item.id}/replace-frame`, { method: "POST" }), "更换抽帧失败");
+      setNotice(result.message);
+      await refresh();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "更换抽帧失败，已保留原图");
+    } finally {
+      setBusy(false); setReplacingFrame(false);
+    }
+  };
+
   const copyPrompt = useCallback(async (itemId: string, step: Stage) => {
     try {
       const data = await readJson<{ prompt: string }>(
@@ -380,7 +396,9 @@ export function ImageWorkbenchRoute() {
                 ] as const).map(({ key, label, caption, missing }) => <figure key={key} className="image-copy-surface">
                   {item.assets[key] ? <AssetPreview src={assetUrl(item, key)} label={label} busy={busy}
                     onView={() => setViewer({ src: assetUrl(item, key), label })} onCopy={() => void copyImage(key, label)} /> : <div>{missing}</div>}
-                  <figcaption>{caption}</figcaption>
+                  <figcaption>{caption}{key === "frame" && <button type="button" className="image-replace-frame" disabled={busy || !item.assets.frame || AUTO_LIVE.includes(item.automation?.status || "")}
+                    title="从原视频另选服装覆盖更完整的新画面，只更换参考抽帧；会调用视觉接口挑选"
+                    onClick={() => void replaceFrame()}>{replacingFrame ? <SpinnerGap className="spin" /> : <ArrowClockwise />}{replacingFrame ? "正在选帧…" : "更换抽帧"}</button>}</figcaption>
                 </figure>)}</div>}
                 {stage !== "person" && <div className="image-reference-pair image-reference-single" aria-label="封面参考图片">
                   <figure className="image-copy-surface">

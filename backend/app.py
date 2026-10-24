@@ -3365,6 +3365,20 @@ def image_workbench_asset(folder_id: str, key: str, v: str = "", preview: bool =
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": cache})
 
 
+@app.post("/api/image-workbench/{folder_id}/replace-frame")
+async def replace_workbench_frame(folder_id: str):
+    from .frame_replacement import replace_frame
+
+    try:
+        folder = image_workbench.resolve_folder(folder_id)
+        await replace_frame(folder)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"message": "抽帧已更换；如需采用新参考，请重新生成人物图"}
+
+
 @app.get("/api/image-workbench/{folder_id}/prompt/{stage}")
 async def image_workbench_prompt(folder_id: str, stage: str, kind: str = Query("singing")):
     try:
