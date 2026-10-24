@@ -2043,14 +2043,10 @@ body {
   .batch-zone-control { align-items: flex-start; flex-direction: column; }
 }
 
-/* 图片只负责打开大图；复制使用独立的悬浮按钮。 */
+/* 图片打开大图，复制操作固定放在底部。 */
 .image-copy-surface { position: relative; }
 .image-view-trigger { display: grid; place-items: center; width: 100%; padding: 0; border: 0; background: transparent; cursor: zoom-in; overflow: hidden; }
 .image-workbench-preview > .image-view-trigger { height: 100%; min-height: inherit; }
-.image-copy-surface > .image-hover-copy { position: absolute; z-index: 2; top: 10px; right: 10px; display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 7px 10px; border: 1px solid rgba(167, 139, 250,.6); border-radius: 7px; background: rgba(14,15,16,.94); color: #eaf4f0; font-size: 11px; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .15s; }
-.image-copy-surface > .image-hover-copy svg { width: 15px; height: 15px; }
-.image-copy-surface:hover > .image-hover-copy, .image-copy-surface:focus-within > .image-hover-copy { opacity: 1; pointer-events: auto; }
-.image-hover-copy:disabled { cursor: wait; }
 .workbench-image-viewer { position: fixed; inset: 0; box-sizing: border-box; width: min(1080px, 92vw); max-width: calc(100vw - 32px); height: 84dvh; max-height: calc(100dvh - 32px); margin: auto; padding: 0; border: 1px solid #454947; border-radius: 12px; background: var(--studio-inset); color: #eceeed; box-shadow: 0 24px 80px rgba(0,0,0,.5); overflow: hidden; }
 .workbench-image-viewer[open] { display: flex; flex-direction: column; }
 .workbench-image-viewer::backdrop { background: rgba(0,0,0,.65); }
@@ -2065,7 +2061,6 @@ body {
 .workbench-viewer-viewport.dragging { cursor: grabbing; }
 .workbench-viewer-viewport img { display: block; max-width: min(1048px, calc(92vw - 32px)); max-height: calc(84dvh - 124px); object-fit: contain; transform-origin: center; pointer-events: none; }
 .workbench-viewer-hint { flex-shrink: 0; margin: 0; padding: 10px 16px 14px; color: #a6b2ab; font-size: 12px; text-align: center; }
-@media (hover: none) { .image-copy-surface > .image-hover-copy { opacity: 1; pointer-events: auto; } }
 @media (max-width: 600px) { .workbench-viewer-toolbar { padding: 10px; gap: 6px; } .workbench-viewer-toolbar > div { gap: 4px; } .workbench-viewer-toolbar strong { font-size: 11px; } }
 
 /* Reserve red for deletion; amber indicates interrupted work. */
@@ -2101,7 +2096,6 @@ body {
 .image-workbench-actions .image-action-grid button { min-height: 36px; padding: 7px 10px; }
 .image-workbench-actions .image-action-grid button svg { width: 16px; height: 16px; flex-shrink: 0; }
 
-.image-workbench-actions .image-cover-reference .image-hover-copy:focus-visible,
 .image-cover-rules summary:focus-visible { outline: 2px solid #b5d5c0; outline-offset: 3px; }
 @media (max-width: 1120px) {
   .image-cover-reference-body { grid-template-columns: 104px minmax(0, 1fr); gap: 12px; }
@@ -2116,8 +2110,6 @@ body {
 .image-auto-controls .image-generate-stage { background: #242826; border-color: #454947; color: #eaf4f0; }
 .image-action-grid button { justify-content: center; }
 
-.image-copy-surface > .image-hover-copy { min-height: 38px; padding: 8px 12px; font-size: 12px; }
-.image-copy-surface > .image-hover-copy svg { width: 18px; height: 18px; }
 .image-workbench-actions .image-action-grid { grid-template-columns: minmax(0, 1fr); }
 
 .image-reference-pair.image-reference-single { grid-template-columns: minmax(0, 1fr); }
@@ -2135,3 +2127,13 @@ body {
 .batch-task-cell .batch-item-source { max-width: 100%; }
 
 @media (max-width: 600px) { .workbench-viewer-toolbar { flex-wrap: wrap; } .workbench-viewer-toolbar > div { margin-left: auto; } .workbench-viewer-viewport img { max-height: calc(84dvh - 156px); } }
+
+.image-copy-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 32px; padding: 5px 8px; border: 1px solid var(--shell-line-strong); border-radius: 6px; background: var(--studio-inset); color: var(--shell-copy); font: inherit; font-size: 12px; cursor: pointer; }
+.image-copy-button svg { width: 16px; height: 16px; flex-shrink: 0; }
+.image-copy-button:disabled { opacity: .5; cursor: wait; }
+.image-copy-button:hover:not(:disabled) { color: var(--shell-accent); }
+.image-copy-button:focus-visible { outline: 2px solid var(--shell-accent); outline-offset: 2px; }
+.image-workbench-preview > .image-copy-button { position: absolute; left: 9px; bottom: 9px; z-index: 2; }
+.image-reference-pair figcaption { flex-wrap: wrap; }
+.image-reference-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; margin-left: auto; }
+.image-reference-controls .image-replace-frame { margin-left: 0; min-height: 32px; }

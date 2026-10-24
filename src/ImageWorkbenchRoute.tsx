@@ -53,17 +53,20 @@ function assetUrl(item: WorkItem, key: keyof WorkItem["assets"]) {
 let cachedItems: WorkItem[] = [];
 let cachedSelectedId = "";
 
-function AssetPreview({ src, label, busy, onView, onCopy }: {
-  src: string; label: string; busy: boolean; onView: () => void; onCopy: () => void;
+function AssetPreview({ src, label, onView }: {
+  src: string; label: string; onView: () => void;
 }) {
-  return <>
-    <button type="button" className="image-view-trigger" aria-label={`放大查看${label}`} title="点击放大查看" onClick={onView}>
-      <PreviewImage src={`${src}&preview=true`} alt={label} retry={false} />
-    </button>
-    <button type="button" className="image-hover-copy" aria-label={`复制${label}`} disabled={busy} onClick={onCopy}>
-      <ClipboardText />复制图片
-    </button>
-  </>;
+  return <button type="button" className="image-view-trigger" aria-label={`放大查看${label}`} title="点击放大查看" onClick={onView}>
+    <PreviewImage src={`${src}&preview=true`} alt={label} retry={false} />
+  </button>;
+}
+
+function CopyImageButton({ label, busy, onCopy }: {
+  label: string; busy: boolean; onCopy: () => void;
+}) {
+  return <button type="button" className="image-copy-button" aria-label={`复制${label}`} disabled={busy} onClick={onCopy}>
+    <ClipboardText />复制图片
+  </button>;
 }
 
 export function ImageViewer({ src, label, onClose }: { src: string; label: string; onClose: () => void }) {
@@ -383,10 +386,10 @@ export function ImageWorkbenchRoute() {
                 aria-busy={busy} tabIndex={0} aria-label="图片预览与上传"
                 onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = busy ? "none" : "copy"; }}
                 onDrop={(event) => { event.preventDefault(); const file = event.dataTransfer.files[0]; if (file && !busy) void upload(file); }}>
-                {stageAsset ? <AssetPreview src={assetUrl(item, stage)} label={STAGES.find((row) => row.id === stage)?.label || "图片"} busy={busy}
-                  onView={() => setViewer({ src: assetUrl(item, stage), label: STAGES.find((row) => row.id === stage)?.label || "图片" })}
-                  onCopy={() => void copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} />
+                {stageAsset ? <AssetPreview src={assetUrl(item, stage)} label={STAGES.find((row) => row.id === stage)?.label || "图片"}
+                  onView={() => setViewer({ src: assetUrl(item, stage), label: STAGES.find((row) => row.id === stage)?.label || "图片" })} />
                   : <div><StudioBot mood={autoLive ? "working" : "idle"} variant={autoLive ? "thinking" : "wide"} size={104} /></div>}
+                {stageAsset && <CopyImageButton label={STAGES.find((row) => row.id === stage)?.label || "图片"} busy={busy} onCopy={() => void copyImage(stage, STAGES.find((row) => row.id === stage)?.label || "图片")} />}
                 <span>{stageAsset ? `${stageAsset.width} × ${stageAsset.height}` : "等待生成"}</span>
               </div>
               <div className="image-workbench-actions">
@@ -394,17 +397,18 @@ export function ImageWorkbenchRoute() {
                   { key: "frame", label: "图一抽帧", caption: "图一", missing: "缺少抽帧" },
                   { key: "identity", label: "图二固定五官", caption: "图二", missing: "缺少参考" },
                 ] as const).map(({ key, label, caption, missing }) => <figure key={key} className="image-copy-surface">
-                  {item.assets[key] ? <AssetPreview src={assetUrl(item, key)} label={label} busy={busy}
-                    onView={() => setViewer({ src: assetUrl(item, key), label })} onCopy={() => void copyImage(key, label)} /> : <div>{missing}</div>}
-                  <figcaption>{caption}{key === "frame" && <button type="button" className="image-replace-frame" disabled={busy || !item.assets.frame || AUTO_LIVE.includes(item.automation?.status || "")}
+                  {item.assets[key] ? <AssetPreview src={assetUrl(item, key)} label={label}
+                    onView={() => setViewer({ src: assetUrl(item, key), label })} /> : <div>{missing}</div>}
+                  <figcaption><span>{caption}</span><div className="image-reference-controls">{item.assets[key] && <CopyImageButton label={label} busy={busy} onCopy={() => void copyImage(key, label)} />}{key === "frame" && <button type="button" className="image-replace-frame" disabled={busy || !item.assets.frame || AUTO_LIVE.includes(item.automation?.status || "")}
                     title="从原视频另选服装覆盖更完整的新画面，只更换参考抽帧；会调用视觉接口挑选"
-                    onClick={() => void replaceFrame()}>{replacingFrame ? <SpinnerGap className="spin" /> : <ArrowClockwise />}{replacingFrame ? "正在选帧…" : "更换抽帧"}</button>}</figcaption>
+                    onClick={() => void replaceFrame()}>{replacingFrame ? <SpinnerGap className="spin" /> : <ArrowClockwise />}{replacingFrame ? "正在选帧…" : "更换抽帧"}</button>}</div></figcaption>
                 </figure>)}</div>}
                 {stage !== "person" && <div className="image-reference-pair image-reference-single" aria-label="封面参考图片">
                   <figure className="image-copy-surface">
-                    {item.assets.person ? <AssetPreview src={assetUrl(item, "person")} label="封面参考 · 人物图" busy={busy}
-                      onView={() => setViewer({ src: assetUrl(item, "person"), label: "封面参考 · 人物图" })} onCopy={() => void copyImage("person", "人物图")} />
+                    {item.assets.person ? <AssetPreview src={assetUrl(item, "person")} label="封面参考 · 人物图"
+                      onView={() => setViewer({ src: assetUrl(item, "person"), label: "封面参考 · 人物图" })} />
                       : <div>请先完成人物图</div>}
+                    <figcaption><span>人物图</span><div className="image-reference-controls">{item.assets.person && <CopyImageButton label="人物图" busy={busy} onCopy={() => void copyImage("person", "人物图")} />}</div></figcaption>
                   </figure>
                 </div>}
                 {stage !== "person" && <p className="image-prompt-note">手指完整可见或自然遮挡时保留原构图；手指被画面边缘截断、异常、看不清或检查失败时采用不露手半身构图。复制的提示词会按当前检查结果匹配，封面生成后直接保存。</p>}
