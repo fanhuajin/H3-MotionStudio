@@ -291,7 +291,7 @@ def _build_request(
             raise RuntimeError("composite 模式必须同时给场景图与身份图")
         combined = compose_reference(scene_image, relay_identity, work_dir / "reference-combined.png")
         text = (
-            "输入图是一张左右拼合的参考图：左半部分是「图一」（人物造型与服装参考；背景按正文要求替换），"
+            "输入图是一张左右拼合的参考图：左半部分是「图一」（人物造型与服装参考；背景按正文判断保留或调整），"
             "右半部分是「图二」（唯一的人物身份与面部参考）。请把它当作两张独立参考图理解，"
             "不要输出这种左右拼接的画面。\n\n" + prompt
         )

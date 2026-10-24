@@ -2687,8 +2687,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         根因：精简模板第一句就是「以图像-1 为唯一的**场景、背景**基准」，抽帧背景里的同框其他人
         （路人/观众/伴舞/镜面倒影）会被照抄进成图，而且画得很怪；原来只在【出片可用性】里带了
         一句「不要……路人」，被淹没了。所以升级成一个独立的硬要求块，并**收进口径指纹**。
-        口径：① 其他人**全部去掉**、只留图像-2 本人一个；② 2026-09-24 用户选择 B，
-        保留室内外属性、光线与氛围，必须换成另一处同类地点；
+        口径：① 其他人**全部去掉**、只留图像-2 本人一个；② 按当前场景约定，
+        场景应符合服装风格与人物气质，合适可保留，不合适再重新设计；
         ③ **不许用重度虚化糊掉**杂乱背景（那是"藏"不是"清"，而且背景一糊 ComfyUI 就没有可依据的
         空间结构）。
         """
@@ -2696,7 +2696,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("只保留主体一人", block)
         self.assertIn("移除其他人物、镜子及人物倒影、字幕与杂物", block)
         self.assertIn("原位置补成合理环境", block)
-        self.assertIn("按图一的居家或户外类别重新设计另一处同类地点", block)
+        self.assertIn("根据人物服装风格、配色与整体气质选择协调的场景", block)
         self.assertIn("不用虚化掩盖杂乱", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
@@ -2712,14 +2712,15 @@ class WorkflowPreparationTests(unittest.TestCase):
         with patch.object(batch_ai, "BACKGROUND_CLEAN_BLOCK", block + "\n再干净一点"):
             self.assertNotEqual(batch_ai.compliance_fingerprint(), local)
 
-    def test_image_prompts_require_a_different_location(self) -> None:
+    def test_image_prompts_match_scene_to_clothing(self) -> None:
         for kind, style in (("dance", "video"), ("singing", "video"), ("singing", "redesign")):
             with self.subTest(kind=kind, style=style):
                 prompt = batch_ai.compose_image_prompt(kind, style)
-                self.assertIn("必须替换图一原背景", prompt)
-                self.assertIn("空间布局与主要陈设或景物组合应明显不同", prompt)
-                self.assertIn("不只清理杂物、换色或虚化", prompt)
-                self.assertLess(prompt.index("必须替换图一原背景"), prompt.index("【服装】"))
+                self.assertIn("服装风格、配色", prompt)
+                self.assertIn("原场景协调时可以保留，不协调时再重新设计", prompt)
+                self.assertIn("不强制更换场景", prompt)
+                self.assertNotIn("必须替换图一原背景", prompt)
+                self.assertLess(prompt.index("原场景协调时可以保留"), prompt.index("【服装】"))
 
     def test_frame_picker_also_avoids_bystanders(self) -> None:
         """挑抽帧那一步要一并挑「背景里没有其他人」的帧（同一次视觉调用，不多花钱）。
