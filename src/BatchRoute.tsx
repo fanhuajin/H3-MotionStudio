@@ -937,9 +937,9 @@ export function BatchRoute() {
     if (ok) await itemCallFor(item, "complete");
   };
 
-  /** 批量操作：勾选后批量重新开始 / 删除（后端逐个校验，出片仍一条一条来）。 */
+  /** 批量操作：勾选后批量重新开始 / 跳过 / 删除（后端逐个校验，出片仍一条一条来）。 */
   const batchOp = async (
-    action: "retry-many" | "delete-many",
+    action: "retry-many" | "skip-many" | "delete-many",
     ask?: ConfirmAsk,
   ) => {
     if (!batch || selectedIds.size === 0) return;
@@ -1944,6 +1944,18 @@ export function BatchRoute() {
                   {activeTab === "archive" ? <><Play />开始出片</> : <><ArrowClockwise />重新开始</>}
                 </button>
                 </>}
+                {activeTab === "render" && <button
+                  className="batch-warning"
+                  disabled={Boolean(busyAction)}
+                  onClick={() => void batchOp("skip-many", selectedItems.some(renderingNow) ? {
+                    title: `跳过选中的 ${selectedItems.length} 条任务？`,
+                    detail: "正在出片的任务会安全取消，未完成的出片进度会作废；已生成的文件保留。跳过后进入等待区，可以再次安排出片。",
+                    items: selectedItems.map((item) => `第 ${itemNumber(item)} 条 · ${itemTitle(item)}`),
+                    confirmLabel: "跳过所选任务",
+                    tone: "warning",
+                  } : undefined)}
+                  title="跳过所选任务并移入等待区，之后可以再次安排出片"
+                ><X />跳过</button>}
                 <button
                   className="danger"
                   disabled={!anyDeletable || Boolean(busyAction)}
