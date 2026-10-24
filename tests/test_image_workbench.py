@@ -75,14 +75,14 @@ class ImageWorkbenchTests(unittest.TestCase):
                 self.assertFalse(rows[0].get("awaitingMaterials", False))
                 self.assertTrue(rows[0]["batchLive"])
 
-    def test_failed_prepare_creates_uploadable_workbench_entry(self) -> None:
+    def test_failed_render_creates_uploadable_workbench_entry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             frame = root / "batches" / "batch" / "item" / "scene-frame.jpg"
             frame.parent.mkdir(parents=True)
             Image.new("RGB", (1200, 900)).save(frame)
             item = {"id": "item", "kind": "singing", "index": 1, "title": "测试歌曲",
-                    "awemeId": "123", "ai": {}, "outputs": {}}
+                    "awemeId": "123", "ai": {}, "outputs": {}, "renderQueued": True}
             with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), \
                  patch.object(batch_worker, "DATA_DIR", root), \
                  patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \

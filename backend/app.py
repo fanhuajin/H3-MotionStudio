@@ -972,6 +972,7 @@ async def start_batch_render(batch_id: str, request: BatchItemIdsRequest | None 
         if row.get("status") == "skipped":
             batch_worker.restart_item_to_run(batch_id, row["id"])
         batch_worker._set_item(batch_id, row["id"], renderQueued=True)
+        await asyncio.to_thread(deliver_review_materials, batch_id, row["id"])
     batch_store.update(batch_id, autoRender=False, renderRequested=True, shutdownAfterPrep=False)
     return _resume_batch(batch_id, "已安排出片，按队列逐条制作。")
 
@@ -1626,7 +1627,7 @@ async def upload_batch_item_image(
 
     batch_store.mutate_item(batch_id, item_id, apply)
     batch_store.add_item_log(batch_id, item_id, f"已收到你上传的候选图：{target.name}。{rewrite_note}")
-    # 换图/重写文案后，发布目录里的「人物图 + 发布文案」同步刷新（审核点已先落盘）
+    # 换图/重写文案后同步素材；未安排出片时只写内部暂存。
     await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
     # 图的比例和本条选定的画布比例不一致时提示（不拦截：最终构图由工作流缩放处理）
     mismatch = image_ratio_note(target, item_ratio(_batch_item_or_404(batch_id, item_id)))

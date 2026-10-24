@@ -4974,12 +4974,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn(_TEST_PUBLISH_ROOT.name, str(folder))
         self.assertTrue(folder.is_dir())
 
-    def test_batch_review_lands_image_and_copy_in_publish_folder(self) -> None:
-        """审核点就把「人物图 + 发布文案」写进发布目录（用户 2026-09-13：
-
-        「批量创建的时候 发布成品 这个目录下怎么没有生成对应内容呢」）。
-        提前落盘不能碰里程碑、不能写 videoFinal —— 成片还得等出片，之后由 `_deliver` 覆盖补上。
-        """
+    def test_batch_review_stages_materials_until_render(self) -> None:
+        """审核点只暂存素材，出片后才把最终成片与素材交付到发布目录。"""
         import asyncio
 
         from backend import batch_store as batch_store_module
@@ -5016,7 +5012,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                 with patch.object(batch_worker, "batch_store", store), patch.object(
                     batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
                 ):
-                    outputs = batch_worker.deliver_review_materials(state["id"], item["id"])
+                    with patch.object(batch_worker, "DATA_DIR", root / "data"):
+                        outputs = batch_worker.deliver_review_materials(state["id"], item["id"])
 
                 self.assertIsNotNone(outputs)
                 assert outputs is not None
@@ -5024,7 +5021,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                 self.assertTrue(Path(outputs["image"]).is_file())
                 self.assertTrue(Path(outputs["copy"]).is_file())
                 self.assertNotIn("videoFinal", outputs)
-                self.assertIn("7684126327402778850", Path(outputs["folder"]).name)
+                self.assertEqual(Path(outputs["folder"]).name, "publish-materials")
+                self.assertFalse((root / "发布成品").exists())
                 self.assertIn("#手势舞", Path(outputs["copy"]).read_text(encoding="utf-8-sig"))
                 # 里程碑不许被提前打勾（成片还没跑）
                 steps = {step["id"]: step["status"] for step in row()["milestones"]}
@@ -5032,7 +5030,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                 self.assertNotIn("deliver", steps)
                 self.assertEqual(row()["status"], "awaiting_review")
 
-                # 出片之后 `_deliver` 用同一个目录补上最终成片，且不会留下两张人物图
+                # 出片之后 `_deliver` 创建发布目录，且不会留下两张人物图
                 final = root / "final.mp4"
                 final.write_bytes(b"fake-video")
                 with patch.object(batch_worker, "batch_store", store), patch.object(
@@ -5041,7 +5039,8 @@ class WorkflowPreparationTests(unittest.TestCase):
                     delivered = asyncio.run(
                         batch_worker._deliver(state["id"], item["id"], {"finalOutput": str(final)})
                     )
-                self.assertEqual(Path(delivered["folder"]), Path(outputs["folder"]))
+                self.assertNotEqual(Path(delivered["folder"]), Path(outputs["folder"]))
+                self.assertIn("7684126327402778850", Path(delivered["folder"]).name)
                 self.assertEqual(Path(delivered["videoFinal"]).name, "最终成片.mp4")
                 self.assertTrue(Path(delivered["videoFinal"]).is_file())
                 self.assertEqual(
@@ -5053,6 +5052,7 @@ class WorkflowPreparationTests(unittest.TestCase):
                 with patch.object(batch_worker, "batch_store", store), patch.object(
                     batch_worker, "BATCH_OUTPUT_ROOT", root / "发布成品"
                 ):
+                    store.mutate_item(state["id"], item["id"], lambda row: row.update(renderQueued=True))
                     batch_worker.deliver_review_materials(state["id"], item["id"])
                 self.assertEqual(
                     sorted(p.name for p in Path(delivered["folder"]).glob("人物图.*")),

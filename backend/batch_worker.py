@@ -1730,11 +1730,11 @@ def _covers_ready(item: dict[str, Any]) -> bool:
 
 
 def _prep_assets_ready(item: dict[str, Any]) -> bool:
-    """备料是否已齐：人物图 + 发布文案落进发布目录。
+    """备料是否已齐：人物图 + 发布文案已暂存，兼容旧发布目录。
 
     封面在后台生成，不计入备料条件，出片可以立即放行。
     """
-    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    folder = _prepared_material_folder(item) or _recorded_publish_folder(item) or _existing_publish_folder(item)
     return bool(folder and folder.is_dir() and publish_published_image(folder)
                 and (folder / "发布文案.txt").is_file())
 
@@ -1767,13 +1767,13 @@ async def _finish_prep_covers(batch_id: str, item_id: str) -> None:
         return
     if _covers_ready(item):
         return
-    folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+    folder = _prepared_material_folder(item) or _recorded_publish_folder(item) or _existing_publish_folder(item)
     if folder is None and Path(str((item.get("ai") or {}).get("reference_image_path") or "")).is_file():
         await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
         item = _item(batch_id, item_id)
-        folder = _recorded_publish_folder(item) or _existing_publish_folder(item)
+        folder = _prepared_material_folder(item) or _recorded_publish_folder(item) or _existing_publish_folder(item)
     if folder is None or publish_published_image(folder) is None:
-        raise RuntimeError("人物图尚未落入发布目录，无法完成备料")
+        raise RuntimeError("人物图尚未暂存，无法完成备料")
     if not (folder / "发布文案.txt").is_file():
         raise RuntimeError("发布文案尚未落盘，无法完成备料")
 
@@ -2354,8 +2354,7 @@ async def _prepare_review_work(
         batch_store.add_item_log(
             batch_id, item_id, "出图素材已备齐，等待你上传 GPT 生成的图片后再确认出片。"
         )
-    # 审核点就把「人物图 + 发布文案」先放进发布目录（用户 2026-09-13 要求），
-    # 最终成片等出片后由 `_deliver` 补上；失败只记日志，不影响停在审核点。
+    # 审核点只暂存素材；安排进入出片区后再放进发布目录。
     await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
     # 注意：这里**不**把整个批次置为 awaiting_review，也不停 runner ——
     # 用户要求先整批备料，所以要让 run_batch 继续跑下一条的备料。
@@ -2810,6 +2809,8 @@ def publish_image_state(folder: Path | None) -> dict[str, Any]:
 def _sync_publish_images(batch_id: str, item_id: str) -> dict[str, Any]:
     """线程里跑：把能补的人物图先补进发布目录，再回报还缺什么。"""
     item = _item(batch_id, item_id)
+    if not _publish_materials_allowed(item):
+        return publish_image_state(_prepared_material_folder(item))
     ai = item.get("ai") or {}
     if not ai:
         return publish_image_state(None)
@@ -3852,20 +3853,30 @@ def _write_publish_frame(folder: Path, frame: Path | None) -> Path | None:
         return None
 
 
-def deliver_review_materials(batch_id: str, item_id: str) -> dict[str, str] | None:
-    """**审核点就把「人物图 + 发布文案」写进发布目录**，最终成片等出片后由 `_deliver` 补。
+def _publish_materials_allowed(item: dict[str, Any]) -> bool:
+    return bool(item.get("renderQueued") or item.get("status") == "completed" or item.get("videoJobId"))
 
-    用户 2026-09-13：「批量创建的时候 E:\\AI_Exports\\H3-MotionStudio\\发布成品 这个目录下
-    怎么没有生成对应内容呢」—— 人物图（用户上传的那张）与发布文案在确认前就已就绪，
-    没必要等成片跑完才落盘。这里只提前落这两件 + `folder`，**不碰里程碑、不写 videoFinal**，
-    所以「发布文件还没整理 / 重新整理发布文件」的语义不变；`_deliver` 之后照旧覆盖补全。
-    幂等：换图或重写文案后再次调用会覆盖同名文件。
-    """
+
+def _prepared_material_folder(item: dict[str, Any]) -> Path | None:
+    raw = str((item.get("prepOutputs") or {}).get("folder") or "")
+    if not raw:
+        return None
+    path = Path(raw)
+    try:
+        path.resolve().relative_to(DATA_DIR.resolve())
+    except ValueError:
+        return None
+    return path if path.is_dir() else None
+
+
+def deliver_review_materials(batch_id: str, item_id: str) -> dict[str, str] | None:
+    """等待出片时暂存素材；手动安排出片后才写发布目录，已有作品不搬动。"""
     item = _item(batch_id, item_id)
     ai = dict(item.get("ai") or {})
     if not ai:
         return None
-    folder = publish_folder(item)
+    publishing = _publish_materials_allowed(item)
+    folder = publish_folder(item) if publishing else DATA_DIR / "batches" / batch_id / item_id / "publish-materials"
     try:
         folder.mkdir(parents=True, exist_ok=True)
         fresh: dict[str, str] = {}
@@ -3880,11 +3891,12 @@ def deliver_review_materials(batch_id: str, item_id: str) -> dict[str, str] | No
         copy_path.write_text(publish_copy_text(ai), encoding="utf-8-sig")
         fresh["copy"] = str(copy_path)
         fresh["folder"] = str(folder.resolve())
-        merged = {**(item.get("outputs") or {}), **fresh}
-        _set_item(batch_id, item_id, outputs=merged)
+        output_key = "outputs" if publishing else "prepOutputs"
+        merged = {**(item.get(output_key) or {}), **fresh}
+        _set_item(batch_id, item_id, **{output_key: merged})
     except OSError as error:
         batch_store.add_item_log(
-            batch_id, item_id, f"提前写发布目录失败（不影响出片）：{error}"
+            batch_id, item_id, f"{'写发布目录' if publishing else '暂存备料'}失败：{error}"
         )
         return None
     landed = ["发布文案"]
@@ -3895,7 +3907,7 @@ def deliver_review_materials(batch_id: str, item_id: str) -> dict[str, str] | No
     batch_store.add_item_log(
         batch_id,
         item_id,
-        f"{'、'.join(landed)}已先放进发布目录：{folder}（最终成片跑完后再补）",
+        f"{'、'.join(landed)}已{'放进发布目录' if publishing else '暂存，安排出片后再放进发布目录'}：{folder}",
     )
     return merged
 
@@ -4594,8 +4606,10 @@ def _soft_fail_item(
 
 
 def _expose_failed_item_in_image_workbench(batch_id: str, item_id: str) -> None:
-    """备料中途失败也要留下可上传图片的发布目录入口。"""
+    """只为已经进入出片流程的异常任务补发布目录入口。"""
     item = _item(batch_id, item_id)
+    if not _publish_materials_allowed(item):
+        return
     folder = _existing_publish_folder(item) or _recorded_publish_folder(item) or _ideal_publish_folder(item)
     folder.mkdir(parents=True, exist_ok=True)
     frame = _item_frame(item)
