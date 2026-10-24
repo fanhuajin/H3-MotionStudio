@@ -203,14 +203,45 @@
 .studio-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .studio-skip-link { position: fixed; top: -80px; left: 260px; z-index: 99; background: #d1d6d2; color: #1f1f1f; padding: 12px 20px; border-radius: 8px; }
 .studio-skip-link:focus { top: 10px; }
-.prism-workspace.sidebar-collapsed { grid-template-columns: 80px minmax(0, 1fr); }
-.sidebar-collapsed .app-sidebar { padding-inline: 12px; }
-.sidebar-collapsed .sidebar-top { padding: 0 0 20px 12px; }
-.sidebar-collapsed :is(.studio-brand-copy, .studio-nav-label, .sidebar-section-label, .studio-nav-caret, .studio-search-trigger span, .studio-search-trigger kbd, .studio-profile-copy, .studio-owner-card > svg, .sidebar-system footer, .sidebar-service-row) { display: none; }
-.sidebar-collapsed .studio-search-trigger { justify-content: center; }
-.sidebar-collapsed .sidebar-nav-item { display: flex; justify-content: center; padding: 0; }
+.sidebar-collapsed :is(.studio-profile-copy, .studio-owner-card > svg) { display: none; }
 .sidebar-collapsed .studio-owner-card { padding: 8px 0; justify-content: center; }
-.sidebar-collapsed .studio-nav-section + .studio-nav-section { border-top: 1px solid var(--shell-line); padding-top: 12px; margin-top: 12px; }
+/* Keep the same navigation layout through the transition so labels never push icons. */
+@media (min-width: 901px) {
+  .prism-workspace { transition: grid-template-columns 280ms cubic-bezier(.22, 1, .36, 1); }
+  .prism-workspace.sidebar-collapsed { grid-template-columns: 80px minmax(0, 1fr); }
+  .prism-workspace .app-sidebar { min-width: 0; }
+  .prism-workspace .sidebar-top { transition: padding 280ms cubic-bezier(.22, 1, .36, 1); }
+  .sidebar-collapsed .sidebar-top { padding-inline: 12px 0; }
+  .prism-workspace :is(.studio-brand-copy, .studio-nav-label, .studio-search-trigger span, .studio-search-trigger kbd) {
+    min-width: 0;
+    white-space: nowrap;
+    transition: opacity 160ms ease, transform 280ms cubic-bezier(.22, 1, .36, 1), visibility 160ms;
+  }
+  .sidebar-collapsed :is(.studio-brand-copy, .studio-nav-label, .studio-search-trigger span, .studio-search-trigger kbd) {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateX(-6px);
+  }
+  .prism-workspace .sidebar-nav-item { overflow: hidden; transition: padding 280ms cubic-bezier(.22, 1, .36, 1), background .15s, color .15s; }
+  .prism-workspace .studio-search-trigger { overflow: hidden; transition: padding 280ms cubic-bezier(.22, 1, .36, 1); }
+  .sidebar-collapsed .sidebar-nav-item { padding-inline: 17px 0; }
+  .sidebar-collapsed .studio-search-trigger { padding-inline: 18px 0; }
+  .prism-workspace .sidebar-section-label {
+    max-height: 26px;
+    overflow: hidden;
+    white-space: nowrap;
+    transition: max-height 280ms cubic-bezier(.22, 1, .36, 1), margin 280ms cubic-bezier(.22, 1, .36, 1), opacity 160ms, visibility 160ms;
+  }
+  .sidebar-collapsed .sidebar-section-label { max-height: 0; margin-bottom: 0; opacity: 0; visibility: hidden; }
+  .prism-workspace .studio-nav-section + .studio-nav-section { transition: margin-top 280ms cubic-bezier(.22, 1, .36, 1); }
+  .sidebar-collapsed .studio-nav-section + .studio-nav-section { margin-top: 12px; }
+  .prism-workspace .sidebar-system {
+    max-height: 420px;
+    overflow: hidden;
+    transition: max-height 280ms cubic-bezier(.22, 1, .36, 1), margin-top 280ms cubic-bezier(.22, 1, .36, 1), opacity 160ms, visibility 160ms;
+  }
+  .sidebar-collapsed .sidebar-system { max-height: 0; margin-top: 0; opacity: 0; visibility: hidden; }
+}
 @media (max-width: 1280px) {
   .studio-topbar { padding-inline: 25px; }
   .prism-workspace :is(.batch-page, .image-workbench-page, .motion-route, .migrate-route, .upscale-route, .rvc-route, .subtitle-route, .douyin-route) { padding: 28px 25px 45px; }
