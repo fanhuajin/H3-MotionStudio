@@ -2696,15 +2696,15 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertIn("只保留主体一人", block)
         self.assertIn("移除其他人物、镜子及人物倒影、字幕与杂物", block)
         self.assertIn("原位置补成合理环境", block)
-        self.assertIn("根据人物服装风格、配色与整体气质选择协调的场景", block)
+        self.assertIn("人物本次服装的风格、配色、材质及整体气质协调", block)
         self.assertIn("不用虚化掩盖杂乱", block)
         for kind in ("dance", "singing"):
             prompt = batch_ai.compose_image_prompt(kind)
-            self.assertIn("【背景与实拍感】", prompt)
+            self.assertIn("【场景与光线】", prompt)
             self.assertIn(block.strip(), prompt)
             self.assertLess(len(prompt), 1800)
             self.assertLess(
-                prompt.index("【背景与实拍感】"),
+                prompt.index("【场景与光线】"),
                 prompt.index(batch_ai.IDENTITY_PRIORITY_BLOCK.strip()),
             )
         # 口径指纹要跟着背景块一起变（否则自检会误判「线上已是最新」）
@@ -2716,11 +2716,12 @@ class WorkflowPreparationTests(unittest.TestCase):
         for kind, style in (("dance", "video"), ("singing", "video"), ("singing", "redesign")):
             with self.subTest(kind=kind, style=style):
                 prompt = batch_ai.compose_image_prompt(kind, style)
-                self.assertIn("服装风格、配色", prompt)
-                self.assertIn("原场景协调时可以保留，不协调时再重新设计", prompt)
-                self.assertIn("不强制更换场景", prompt)
+                self.assertIn("服装的风格、配色、材质及整体气质协调", prompt)
+                self.assertIn("原场景合适时可以保留并整理；不合适时，重新设计与穿搭协调的环境", prompt)
+                self.assertIn("环境色彩、陈设与空间氛围衬托人物，不抢主体", prompt)
+                self.assertIn("光向、色温、投影和透视一致", prompt)
                 self.assertNotIn("必须替换图一原背景", prompt)
-                self.assertLess(prompt.index("原场景协调时可以保留"), prompt.index("【服装】"))
+                self.assertLess(prompt.index("原场景合适时可以保留"), prompt.index("【服装】"))
 
     def test_frame_picker_also_avoids_bystanders(self) -> None:
         """挑抽帧那一步要一并挑「背景里没有其他人」的帧（同一次视觉调用，不多花钱）。

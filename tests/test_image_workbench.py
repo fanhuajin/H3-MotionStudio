@@ -601,7 +601,7 @@ class ImageWorkbenchTests(unittest.TestCase):
         self.assertIn("剪裁留自然余量", person)
         self.assertIn("抬手、转身和弯腰时", person)
         self.assertIn("自然精致淡妆", person)
-        self.assertIn("【背景与实拍感】", person)
+        self.assertIn("【场景与光线】", person)
         self.assertNotIn("姿态不得有性暗示", person)  # 动作/姿态不在本次口径内
         self.assertNotIn("【服装】", cover)
         self.assertNotIn(batch_ai.CLOTHING_EXPOSURE_BLOCK, cover)
