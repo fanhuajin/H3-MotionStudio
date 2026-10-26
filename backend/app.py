@@ -1403,7 +1403,10 @@ async def skip_batch_item(batch_id: str, item_id: str):
                 if milestone.get("status") in {"pending", "running"}:
                     milestone["status"] = "skipped"
         batch_store.mutate_item(batch_id, item_id, mark_skipped)
-    return _wake_batch(batch_id, "当前条目已跳过。")
+    else:
+        # 批次已退出时也必须有人收尾，不能只留下 skipRequested。
+        batch_worker._spawn_orphan_abandon(batch_id, item_id, deleted=False)
+    return _wake_batch(batch_id, "当前条目已请求跳过，正在安全收尾。")
 
 
 @app.post("/api/batches/{batch_id}/items/{item_id}/complete")

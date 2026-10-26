@@ -9320,7 +9320,7 @@ class CancelGateTests(unittest.TestCase):
 
         item = {"id": "i1", "status": "running", "videoJobId": "job-1",
                 "childJob": {"id": "job-1"}, "milestones": [{"id": "video", "status": "running"}]}
-        state = {"id": "b1", "items": [item], "status": "running"}
+        state = {"id": "b1", "items": [item], "status": "completed", "runnerActive": False}
         cancelled: list[str] = []
 
         class _BatchStore:
@@ -9343,9 +9343,11 @@ class CancelGateTests(unittest.TestCase):
             with patch.object(app_module, "_batch_item_or_404", return_value=item), \
                  patch.object(app_module, "batch_store", _BatchStore()), \
                  patch.object(app_module, "cancel_item_work", return_value=False), \
+                 patch.object(app_module.batch_worker, "_spawn_orphan_abandon") as abandon, \
                  patch.object(app_module, "cancel_job", new=fake_cancel), \
                  patch.object(app_module, "_wake_batch", lambda *_a, **_k: state):
                 await app_module.skip_batch_item("b1", "i1")
+                abandon.assert_called_once_with("b1", "i1", deleted=False)
 
         asyncio.run(scenario())
         self.assertEqual(cancelled, ["job-1"], "跳过正在出片的一条，必须真的取消子任务")
