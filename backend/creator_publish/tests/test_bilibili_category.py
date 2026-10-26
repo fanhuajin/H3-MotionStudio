@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import Mock, patch
 import unittest
 
-from bilibili_category import category_opener, category_option, read_menu, set_category
+from bilibili_category import CategoryMenu, _settled_menu, category_opener, category_option, read_menu, set_category
 
 
 def node(name="", x=100, y=100, *, width=50, height=20, kind="TextControl", cls="", parent=None, offscreen=False):
@@ -14,6 +14,41 @@ def node(name="", x=100, y=100, *, width=50, height=20, kind="TextControl", cls=
 
 
 class CategoryTests(unittest.TestCase):
+    def test_scroll_waits_for_two_matching_menu_observations(self):
+        draft, _, _, popup, options = self.harness(wrapper=True)
+        moving = node("舞蹈", y=180, parent=popup)
+        first = CategoryMenu(popup, [moving], [moving])
+        settled = CategoryMenu(popup, options, options)
+        with patch("bilibili_category.read_menu", side_effect=[first, settled, settled]) as read, \
+                patch("bilibili_category.time.sleep"):
+            self.assertIs(_settled_menu(draft, 5), settled)
+        self.assertEqual(read.call_count, 3)
+        draft.scroll_in_control.assert_not_called()
+
+    def test_target_inside_menu_with_delayed_visibility_does_not_scroll_past_it(self):
+        draft, state, _, popup, options = self.harness(wrapper=True)
+        state["open"] = True
+        target = options[1]
+        stale = node("舞蹈", y=195, parent=popup)
+        stale.control = target
+        target.IsOffscreen = True
+        read = draft.controls
+        reads = 0
+
+        def controls():
+            nonlocal reads
+            reads += 1
+            if reads >= 4:
+                target.IsOffscreen = False
+            return [stale if c is target and target.IsOffscreen else c for c in read()]
+
+        draft.controls = controls
+        with patch("bilibili_category.time.sleep"):
+            set_category(draft, "舞蹈")
+        draft.scroll_in_control.assert_not_called()
+        draft.click.assert_called_once_with(target)
+        self.assertTrue(state["chosen"])
+
     def test_real_menu_accepts_new_category_names_without_losing_scroll_region(self):
         draft,_,current,popup,options=self.harness(wrapper=True)
         current.Name="vlog"

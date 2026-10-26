@@ -228,6 +228,23 @@ def _make_menu_room(draft, controls):
     return controls
 
 
+def _settled_menu(draft, timeout):
+    """滚轮后的UIA矩形和可见标记会分批更新，连续两次一致后再决定方向。"""
+    deadline = draft.now() + timeout
+    previous = None
+    while draft.now() < deadline:
+        draft.check()
+        menu = read_menu(draft)
+        if menu is None or not menu.options:
+            raise RuntimeError("B站分区菜单滚动后消失，未继续滚动页面或发布。")
+        signature = tuple(sorted((c.Name, *_center(c), c.IsOffscreen) for c in menu.all_options))
+        if signature == previous:
+            return menu
+        previous = signature
+        time.sleep(0.15)
+    raise RuntimeError("B站分区菜单滚动后仍未稳定，已保留稿件。")
+
+
 def set_category(draft, value, *, timeout=5, max_steps=60):
     if value not in CATEGORY_NAMES:
         raise ValueError(f"不支持的B站分区：{value}")
@@ -252,6 +269,10 @@ def set_category(draft, value, *, timeout=5, max_steps=60):
     previous, unchanged, direction, reversed_once = None, 0, "up", False
     for _ in range(max_steps):
         draft.check()
+        # check可能暂停很久；恢复后不沿用暂停前的菜单快照。
+        menu = read_menu(draft)
+        if menu is None or not menu.options:
+            raise RuntimeError("B站分区菜单已关闭，未继续滚动页面或发布。")
         # 菜单滚动期间快照可能仍标为可见，点击前按实时节点及菜单剪裁范围核对。
         chosen = _choose([c for c in menu.options if c.Name == value
                           and draft.visible(getattr(c, "control", c))
@@ -270,13 +291,14 @@ def set_category(draft, value, *, timeout=5, max_steps=60):
         hidden = _unique_options([c for c in menu.all_options if c.Name == value])
         if hidden and menu.container is not None:
             live = getattr(hidden[0], "control", hidden[0])
+            if _inside(live, menu.container):
+                # 目标已进入菜单但UIA尚未报告可见时等待刷新，继续滚动会越过目标。
+                time.sleep(0.15)
+                continue
             direction = "up" if _center(live)[1] < menu.container.BoundingRectangle.top else "down"
         anchor = menu.container or sorted(menu.options, key=lambda c: _center(c)[1])[len(menu.options) // 2]
         draft.scroll_in_control(anchor, direction, 1)
-        time.sleep(0.15)
-        menu = read_menu(draft)
-        if menu is None or not menu.options:
-            raise RuntimeError("B站分区菜单滚动后消失，未继续滚动页面或发布。")
+        menu = _settled_menu(draft, timeout)
     else:
         raise RuntimeError(f"B站分区列表中没有找到{value}，未发布。")
     deadline = draft.now() + timeout
