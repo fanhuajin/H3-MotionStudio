@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import subprocess
+import time
 
 
 def classify_field(platform, observation):
@@ -77,16 +78,25 @@ def classify_field(platform, observation):
 
 def focused_field(platform, expected_window):
     """通过系统 UI Automation 只读探测，超时或窗口改变时停止，不操作浏览器。"""
-    process = subprocess.run(
-        ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-         "-ExecutionPolicy", "Bypass", "-File",
-         str(Path(__file__).with_name("focus_probe.ps1"))],
-        capture_output=True,
-        encoding="utf-8-sig",
-        errors="replace",
-        timeout=8,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+    for attempt in range(3):
+        process = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-File",
+             str(Path(__file__).with_name("focus_probe.ps1"))],
+            capture_output=True,
+            encoding="utf-8-sig",
+            errors="replace",
+            timeout=8,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if not process.returncode:
+            break
+        detail = (process.stderr or process.stdout).strip()
+        # 仅重试尚未执行输入的只读探测；成功后仍核对窗口及字段，不重发F6。
+        transient = "没有可读取的焦点控件" in detail or "CouldNotAutoloadMatchingModule" in detail
+        if not transient or attempt == 2:
+            break
+        time.sleep(0.25)
     if process.returncode:
         detail = (process.stderr or process.stdout).strip()
         raise RuntimeError("浏览器焦点检测脚本执行失败：\n" + (detail or f"退出码 {process.returncode}"))
