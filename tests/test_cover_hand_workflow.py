@@ -17,7 +17,7 @@ def picture(color="red"):
 
 
 class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_outstretched_arm_uses_no_hands_without_expanding_background(self):
+    async def test_reasonable_hands_near_edge_keep_pose_and_gain_margin(self):
         for edge in ("yes", "uncertain"):
             with self.subTest(edge=edge), tempfile.TemporaryDirectory() as raw:
                 folder = Path(raw)
@@ -25,11 +25,13 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 report = {"status": "reasonable", "reason": "手臂横伸出画",
                           "fingersCutByFrame": "no", "handsNearOrOutsideFrame": edge}
                 async def generate(**kw):
-                    self.assertIn("双臂调整为自然下垂", kw["prompt"])
-                    self.assertIn("不扩展背景", kw["prompt"])
-                    self.assertNotIn("再适量扩展背景", kw["prompt"])
+                    self.assertIn("保留原有举手或伸臂动作", kw["prompt"])
+                    self.assertIn("5%的安全距离", kw["prompt"])
+                    self.assertIn("手掌和全部手指完整入画", kw["prompt"])
+                    self.assertNotIn("双臂调整为自然下垂", kw["prompt"])
+                    self.assertNotIn("不扩展背景", kw["prompt"])
                     snapshot = json.loads((kw["output_path"].parent / "request.json").read_text(encoding="utf-8"))
-                    self.assertTrue(snapshot["failureFallback"])
+                    self.assertFalse(snapshot.get("failureFallback", False))
                     kw["output_path"].write_bytes(picture("blue"))
                 with patch.object(batch_ai, "judge_cover_hands", new_callable=AsyncMock, return_value=report) as judge, patch.object(batch_image, "generate_candidate_image", side_effect=generate), patch.object(wb, "save_upload"):
                     for stage in ("bilibili", "douyin"):
@@ -81,6 +83,9 @@ class CoverHandWorkflowTests(unittest.IsolatedAsyncioTestCase):
                             self.assertIn("不放大头脸", kw["prompt"])
                         self.assertIn("不得仅靠裁切", kw["prompt"])
                         self.assertIn("双臂调整为自然下垂", kw["prompt"])
+                        self.assertIn("必须自然连接完整的手掌和手指", kw["prompt"])
+                        self.assertIn("不在袖口或手腕处截断", kw["prompt"])
+                        self.assertNotIn("双手及手腕完全位于画面下边缘之外", kw["prompt"])
                         self.assertIn("自然补全原先被手或手臂遮挡", kw["prompt"])
                 self.assertEqual(person.read_bytes(), picture())
                 self.assertEqual((folder / "封面人物图.png").read_bytes(), b"obsolete")

@@ -72,5 +72,4 @@ async def review(image: Path, report: Path) -> dict[str, Any]:
 
 def hide_hands(report: dict[str, Any] | None) -> bool:
     return (not report or report.get("status") not in {"reasonable", "no_hands"}
-            or report.get("fingersCutByFrame") != "no"
-            or report.get("handsNearOrOutsideFrame") != "no")
+            or report.get("fingersCutByFrame") != "no")

@@ -267,7 +267,7 @@ def prompt(folder: Path, stage: str, kind: str = "singing", *, hand_report: dict
         return person_prompt(folder, kind)
     # 画幅话术只写比例、不写平台名（用户 2026-09-20：封面多平台复用，提示词里出现
     # 「B站」/「抖音」会让模型把对应平台的 logo 画进封面）。
-    # 原人物图单参考；检查合理保留构图，否则明确使用不露手半身构图。
+    # 原人物图单参考；手部正常但贴边时保留动作并留足边距，异常时调整姿态。
     ratio = "4:3 横版" if stage == "bilibili" else "3:4 竖版"
     title = _copy_field(copy, "标题") or _title(copy, folder.name)
     introduction = _copy_field(copy, "简介")
@@ -291,12 +291,18 @@ def prompt(folder: Path, stage: str, kind: str = "singing", *, hand_report: dict
         f"{framing_scale}"
         "头顶和两侧留有自然边距，不裁切肩膀，不放大头脸，不用贴脸特写或肩部以上近景来避手。"
     )
+    needs_pose_adjustment = failure_fallback or cover_review.hide_hands(report)
+    needs_hand_margin = not needs_pose_adjustment and report.get("handsNearOrOutsideFrame") != "no"
     framing = (
         avoid_hands_crop +
-        "若参考图的手臂横伸出画，或手或手臂举到胸前、肩旁或脸旁，不得仅靠裁切隐藏；将双臂调整为自然下垂，双手及手腕完全位于画面下边缘之外。"
+        "若参考图的手臂横伸出画，或手或手臂举到胸前、肩旁或脸旁，不得仅靠裁切隐藏；将双臂调整为自然下垂；画面包含袖口或手腕时，必须自然连接完整的手掌和手指，双手完整入画并留足边距。需要近景时在远离手腕的前臂或上臂处自然裁切，使袖口、手腕和双手一起位于画外，不在袖口或手腕处截断。"
         "自然补全原先被手或手臂遮挡的衣服、背景及必要的人物轮廓，不改变人物五官身份；"
         "不残留手指、手腕、截断手掌或突兀的手臂，不得只删除手掌而留下断臂。"
-        if failure_fallback or cover_review.hide_hands(report) else
+        if needs_pose_adjustment else
+        "保留原图人物的五官身份、发型、发饰、表情、服装、场景与光线，保留原有举手或伸臂动作及手部结构、左右对应和遮挡关系。"
+        "适当缩小人物并重新安排位置，必要时只延展同一场景的背景，使原图可见的双臂、手腕、手掌和全部手指完整入画，手指与四周边缘至少留出画面对应边长5%的安全距离。"
+        "不为了避开边缘放下手臂、删除手掌、藏手或改变动作，不在袖口和手腕处截断，不新增肢体；文字避让人物和手部。"
+        if needs_hand_margin else
         "保留原图人物的脸部五官、发型、发饰、表情、视线、姿态、服装、背景与光线，保持人物原有比例和位置，不重新摆姿势。"
         "原图中已经可见的手臂、双手和手指保持原样，不改变动作、位置、形态和遮挡关系，不重画已有手部。"
         "在目标画幅内安排文字留白，不扩展背景，不缩小人物来增加留白。"
@@ -305,7 +311,8 @@ def prompt(folder: Path, stage: str, kind: str = "singing", *, hand_report: dict
         "仍处于最终画幅之外，或因双手背在身后、被身体或衣物自然遮挡而不可见的手部，保持原有遮挡关系，无需补出或强行展示，不为露出双手改变姿态。"
         "不为排字删除、遮盖或改变人物及手部；留白不足时优先移动文字、换行或缩小字号，不通过扩展背景增加留白。"
     )
-    return f"""仅以这张原人物图为参考制作 {ratio} 封面。{framing}不扩展背景，不为增加文字空间拉远或缩小人物。只将下列文字自然融入画面。
+    background_rule = "仅为完整容纳手部调整构图和延展背景，不为增加文字空间继续缩小人物。" if needs_hand_margin else "不扩展背景，不为增加文字空间拉远或缩小人物。"
+    return f"""仅以这张原人物图为参考制作 {ratio} 封面。{framing}{background_rule}只将下列文字自然融入画面。
 标题：{title}
 简介：{introduction}
 标题采用自然有手写感的毛笔字，重点词用协调的颜色突出，搭配少量自然笔触或手绘下划线；简介用清楚易读的小字轻量融入画面，不使用厚重边框。文字准确完整，不重复，不改写标题与简介。
@@ -681,9 +688,8 @@ async def _generate_cover(
                 base_prompt = prompt(folder, stage, kind, hand_report=report)
                 snapshot = {"reference": frozen.name, "prompt": base_prompt,
                             "handReview": report, "ratio": "4:3" if stage == "bilibili" else "3:4"}
-                # 截指或伸臂贴边输入首次使用备用构图，失败后不重复同一备用付费请求。
-                if (report.get("fingersCutByFrame") in {"yes", "uncertain"}
-                        or report.get("handsNearOrOutsideFrame") in {"yes", "uncertain"}):
+                # 截指输入首次使用备用构图；正常手部贴边只调整边距，仍保留一次终态失败备用机会。
+                if report.get("fingersCutByFrame") in {"yes", "uncertain"}:
                     snapshot["failureFallback"] = True
                 temporary = inputs.with_suffix(".tmp")
                 temporary.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
