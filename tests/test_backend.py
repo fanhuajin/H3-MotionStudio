@@ -2965,14 +2965,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(copy_schema["properties"]["tags"]["maxItems"], 5)
         self.assertEqual(copy_schema["properties"]["tags"]["minItems"], 5)
 
-    def test_copy_prefers_the_original_video_copy_and_tags(self) -> None:
-        """2026-09-21 用户：「还有生成的标题简介标签都尽量参考原视频的」。
-
-        口径（逐条确认）：① **能沿用就沿用**、以原作品描述为主 —— 旧口径正好相反：预审写着
-        「参考原文风格但**不要照抄**」，出图后那次重写更写着「**不要照抄原作品描述**」、
-        而且连原标签都没传进去；② **原标签优先占满 5 个**；③ 旧红线继续生效
-        （不许互动喊话、不许客观描述句）。
-        """
+    def test_copy_creates_our_own_titles_and_introductions(self) -> None:
+        """源文案仅供参考，两处生成规则均要求为我们自己的作品重新创作。"""
         source = {"description": "随手一跳 今天的风很好", "tags": ["舞蹈", "日常", "卡点舞"]}
         prompts = {
             "预审": batch_ai.preflight_prompt(kind="dance", duration=15.0, **source),
@@ -2982,14 +2976,14 @@ class WorkflowPreparationTests(unittest.TestCase):
             ),
         }
         for label, prompt in prompts.items():
-            self.assertIn("第一来源", prompt, label)
-            self.assertIn("能沿用就直接沿用", prompt, label)
-            self.assertIn("优先取原作品描述里最像标题的那一句", prompt, label)
+            self.assertIn("原视频标题、简介仅作主题与事实参考", prompt, label)
+            self.assertIn("为我们自己的作品重新创作标题和简介", prompt, label)
+            self.assertIn("不直接沿用原句，也不只换几个词、调整语序或标点", prompt, label)
             self.assertIn("优先用原标签", prompt, label)
             self.assertIn("不足 5 个才自己补", prompt, label)
-            # 旧口径必须消失，否则模型照样另起炉灶
-            self.assertNotIn("不要照抄原作品描述", prompt, label)
-            self.assertNotIn("参考原文风格但不要照抄", prompt, label)
+            # 删除直接沿用的旧口径，避免提示词互相矛盾
+            self.assertNotIn("能沿用就直接沿用", prompt, label)
+            self.assertNotIn("优先取原作品描述里最像标题的那一句", prompt, label)
             # 旧红线继续生效
             self.assertIn("不许互动喊话", prompt, label)
         # 原标签必须**真的进正文**（以前这条路只看得到描述）
@@ -3021,7 +3015,18 @@ class WorkflowPreparationTests(unittest.TestCase):
                 source_tags=["舞蹈", "日常"],
             ))
         self.assertIn('原标签：["舞蹈", "日常"]', captured["text"])
-        self.assertIn("能沿用就直接沿用", captured["text"])
+        self.assertIn("为我们自己的作品重新创作标题和简介", captured["text"])
+
+    def test_copy_fallback_does_not_quote_source_description(self) -> None:
+        description = "随手一跳 今天的风很好"
+        for kind in ("dance", "singing"):
+            with self.subTest(kind=kind):
+                result = batch_ai.fallback_result(kind=kind, description=description, tags=[])
+                self.assertTrue(result["title"])
+                self.assertTrue(result["introduction"])
+                self.assertNotIn(description, result["title"])
+                self.assertNotIn(description, result["introduction"])
+                self.assertNotIn(description, batch_ai.compose_introduction(kind, description=description))
 
     def test_platform_tags_are_removed_and_replaced(self) -> None:
         result = {
@@ -3307,20 +3312,20 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertIn("readJsonOrNull", source, name)
 
     def test_batch_ai_fallback_and_action_plan_keep_item_runnable(self) -> None:
-        """模型降级时条目仍可继续：文案退到源作品信息，动作/运镜按时长铺满。"""
+        """模型降级时条目仍可继续：文案使用中性兜底，动作/运镜按时长铺满。"""
         result = batch_ai.fallback_result(
             kind="singing",
             description="粉色限定 #爱如潮水remix",
             tags=["爱如潮水", "#翻唱"],
         )
         self.assertEqual(result["style_source"], "video")
-        self.assertEqual(result["title"], "粉色限定")
+        self.assertEqual(result["title"], "翻唱作品")
         # 源作品标签排在前面，缺的用兜底池补到恰好 5 个（发布标签固定 5 个）
         self.assertEqual(result["tags"][:2], ["爱如潮水", "翻唱"])
         self.assertEqual(len(result["tags"]), 5)
         # 降级时简介不能是空的（2026-09-13 用户：「流程中简介和标签没有的话自动生成」）
         self.assertTrue(result["introduction"].strip())
-        self.assertIn("粉色限定", result["introduction"])
+        self.assertNotIn("粉色限定", result["introduction"])
         self.assertIsInstance(result["remove_subtitles"], bool)
         self.assertTrue(
             all(
