@@ -2698,7 +2698,7 @@ class WorkflowPreparationTests(unittest.TestCase):
         （路人/观众/伴舞/镜面倒影）会被照抄进成图，而且画得很怪；原来只在【出片可用性】里带了
         一句「不要……路人」，被淹没了。所以升级成一个独立的硬要求块，并**收进口径指纹**。
         口径：① 其他人**全部去掉**、只留图像-2 本人一个；② 按当前场景约定，
-        场景应符合服装风格与人物气质，合适可保留，不合适再重新设计；
+        场景应符合服装风格与人物气质，必须更换原背景；
         ③ **不许用重度虚化糊掉**杂乱背景（那是"藏"不是"清"，而且背景一糊 ComfyUI 就没有可依据的
         空间结构）。
         """
@@ -2727,14 +2727,15 @@ class WorkflowPreparationTests(unittest.TestCase):
             with self.subTest(kind=kind, style=style):
                 prompt = batch_ai.compose_image_prompt(kind, style)
                 self.assertIn("服装的风格、配色、材质及整体气质协调", prompt)
-                self.assertIn("原场景满足上述空间要求且与穿搭协调时可以保留并整理；否则重新设计与穿搭协调的环境", prompt)
+                self.assertIn("必须替换图一原背景", prompt)
+                self.assertIn("即使原背景合适也不得沿用，不得只清理杂物、换色或虚化", prompt)
                 self.assertIn("画面中不得出现床、床垫、床头、沙发或躺椅", prompt)
                 self.assertIn("移除并补全原有墙面和地面", prompt)
                 self.assertIn("居家场景保持真实自然的居家环境", prompt)
                 self.assertIn("环境色彩、陈设与空间氛围衬托人物，不抢主体", prompt)
                 self.assertIn("光向、色温、投影和透视一致", prompt)
-                self.assertNotIn("必须替换图一原背景", prompt)
-                self.assertLess(prompt.index("原场景满足上述空间要求"), prompt.index("【服装】"))
+                self.assertNotIn("可以保留并整理", prompt)
+                self.assertLess(prompt.index("必须替换图一原背景"), prompt.index("【服装】"))
 
     def test_frame_picker_also_avoids_bystanders(self) -> None:
         """挑抽帧那一步要一并挑「背景里没有其他人」的帧（同一次视觉调用，不多花钱）。
