@@ -205,10 +205,23 @@ class PublishServiceTests(unittest.TestCase):
         self.assertEqual(self.edit(item, hour="25").status_code, 400)
         self.assertEqual(self.store.path.read_bytes(), before)
 
-    def test_completed_status_cannot_be_reset(self):
+    def test_completed_status_can_be_reset_with_history_preserved(self):
         item = self.add()
-        self.assertEqual(self.edit(item, platform="douyin", complete=True).status_code, 200)
-        self.assertEqual(self.edit(item, platform="douyin", state="待发布").status_code, 400)
+        for platform in service.PLATFORMS:
+            for target in ("待发布", "不发布"):
+                with self.subTest(platform=platform, target=target):
+                    self.assertEqual(self.edit(item, platform=platform, complete=True).status_code, 200)
+                    previous = self.store.read()["items"][0]["details"][platform]
+                    response = self.edit(item, platform=platform, state=target)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    changed = response.json()["items"][0]
+                    self.assertEqual(changed["states"][platform], target)
+                    detail = self.store.read()["items"][0]["details"][platform]
+                    self.assertFalse(detail["submitted"])
+                    self.assertEqual(detail["previous_attempt"], previous)
+                    if target == "不发布":
+                        self.assertEqual(self.edit(item, platform=platform, state="待发布").status_code, 200)
+                        self.assertFalse(self.store.read()["items"][0]["details"][platform]["submitted"])
 
     def test_import_preserves_submitted_and_recovers_interrupted_states(self):
         source = self.root / "old.json"

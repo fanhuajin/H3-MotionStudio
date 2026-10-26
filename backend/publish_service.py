@@ -364,8 +364,11 @@ def edit(request: EditRequest):
                     item["details"][p] = {"manual": True, "submitted": True,
                         "completed_at": datetime.now(CHINA_TIME).isoformat(), "previous_attempt": previous}
                 elif request.state is not None:
-                    if current in ("已完成", "待核对", "发布中") or request.state not in ("待发布", "不发布"):
+                    if current in ("待核对", "发布中") or request.state not in ("待发布", "不发布"):
                         raise ValueError("该状态不能直接修改，请使用核对结果。")
+                    if current == "已完成":
+                        previous = item["details"].get(p, {})
+                        item["details"][p] = {"manual_reset": True, "submitted": False, "previous_attempt": previous}
                     item["states"][p] = request.state
         return view(publisher.mutate(operation))
     except (ValueError, OSError) as error:
