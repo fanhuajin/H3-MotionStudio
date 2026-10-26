@@ -207,16 +207,17 @@ export function PublishRoute() {
     return () => document.removeEventListener("keydown", navigate, true);
   }, [modal, queue, busy]);
 
-  async function action(path: string, body: unknown, close = true) {
+  async function action(path: string, body: unknown, close = true, showPageFeedback = true) {
     if (busyRef.current) return false;
     busyRef.current = true;
     generation.current++;
-    setBusy(true); setError(""); setActionFeedback("正在处理…");
+    setBusy(true); setError("");
+    if (showPageFeedback) setActionFeedback("正在处理…");
     try {
       const result = await api<Queue>(path, body);
       if (!alive.current) return false;
       if (result.items) setQueue(result);
-      setActionFeedback(path === "/control/stop" ? "停止指令已接收，正在等待当前操作安全结束…" : "操作已接收，正在同步状态…");
+      if (showPageFeedback) setActionFeedback(path === "/control/stop" ? "停止指令已接收，正在等待当前操作安全结束…" : "操作已接收，正在同步状态…");
       if (close) setModal(null);
       return true;
     } catch (failure) {
@@ -230,7 +231,8 @@ export function PublishRoute() {
   async function selectPreviewPlatform(item: Work, platform: Platform, checked: boolean) {
     if (busyRef.current) return;
     setPlatformEdit({ id: item.id, platform, checked });
-    await action("/edit", { ids: [item.id], platform, state: checked ? "待发布" : "不发布" }, false);
+    // 弹窗已有保存反馈，避免页面提示增删时推动背景列表。
+    await action("/edit", { ids: [item.id], platform, state: checked ? "待发布" : "不发布" }, false, false);
     if (alive.current) setPlatformEdit(null);
   }
   async function pickFolders() {
