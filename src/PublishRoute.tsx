@@ -263,7 +263,7 @@ export function PublishRoute() {
       onClick={() => setModal({ kind: "review", id: item.id, platform: p })}>待核对</button>
       : state === "发布中" ? <span className="publish-state">{state}</span>
       : <select aria-label={`${item.name} ${labels[p]}发布状态`} value={state} disabled={readonly}
-        className={state === "已完成" ? "publish-state success" : state === "失败" ? "publish-failed" : ""} onChange={event => void action("/edit", { ids: [item.id], platform: p, state: event.target.value }, false)}>
+        className={state === "失败" ? "publish-failed" : ""} onChange={event => void action("/edit", { ids: [item.id], platform: p, state: event.target.value }, false)}>
         {state === "已完成" && <option>已完成</option>}{state === "失败" && <option value="失败">失败</option>}<option>待发布</option><option>不发布</option></select>;
   }
   const items = queue?.items ?? [];
