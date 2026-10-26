@@ -2727,11 +2727,14 @@ class WorkflowPreparationTests(unittest.TestCase):
             with self.subTest(kind=kind, style=style):
                 prompt = batch_ai.compose_image_prompt(kind, style)
                 self.assertIn("服装的风格、配色、材质及整体气质协调", prompt)
-                self.assertIn("原场景合适时可以保留并整理；不合适时，重新设计与穿搭协调的环境", prompt)
+                self.assertIn("原场景满足上述空间要求且与穿搭协调时可以保留并整理；否则重新设计与穿搭协调的环境", prompt)
+                self.assertIn("画面中不得出现床、床垫、床头、沙发或躺椅", prompt)
+                self.assertIn("移除并补全原有墙面和地面", prompt)
+                self.assertIn("居家场景保持真实自然的居家环境", prompt)
                 self.assertIn("环境色彩、陈设与空间氛围衬托人物，不抢主体", prompt)
                 self.assertIn("光向、色温、投影和透视一致", prompt)
                 self.assertNotIn("必须替换图一原背景", prompt)
-                self.assertLess(prompt.index("原场景合适时可以保留"), prompt.index("【服装】"))
+                self.assertLess(prompt.index("原场景满足上述空间要求"), prompt.index("【服装】"))
 
     def test_frame_picker_also_avoids_bystanders(self) -> None:
         """挑抽帧那一步要一并挑「背景里没有其他人」的帧（同一次视觉调用，不多花钱）。
