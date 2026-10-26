@@ -246,21 +246,21 @@ export function ImageWorkbenchRoute() {
    *  - 单步（`stageArg`）：**总是带 `force=true`** —— 用户点这一下就是要「重新生成这一张」。
    *    不带 force 的话后端看到文件已存在会直接跳过、只在页面上回一句「已完成生成」，
    *    用户会以为按钮坏了（2026-09-19 反馈：「已完成生成 如果我点击之后需要运行我重新生成」）。
-   *  - 整条（不带 `stageArg`）：不 force，只补齐缺的那几张，不无谓重做。
+   *  - 整条（不带 `stageArg`）：重新提交缺图请求，已有图片保留。
    */
   const startAuto = useCallback(async (itemId: string, stageArg?: Stage) => {
     if (busy) return;
     setBusy(true);
     try {
       const label = STAGES.find((row) => row.id === stageArg)?.label || stageArg;
-      const query = stageArg ? `?stage=${stageArg}&force=true` : "";
+      const query = stageArg ? `?stage=${stageArg}&force=true` : "?retry_missing=true";
       await readJson(
         fetch(`/api/image-workbench/${itemId}/automatic${query}`, { method: "POST" }),
         "启动自动生成失败",
       );
       setNotice(stageArg
         ? `已开始重新生成${label}（会用新图覆盖现有那张）。`
-        : "已开始补齐这条的缺图；人物图与文案就绪后即可检查手部并生成封面。");
+        : "已开始重新请求缺图（可能产生新费用），已有图片保留；已下载的结果直接补保存。");
       await refresh();
     } catch (error) {
       setNotice(String((error as Error).message || error));
@@ -375,7 +375,7 @@ export function ImageWorkbenchRoute() {
                     onClick={() => startAuto(item.id, stage)}
                     disabled={busy || (stage !== "person" && !item.canCover)}
                     title={stage !== "person" && !item.canCover ? "请先准备人物图与发布文案，即可生成封面，无需等待视频完成" : undefined}
-                  ><SpinnerGap className={busy ? "spin" : undefined} />{stageAsset ? "重新生成这一步" : "API 自动生成这一步"}</button><button onClick={() => startAuto(item.id)} disabled={busy}>补齐这条的缺图</button></div></div>
+                  ><SpinnerGap className={busy ? "spin" : undefined} />{stageAsset ? "重新生成这一步" : "API 自动生成这一步"}</button><button onClick={() => startAuto(item.id)} disabled={busy} title="重新提交缺图的中转站请求，可能产生新费用；已有图片保留">补齐这条的缺图</button></div></div>
             {item.automation && AUTO_LIVE.includes(item.automation.status || "") && <p className="image-auto-progress"><StudioBot mood="working" variant="swirl" size={42} />{item.automation.message || "正在自动生成…"}{elapsedOf(item) ? `（已用 ${elapsedOf(item)} 秒）` : ""}</p>}
             {item.automation?.status === "completed" && item.automation.message && <p className="image-auto-done"><StudioBot mood="success" size={42} />{item.automation.message}</p>}
             {item.automation?.status === "failed" && <p className="image-auto-failed"><StudioBot mood="error" variant="exclaim" size={42} />{item.automation.message || "自动生成失败"}</p>}

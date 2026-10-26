@@ -3481,13 +3481,14 @@ async def image_workbench_watch_status(watch_id: str):
 async def image_workbench_automatic(
     folder_id: str,
     force: bool = Query(False),
+    retry_missing: bool = Query(False, description="主动重新提交缺图请求，可能产生新费用；已有图片保留"),
     stage: str | None = Query(None, description="只跑这一步：person / bilibili / douyin；留空=整条三步"),
 ):
     """自动出图。用户 2026-09-19：「也可以让我选择每一张的生成」——
     带 `stage` 就只生成那一张（人物图 / B站 / 抖音各自可单独点），不带就三步一次跑完。"""
     try:
         image_workbench.resolve_folder(folder_id)
-        return image_workbench.start_automatic(folder_id, force=force, stage=stage)
+        return image_workbench.start_automatic(folder_id, force=force, stage=stage, retry_missing=retry_missing)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(400, str(exc)) from exc
 

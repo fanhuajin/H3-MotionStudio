@@ -578,8 +578,7 @@ async def _generate_person(
     # 下一轮就会误以为从未提交过并再次扣费。成功后才清理；失败/取消则留下检查点。
     work = folder / ".h3-person-work"
     if allow_uncertain_retry and work.is_dir():
-        import shutil
-        shutil.rmtree(work, ignore_errors=True)
+        work.rename(work.with_name(f"{work.name}.previous-unknown-{uuid.uuid4().hex[:8]}"))
     work.mkdir(parents=True, exist_ok=True)
     completed = False
     try:
@@ -756,7 +755,7 @@ async def _generate_cover(
 
 
 async def run_automatic(folder_id: str, *, force: bool = False,
-                        stage: str | None = None) -> None:
+                        stage: str | None = None, retry_missing: bool = False) -> None:
     """自动出图。`stage` 给定就**只跑那一步**（用户在页面上单独点某一张）。
 
     stage ∈ {None(整条), "person", "bilibili", "douyin"}。
@@ -785,7 +784,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                                   message="正在生成人物图（生成后直接使用，不做自检）", kind=kind)
                         person_score = await _generate_person(
                             folder, kind,
-                            allow_uncertain_retry=bool(force and stage == "person"),
+                            allow_uncertain_retry=retry_missing or bool(force and stage == "person"),
                         )
                     continue
                 if not force and (folder / COVER_NAMES[step]).is_file():
@@ -797,8 +796,8 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                 ):
                     await _generate_cover(
                         folder, step, kind,
-                        # 单步重做才允许越过未知结果保护；已有任务仍只续取。
-                        allow_uncertain_retry=bool(force and stage == step),
+                        # 用户明确重提缺图或单步重做时归档旧请求，自动恢复仍续取。
+                        allow_uncertain_retry=retry_missing or bool(force and stage == step),
                     )
             done = "人物图与封面已自动补齐" if not stage else "已完成生成"
             if stage in (None, "person") and person_score >= 0:
@@ -812,14 +811,14 @@ async def run_automatic(folder_id: str, *, force: bool = False,
 
 
 def start_automatic(folder_id: str, *, force: bool = False,
-                    stage: str | None = None) -> dict[str, Any]:
+                    stage: str | None = None, retry_missing: bool = False) -> dict[str, Any]:
     if stage not in {None, "person", "bilibili", "douyin"}:
         raise ValueError(f"不支持的步骤：{stage}")
     current = AUTOMATIONS.get(folder_id) or {}
     if current.get("status") in {"queued", "running"}:
         return current
     _clear_stop()  # 用户主动点生成 = 新的一轮意图，清掉上次的停止开关
-    asyncio.create_task(run_automatic(folder_id, force=force, stage=stage))
+    asyncio.create_task(run_automatic(folder_id, force=force, stage=stage, retry_missing=retry_missing))
     _set_auto(folder_id, status="queued", stage="waiting", message="正在准备自动生成")
     return AUTOMATIONS[folder_id]
 
