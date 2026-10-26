@@ -277,6 +277,37 @@ class CategoryTests(unittest.TestCase):
         self.assertEqual(draft.click.call_count, 1)
         draft.scroll_page.assert_not_called()
 
+    def test_stale_visible_snapshot_scrolls_to_live_option_before_click(self):
+        draft, state, _, popup, options = self.harness(wrapper=True)
+        state["open"] = True
+        target = options[1]
+        stale = node("舞蹈", y=195, parent=popup)
+        stale.control = target
+        target.IsOffscreen = True
+        target.BoundingRectangle.top = 70
+        target.BoundingRectangle.bottom = 90
+        read = draft.controls
+
+        def controls():
+            result = read()
+            return [stale if c is target else c for c in result] if not state.get("scrolled") else result
+
+        def scroll(anchor, direction, amount):
+            self.assertIs(anchor, popup)
+            self.assertEqual((direction, amount), ("up", 1))
+            state["scrolled"] = True
+            target.IsOffscreen = False
+            target.BoundingRectangle.top = 195
+            target.BoundingRectangle.bottom = 215
+
+        draft.controls = controls
+        draft.scroll_in_control = Mock(side_effect=scroll)
+        with patch("bilibili_category.time.sleep"):
+            set_category(draft, "舞蹈")
+        draft.scroll_in_control.assert_called_once()
+        draft.click.assert_called_once_with(target)
+        self.assertTrue(state["chosen"])
+
 
 if __name__ == "__main__":
     unittest.main()

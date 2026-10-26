@@ -252,7 +252,11 @@ def set_category(draft, value, *, timeout=5, max_steps=60):
     previous, unchanged, direction, reversed_once = None, 0, "up", False
     for _ in range(max_steps):
         draft.check()
-        chosen = _choose([c for c in menu.options if c.Name == value])
+        # 菜单滚动期间快照可能仍标为可见，点击前按实时节点及菜单剪裁范围核对。
+        chosen = _choose([c for c in menu.options if c.Name == value
+                          and draft.visible(getattr(c, "control", c))
+                          and (menu.container is None
+                               or _inside(getattr(c, "control", c), menu.container))])
         if chosen is not None:
             draft.click(chosen)
             break
@@ -265,7 +269,8 @@ def set_category(draft, value, *, timeout=5, max_steps=60):
             direction, reversed_once, previous, unchanged = "down", True, None, 0
         hidden = _unique_options([c for c in menu.all_options if c.Name == value])
         if hidden and menu.container is not None:
-            direction = "up" if _center(hidden[0])[1] < menu.container.BoundingRectangle.top else "down"
+            live = getattr(hidden[0], "control", hidden[0])
+            direction = "up" if _center(live)[1] < menu.container.BoundingRectangle.top else "down"
         anchor = menu.container or sorted(menu.options, key=lambda c: _center(c)[1])[len(menu.options) // 2]
         draft.scroll_in_control(anchor, direction, 1)
         time.sleep(0.15)
