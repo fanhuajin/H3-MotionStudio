@@ -182,6 +182,8 @@ interface BatchItem {
   prepAttemptStartedAt?: string | null;
   coverStage?: "bilibili" | "douyin" | null;
   coverStartedAt?: string | null;
+  bilibiliCoverError?: string | null;
+  douyinCoverError?: string | null;
   finishedAt?: string | null;
   /** 源视频文件名（含抖音作品号） */
   sourceName?: string;
@@ -2078,6 +2080,11 @@ export function BatchRoute() {
                                 <b className="batch-status-percent">{itemPercent(item)}%</b>
                               )}
                             </span>
+                            {(item.bilibiliCoverError || item.douyinCoverError) && (
+                              <small role="status" title={[item.bilibiliCoverError, item.douyinCoverError].filter(Boolean).join("；")}>
+                                封面待处理：{[item.bilibiliCoverError && "B站", item.douyinCoverError && "抖音"].filter(Boolean).join("、")}
+                              </small>
+                            )}
                             {item.childJob?.currentSegment && item.childJob.estimatedSegments && (
                               <small className="batch-seg">H3 分段 {item.childJob.currentSegment}/{item.childJob.estimatedSegments}</small>
                             )}

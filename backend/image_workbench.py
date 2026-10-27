@@ -667,7 +667,7 @@ async def _generate_cover(
                 return
             if not ready and not checkpoint.is_file():
                 raise RuntimeError(
-                    f"上一次{stage}封面请求已提交但结果未确认；为避免重复扣费，本次没有自动重发。"
+                    f"上一次{stage}封面尝试提交后未取得接单回执，是否受理未知；为避免重复扣费，本次没有自动重发。"
                     "请核对中转站后台后，在图片工作台明确点击这一步重做"
                 )
         # 用户主动重试允许新请求；旧任务和冻结输入先归档，已下载原图仍直接保存。
@@ -737,6 +737,12 @@ async def _generate_cover(
         completed = True
         marker.unlink(missing_ok=True)
         completion.set_result((True, ""))
+    except batch_image.RelayUnreachable as exc:
+        # 提交前检查或连接建立失败，确定没有发出生成请求，不应留下未知计费闸门。
+        marker.unlink(missing_ok=True)
+        if not completion.done():
+            completion.set_result((False, str(exc)))
+        raise
     except batch_image.PolicyRejected as exc:
         # 明确的 400 拒绝没有待确认结果；允许用户之后在异常区点「重试」。
         marker.unlink(missing_ok=True)

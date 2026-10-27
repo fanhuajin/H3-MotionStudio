@@ -519,14 +519,25 @@ async def _prepare_route() -> str:
     （2026-09-23 实测：代理 SSL 直接 EOF，直连 0.4s 正常）。若每次出图都重新按配置覆盖，
     自愈结果会被冲掉、每次都要先白等一次连接失败。
     """
-    global _route_proxy, _route_note
+    global _route_proxy, _route_note, _route_override
     if _route_override is not None:
         _route_proxy, _route_note = _route_override
+    else:
+        proxy, note = await netproxy.probe_route_async(f"{base_url()}/models")
+        _route_proxy = proxy or None
+        _route_note = note
+    # 强制代理配置也要实际检查，不能拿付费 POST 当连通性探测。
+    url = f"{base_url()}/models"
+    if await asyncio.to_thread(netproxy._probe, url, _route_proxy or "", 8.0):
         return _route_note
-    proxy, note = await netproxy.probe_route_async(f"{base_url()}/models")
-    _route_proxy = proxy or None
-    _route_note = note
-    return note
+    has_other, other = _alternative_route(_route_proxy)
+    if has_other and await asyncio.to_thread(netproxy._probe, url, other or "", 8.0):
+        _route_proxy = other
+        _route_note = "提交前检查失败，已切换至" + (f"代理 {other}" if other else "直连")
+        _route_override = (other, _route_note)
+        return _route_note
+    _route_override = None
+    raise RelayUnreachable("图片提交前连通检查失败，尚未发送生成请求；请检查中转站或网络线路")
 
 
 def route_note() -> str:
@@ -573,7 +584,7 @@ async def _post(
         data.update({"async": "true", "response_format": "url"})
     timeout = httpx.Timeout(SUBMIT_TIMEOUT, connect=30.0) if asynchronous else REQUEST_TIMEOUT
     _report_request_status("正在提交图片请求，等待中转站接单回执（尚未确认受理）")
-    async with httpx.AsyncClient(timeout=timeout, proxy=route) as client:
+    async with httpx.AsyncClient(timeout=timeout, proxy=route, trust_env=False) as client:
         try:
             return await client.post(
                 url,

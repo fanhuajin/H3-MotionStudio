@@ -10,6 +10,40 @@ from backend import batch_image as relay
 
 
 class YeeloRelayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_preflight_switches_bad_proxy_before_any_paid_request(self):
+        with patch.object(relay, "_route_override", None), \
+             patch.object(relay, "_route_proxy", None), \
+             patch.object(relay, "_route_note", ""), \
+             patch.object(relay.netproxy, "probe_route_async", new_callable=AsyncMock,
+                          return_value=("http://broken-proxy", "configured")), \
+             patch.object(relay.netproxy, "_probe", side_effect=[False, True]) as probe, \
+             patch.object(relay, "_post", new_callable=AsyncMock) as post:
+            await relay._prepare_route()
+            self.assertIsNone(relay._route())
+            self.assertEqual([call.args[1] for call in probe.call_args_list],
+                             ["http://broken-proxy", ""])
+            post.assert_not_awaited()
+            self.assertIsNotNone(relay._route_override)
+
+    async def test_preflight_both_routes_down_never_submits(self):
+        with patch.object(relay, "_route_override", None), \
+             patch.object(relay, "_route_proxy", None), \
+             patch.object(relay, "_route_note", ""), \
+             patch.object(relay.netproxy, "probe_route_async", new_callable=AsyncMock,
+                          return_value=("http://broken-proxy", "configured")), \
+             patch.object(relay.netproxy, "_probe", return_value=False), \
+             patch.object(relay, "_post", new_callable=AsyncMock) as post:
+            with self.assertRaises(relay.RelayUnreachable):
+                await relay._prepare_route()
+            post.assert_not_awaited()
+
+    async def test_disconnect_without_receipt_never_repeats_paid_post(self):
+        with patch.object(relay, "_post", new_callable=AsyncMock,
+                          side_effect=httpx.RemoteProtocolError("disconnected")) as post:
+            with self.assertRaises(httpx.RemoteProtocolError):
+                await relay._post_with_route_fallback({"model": "test"}, [])
+            self.assertEqual(post.await_count, 1)
+
     def setUp(self):
         self.env = patch.object(relay, "env_value", side_effect=lambda key, default="": {
             "H3_BATCH_IMAGE_BASE_URL": "https://img.yeelo.fun/v1",

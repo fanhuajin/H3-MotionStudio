@@ -162,7 +162,7 @@ def _probe(url: str, proxy: str, timeout: float) -> bool:
     import httpx
 
     try:
-        with httpx.Client(timeout=timeout, proxy=proxy or None) as client:
+        with httpx.Client(timeout=timeout, proxy=proxy or None, trust_env=False) as client:
             client.get(url, headers={"Authorization": "Bearer probe"})
         return True
     except Exception:  # noqa: BLE001 - 连不上就是连不上，任何异常都算这条路不通

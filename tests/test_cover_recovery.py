@@ -19,6 +19,42 @@ def png():
 
 
 class CoverRequestRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_batch_records_platform_failure_and_clears_success(self):
+        with tempfile.TemporaryDirectory() as raw, \
+             patch.object(worker, "_item", return_value={}), \
+             patch.object(worker, "_set_item") as update, \
+             patch.object(worker.batch_store, "add_item_log"), \
+             patch.object(workbench, "_generate_cover", new_callable=AsyncMock,
+                          side_effect=[RuntimeError("no receipt"), None]):
+            errors = await worker._generate_covers_via_api("batch", "item", Path(raw))
+            self.assertEqual(len(errors), 1)
+            update.assert_any_call("batch", "item", bilibiliCoverError="no receipt")
+            update.assert_any_call("batch", "item", douyinCoverError=None)
+
+    def test_saving_missing_cover_clears_warning_even_when_copy_already_locked(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / workbench.COVER_NAMES["bilibili"]).write_bytes(png())
+            item = {"id": "item", "ai": {"copyLocked": True},
+                    "bilibiliCoverError": "no receipt", "douyinCoverError": "offline"}
+            with patch.object(worker, "_find_item_for_folder", return_value=({"id": "batch"}, item)), \
+                 patch.object(worker, "_set_item") as update:
+                worker.mark_publish_copy_locked(folder)
+                update.assert_called_once_with("batch", "item", bilibiliCoverError=None)
+
+    async def test_unreachable_before_submission_does_not_leave_unknown_marker(self):
+        with tempfile.TemporaryDirectory() as raw:
+            folder = Path(raw)
+            (folder / workbench.PERSON_NAME).write_bytes(png())
+            with patch.object(workbench, "prompt", return_value="cover"), \
+                 patch.object(batch_image, "generate_candidate_image", new_callable=AsyncMock,
+                              side_effect=batch_image.RelayUnreachable("preflight failed")) as generate:
+                with self.assertRaises(batch_image.RelayUnreachable):
+                    await workbench._generate_cover(folder, "bilibili", "dance")
+                self.assertFalse((folder / ".h3-bilibili-request-pending").exists())
+                self.assertTrue((folder / ".h3-bilibili-work" / "request.json").is_file())
+                self.assertEqual(generate.await_count, 1)
+
     def setUp(self):
         judge = patch.object(workbench.batch_ai, "judge_cover_hands", new_callable=AsyncMock,
                              return_value={"status": "reasonable", "reason": "结构自然", "fingersCutByFrame": "no", "handsNearOrOutsideFrame": "no"})

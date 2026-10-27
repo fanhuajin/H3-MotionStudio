@@ -2535,6 +2535,7 @@ async def _generate_covers_via_api(
         try:
             for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
                 if not force and any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
+                    _set_item(batch_id, item_id, **{f"{stage}CoverError": None})
                     continue
                 _set_item(batch_id, item_id, coverStage=stage, coverStartedAt=now_iso())
                 if any(step.get("id") == "prepare" and step.get("status") == "running"
@@ -2558,11 +2559,13 @@ async def _generate_covers_via_api(
                     raise
                 except Exception as error:  # noqa: BLE001 - 封面失败不该把整条作品判失败
                     errors.append(f"{label}{error}")
+                    _set_item(batch_id, item_id, **{f"{stage}CoverError": str(error)})
                     batch_store.add_item_log(
                         batch_id, item_id,
                         f"{label}自动生成失败（不影响出片，用时 {int(time.monotonic() - started)} 秒）：{error}",
                     )
                     continue
+                _set_item(batch_id, item_id, **{f"{stage}CoverError": None})
                 batch_store.add_item_log(
                     batch_id, item_id,
                     f"{label}已生成并放进发布目录（用时 {int(time.monotonic() - started)} 秒）。",
@@ -3553,6 +3556,13 @@ def mark_publish_copy_locked(folder: Path) -> bool:
     item_id = str(item.get("id") or "")
     if not batch_id or not item_id:
         return False
+    cleared = {
+        f"{stage}CoverError": None
+        for stage, names in PUBLISH_COVER_ALIASES.items()
+        if item.get(f"{stage}CoverError") and any(_present_file(folder, name) for name in names)
+    }
+    if cleared:
+        _set_item(batch_id, item_id, **cleared)
     if (item.get("ai") or {}).get("copyLocked"):
         return False
 
