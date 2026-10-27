@@ -93,6 +93,31 @@ class ImageWorkbenchTests(unittest.TestCase):
                 self.assertEqual(row["batchLive"], item["status"] in {"pending", "confirmed"})
             self.assertEqual(list(root.iterdir()), [])
 
+    def test_skipped_task_reads_prepared_person_without_publish_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            prepared = root / "batches" / "batch" / "item" / "publish-materials"
+            prepared.mkdir(parents=True)
+            Image.new("RGB", (90, 160)).save(prepared / "人物图.png")
+            (prepared / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+            folder = root / "publish" / "dance" / "100_跳舞_测试_123"
+            item = {"id": "item", "status": "skipped", "kind": "dance", "index": 100,
+                    "prepOutputs": {"folder": str(prepared)}}
+            with patch.object(workbench, "BATCH_OUTPUT_ROOT", root / "publish"), \
+                 patch.object(workbench, "DATA_DIR", root), \
+                 patch.object(workbench.batch_store, "latest", return_value={"items": [item]}), \
+                 patch.object(batch_worker, "_existing_publish_folder", return_value=None), \
+                 patch.object(batch_worker, "_recorded_publish_folder", return_value=None), \
+                 patch.object(batch_worker, "_ideal_publish_folder", return_value=folder):
+                row, = workbench.list_items()
+                self.assertIsNotNone(row["assets"]["person"])
+                self.assertFalse(row["awaitingMaterials"])
+                self.assertFalse(row["batchLive"])
+                self.assertTrue(row["canCover"])
+                self.assertEqual(workbench.resolve_folder(row["id"]), prepared.resolve())
+                self.assertEqual(workbench.asset_path(prepared, "person"), prepared / "人物图.png")
+                self.assertFalse(folder.exists())
+
     def test_failed_render_creates_uploadable_workbench_entry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

@@ -50,6 +50,16 @@ def _folder_id(folder: Path) -> str:
     return folder.name.encode("utf-8").hex()
 
 
+def _prepared_folder(row: dict[str, Any]) -> Path | None:
+    raw = str((row.get("prepOutputs") or {}).get("folder") or "")
+    if not raw:
+        return None
+    folder = Path(raw).resolve()
+    if folder.is_relative_to((DATA_DIR / "batches").resolve()) and folder.is_dir():
+        return folder
+    return None
+
+
 def resolve_folder(folder_id: str) -> Path:
     if not _SAFE_ID.fullmatch(folder_id or ""):
         raise ValueError("作品编号无效")
@@ -71,6 +81,13 @@ def resolve_folder(folder_id: str) -> Path:
         folder = candidate.resolve()
         if folder.parent in allowed and folder.is_dir():
             return folder
+    for row in (batch_store.latest() or {}).get("items") or []:
+        if row.get("status") == "deleted" or row.get("deleteRequested"):
+            continue
+        if _folder_id(batch_worker._ideal_publish_folder(row)) == folder_id:
+            prepared = _prepared_folder(row)
+            if prepared:
+                return prepared
     raise FileNotFoundError("作品目录不存在")
 
 
@@ -218,6 +235,18 @@ def list_items() -> list[dict[str, Any]]:
             "hasVideo": False, "canCover": False,
             "assets": {name: None for name in ("frame", "identity", "person", "bilibili", "douyin")},
         }
+        prepared = _prepared_folder(row)
+        if prepared:
+            entry["copy"] = _copy_text(prepared)
+            entry["awaitingMaterials"] = False
+            person = _first(prepared, PERSON_NAME)
+            entry["canCover"] = bool(person and entry["copy"])
+            entry["assets"] = {
+                "frame": _meta(_first(prepared, "抽帧.jpg", "抽帧.png")),
+                "identity": _meta(IDENTITY_PATH), "person": _meta(person),
+                "bilibili": _meta(_first(prepared, COVER_NAMES["bilibili"])),
+                "douyin": _meta(_first(prepared, COVER_NAMES["douyin"])),
+            }
         items.append(entry)
         by_id[key] = entry
     return items
