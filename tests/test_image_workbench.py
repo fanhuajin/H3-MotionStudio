@@ -75,6 +75,24 @@ class ImageWorkbenchTests(unittest.TestCase):
                 self.assertFalse(rows[0].get("awaitingMaterials", False))
                 self.assertTrue(rows[0]["batchLive"])
 
+    def test_all_tasks_visible_without_count_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            statuses = ("pending", "confirmed", "completed", "failed", "skipped")
+            items = [{"id": str(index), "index": index, "kind": "dance",
+                      "status": statuses[index % len(statuses)]} for index in range(1, 206)]
+            with patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \
+                 patch.object(workbench.batch_store, "latest", return_value={"items": items}), \
+                 patch.object(batch_worker, "_existing_publish_folder", return_value=None), \
+                 patch.object(batch_worker, "_recorded_publish_folder", return_value=None), \
+                 patch.object(batch_worker, "_ideal_publish_folder", side_effect=lambda row: root / row["id"]):
+                rows = workbench.list_items()
+            self.assertEqual(len(rows), len(items))
+            self.assertEqual(len({row["id"] for row in rows}), len(items))
+            for item, row in zip(items, rows):
+                self.assertEqual(row["batchLive"], item["status"] in {"pending", "confirmed"})
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_failed_render_creates_uploadable_workbench_entry(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
