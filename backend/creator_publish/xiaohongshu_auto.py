@@ -119,15 +119,7 @@ class XiaohongshuDraft(DouyinDraft):
     def set_cover(self, path):
         if self.locate("完成"):
             self.finish_cover()
-        label = self.form_find("设置封面", direction="up")
-        r = label.BoundingRectangle
-        previews = [c for c in self.controls() if c.ControlTypeName == "GroupControl" and not c.Name
-                    and self.visible(c) and abs(c.BoundingRectangle.left-r.left)<25
-                    and r.bottom<c.BoundingRectangle.top<r.bottom+180
-                    and 100<c.BoundingRectangle.width()<250 and c.BoundingRectangle.height()>150]
-        if not previews:
-            raise RuntimeError("未找到封面预览。")
-        p = previews[0].BoundingRectangle
+        p = self.cover_preview().BoundingRectangle
         self.move_pointer(((p.left+p.right)//2,p.bottom-40))
         self.click(self.wait_name("编辑封面"))
         self.click(self.cover_upload_button())
@@ -135,6 +127,25 @@ class XiaohongshuDraft(DouyinDraft):
         self.wait_uploaded_cover()
         self.finish_cover()
         self.wait_name("封面效果评估通过，未发现封面质量问题", timeout=60)
+
+    def cover_preview(self):
+        from bilibili_auto import choose_control
+        for _ in range(20):
+            self.check()
+            controls = self.controls()
+            labels = [c.BoundingRectangle for c in controls
+                      if c.Name == "设置封面" and self.visible(c)]
+            # 同名文字可能同时出现在封面区域内；用标题下方的缩略图确认入口。
+            previews = [c for c in controls if c.ControlTypeName == "GroupControl" and not c.Name
+                        and self.visible(c) and 100<c.BoundingRectangle.width()<250
+                        and c.BoundingRectangle.height()>150
+                        and any(abs(c.BoundingRectangle.left-r.left)<25
+                                and r.bottom<c.BoundingRectangle.top<r.bottom+180 for r in labels)]
+            preview = choose_control(previews)
+            if preview is not None:
+                return preview
+            self.scroll_form("up", 4)
+        raise RuntimeError("未找到封面预览。")
 
     def cover_upload_button(self, timeout=8):
         """模板页保留时只切换已实测的“裁剪”工具页，一次切换后只读等待。"""

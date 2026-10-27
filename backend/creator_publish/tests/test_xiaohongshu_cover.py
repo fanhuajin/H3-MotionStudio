@@ -12,6 +12,34 @@ def control(name,kind="ButtonControl",x=100,y=200,enabled=True,classes=""):
 
 
 class CoverTests(unittest.TestCase):
+    def preview(self,x=1037,y=568):
+        c=control("",kind="GroupControl",x=x,y=y)
+        c.BoundingRectangle.bottom=y+250
+        c.BoundingRectangle.height=lambda:250
+        return c
+
+    def test_duplicate_cover_labels_resolve_to_only_matching_preview(self):
+        d=self.draft();preview=self.preview()
+        d.controls=lambda:[control("设置封面",kind="TextControl",x=1037,y=480),
+                           control("设置封面",kind="TextControl",x=1096,y=697),preview]
+        d.scroll_form=Mock()
+        self.assertIs(d.cover_preview(),preview)
+        d.scroll_form.assert_not_called()
+
+    def test_two_distinct_cover_previews_remain_ambiguous(self):
+        d=self.draft()
+        d.controls=lambda:[control("设置封面",x=1037,y=480),
+                           self.preview(),self.preview(y=620)]
+        with self.assertRaisesRegex(RuntimeError,"多个同名控件"):
+            d.cover_preview()
+        d.click.assert_not_called()
+
+    def test_missing_preview_scrolls_up_and_reads_fresh_controls(self):
+        d=self.draft();preview=self.preview();d.scroll_form=Mock()
+        d.controls=Mock(side_effect=[[],[control("设置封面",x=1037,y=480),preview]])
+        self.assertIs(d.cover_preview(),preview)
+        d.scroll_form.assert_called_once_with("up",4)
+
     def draft(self):
         d=object.__new__(XiaohongshuDraft);d.visible=lambda c:True
         d.check=Mock();d.now=time.monotonic;d.click=Mock()
