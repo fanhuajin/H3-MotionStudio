@@ -5,6 +5,7 @@ import { useVideoPreviewWheel } from "./useVideoPreviewWheel";
 import { BatchVideo } from "./BatchVideo";
 import { PreviewImage } from "./PreviewImage";
 import { ImageViewer } from "./ImageWorkbenchRoute";
+import { ImageModelSettings } from "./ImageModelSettings";
 import { StudioBot, statusMood } from "./StudioBot";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
@@ -2268,7 +2269,7 @@ export function BatchRoute() {
       </BatchDialog>}
       {settingsOpen && <BatchDialog id="batch-running-settings-dialog" title="运行设置" subtitle="批量制作 · 运行策略"
         icon={<GearSix weight="duotone" />} trigger={settingsTrigger} onClose={() => setActiveDialog(null)}
-        description={batch ? "开关修改后立即保存并生效，无需再次确认。关闭此窗口不会撤销已保存的设置。" : "设置会记在当前浏览器，点击「准备任务」时随新批次一起应用。"}
+        description={batch ? "关机开关修改后立即保存；图片模型需点击「保存模型」。关闭窗口不会撤销已保存的设置。" : "关机设置会记在当前浏览器，随新批次应用；图片模型点击「保存模型」后全局生效。"}
         footer={<>
 
             <div className={settingsFeedback?.error ? "batch-settings-feedback error" : "batch-settings-feedback"} role={settingsFeedback?.error ? "alert" : "status"}>
@@ -2277,6 +2278,7 @@ export function BatchRoute() {
             <button type="button" className="batch-primary small" onClick={() => setActiveDialog(null)}>关闭</button>
 
         </>}>
+        <ImageModelSettings />
         <div className="batch-settings-body">
         <div className="batch-shutdown-row">
           <span><b><Power weight="fill" /> 备料完成后关机</b>

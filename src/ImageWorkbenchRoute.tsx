@@ -1,5 +1,4 @@
 import { ContentLoading } from "./ContentLoading";
-import { ImageModelSettings } from "./ImageModelSettings";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRememberedTab } from "./useRememberedTab";
@@ -354,7 +353,6 @@ export function ImageWorkbenchRoute() {
         </div>
       </header>
 
-      <ImageModelSettings />
 
       <section className="image-workbench-shell">
         <aside className="image-workbench-list">
