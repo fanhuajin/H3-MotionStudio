@@ -67,7 +67,7 @@ class DancePosePromptTests(unittest.TestCase):
             text = compose_image_prompt(kind)
             self.assertEqual(text.count('【服装】'), 1)
             self.assertIn('款式可适当调整', text)
-            self.assertIn('腰腹与背部完整遮盖', text)
+            self.assertIn('腰腹与背部由衣料完整遮盖', text)
             self.assertIn('覆盖要求优先于参考图及造型修改意见', text)
             self.assertNotIn('【唱歌着装】', text)
             self.assertEqual('【跳舞着装】' in text, kind == 'dance')
@@ -76,7 +76,14 @@ class DancePosePromptTests(unittest.TestCase):
         redesign = compose_image_prompt('singing', style_source='redesign')
         self.assertIn('根据歌曲氛围设计自然的发型、服装', redesign)
         self.assertNotIn('保留图一的服装类别', redesign)
-        self.assertIn('腰腹与背部完整遮盖', redesign)
+        self.assertIn('腰腹与背部由衣料完整遮盖', redesign)
+        for prompt in (compose_image_prompt('singing'), compose_image_prompt('dance'), redesign):
+            self.assertEqual(prompt.count('领口靠近锁骨'), 1)
+            self.assertIn('仅保留颈部及少量锁骨露肤', prompt)
+            self.assertIn('上胸、胸部、腰腹与背部由衣料完整遮盖，不露乳沟', prompt)
+            self.assertIn('提高领口或增加同风格内搭', prompt)
+            self.assertIn('不用头发、饰品代替衣物遮盖', prompt)
+            self.assertNotIn('领口稳妥', prompt)
 
     def test_prompt_omits_redundant_and_overly_rigid_constraints(self):
         redundant = (
