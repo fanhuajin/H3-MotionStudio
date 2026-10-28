@@ -17,6 +17,7 @@ import {
   ListChecks,
   MusicNotes,
   PersonSimpleRun,
+  Pause,
   Play,
   Power,
   SpinnerGap,
@@ -1324,14 +1325,15 @@ export function BatchRoute() {
           >
             <Check weight="bold" />确认并出片
           </button>
-          <button className="batch-warning" onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>
+          {!TAB_MATCH.prep(item) && <button className="batch-warning" onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>}
         </>
       );
     }
     if (item.status === "pending") {
-      return <button className="batch-warning" onClick={() => void itemCallFor(item, "skip")}><X />跳过</button>;
+      return null;
     }
     if (["confirmed", "running", "revising"].includes(item.status)) {
+      if (TAB_MATCH.prep(item)) return null;
       return (
         <button
           className="batch-warning"
@@ -1841,10 +1843,19 @@ export function BatchRoute() {
     );
   };
 
-  const resumeOnly = Boolean(batch && batch.status === "paused" && !batch.recoveryActive);
+  const pauseSettling = Boolean(batch?.pauseRequested && visibleItems.some(item => item.status === "running"));
+  const resumeOnly = Boolean(batch && batch.status === "paused" && !batch.recoveryActive && !pauseSettling);
 
   const renderQueueActions = () => (
         <div className="batch-entry-actions">
+          {activeTab === "prep" && prepBlocked && batch?.status === "running" && !batch.pauseRequested && (
+            <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)}
+              title="当前条目安全结束后暂停，保留进度，可在重启项目后继续"
+              onClick={() => void call("pause")}><Pause />暂停备料</button>
+          )}
+          {activeTab === "prep" && pauseSettling && (
+            <button type="button" className="batch-add-toggle" disabled><SpinnerGap className="spin" />正在暂停</button>
+          )}
           {/* 2026-10-18 用户：「添加任务放到运行设置前边」「已安排出片样式和前边按钮样式保持一致」
               —— 整组都是灰绿描边按钮，不再单独用实心的 .batch-primary。 */}
           <button type="button" className="batch-add-toggle" ref={inputToggle}
@@ -1858,7 +1869,7 @@ export function BatchRoute() {
             onClick={() => { setSettingsFeedback(null); setActiveDialog("settings"); }}>
             <GearSix />运行设置{(prepShutdownSwitchOn || shutdownSwitchOn) && <span className="batch-settings-badge"><Power />{prepShutdownSwitchOn ? "备料后关机" : "完成后关机"}</span>}
           </button>
-          {resumeOnly && <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续任务</button>}
+          {resumeOnly && <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />{activeTab === "prep" ? "继续备料" : "继续任务"}</button>}
 
 
 
@@ -1939,6 +1950,16 @@ export function BatchRoute() {
               {renderQueueActions()}
             </div>
 
+            {activeTab === "prep" && batch.pauseRequested && (
+              <div className="batch-render-context" role="status">
+                <span>{pauseSettling
+                  ? "正在等待当前条目安全结束，后续条目不会开始。请等显示已暂停后再重启项目，避免丢失已提交的生成结果。"
+                  : batch.recoveryActive
+                    ? "正在恢复重启前的任务，请等待恢复结束。"
+                    : "备料已暂停，进度已保存，可以重启项目。重新打开后点「继续备料」，沿用已有素材继续处理。"}</span>
+              </div>
+            )}
+
             {activeTab === "render" && tabCount("prep") > 0 && (
               <div className="batch-render-context" role="status">
                 <span><ListChecks />{tabCount("prep")} 条任务正在备料区准备，备齐后会进入这里。{tabCount("render") === 0 ? "任务已在队列中，无需重复添加。" : "可先关注下方出片进度。"}</span>
@@ -1950,7 +1971,7 @@ export function BatchRoute() {
             {selectedIds.size > 0 && (
               <div className="batch-bulk-bar">
                 <span>已选 {selectedIds.size} 条</span>
-                {activeTab !== "render" && activeTab !== "completed" && <>
+                {activeTab !== "prep" && activeTab !== "render" && activeTab !== "completed" && <>
                 <button
                   disabled={Boolean(busyAction) || (activeTab === "archive" ? prepBlocked || !selectedItems.some(TAB_MATCH.archive) : !anyRestartable)}
                   onClick={() => activeTab === "archive"

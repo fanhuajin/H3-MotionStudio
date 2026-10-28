@@ -4791,6 +4791,9 @@ async def run_batch(batch_id: str) -> None:
         state = batch_store.get(batch_id)
         if not state:
             return
+        if state.get("pauseRequested") or state.get("status") == "paused":
+            batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
+            return
         batch_store.update(
             batch_id,
             status="running",

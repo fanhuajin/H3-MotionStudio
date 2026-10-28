@@ -960,7 +960,7 @@ async def pause_batch(batch_id: str):
         batch_id,
         status="paused",
         pauseRequested=True,
-        notice="已请求暂停；若当前正在生成视频，会在这一条安全结束后暂停。",
+        notice="已请求暂停；当前备料或出片条目安全结束后停止，进度保留，重启项目后可继续。",
     )
 
 
