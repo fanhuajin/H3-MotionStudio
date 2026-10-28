@@ -974,7 +974,7 @@ export function BatchRoute() {
     action: "retry-many" | "skip-many" | "delete-many",
     ask?: ConfirmAsk,
   ) => {
-    if (!batch || selectedIds.size === 0) return;
+    if (!batch || busyAction || selectedIds.size === 0) return;
     if (ask && !(await askConfirm(ask))) return;
     const endpoint = `/api/batches/${batch.id}/items/${action}`;
     setBusyAction(action);
@@ -2076,6 +2076,7 @@ export function BatchRoute() {
                       <Fragment key={item.id}>
                         <tr
                           className={`batch-row ${selectedId === item.id ? "selected" : ""} ${item.status}`}
+                          aria-busy={busyAction === `items/${item.id}/skip` || (busyAction === "skip-many" && selectedIds.has(item.id))}
                           onClick={() => selectItem(item.id)}
                         >
                           <td className="batch-check">
@@ -2083,6 +2084,7 @@ export function BatchRoute() {
                               type="checkbox"
                               aria-label={`选择第 ${itemNumber(item)} 条`}
                               checked={selectedIds.has(item.id)}
+                              disabled={Boolean(busyAction)}
                               onChange={() => toggleSelect(item.id)}
                               onClick={(event) => event.stopPropagation()}
                             />
@@ -2107,12 +2109,14 @@ export function BatchRoute() {
                           </td>
                           <td className="batch-status-cell">
                             <div className="batch-status-line">
-                            <span className={`batch-status ${item.status}`}>
-                              {itemZoneStatus(item)}
+                            <span className={`batch-status ${item.status}`} role="status">
+                              {busyAction === `items/${item.id}/skip` || (busyAction === "skip-many" && selectedIds.has(item.id))
+                                ? <><SpinnerGap className="spin" />正在跳过…</>
+                                : itemZoneStatus(item)}
                               {/* 进度直接在列表这一行显示，不用点开（2026-09-15 用户：「除了时间
                                   进入也同步的列表中 像现在的 17% 这样的 我有时候不想点开来看」）；
                                   只认真实非零进度，0/null 不显示数字（进度不得造假）。 */}
-                              {itemPercent(item) !== null && (
+                              {busyAction !== `items/${item.id}/skip` && !(busyAction === "skip-many" && selectedIds.has(item.id)) && itemPercent(item) !== null && (
                                 <b className="batch-status-percent">{itemPercent(item)}%</b>
                               )}
                             </span>
