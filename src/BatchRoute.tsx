@@ -1977,15 +1977,6 @@ export function BatchRoute() {
             {(activeTab === "prep" || selectedIds.size > 0) && (
               <div className="batch-bulk-bar">
                 <span>已选 {selectedIds.size} 条</span>
-                {activeTab === "prep" && prepBlocked && batch?.status === "running" && !batch.pauseRequested && (
-                  <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)}
-                    title="当前条目安全结束后暂停，保留进度，可在重启项目后继续"
-                    onClick={() => void call("pause")}><Pause />暂停备料</button>
-                )}
-                {activeTab === "prep" && pauseSettling && (
-                  <button type="button" className="batch-add-toggle" disabled><SpinnerGap className="spin" />正在暂停</button>
-                )}
-                {activeTab === "prep" && resumeOnly && <button type="button" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续备料</button>}
                 {activeTab !== "prep" && activeTab !== "render" && activeTab !== "completed" && <>
                 <button
                   disabled={Boolean(busyAction) || (activeTab === "archive" ? prepBlocked || !selectedItems.some(TAB_MATCH.archive) : !anyRestartable)}
@@ -2036,6 +2027,15 @@ export function BatchRoute() {
                 >
                   <Trash />删除
                 </button>
+                {activeTab === "prep" && prepBlocked && batch?.status === "running" && !batch.pauseRequested && (
+                  <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)}
+                    title="当前条目安全结束后暂停，保留进度，可在重启项目后继续"
+                    onClick={() => void call("pause")}><Pause />暂停备料</button>
+                )}
+                {activeTab === "prep" && pauseSettling && (
+                  <button type="button" className="batch-add-toggle" disabled><SpinnerGap className="spin" />正在暂停</button>
+                )}
+                {activeTab === "prep" && resumeOnly && <button type="button" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续备料</button>}
                 <button className="ghost" onClick={() => setSelectedIds(new Set())}>取消选择</button>
               </div>
             )}
