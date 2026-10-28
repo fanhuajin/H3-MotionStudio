@@ -1973,8 +1973,7 @@ export function BatchRoute() {
               </div>
             )}
 
-            {/* 备料操作常驻，其他区域勾选后显示批量操作。 */}
-            {(activeTab === "prep" || selectedIds.size > 0) && (
+            {selectedIds.size > 0 && (
               <div className="batch-bulk-bar">
                 <span>已选 {selectedIds.size} 条</span>
                 {activeTab !== "prep" && activeTab !== "render" && activeTab !== "completed" && <>
