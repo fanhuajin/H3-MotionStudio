@@ -947,6 +947,7 @@ def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: b
             renderQueued=False,
             skipRequested=False,
             deleteRequested=False,
+            prepPaused=False,
             childJob=None,
             videoJobId=None,
             outputs=keep,
@@ -1702,6 +1703,8 @@ async def _run_prep(batch_id: str, item_id: str) -> None:
     """
     _set_item(batch_id, item_id, prepAttemptStartedAt=now_iso())
     existing = _item(batch_id, item_id)
+    if existing.get("prepPaused"):
+        return
     if existing.get("status") == "confirmed":
         _set_item(batch_id, item_id, status="running", stage="prepare", coverOnlyPrep=True)
         try:
@@ -1715,6 +1718,9 @@ async def _run_prep(batch_id: str, item_id: str) -> None:
     refreshed = _item(batch_id, item_id)
     if refreshed.get("skipRequested") or refreshed.get("deleteRequested"):
         raise asyncio.CancelledError
+    if refreshed.get("prepPaused"):
+        _set_item(batch_id, item_id, status="pending", stage="prep_paused")
+        return
     feedback = str(refreshed.get("revisionFeedback") or "")
     mode = str(refreshed.get("revisionMode") or "both")
     await _prepare_review(batch_id, item_id, feedback=feedback, mode=mode)
@@ -4543,7 +4549,7 @@ def _next_work(state: dict[str, Any], *, allow_confirmed: bool = True) -> dict[s
         if not allow_confirmed and statuses == {"confirmed"}:
             continue
         for item in items:
-            if item.get("status") in statuses:
+            if item.get("status") in statuses and not item.get("prepPaused"):
                 return item
     return None
 
@@ -4557,7 +4563,7 @@ def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
     """
     numbered = sorted(state.get("items") or [], key=lambda row: int(row.get("renderIndex") or row.get("kindIndex") or row.get("index") or 0))
     for item in _priority_sorted(numbered):
-        if str(item.get("status")) == "confirmed" and item.get("renderQueued", False):
+        if str(item.get("status")) == "confirmed" and item.get("renderQueued", False) and not item.get("prepPaused"):
             return item
     return None
 
@@ -4573,7 +4579,8 @@ def _next_prep(state: dict[str, Any]) -> dict[str, Any] | None:
 
 def _prep_remaining(state: dict[str, Any]) -> bool:
     return any(
-        item.get("status") in {"pending", "revising", "awaiting_review"}
+        (item.get("prepPaused") and item.get("status") not in {"failed", "skipped", "completed", "deleted"})
+        or item.get("status") in {"pending", "revising", "awaiting_review"}
         or (item.get("status") == "running" and item.get("stage") in {"download", "prepare"})
         for item in state.get("items") or []
     )

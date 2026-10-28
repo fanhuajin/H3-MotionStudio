@@ -1376,6 +1376,31 @@ async def retry_batch_item(batch_id: str, item_id: str, allowUncertainRetry: boo
     batch_store.add_item_log(batch_id, item_id, restart_item_log(direct))
     return _resume_batch(batch_id, "已重试：沿用已有图片，重新请求补齐缺图后继续出片。")
 
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/pause-prep")
+async def pause_batch_item_prep(batch_id: str, item_id: str):
+    item = _batch_item_or_404(batch_id, item_id)
+    if item.get("status") not in {"pending", "revising", "running", "awaiting_review"} or (
+        item.get("status") == "running" and item.get("stage") not in {"download", "prepare"}
+    ):
+        raise HTTPException(409, "只有备料中的任务可以暂停")
+    batch_store.mutate_item(batch_id, item_id, lambda row: row.update(prepPaused=True))
+    return _with_publish_chain(_batch_or_404(batch_id))
+
+
+@app.post("/api/batches/{batch_id}/items/{item_id}/resume-prep")
+async def resume_batch_item_prep(batch_id: str, item_id: str):
+    item = _batch_item_or_404(batch_id, item_id)
+    if not item.get("prepPaused"):
+        raise HTTPException(409, "这条任务没有暂停备料")
+    if item.get("status") == "running":
+        raise HTTPException(409, "请等待当前条目安全结束后继续")
+    batch_store.mutate_item(batch_id, item_id, lambda row: row.update(prepPaused=False))
+    state = _batch_or_404(batch_id)
+    if state.get("pauseRequested") or state.get("status") == "paused":
+        return _with_publish_chain(state)
+    return _resume_batch(batch_id, "这条任务已继续备料，沿用已有素材。")
+
 @app.post("/api/batches/{batch_id}/items/{item_id}/skip")
 async def skip_batch_item(batch_id: str, item_id: str):
     item = _batch_item_or_404(batch_id, item_id)

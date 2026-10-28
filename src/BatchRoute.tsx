@@ -212,6 +212,7 @@ interface BatchItem {
   error?: string | null;
   warning?: string | null;
   prepReady?: boolean;
+  prepPaused?: boolean;
   renderQueued?: boolean;
 }
 
@@ -454,11 +455,11 @@ const TABS: Array<{ id: TabId; label: string }> = [
   { id: "completed", label: "已完成" },
 ];
 const TAB_MATCH: Record<TabId, (item: BatchItem) => boolean> = {
-  prep: (item) => !["completed", "skipped", "failed"].includes(item.status) && !item.prepReady,
-  render: (item) => !["skipped", "completed", "failed"].includes(item.status) && Boolean(item.prepReady) && Boolean(item.renderQueued || renderingNow(item)),
+  prep: (item) => !["completed", "skipped", "failed"].includes(item.status) && (Boolean(item.prepPaused) || !item.prepReady),
+  render: (item) => !item.prepPaused && !["skipped", "completed", "failed"].includes(item.status) && Boolean(item.prepReady) && Boolean(item.renderQueued || renderingNow(item)),
   exception: (item) => item.status === "failed",
   completed: (item) => item.status === "completed",
-  archive: (item) => item.status === "skipped" || (item.status === "confirmed" && Boolean(item.prepReady) && !item.renderQueued),
+  archive: (item) => item.status === "skipped" || (item.status === "confirmed" && Boolean(item.prepReady) && !item.renderQueued && !item.prepPaused),
 };
 
 /** 这一条有没有可看的成片：优先 outputs 快照，其次发布目录里的真实文件（publishChain.clean）。 */
@@ -467,6 +468,7 @@ function hasFinalVideo(item: BatchItem): boolean {
 }
 
 function itemZoneStatus(item: BatchItem): string {
+  if (item.prepPaused && !["failed", "skipped", "completed"].includes(item.status)) return item.status === "running" ? "正在暂停" : "已暂停";
   if (item.status === "skipped" || (item.status === "confirmed" && item.prepReady && !item.renderQueued)) return "等待安排";
   if (item.coverStage && !["failed", "skipped", "completed"].includes(item.status)) return "备料中";
   if (item.status === "confirmed" && !item.prepReady) return "备料中";
@@ -717,7 +719,7 @@ export function BatchRoute() {
   );
   const tabCount = (id: TabId) => visibleItems.filter(TAB_MATCH[id]).length;
   const prepBlocked = visibleItems.some((item) =>
-    ["pending", "revising", "awaiting_review"].includes(item.status)
+    (item.prepPaused && !["failed", "skipped", "completed"].includes(item.status)) || ["pending", "revising", "awaiting_review"].includes(item.status)
     || (item.status === "running" && ["download", "prepare"].includes(item.stage))
     || (item.status === "confirmed" && !item.prepReady),
   );
@@ -1314,9 +1316,21 @@ export function BatchRoute() {
 
   // —— 表格行里按状态给的操作按钮（每行只给最该做的 1~2 个动作） ——
   const statusAction = (item: BatchItem) => {
+    let pauseAction: ReactNode = null;
+    if (TAB_MATCH.prep(item)) {
+      const settling = Boolean(item.prepPaused && item.status === "running");
+      pauseAction = <button type="button" disabled={Boolean(busyAction) || settling}
+        title={item.prepPaused ? "沿用已保存的素材继续；整批暂停时需先继续整批备料" : "暂停这一条，当前已提交请求安全结束后生效，其余条目继续"}
+        onClick={() => void itemCallFor(item, item.prepPaused ? "resume-prep" : "pause-prep")}>
+        {settling ? <SpinnerGap className="spin" /> : item.prepPaused ? <Play /> : <Pause />}
+        {settling ? "正在暂停" : item.prepPaused ? "继续" : "暂停"}
+      </button>;
+      if (item.status !== "awaiting_review") return pauseAction;
+    }
     if (item.status === "awaiting_review") {
       return (
         <>
+          {pauseAction}
           <button
             className="batch-primary small"
             disabled={Boolean(busyAction) || !item.ai?.reference_image_path}
