@@ -1849,7 +1849,7 @@ export function BatchRoute() {
               —— 整组都是灰绿描边按钮，不再单独用实心的 .batch-primary。 */}
           <button type="button" className="batch-add-toggle" ref={inputToggle}
             aria-haspopup="dialog" aria-expanded={addOpen} aria-controls="batch-add-dialog"
-            onClick={() => { restoreInputFocus.current = true; setAddError(""); setActiveDialog("add"); }}>
+            onClick={() => { restoreInputFocus.current = true; setAddError(""); setAddResult(null); setActiveDialog("add"); }}>
             <UploadSimple />添加任务{(singing.trim() || dance.trim()) && <span className="batch-draft-badge">草稿 {splitUrls(singing).length + splitUrls(dance).length}</span>}
           </button>
           <button type="button" className="batch-add-toggle batch-settings-trigger" ref={settingsTrigger}
