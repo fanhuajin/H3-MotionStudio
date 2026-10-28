@@ -3,6 +3,14 @@ import unittest
 from backend.batch_ai import compose_image_prompt
 
 class DancePosePromptTests(unittest.TestCase):
+    def test_face_visibility_overrides_reference_arm_pose(self):
+        for kind, source in (('singing', 'video'), ('dance', 'video'), ('singing', 'redesign')):
+            text = compose_image_prompt(kind, style_source=source)
+            self.assertIn('面部完整可见优先于参考姿势', text)
+            self.assertIn('手或前臂遮脸', text)
+            self.assertIn('自然放下或移至脸侧', text)
+            self.assertIn('露出双眼、鼻、嘴和下颌', text)
+
     def test_generated_prompts_have_no_duplicate_sections_or_json(self):
         for kind, source in (('singing', 'video'), ('dance', 'video'), ('singing', 'redesign')):
             text = compose_image_prompt(kind, style_source=source)
