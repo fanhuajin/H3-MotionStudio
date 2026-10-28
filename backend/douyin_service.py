@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -23,9 +24,7 @@ logger = logging.getLogger("uvicorn.error")
 DOUYIN_ROOT = Path(
     os.getenv("H3_DOUYIN_DOWNLOADER_ROOT", r"D:\project\douyin-downloader")
 ).resolve()
-# 9000 may be reserved by Windows/Hyper-V (WinError 10013). Keep the service
-# on a nearby fixed port outside the host's excluded range; an explicit env
-# override still wins for installations that already use another port.
+# Preferred address; Windows may reserve this port after a reboot.
 DOUYIN_URL = os.getenv("H3_DOUYIN_DOWNLOADER_URL", "http://127.0.0.1:9100").rstrip("/")
 # 默认保存到 D:\EV；可用 H3_DOUYIN_OUTPUT 覆盖。下载服务子进程通过
 # DOUYIN_PATH 环境变量使用同一目录，保证服务落盘与这里查找结果一致。
@@ -44,6 +43,25 @@ def _recent_startup_error() -> str:
         return ""
     relevant = [line for line in lines[-30:] if "ERROR" in line or "WinError" in line or "error" in line.lower()]
     return "；".join(relevant[-3:])[-700:]
+
+
+def _available_service_url(url: str) -> str:
+    # Explicit endpoints may belong to an externally managed service.
+    if os.getenv("H3_DOUYIN_DOWNLOADER_URL"):
+        return url
+    parsed = urlparse(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 9100
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind((host, port))
+        return url
+    except OSError:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind((host, 0))
+            port = probe.getsockname()[1]
+        logger.info("抖音下载服务端口不可用，改用系统分配端口 %s", port)
+        return parsed._replace(netloc=f"{host}:{port}").geturl()
 
 
 class DouyinServiceError(RuntimeError):
@@ -118,6 +136,7 @@ def is_douyin_url(value: str) -> bool:
 
 class DouyinServiceManager:
     def __init__(self) -> None:
+        self.url = DOUYIN_URL
         self.process: subprocess.Popen | None = None
         self.log_handle = None
         self.lock = asyncio.Lock()
@@ -135,7 +154,7 @@ class DouyinServiceManager:
     async def healthy(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=2.5) as client:
-                response = await client.get(f"{DOUYIN_URL}/api/v1/health")
+                response = await client.get(f"{self.url}/api/v1/health")
                 return response.status_code == 200 and response.json().get("status") == "ok"
         except (httpx.HTTPError, ValueError):
             return False
@@ -151,10 +170,16 @@ class DouyinServiceManager:
                 raise DouyinServiceError(
                     f"未找到抖音下载服务，请确认项目位于 {DOUYIN_ROOT}"
                 )
+            if self.process and self.process.poll() is None:
+                raise DouyinServiceError("抖音下载服务仍在运行但健康检查失败，请稍后重试")
+            try:
+                self.url = _available_service_url(self.url)
+            except OSError as exc:
+                raise DouyinServiceError(f"无法为抖音下载服务分配本机端口：{exc}") from exc
             DOUYIN_LOG.parent.mkdir(parents=True, exist_ok=True)
             DOUYIN_OUTPUT.mkdir(parents=True, exist_ok=True)
             self.log_handle = DOUYIN_LOG.open("a", encoding="utf-8")
-            parsed_url = urlparse(DOUYIN_URL)
+            parsed_url = urlparse(self.url)
             service_host = parsed_url.hostname or "127.0.0.1"
             service_port = str(parsed_url.port or 9100)
             child_env = os.environ.copy()
@@ -217,7 +242,7 @@ class DouyinServiceManager:
         if connected:
             try:
                 async with httpx.AsyncClient(timeout=3) as client:
-                    response = await client.get(f"{DOUYIN_URL}/api/v1/auth/status")
+                    response = await client.get(f"{self.url}/api/v1/auth/status")
                 if response.status_code == 200:
                     cookie_ready = bool(response.json().get("cookieReady"))
             except (httpx.HTTPError, ValueError):
@@ -226,7 +251,7 @@ class DouyinServiceManager:
             "available": available,
             "connected": connected,
             "cookieReady": cookie_ready,
-            "serviceUrl": DOUYIN_URL,
+            "serviceUrl": self.url,
             "outputDirectory": str(DOUYIN_OUTPUT),
             "message": (
                 "下载服务已连接"
@@ -259,7 +284,7 @@ class DouyinServiceManager:
             await self.ensure_running()
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.request(method, f"{DOUYIN_URL}{path}", json=json)
+                response = await client.request(method, f"{self.url}{path}", json=json)
         except httpx.HTTPError as exc:
             raise DouyinServiceError(f"无法连接抖音下载服务：{exc}") from exc
         if response.status_code >= 400:
