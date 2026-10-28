@@ -1848,14 +1848,6 @@ export function BatchRoute() {
 
   const renderQueueActions = () => (
         <div className="batch-entry-actions">
-          {activeTab === "prep" && prepBlocked && batch?.status === "running" && !batch.pauseRequested && (
-            <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)}
-              title="当前条目安全结束后暂停，保留进度，可在重启项目后继续"
-              onClick={() => void call("pause")}><Pause />暂停备料</button>
-          )}
-          {activeTab === "prep" && pauseSettling && (
-            <button type="button" className="batch-add-toggle" disabled><SpinnerGap className="spin" />正在暂停</button>
-          )}
           {/* 2026-10-18 用户：「添加任务放到运行设置前边」「已安排出片样式和前边按钮样式保持一致」
               —— 整组都是灰绿描边按钮，不再单独用实心的 .batch-primary。 */}
           <button type="button" className="batch-add-toggle" ref={inputToggle}
@@ -1869,7 +1861,7 @@ export function BatchRoute() {
             onClick={() => { setSettingsFeedback(null); setActiveDialog("settings"); }}>
             <GearSix />运行设置{(prepShutdownSwitchOn || shutdownSwitchOn) && <span className="batch-settings-badge"><Power />{prepShutdownSwitchOn ? "备料后关机" : "完成后关机"}</span>}
           </button>
-          {resumeOnly && <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />{activeTab === "prep" ? "继续备料" : "继续任务"}</button>}
+          {resumeOnly && activeTab !== "prep" && <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续任务</button>}
 
 
 
@@ -1967,10 +1959,19 @@ export function BatchRoute() {
               </div>
             )}
 
-            {/* 批量操作栏：勾选任意一条后出现 */}
-            {selectedIds.size > 0 && (
+            {/* 备料操作常驻，其他区域勾选后显示批量操作。 */}
+            {(activeTab === "prep" || selectedIds.size > 0) && (
               <div className="batch-bulk-bar">
                 <span>已选 {selectedIds.size} 条</span>
+                {activeTab === "prep" && prepBlocked && batch?.status === "running" && !batch.pauseRequested && (
+                  <button type="button" className="batch-add-toggle" disabled={Boolean(busyAction)}
+                    title="当前条目安全结束后暂停，保留进度，可在重启项目后继续"
+                    onClick={() => void call("pause")}><Pause />暂停备料</button>
+                )}
+                {activeTab === "prep" && pauseSettling && (
+                  <button type="button" className="batch-add-toggle" disabled><SpinnerGap className="spin" />正在暂停</button>
+                )}
+                {activeTab === "prep" && resumeOnly && <button type="button" disabled={Boolean(busyAction)} onClick={() => void call("resume")}><Play />继续备料</button>}
                 {activeTab !== "prep" && activeTab !== "render" && activeTab !== "completed" && <>
                 <button
                   disabled={Boolean(busyAction) || (activeTab === "archive" ? prepBlocked || !selectedItems.some(TAB_MATCH.archive) : !anyRestartable)}
