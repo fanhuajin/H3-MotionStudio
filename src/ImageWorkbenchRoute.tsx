@@ -21,6 +21,7 @@ type WorkItem = {
   batchLive?: boolean;
   hasVideo?: boolean;
   canCover?: boolean;
+  failedCovers?: boolean;
   coverReview?: { status: string; reason: string } | null;
 };
 type Stage = "person" | "bilibili" | "douyin";
@@ -198,6 +199,7 @@ export function ImageWorkbenchRoute() {
     }
   }, [visible, selectedId]);
   const finished = items.filter(complete).length;
+  const hasFailedCovers = items.some((row) => row.failedCovers && !complete(row));
   /** 活跃任务用于显示耗时；目录同步不依赖页面事先知道有任务。 */
   const autoLive = items.some((row) => row.batchLive || AUTO_LIVE.includes(row.automation?.status || ""));
 
@@ -379,7 +381,7 @@ export function ImageWorkbenchRoute() {
       <section className="image-workbench-shell">
         <aside className="image-workbench-list">
           <div className="image-workbench-list-head"><strong>发布作品</strong><div><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待处理</button><button className={filter === "completed" ? "active" : ""} onClick={() => setFilter("completed")}>已处理</button></div></div>
-          {filter === "pending" && <div className="image-workbench-list-actions">
+          {filter === "pending" && hasFailedCovers && <div className="image-workbench-list-actions">
             <button type="button" onClick={() => void resendIncompleteCovers()} disabled={busy || initialLoading}
               title="重新发送未完成的封面请求，旧请求视为失败；已完成图片保留，可能产生新费用">
               <ArrowClockwise />重发未完成封面

@@ -9,6 +9,26 @@ from backend import batch_worker
 
 
 class RetryMissingTests(unittest.IsolatedAsyncioTestCase):
+    def test_failure_requires_missing_cover_and_recorded_cover_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            folder_id = workbench._folder_id(folder)
+            rows = [{"outputs": {"folder": str(folder)}, "bilibiliCoverError": "submit timeout"}]
+            with patch.dict(workbench.AUTOMATIONS, {}, clear=True):
+                self.assertFalse(workbench._has_failed_covers(folder, []))
+                self.assertTrue(workbench._has_failed_covers(folder, rows))
+                self.assertFalse(workbench._has_failed_covers(folder, [{
+                    "outputs": {"folder": str(folder / "another")}, "bilibiliCoverError": "failed",
+                }]))
+                workbench.AUTOMATIONS[folder_id] = {"status": "running", "stage": "bilibili"}
+                self.assertFalse(workbench._has_failed_covers(folder, rows))
+                workbench.AUTOMATIONS[folder_id] = {"status": "failed", "stage": "person"}
+                self.assertFalse(workbench._has_failed_covers(folder, []))
+                workbench.AUTOMATIONS[folder_id] = {"status": "failed", "stage": "bilibili"}
+                self.assertTrue(workbench._has_failed_covers(folder, []))
+                (folder / "B站4x3.png").write_bytes(b"completed")
+                self.assertFalse(workbench._has_failed_covers(folder, rows))
+
     async def test_cover_retry_attempts_both_missing_covers_without_generating_person(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

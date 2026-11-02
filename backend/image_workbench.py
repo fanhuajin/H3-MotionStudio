@@ -183,7 +183,30 @@ def expose_failed_items() -> None:
                     logger.exception("补建异常条目的图片上传入口失败：%s", row.get("id"))
 
 
+def _has_failed_covers(folder: Path, rows: list[dict[str, Any]]) -> bool:
+    """缺图不等于失败；仅依据图片页或批量任务的实际异常记录。"""
+    automation = AUTOMATIONS.get(_folder_id(folder)) or {}
+    if automation.get("status") in AUTO_LIVE_STATUSES or any(
+        (str(folder.resolve()).lower(), stage) in _COVER_INFLIGHT for stage in COVER_NAMES
+    ):
+        return False
+    aweme_id = folder.name.rsplit("_", 1)[-1]
+    for stage, name in COVER_NAMES.items():
+        if _first(folder, name, LEGACY_COVER_NAMES[stage]):
+            continue
+        if (automation.get("status") == "failed"
+                and automation.get("stage") in {stage, "covers"}):
+            return True
+        if any(row.get(f"{stage}CoverError") for row in rows
+               if (Path(row["outputs"]["folder"]).resolve() == folder.resolve()
+                   if (row.get("outputs") or {}).get("folder")
+                   else str(row.get("awemeId") or "") == aweme_id)):
+            return True
+    return False
+
+
 def list_items() -> list[dict[str, Any]]:
+    latest = batch_store.latest()
     items: list[dict[str, Any]] = []
     for folder in _publish_folders():
         copy = _copy_text(folder)
@@ -203,6 +226,7 @@ def list_items() -> list[dict[str, Any]]:
             "copy": copy,
             "kind": infer_kind(folder),
             "automation": AUTOMATIONS.get(_folder_id(folder)),
+            "failedCovers": _has_failed_covers(folder, (latest or {}).get("items") or []),
             "hasVideo": has_video,
             "canCover": bool(person and (folder / "发布文案.txt").is_file()),
             "coverReview": cover_review.read_report(person, folder / ".h3-cover-hands.json") if person else None,
@@ -213,7 +237,6 @@ def list_items() -> list[dict[str, Any]]:
         })
     # Batch records exist before review materials reach the publishing folder.
     # Expose them without creating placeholder files or changing batch state.
-    latest = batch_store.latest()
     by_id = {row["id"]: row for row in items}
     for row in (latest or {}).get("items") or []:
         if row.get("status") == "deleted" or row.get("deleteRequested"):
@@ -853,6 +876,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                             raise
                         errors.append(f"{label}：{exc}")
             if errors:
+                _set_auto(folder_id, stage="covers")
                 raise RuntimeError("；".join(errors))
             done = "人物图与封面已自动补齐" if not stage else "已完成生成"
             if stage in (None, "person") and person_score >= 0:
