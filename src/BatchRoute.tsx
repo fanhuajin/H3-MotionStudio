@@ -470,7 +470,6 @@ function hasFinalVideo(item: BatchItem): boolean {
 function itemZoneStatus(item: BatchItem): string {
   if (item.prepPaused && !["failed", "skipped", "completed"].includes(item.status)) return item.status === "running" ? "正在暂停" : "已暂停";
   if (item.status === "skipped" || (item.status === "confirmed" && item.prepReady && !item.renderQueued)) return "等待安排";
-  if (item.coverStage && !["failed", "skipped", "completed"].includes(item.status)) return "备料中";
   if (item.status === "confirmed" && !item.prepReady) return "备料中";
   return batchStatusLabel(item.status, item.stage);
 }
@@ -483,15 +482,11 @@ function prepElapsedMs(item: BatchItem, nowMs: number): number | null {
 
 function prepPhase(item: BatchItem): string {
   if (item.status === "skipped" || (item.status === "confirmed" && item.prepReady && !item.renderQueued)) return "等待安排";
-  if (item.coverStage) return `正在生成${item.coverStage === "bilibili" ? "B站" : "抖音"}封面`;
   const runningStep = (item.milestones || []).find((step) => step.status === "running");
   if (runningStep?.currentNode) return runningStep.currentNode;
   if (item.stage === "download") return "下载源视频";
   if (item.status === "confirmed" && !item.prepReady) {
-    const recent = (item.logs || []).slice(-3).map((row) => row.message).join(" ");
-    if (recent.includes("抖音封面请求")) return "抖音封面生成中";
-    if (recent.includes("B站封面请求")) return "B站封面生成中";
-    return "补齐封面";
+    return "检查人物图与发布文案";
   }
   return "备料中";
 }
@@ -2131,18 +2126,15 @@ export function BatchRoute() {
                             {item.childJob?.upscaleBatch && item.childJob.upscaleBatches && (
                               <small className="batch-seg">二采分段 {item.childJob.upscaleBatch}/{item.childJob.upscaleBatches}</small>
                             )}
-                            {batch?.status === "running"
-                              && item.coverStage
-                              && batch.currentItemId === item.id && (
+                            {item.coverStage && (
                                 <small className="batch-elapsed">
-                                  <Timer weight="fill" />{prepPhase(item)} · 已用 {formatElapsedMs(elapsedMs(item.coverStartedAt, null, batchNowTick) || 0)}
+                                  <Timer weight="fill" />正在生成{item.coverStage === "bilibili" ? "B站" : "抖音"}封面 · 已用 {formatElapsedMs(elapsedMs(item.coverStartedAt, null, batchNowTick) || 0)}
                                 </small>
                               )}
                             {batch?.status === "running"
                               && batch.currentItemId === item.id
                               && !item.prepReady
                               && item.status === "running"
-                              && !item.coverStage
                               && prepElapsedMs(item, batchNowTick) !== null && (
                                 <small className="batch-elapsed">
                                   <Timer weight="fill" />备料已用 {formatElapsedMs(prepElapsedMs(item, batchNowTick)!)} · {prepPhase(item)}
