@@ -4,6 +4,14 @@ from backend import batch_ai
 
 
 class PositiveCopyTests(unittest.TestCase):
+    def test_all_copy_fields_reject_explicit_personal_context(self):
+        result = {"title": "送给自己的舞", "introduction": "跳给我的男朋友", "tags": ["本人小号", "粉丝宝宝", "汉服"], "song_name": "@昵称", "song_mood": "送给自己"}
+        batch_ai.ensure_copy_fields(result, kind="dance", source_tags=["我的主页"])
+        self.assertEqual(len(result["tags"]), 5)
+        for text in [result["title"], result["introduction"], *result["tags"]]:
+            self.assertFalse(batch_ai._has_personal_copy(text))
+        self.assertIn("汉服", result["tags"])
+
     def test_mention_tags_are_discarded_entirely_and_not_reintroduced(self):
         unwanted = ["饭@诺岚🍓～ @夏至🍓", "@夏至🍓", "＃＠昵称", "舞蹈＠某人"]
         self.assertEqual(batch_ai._clean_tags([*unwanted, "#手势舞"]), ["手势舞"])

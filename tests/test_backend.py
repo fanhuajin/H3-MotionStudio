@@ -2979,8 +2979,10 @@ class WorkflowPreparationTests(unittest.TestCase):
             self.assertIn("原视频标题、简介仅作主题与事实参考", prompt, label)
             self.assertIn("为我们自己的作品重新创作标题和简介", prompt, label)
             self.assertIn("不直接沿用原句，也不只换几个词、调整语序或标点", prompt, label)
-            self.assertIn("优先用原标签", prompt, label)
-            self.assertIn("不足 5 个才自己补", prompt, label)
+            self.assertIn("根据作品实际题材", prompt, label)
+            self.assertIn("原文与原标签只作参考", prompt, label)
+            self.assertIn("不使用原作者昵称、账号名、粉丝称呼", prompt, label)
+            self.assertNotIn("优先用原标签", prompt, label)
             # 删除直接沿用的旧口径，避免提示词互相矛盾
             self.assertNotIn("能沿用就直接沿用", prompt, label)
             self.assertNotIn("优先取原作品描述里最像标题的那一句", prompt, label)
@@ -3040,8 +3042,8 @@ class WorkflowPreparationTests(unittest.TestCase):
         self.assertEqual(len(result["tags"]), 5)
         self.assertFalse(any(batch_ai._has_platform_word(tag) for tag in result["tags"]))
 
-    def test_source_tags_fill_the_five_slots_before_the_song_name(self) -> None:
-        """标签不足 5 个时**原标签优先**（用户 2026-09-21 选了「原标签优先占满 5 个」）。"""
+    def test_valid_source_tags_can_fill_missing_generated_tags(self) -> None:
+        """生成不足时可借鉴有效源标签；已经按内容生成齐全的标签保留。"""
         result = {
             "title": "标题", "introduction": "简介",
             "tags": ["评论区点歌"], "song_name": "爱如潮水",
