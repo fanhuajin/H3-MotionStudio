@@ -697,12 +697,13 @@ async def _generate_cover(
             if not ready and not checkpoint.is_file():
                 raise RuntimeError(
                     f"上一次{stage}封面尝试提交后未取得接单回执，是否受理未知；为避免重复扣费，本次没有自动重发。"
-                    "请核对中转站后台后，在图片工作台明确点击这一步重做"
+                    "可在图片与封面页点击「重发未完成封面」直接发送新请求"
                 )
-        # 用户主动重试允许新请求；旧任务和冻结输入先归档，已下载原图仍直接保存。
-        if allow_uncertain_retry and not ready:
+        # 用户主动重发把未交付的旧请求视为失败，不再恢复旧任务或旧原图。
+        if allow_uncertain_retry:
             work.rename(work.with_name(f"{work.name}.previous-unknown-{uuid.uuid4().hex[:8]}"))
             work.mkdir()
+            ready = False
             if marker.is_file():
                 marker.rename(marker.with_name(f"{marker.name}.previous-unknown-{uuid.uuid4().hex[:8]}"))
         if not ready:
@@ -799,7 +800,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                         stage: str | None = None, retry_missing: bool = False) -> None:
     """自动出图。`stage` 给定就**只跑那一步**（用户在页面上单独点某一张）。
 
-    stage ∈ {None(整条), "person", "bilibili", "douyin"}。
+    stage ∈ {None(整条), "person", "bilibili", "douyin", "covers"(双封面)}。
     人物图与文案齐备后即可生成封面，先检查原人物图手部再决定构图。
     """
     folder = resolve_folder(folder_id)
@@ -807,11 +808,15 @@ async def run_automatic(folder_id: str, *, force: bool = False,
     if not kind:
         _set_auto(folder_id, status="failed", stage="type", message="无法从批量任务确定唱歌/跳舞类型")
         return
-    steps = [stage] if stage else ["person", "bilibili", "douyin"]
+    if stage == "covers":
+        steps = ["bilibili", "douyin"]
+    else:
+        steps = [stage] if stage else ["person", "bilibili", "douyin"]
     _set_auto(folder_id, status="queued", stage="waiting", message="已加入自动生成队列", kind=kind)
     async with _AUTO_LOCK:
         try:
             person_score = -1
+            errors: list[str] = []
             for step in steps:
                 # 用户点了「停止」：正在跑的那一步跑完就停，后面的步骤不再开始。
                 if _stop_requested():
@@ -830,16 +835,25 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                     continue
                 if not force and (folder / COVER_NAMES[step]).is_file():
                     continue
+                if stage == "covers" and _first(folder, LEGACY_COVER_NAMES[step]):
+                    continue
                 _set_auto(folder_id, status="running", stage=step,
                           message=f"正在检查人物图手部并生成{label}（异常或不确定时改为不露手半身构图）", kind=kind)
                 with batch_image.report_request_status(
                     lambda message: _set_auto(folder_id, message=message)
                 ):
-                    await _generate_cover(
-                        folder, step, kind,
-                        # 用户明确重提缺图或单步重做时归档旧请求，自动恢复仍续取。
-                        allow_uncertain_retry=retry_missing or bool(force and stage == step),
-                    )
+                    try:
+                        await _generate_cover(
+                            folder, step, kind,
+                            # 用户明确重提缺图或单步重做时归档旧请求，自动恢复仍续取。
+                            allow_uncertain_retry=retry_missing or bool(force and stage == step),
+                        )
+                    except Exception as exc:
+                        if stage != "covers":
+                            raise
+                        errors.append(f"{label}：{exc}")
+            if errors:
+                raise RuntimeError("；".join(errors))
             done = "人物图与封面已自动补齐" if not stage else "已完成生成"
             if stage in (None, "person") and person_score >= 0:
                 done += f"（人物图相似度 {person_score}/100）"
@@ -853,15 +867,41 @@ async def run_automatic(folder_id: str, *, force: bool = False,
 
 def start_automatic(folder_id: str, *, force: bool = False,
                     stage: str | None = None, retry_missing: bool = False) -> dict[str, Any]:
-    if stage not in {None, "person", "bilibili", "douyin"}:
+    if stage not in {None, "person", "bilibili", "douyin", "covers"}:
         raise ValueError(f"不支持的步骤：{stage}")
     current = AUTOMATIONS.get(folder_id) or {}
     if current.get("status") in {"queued", "running"}:
         return current
     _clear_stop()  # 用户主动点生成 = 新的一轮意图，清掉上次的停止开关
-    asyncio.create_task(run_automatic(folder_id, force=force, stage=stage, retry_missing=retry_missing))
+    task = asyncio.create_task(run_automatic(folder_id, force=force, stage=stage, retry_missing=retry_missing))
+    if stage == "covers":
+        # 主动补封面同样属于批次收尾工作，避免生成途中自动关机。
+        batch_worker._BG_COVER_TASKS.add(task)
+        task.add_done_callback(batch_worker._BG_COVER_TASKS.discard)
     _set_auto(folder_id, status="queued", stage="waiting", message="正在准备自动生成")
     return AUTOMATIONS[folder_id]
+
+
+def retry_incomplete_covers() -> dict[str, int]:
+    """用户主动重发图片页缺失封面；完成的图片和人物图保留。"""
+    result = {"queued": 0, "waiting": 0, "running": 0}
+    for row in list_items():
+        assets = row["assets"]
+        if assets["bilibili"] and assets["douyin"]:
+            continue
+        if not assets["person"] or not row.get("canCover") or not row.get("kind"):
+            result["waiting"] += 1
+            continue
+        folder_id = row["id"]
+        folder = resolve_folder(folder_id)
+        if ((AUTOMATIONS.get(folder_id) or {}).get("status") in AUTO_LIVE_STATUSES
+                or any((str(folder.resolve()).lower(), step) in _COVER_INFLIGHT
+                       for step in COVER_NAMES)):
+            result["running"] += 1
+            continue
+        start_automatic(folder_id, stage="covers", retry_missing=True)
+        result["queued"] += 1
+    return result
 
 
 def start_all_missing() -> dict[str, int]:

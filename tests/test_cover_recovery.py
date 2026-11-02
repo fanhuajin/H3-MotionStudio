@@ -176,9 +176,11 @@ class CoverRequestRecoveryTests(unittest.IsolatedAsyncioTestCase):
             work.mkdir()
             checkpoint = batch_image._task_checkpoint(work / "bilibili.png")
             checkpoint.write_text('{"taskId":"failed-old-task"}', encoding="utf-8")
+            (work / "bilibili.png").write_bytes(png())
             (work / "request.json").write_text('{"prompt":"old"}', encoding="utf-8")
             async def generate(**kwargs):
                 self.assertFalse(checkpoint.exists())
+                self.assertFalse(kwargs["output_path"].exists())
                 self.assertEqual(kwargs["prompt"], "fresh prompt")
                 kwargs["output_path"].write_bytes(png())
             with patch.object(batch_image, "generate_candidate_image", side_effect=generate) as request, \

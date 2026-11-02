@@ -3510,7 +3510,7 @@ async def image_workbench_automatic(
     folder_id: str,
     force: bool = Query(False),
     retry_missing: bool = Query(False, description="主动重新提交缺图请求，可能产生新费用；已有图片保留"),
-    stage: str | None = Query(None, description="只跑这一步：person / bilibili / douyin；留空=整条三步"),
+    stage: str | None = Query(None, description="只跑这一步：person / bilibili / douyin；covers=双封面；留空=整条三步"),
 ):
     """自动出图。用户 2026-09-19：「也可以让我选择每一张的生成」——
     带 `stage` 就只生成那一张（人物图 / B站 / 抖音各自可单独点），不带就三步一次跑完。"""
@@ -3519,6 +3519,13 @@ async def image_workbench_automatic(
         return image_workbench.start_automatic(folder_id, force=force, stage=stage, retry_missing=retry_missing)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/image-workbench/retry-covers")
+async def retry_workbench_covers():
+    if not image_workbench.batch_image.configured():
+        raise HTTPException(400, "第三方图片接口尚未配置")
+    return image_workbench.retry_incomplete_covers()
 
 
 @app.post("/api/image-workbench/automatic-all")

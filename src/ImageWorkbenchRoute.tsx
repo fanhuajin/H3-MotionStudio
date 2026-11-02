@@ -259,7 +259,7 @@ export function ImageWorkbenchRoute() {
       );
       setNotice(stageArg
         ? `已开始重新生成${label}（会用新图覆盖现有那张）。`
-        : "已开始重新请求缺图（可能产生新费用），已有图片保留；已下载的结果直接补保存。");
+        : "已开始重新请求缺图（可能产生新费用），已完成图片保留；未完成封面直接发送新请求。");
       await refresh();
     } catch (error) {
       setNotice(String((error as Error).message || error));
@@ -267,6 +267,23 @@ export function ImageWorkbenchRoute() {
       setBusy(false);
     }
   }, [busy, refresh]);
+
+  const resendIncompleteCovers = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await readJson<{ queued: number; waiting: number; running: number }>(
+        fetch("/api/image-workbench/retry-covers", { method: "POST" }),
+        "重新发送封面请求失败",
+      );
+      setNotice(`已将 ${result.queued} 条作品的未完成封面加入重发队列，已完成图片保留。${result.running ? ` ${result.running} 条正在执行或排队，无需重复发送。` : ""}${result.waiting ? ` ${result.waiting} 条等待人物图、文案或作品类型就绪。` : ""}`);
+      await refresh();
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "重新发送封面请求失败");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const replaceFrame = async () => {
     if (!item || busy) return;
@@ -353,6 +370,13 @@ export function ImageWorkbenchRoute() {
         </div>
       </header>
 
+
+      <div className="image-auto-controls">
+        <button onClick={() => void resendIncompleteCovers()} disabled={busy || initialLoading}
+          title="重新发送未完成的封面请求，旧请求视为失败；已完成图片保留，可能产生新费用">
+          <ArrowClockwise />重发未完成封面
+        </button>
+      </div>
 
       <section className="image-workbench-shell">
         <aside className="image-workbench-list">
