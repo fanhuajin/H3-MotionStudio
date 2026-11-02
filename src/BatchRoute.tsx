@@ -2095,10 +2095,9 @@ export function BatchRoute() {
                               </i>
                               <strong>{itemTitle(item)}</strong>
                             </div>
-                            {/* 模型起的标题认不出是哪条视频：列表里再挂一行源作品自己的文案 */}
-                            {sourceCaption(item) && (
-                              <small className="batch-item-source" title={sourceCaption(item)}>
-                                源：{sourceCaption(item)}
+                            {item.ai?.introduction && (
+                              <small className="batch-item-source" title={item.ai.introduction}>
+                                简介：{item.ai.introduction}
                               </small>
                             )}
                           </td>
