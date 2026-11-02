@@ -2,12 +2,31 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import parse_qs, urlsplit
 
 from .settings import DATA_DIR
+
+
+def history_key(url: str) -> str:
+    """明确作品链接按作品号判重；短链接仍按原文，不联网解析。"""
+    text = url.strip()
+    try:
+        parsed = urlsplit(text)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"douyin.com", "www.douyin.com"}:
+            return text
+        modal_ids = parse_qs(parsed.query).get("modal_id", [])
+        path = re.fullmatch(r"/video/([0-9]{15,22})/?", parsed.path)
+        ident = modal_ids[0] if modal_ids else path.group(1) if path else ""
+        if re.fullmatch(r"[0-9]{15,22}", ident):
+            return f"https://www.douyin.com/video/{ident}"
+    except ValueError:
+        pass
+    return text
 
 
 def duplicate_details(
@@ -16,19 +35,20 @@ def duplicate_details(
     """按实际过滤规则返回原输入的位置和原因，供添加窗口逐条展示。"""
     from .batch_worker import url_key
 
+    known_keys = {history_key(url) for url in known}
     current = {
         url_key(str(item.get("url") or ""))
         for item in items or [] if item.get("status") not in {"deleted", "skipped"}
     }
-    overlap = {url_key(url) for url in singing if url not in known} & {
-        url_key(url) for url in dance if url not in known
+    overlap = {url_key(url) for url in singing if history_key(url) not in known_keys} & {
+        url_key(url) for url in dance if history_key(url) not in known_keys
     }
     seen: set[str] = set()
     duplicates = []
     for kind, urls in (("singing", singing), ("dance", dance)):
         for index, url in enumerate(urls, 1):
             key = url_key(url)
-            if url in known:
+            if history_key(url) in known_keys:
                 reason = "历史已有"
             elif key in overlap:
                 reason = "唱歌与跳舞重复，两边均未添加"

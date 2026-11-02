@@ -372,9 +372,11 @@ def url_key(url: str) -> str:
     `www.douyin.com/user/self?from_tab_name=main&modal_id=<作品号>&showTab=like` ——
     作品号在 **query** 里。早先的实现把整段 query 丢掉，导致所有这类链接都变成
     `www.douyin.com/user/self`，两条不同视频被误判成重复链接过滤掉，点了没有任何新增。
-    现在只丢已知跟踪参数，`modal_id` / `vid` / `item_id` 之类全部保留。
+    明确的作品页与 modal_id 链接先统一作品身份；其他链接只丢已知跟踪参数。
     """
-    text = str(url or "").strip().lower()
+    from .link_history import history_key
+
+    text = history_key(str(url or "")).lower()
     if not text:
         return ""
     text = text.split("#", 1)[0]

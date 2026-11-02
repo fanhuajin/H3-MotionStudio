@@ -848,8 +848,9 @@ async def create_batch(request: BatchCreateRequest):
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     with link_history.transaction() as known:
-        fresh_singing = [url for url in singing if url not in known]
-        fresh_dance = [url for url in dance if url not in known]
+        known_keys = {link_history.history_key(url) for url in known}
+        fresh_singing = [url for url in singing if link_history.history_key(url) not in known_keys]
+        fresh_dance = [url for url in dance if link_history.history_key(url) not in known_keys]
         historical_duplicates = len(urls) - len(fresh_singing) - len(fresh_dance)
         state = new_batch_state(
             fresh_singing, fresh_dance, singing_ratio, dance_ratio,
@@ -922,8 +923,9 @@ async def append_batch_items_endpoint(batch_id: str, request: BatchAppendRequest
     try:
         with link_history.transaction() as known:
             duplicate_rows = link_history.duplicate_details(singing, dance, known, state.get("items"))
-            fresh_singing = [url for url in singing if url not in known]
-            fresh_dance = [url for url in dance if url not in known]
+            known_keys = {link_history.history_key(url) for url in known}
+            fresh_singing = [url for url in singing if link_history.history_key(url) not in known_keys]
+            fresh_dance = [url for url in dance if link_history.history_key(url) not in known_keys]
             historical_duplicates = (
                 len(singing) + len(dance) - len(fresh_singing) - len(fresh_dance)
             )

@@ -14,6 +14,55 @@ from backend import app, batch_worker, link_history
 
 
 class LinkHistoryTests(unittest.TestCase):
+    def test_work_identity_unifies_modal_and_video_without_resolving_short_links(self):
+        ident = "7700826271014041314"
+        direct = f"https://www.douyin.com/video/{ident}"
+        modal = f"https://www.douyin.com/user/self?from_tab_name=main&modal_id={ident}&showTab=like"
+        self.assertEqual(link_history.history_key(modal), direct)
+        self.assertEqual(batch_worker.url_key(modal), batch_worker.url_key(direct))
+        self.assertEqual(batch_worker.unique_urls([modal, direct]), [modal])
+        self.assertEqual(batch_worker.filter_cross_kind_urls([modal], [direct]), ([], []))
+        self.assertEqual(link_history.duplicate_details([], [modal, direct], set()), [
+            {"kind": "dance", "inputIndex": 2, "url": direct, "reason": "本次输入重复，已保留前一条"},
+        ])
+        self.assertEqual(link_history.duplicate_details([], [direct], set(), [
+            {"url": modal, "status": "confirmed"},
+        ])[0]["reason"], "当前队列已有")
+        for value in ["https://v.douyin.com/AbC/", f"https://evil.test/video/{ident}",
+                      f"https://www.douyin.com.evil.test/?modal_id={ident}",
+                      "https://www.douyin.com/user/self?modal_id=bad"]:
+            self.assertEqual(link_history.history_key(value), value)
+        self.assertNotEqual(link_history.history_key(modal.replace(ident, "7700826271014041315")), direct)
+
+    def test_old_history_blocks_both_link_formats_on_create_and_append(self):
+        direct = "https://www.douyin.com/video/7700826271014041314"
+        modal = "https://www.douyin.com/user/self?modal_id=7700826271014041314&showTab=like"
+        for old, incoming in [(modal, direct), (direct, modal)]:
+            with self.subTest(old=old):
+                # Exercise existing raw records without a database migration.
+                with link_history.transaction() as known:
+                    known.add(old)
+                with patch.object(app, "batch_store") as store:
+                    store.active.return_value = None
+                    with self.assertRaises(HTTPException) as caught:
+                        asyncio.run(app.create_batch(app.BatchCreateRequest(danceUrls=[incoming])))
+                    self.assertEqual(caught.exception.detail["submission"]["duplicates"], [
+                        {"kind": "dance", "inputIndex": 1, "url": incoming, "reason": "历史已有"},
+                    ])
+                    store.create.assert_not_called()
+                    state = batch_worker.new_batch_state([], [])
+                    state["status"] = "completed"
+                    store.get.return_value = state
+                    store.update.return_value = state
+                    with patch.object(app, "append_batch_items") as append:
+                        append.return_value = {"state": state, "added": 0, "duplicates": 0}
+                        result = asyncio.run(app.append_batch_items_endpoint(
+                            state["id"], app.BatchAppendRequest(singingUrls=[incoming]),
+                        ))
+                    self.assertEqual(append.call_args.args[1:3], ([], []))
+                    self.assertEqual(result["submission"]["duplicates"][0]["reason"], "历史已有")
+                (self.root / "douyin-link-history.db").unlink()
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
