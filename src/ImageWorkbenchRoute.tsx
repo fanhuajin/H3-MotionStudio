@@ -379,12 +379,12 @@ export function ImageWorkbenchRoute() {
       <section className="image-workbench-shell">
         <aside className="image-workbench-list">
           <div className="image-workbench-list-head"><strong>发布作品</strong><div><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待处理</button><button className={filter === "completed" ? "active" : ""} onClick={() => setFilter("completed")}>已处理</button></div></div>
-          <div className="image-workbench-list-actions">
+          {filter === "pending" && <div className="image-workbench-list-actions">
             <button type="button" onClick={() => void resendIncompleteCovers()} disabled={busy || initialLoading}
               title="重新发送未完成的封面请求，旧请求视为失败；已完成图片保留，可能产生新费用">
               <ArrowClockwise />重发未完成封面
             </button>
-          </div>
+          </div>}
           <div className="image-workbench-items">
             {visible.map((row) => <button key={row.id} className={row.id === selectedId ? "active" : ""} onClick={() => { setSelectedId(row.id); setKind(null); setNotice(""); }}><span>{complete(row) ? <Check weight="bold" /> : <ImageSquare />}</span><div><strong>{row.title}</strong><small>{row.folderName}</small></div><em>{[row.assets.person, row.assets.bilibili, row.assets.douyin].filter(Boolean).length}/3</em></button>)}
             {!visible.length && <p className="image-workbench-empty">{filter === "pending" ? "当前没有待处理作品。" : "当前没有已处理作品。"}</p>}
