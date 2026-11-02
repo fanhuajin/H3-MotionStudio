@@ -4,6 +4,17 @@ from backend import batch_ai
 
 
 class PositiveCopyTests(unittest.TestCase):
+    def test_mention_tags_are_discarded_entirely_and_not_reintroduced(self):
+        unwanted = ["饭@诺岚🍓～ @夏至🍓", "@夏至🍓", "＃＠昵称", "舞蹈＠某人"]
+        self.assertEqual(batch_ai._clean_tags([*unwanted, "#手势舞"]), ["手势舞"])
+        for kind in ("dance", "singing"):
+            result = {"title": "轻快节拍", "tags": [unwanted[0], "手势舞"], "song_name": "@夏至🍓"}
+            batch_ai.ensure_copy_fields(result, kind=kind, source_tags=unwanted)
+            self.assertEqual(len(result["tags"]), 5)
+            self.assertEqual(result["tags"][0], "手势舞")
+            self.assertTrue(all("@" not in tag and "＠" not in tag for tag in result["tags"]))
+            self.assertNotIn("饭", result["tags"])
+
     def test_unsafe_source_cannot_return_through_fallback_or_tags(self):
         for kind in ("dance", "singing"):
             result = {"title": "来 杀 我", "introduction": "来杀我，想死了", "tags": ["来杀我", "想死", "卡点舞"], "song_name": "杀了我", "song_mood": "要命"}
