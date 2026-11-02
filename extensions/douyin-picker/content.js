@@ -4,7 +4,7 @@
   const { videoId, links } = H3Picker;
   const host = document.createElement("div");
   host.id = "h3-douyin-picker";
-  host.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none";
+  host.style.cssText = "all:initial;display:none;position:fixed;inset:0;z-index:2147483647;pointer-events:none";
   const root = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
   style.textContent = `
@@ -26,7 +26,7 @@
   panel.className = "panel";
   panel.setAttribute("aria-label", "H3 抖音选片助手");
   panel.innerHTML = `
-    <header><h2>H3 选片 · <span id="count">0</span> 条</h2><button id="collapse" aria-expanded="true">收起</button></header>
+    <header><h2>H3 选片 · <span id="count">0</span> 条</h2><div class="actions"><button id="collapse" aria-expanded="true">收起</button><button id="disable" title="可从浏览器工具栏的插件图标重新开启">关闭</button></div></header>
     <div id="body">
       <div class="current"><small>当前打开的作品</small><div id="current-title" class="title">点开视频后可在这里加入</div>
         <div class="actions"><button id="choose">选择当前视频</button></div>
@@ -49,6 +49,19 @@
   let transitionUntil = 0;
   let currentId = null;
   let collapsed = false;
+  let enabled = false;
+  let scanTimer;
+  function applyEnabled(value) {
+    enabled = value !== false;
+    host.style.display = enabled ? "block" : "none";
+    clearInterval(scanTimer);
+    if (enabled && ready) {
+      scanCards();
+      scanTimer = setInterval(scanCards, 800);
+    } else {
+      cancelAnimationFrame(frame);
+    }
+  }
   const status = (value) => { $("status").textContent = value; };
   async function request(message) {
     const result = await chrome.runtime.sendMessage(message);
@@ -133,6 +146,7 @@
     refreshCurrent();
   }
   function scanCards() {
+    if (!enabled) return;
     const anchors = [...document.querySelectorAll('a[href*="/video/"]')];
     const existing = new Map(cards.map((card) => [card.anchor, card]));
     const next = [];
@@ -167,6 +181,7 @@
   }
   let frame = 0;
   function positionCards() {
+    if (!enabled) return;
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => {
       const modal = Boolean(videoId(location.href));
@@ -214,11 +229,13 @@
     $("collapse").setAttribute("aria-expanded", String(!collapsed));
   };
   $("clear").onclick = () => { $("confirmation").hidden = false; };
+  $("disable").onclick = () => void mutate({ type: "disable" });
   $("cancel-clear").onclick = () => { $("confirmation").hidden = true; };
   $("confirm-clear").onclick = () => { $("confirmation").hidden = true; void mutate({ type: "clear" }); };
   addEventListener("scroll", positionCards, { capture: true, passive: true });
   addEventListener("resize", positionCards);
   const transitioning = (event) => {
+    if (!enabled) return;
     if (event.composedPath().includes(host)) return;
     if (event.type === "keydown" && !["ArrowDown", "ArrowUp", "PageDown", "PageUp"].includes(event.key)) return;
     transitionUntil = performance.now() + 700;
@@ -227,15 +244,26 @@
   addEventListener("wheel", transitioning, { passive: true });
   addEventListener("keydown", transitioning);
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.enabled) applyEnabled(changes.enabled.newValue);
     if (area === "local" && changes.selections) {
       items = changes.selections.newValue || [];
       renderList();
       positionCards();
     }
   });
-  setInterval(scanCards, 800);
   void (async () => {
-    try { items = await request({ type: "list" }); ready = true; renderList(); scanCards(); }
-    catch (error) { status(`读取失败：${error.message}；更新扩展后请刷新抖音页。`); }
+    try {
+      const [savedItems, settings] = await Promise.all([
+        request({ type: "list" }), chrome.storage.local.get("enabled"),
+      ]);
+      items = savedItems;
+      ready = true;
+      renderList();
+      applyEnabled(settings.enabled);
+    }
+    catch (error) {
+      host.style.display = "block";
+      status(`读取失败：${error.message}；更新扩展后请刷新抖音页。`);
+    }
   })();
 })();

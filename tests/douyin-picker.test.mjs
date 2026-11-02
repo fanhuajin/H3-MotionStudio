@@ -36,15 +36,27 @@ test("按作品号去重、统一导出和删除，不保留分类", () => {
 
 test("后台串行保存多个标签页的选择，失败后仍可继续", async () => {
   let listener;
+  let toggle;
+  let badge;
+  let storageChanged;
   let saved = {};
   const backgroundContext = vm.createContext({
     URL,
     importScripts() { vm.runInContext(coreSource, backgroundContext); },
     chrome: {
+      action: {
+        onClicked: { addListener(fn) { toggle = fn; } },
+        async setBadgeText(value) { badge = value.text; },
+        async setBadgeBackgroundColor() {},
+        async setTitle() {},
+      },
       runtime: { id: "test-extension", onMessage: { addListener(fn) { listener = fn; } } },
-      storage: { local: {
+      storage: { onChanged: { addListener(fn) { storageChanged = fn; } }, local: {
         async get() { return structuredClone(saved); },
-        async set(value) { saved = structuredClone(value); },
+        async set(value) {
+          saved = { ...saved, ...structuredClone(value) };
+          storageChanged(Object.fromEntries(Object.entries(value).map(([key, newValue]) => [key, { newValue }])), "local");
+        },
       } },
     },
   });
@@ -58,6 +70,17 @@ test("后台串行保存多个标签页的选择，失败后仍可继续", async
   assert.equal(results[1].items.length, 2);
   assert.ok((await send({ type: "select", item: {} })).error);
   assert.equal((await send({ type: "list" })).items.length, 2);
+  await send({ type: "disable" });
+  assert.equal(saved.enabled, false);
+  assert.equal((await send({ type: "list" })).items.length, 2);
+  toggle();
+  await send({ type: "list" });
+  assert.equal(saved.enabled, true);
+  toggle();
+  await send({ type: "list" });
+  assert.equal(saved.enabled, false);
+  assert.equal(saved.selections.length, 2);
+  assert.equal(badge, "关");
   assert.ok((await send({ type: "clear" }, { ...sender, url: "https://evil.test/" })).error);
   assert.equal((await send({ type: "list" })).items.length, 2);
 });
