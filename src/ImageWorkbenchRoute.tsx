@@ -141,7 +141,7 @@ export function ImageWorkbenchRoute() {
   const [selectedId, setSelectedId] = useState(() => cachedSelectedId);
   const [stage, setStage] = useRememberedTab<Stage>("h3-motionstudio:image-stage-tab:v1", ["person", "bilibili", "douyin"], "person");
   const [kind, setKind] = useState<"singing" | "dance" | null>(null);
-  const [filter, setFilter] = useRememberedTab("h3-motionstudio:image-filter-tab:v1", ["pending", "all"] as const, "pending");
+  const [filter, setFilter] = useRememberedTab("h3-motionstudio:image-filter-tab:v1", ["pending", "completed"] as const, "pending");
   const [busy, setBusy] = useState(false);
   const [replacingFrame, setReplacingFrame] = useState(false);
   const [initialLoading, setInitialLoading] = useState(cachedItems.length === 0);
@@ -157,7 +157,6 @@ export function ImageWorkbenchRoute() {
       const data = await readJson<{ items: WorkItem[] }>(fetch("/api/image-workbench/items", { cache: "no-store" }), "读取发布目录失败");
       cachedItems = data.items;
       setItems(data.items);
-      setSelectedId((current) => current && data.items.some((item) => item.id === current) ? current : data.items.find((row) => !(row.assets.person && row.assets.bilibili && row.assets.douyin))?.id || data.items[0]?.id || "");
     })();
     refreshInFlight.current = request.finally(() => { refreshInFlight.current = null; });
     return refreshInFlight.current;
@@ -191,7 +190,13 @@ export function ImageWorkbenchRoute() {
   }, [selectedId, previewVersions, stage, items]);
   const chosenKind = kind || item?.kind || null;
   const complete = (row: WorkItem) => Boolean(row.assets.person && row.assets.bilibili && row.assets.douyin);
-  const visible = useMemo(() => filter === "pending" ? items.filter((row) => !complete(row)) : items, [filter, items]);
+  const visible = useMemo(() => items.filter((row) => complete(row) === (filter === "completed")), [filter, items]);
+  useEffect(() => {
+    if (!visible.some((row) => row.id === selectedId)) {
+      setSelectedId(visible[0]?.id || "");
+      setKind(null);
+    }
+  }, [visible, selectedId]);
   const finished = items.filter(complete).length;
   /** 活跃任务用于显示耗时；目录同步不依赖页面事先知道有任务。 */
   const autoLive = items.some((row) => row.batchLive || AUTO_LIVE.includes(row.automation?.status || ""));
@@ -373,7 +378,7 @@ export function ImageWorkbenchRoute() {
 
       <section className="image-workbench-shell">
         <aside className="image-workbench-list">
-          <div className="image-workbench-list-head"><strong>发布作品</strong><div><button className={filter === "pending" ? "active" : ""} onClick={() => { setFilter("pending"); const first = items.find((row) => !complete(row)); if (first) { setSelectedId(first.id); setKind(null); } }}>待处理</button><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>全部</button></div></div>
+          <div className="image-workbench-list-head"><strong>发布作品</strong><div><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待处理</button><button className={filter === "completed" ? "active" : ""} onClick={() => setFilter("completed")}>已处理</button></div></div>
           <div className="image-workbench-list-actions">
             <button type="button" onClick={() => void resendIncompleteCovers()} disabled={busy || initialLoading}
               title="重新发送未完成的封面请求，旧请求视为失败；已完成图片保留，可能产生新费用">
@@ -382,7 +387,7 @@ export function ImageWorkbenchRoute() {
           </div>
           <div className="image-workbench-items">
             {visible.map((row) => <button key={row.id} className={row.id === selectedId ? "active" : ""} onClick={() => { setSelectedId(row.id); setKind(null); setNotice(""); }}><span>{complete(row) ? <Check weight="bold" /> : <ImageSquare />}</span><div><strong>{row.title}</strong><small>{row.folderName}</small></div><em>{[row.assets.person, row.assets.bilibili, row.assets.douyin].filter(Boolean).length}/3</em></button>)}
-            {!visible.length && <p className="image-workbench-empty">当前没有待处理作品。</p>}
+            {!visible.length && <p className="image-workbench-empty">{filter === "pending" ? "当前没有待处理作品。" : "当前没有已处理作品。"}</p>}
           </div>
         </aside>
 
