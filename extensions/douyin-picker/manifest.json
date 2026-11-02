@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "H3 抖音选片助手",
+  "version": "1.0.1",
+  "description": "在抖音网页勾选跳舞视频，一次复制全部链接后手动提交到 H3。",
+  "permissions": ["storage"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["https://www.douyin.com/*"],
+    "js": ["core.js", "content.js"],
+    "run_at": "document_idle"
+  }]
+}
