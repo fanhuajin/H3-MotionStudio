@@ -973,13 +973,13 @@ def restart_item_log(direct: bool) -> str:
     """「重新开始」写进条目日志的那句话（单条与批量共用，免得两边跑偏）。
 
     用户 2026-09-20：「如果人物图 B站图片 抖音图片都有的话点击重新开始不要重新生成」——
-    所以这句话必须写清「已有的图沿用、不会重新出图」。2026-10-18 起封面改到出片后从
-    检查人物图手部后生成，所以「缺失封面」不再在备料里补。
+    所以这句话必须写清「已有的图沿用、不会重新出图」。封面进入出片区后检查人物图手部并依次生成，
+    所以「缺失封面」不再在备料里补。
     """
     if direct:
         return (
             "已重新开始这一条：已有的人物图直接沿用，不会重新出图；"
-            "封面改为出片后检查人物图手部再生成，不再在备料里补；随后继续出片。"
+            "封面进入出片区后检查人物图手部并依次生成，不再在备料里补；视频按队列继续出片。"
         )
     return (
         "已重新开始这一条，将从下载与备料重做；已经出好的人物图与封面会直接沿用，"
@@ -1697,7 +1697,7 @@ async def _prepare_review(
 
 
 async def _run_prep(batch_id: str, item_id: str) -> None:
-    """下载、预审、人物图与文案落盘；封面等轮到本条开始出片再生成。
+    """下载、预审、人物图与文案落盘；封面进入出片区后按队列顺序生成。
 
     备料完成后留在等待区，按逐条手动安排继续出片，不等封面。
     """
@@ -1724,7 +1724,7 @@ async def _run_prep(batch_id: str, item_id: str) -> None:
     feedback = str(refreshed.get("revisionFeedback") or "")
     mode = str(refreshed.get("revisionMode") or "both")
     await _prepare_review(batch_id, item_id, feedback=feedback, mode=mode)
-    # 备料阶段不生成封面；仅当前条目提交视频任务后启动对应封面。
+    # 备料阶段不生成封面；进入出片区后统一排入后台封面队列。
 
 
 def _covers_ready(item: dict[str, Any]) -> bool:
@@ -2391,7 +2391,7 @@ async def _prepare_review_work(
                 f"图二（身份参考）{IDENTITY_PATH}。",
             )
 
-    # API 封面由 `_process_confirmed` 在本条视频提交后转后台；桌面端老入口只供显式调用。
+    # API 封面由 runner 在进入出片区后排入后台；桌面端老入口只供显式调用。
     #
     # **自动放行出片**：默认也已关闭（图片自动化的一部分）——上传人物图后停在
     # 「等待你的确认」，点「确认并出片」才走视频链路。想恢复自动放行：`H3_AUTO_CONFIRM=1`。
@@ -2522,7 +2522,7 @@ def spawn_api_covers(
 
 async def _generate_covers_via_api(
     batch_id: str, item_id: str, folder: Path, *, force: bool = False,
-    allow_uncertain_retry: bool = False,
+    allow_uncertain_retry: bool = False, skip_abandoned: bool = False,
 ) -> list[str]:
     """走中转站出两张封面：`B站4x3.png`（4:3）与 `抖音3x4.png`（3:4）。
 
@@ -2540,6 +2540,12 @@ async def _generate_covers_via_api(
             _set_item(batch_id, item_id, retryMissingCovers=False)
         try:
             for stage, label in (("bilibili", "B站封面"), ("douyin", "抖音封面")):
+                current = _item(batch_id, item_id)
+                if skip_abandoned and (
+                    current.get("skipRequested") or current.get("deleteRequested")
+                    or current.get("status") in {"skipped", "deleted", "cancelled"}
+                ):
+                    break
                 if not force and any(_present_file(folder, name) for name in PUBLISH_COVER_ALIASES[stage]):
                     _set_item(batch_id, item_id, **{f"{stage}CoverError": None})
                     continue
@@ -2602,7 +2608,8 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
         if retry_authorized:
             _set_item(batch_id, item_id, retryMissingCovers=False)
         errors = await _generate_covers_via_api(
-            batch_id, item_id, folder, allow_uncertain_retry=retry_authorized
+            batch_id, item_id, folder, allow_uncertain_retry=retry_authorized,
+            skip_abandoned=True,
         )
         if _covers_ready(_item(batch_id, item_id)):
             return
@@ -2624,7 +2631,7 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
 
 
 # 【2026-10-18】封面不再挡下一条视频：中转站出封面是**纯外部等待**（实测 60~100 秒/张），
-# 当前条目提交视频任务后在后台生成对应封面；视频交付后仍补缺失封面。
+# 进入出片区后按队列顺序在后台生成封面；视频交付后仍补缺失封面。
 # `H3_COVER_BLOCKING=1` 可以回到旧的「等封面做完再走下一条」语义。
 # 封面采用中转站原图，不做本地放大；后台补封面不再为放大排队占用 GPU。
 _BG_COVER_TASKS: set[asyncio.Task] = set()
@@ -2664,7 +2671,7 @@ def spawn_item_covers(batch_id: str, item_id: str, folder: Path | None) -> bool:
 
     task.add_done_callback(finished)
     try:
-        batch_store.add_item_log(batch_id, item_id, "当前条目的封面在后台生成（不等待视频完成，不提前生成其他条目封面）。")
+        batch_store.add_item_log(batch_id, item_id, "封面已加入后台队列，按出片顺序依次生成，不等待本条视频开始。")
     except Exception:  # noqa: BLE001 - 批次/条目刚被删掉时只当没日志，别再抛回去
         pass
     return True
@@ -2734,11 +2741,11 @@ async def ensure_publish_images(
     """
     state = await asyncio.to_thread(_sync_publish_images, batch_id, item_id)
     missing = list(state.get("missing") or [])
-    # 2026-10-18 起封面在出片之后才生成：出片前的体检不能再把「缺封面」当成异常提示。
+    # 封面在出片区后台串行生成：出片前的体检不把「缺封面」当成异常提示。
     if not expect_covers and full_auto_enabled():
         cover_names = {name for names in PUBLISH_COVER_ALIASES.values() for name in names}
         missing = [name for name in missing if name not in cover_names]
-        tail = "（封面会在出片后检查人物图手部再生成）"
+        tail = "（封面进入出片区后检查人物图手部并依次生成）"
     else:
         tail = "（图片由你自己出/自己上传）"
     if reason and missing:
@@ -4450,13 +4457,6 @@ async def _process_confirmed(batch_id: str, item_id: str) -> None:
         batch_store.add_item_log(batch_id, item_id, "已确认候选结果，开始执行视频生成单链路。")
         video_job = await _post_video_job(batch_id, item_id)
         _set_item(batch_id, item_id, videoJobId=video_job["id"], childJob=video_job)
-        # 已轮到本条并成功提交视频任务，才并行生成这一条的封面。
-        if full_auto_enabled():
-            current = _item(batch_id, item_id)
-            spawn_item_covers(
-                batch_id, item_id,
-                _recorded_publish_folder(current) or _existing_publish_folder(current),
-            )
         video_job = await _watch_child(batch_id, item_id, video_job["id"], "video")
         batch_store.set_item_milestone(batch_id, item_id, "video", status="completed", progress=100)
         _set_item(batch_id, item_id, stage="deliver", childJob=None)
@@ -4568,11 +4568,36 @@ def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+async def _queue_render_covers(
+    batch_id: str, state: dict[str, Any], queued: set[str]
+) -> None:
+    """已安排的条目提前准备封面素材，复用串行封面队列；每轮只尝试入队一次。"""
+    if not full_auto_enabled():
+        return
+    numbered = sorted(
+        state.get("items") or [],
+        key=lambda row: int(row.get("renderIndex") or row.get("kindIndex") or row.get("index") or 0),
+    )
+    for row in _priority_sorted(numbered):
+        item_id = str(row["id"])
+        if (item_id in queued or not row.get("renderQueued")
+                or row.get("status") not in {"confirmed", "running"}
+                or row.get("prepPaused") or row.get("skipRequested") or row.get("deleteRequested")):
+            continue
+        queued.add(item_id)
+        folder = _recorded_publish_folder(row) or _existing_publish_folder(row)
+        if folder is None:
+            # 安排请求只改状态；素材复制由 runner 执行，不阻塞 HTTP 请求。
+            materials = await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
+            folder = Path(materials["folder"]) if materials else None
+        spawn_item_covers(batch_id, item_id, folder)
+
+
 def _next_prep(state: dict[str, Any]) -> dict[str, Any] | None:
     """下一个要备料的条目（pending / revising）。
 
-    2026-10-18 起**不再**把「已确认但缺封面」的条目拉回备料：封面改到出片之后检查人物图手部再
-    生成，出片闸门不再等封面，所以这里只看还没备料的条目。
+    不把「已确认但缺封面」的条目拉回备料：封面进入出片区后后台串行生成，
+    出片闸门不等封面，所以这里只看还没备料的条目。
     """
     return _next_work(state, allow_confirmed=False)
 
@@ -4794,6 +4819,7 @@ async def run_batch(batch_id: str) -> None:
     video_row: dict[str, Any] | None = None
     prep_task: asyncio.Task | None = None
     prep_row: dict[str, Any] | None = None
+    queued_covers: set[str] = set()
     try:
         state = batch_store.get(batch_id)
         if not state:
@@ -4910,6 +4936,9 @@ async def run_batch(batch_id: str) -> None:
                     continue
                 batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
                 return
+            await _queue_render_covers(batch_id, state, queued_covers)
+            if batch_run_superseded(batch_id, generation):
+                continue
             # 换代时旧视频仍可能安全收尾；它释放前，新 runner 不能开始备料或下一条出片。
             stale_videos = {task for task in _STALE_VIDEO_TASKS if not task.done()}
             if stale_videos:

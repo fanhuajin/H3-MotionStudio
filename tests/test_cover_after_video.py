@@ -5,7 +5,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from backend import batch_worker, image_workbench
+from backend import batch_store, batch_worker, image_workbench
 
 
 class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
@@ -26,7 +26,7 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             prepare.assert_awaited()
             spawn.assert_not_called()
 
-    async def test_only_current_video_starts_its_cover_after_submission(self):
+    async def test_video_submission_does_not_schedule_covers_again(self):
         await self._check_video_cover_trigger("submitted")
 
     async def test_waiting_for_pipeline_does_not_start_covers(self):
@@ -64,8 +64,8 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
                 return {"id": "video-current"}
 
             async def watch(*_args):
-                spawn.assert_called_once_with("batch-current", "current", folder)
-                # Stop while the video is still running: its cover has already started.
+                spawn.assert_not_called()
+                # Covers are scheduled independently by the batch runner.
                 raise asyncio.CancelledError
 
             stack.enter_context(patch.object(batch_worker, "_wait_for_free_pipeline", side_effect=wait))
@@ -77,6 +77,89 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             if scenario != "submitted":
                 spawn.assert_not_called()
             batch_worker._BATCH_VIDEO_LOCKS.pop("batch-current", None)
+
+    async def test_render_queue_schedules_all_covers_in_order_once(self):
+        rows = [
+            {"id": "later", "kind": "singing", "renderIndex": 2},
+            {"id": "first", "kind": "singing", "renderIndex": 1},
+            {"id": "dance", "kind": "dance", "renderIndex": 1},
+            {"id": "waiting", "renderQueued": False},
+            {"id": "paused", "prepPaused": True},
+            {"id": "skipped", "skipRequested": True},
+            {"id": "deleted", "deleteRequested": True},
+            {"id": "failed", "status": "failed"},
+        ]
+        state = {"items": [{"status": "confirmed", "renderQueued": True, **row} for row in rows]}
+        queued = set()
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            folder = Path(directory)
+            stack.enter_context(patch.object(batch_worker, "full_auto_enabled", return_value=True))
+            stack.enter_context(patch.object(batch_worker, "_recorded_publish_folder", return_value=None))
+            stack.enter_context(patch.object(batch_worker, "_existing_publish_folder", return_value=None))
+            materialize = stack.enter_context(patch.object(batch_worker, "deliver_review_materials", return_value={"folder": str(folder)}))
+            spawn = stack.enter_context(patch.object(batch_worker, "spawn_item_covers"))
+            await batch_worker._queue_render_covers("batch", state, queued)
+            await batch_worker._queue_render_covers("batch", state, queued)
+        self.assertEqual([call.args[1] for call in spawn.call_args_list], ["dance", "first", "later"])
+        self.assertEqual(materialize.call_count, 3)
+        self.assertEqual(queued, {"dance", "first", "later"})
+
+    async def test_queued_covers_run_serially_and_skip_removed_items(self):
+        calls = []
+        started = asyncio.Event()
+        release = asyncio.Event()
+        rows = {"first": {}, "later": {}, "removed": {"skipRequested": True}}
+
+        async def generate(folder, stage, kind):
+            calls.append((folder.name, stage))
+            if folder.name == "first" and stage == "bilibili":
+                started.set()
+                await release.wait()
+
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch.object(batch_worker, "_COVER_LOCK", asyncio.Lock()))
+            stack.enter_context(patch.object(batch_worker, "_item", side_effect=lambda b, i: rows[i]))
+            stack.enter_context(patch.object(batch_worker, "_set_item"))
+            stack.enter_context(patch.object(batch_worker.batch_store, "add_item_log"))
+            stack.enter_context(patch.object(image_workbench, "_generate_cover", side_effect=generate))
+            tasks = [asyncio.create_task(batch_worker._generate_covers_via_api(
+                "batch", item_id, Path(directory) / item_id, skip_abandoned=True
+            )) for item_id in rows]
+            try:
+                await asyncio.wait_for(started.wait(), timeout=2)
+                self.assertEqual(calls, [("first", "bilibili")])
+            finally:
+                release.set()
+                await asyncio.wait_for(asyncio.gather(*tasks), timeout=2)
+        self.assertEqual(calls, [
+            ("first", "bilibili"), ("first", "douyin"),
+            ("later", "bilibili"), ("later", "douyin"),
+        ])
+
+    async def test_runner_queues_later_covers_before_first_video(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            folder = Path(directory)
+            stack.enter_context(patch.object(batch_store, "DB_PATH", folder / "queue.db"))
+            store = batch_store.BatchStore()
+            store.create({
+                "id": "cover-queue", "status": "running", "renderRequested": True,
+                "createdAt": "2026-11-02T00:00:00", "updatedAt": "2026-11-02T00:00:00",
+                "items": [{"id": name, "index": index, "status": "confirmed",
+                           "renderQueued": True} for index, name in enumerate(("first", "later"), 1)],
+            })
+            stack.enter_context(patch.object(batch_worker, "batch_store", store))
+            stack.enter_context(patch.object(batch_worker, "full_auto_enabled", return_value=True))
+            stack.enter_context(patch.object(batch_worker, "_recorded_publish_folder", return_value=folder))
+            spawn = stack.enter_context(patch.object(batch_worker, "spawn_item_covers"))
+
+            async def video(batch_id, item_id):
+                self.assertEqual([call.args[1] for call in spawn.call_args_list], ["first", "later"])
+                store.mutate_item(batch_id, item_id, lambda row: row.update(status="completed"))
+
+            process = stack.enter_context(patch.object(batch_worker, "_process_confirmed", side_effect=video))
+            await asyncio.wait_for(batch_worker.run_batch("cover-queue"), timeout=3)
+            self.assertEqual(process.await_count, 2)
+            self.assertEqual(store.get("cover-queue")["status"], "completed")
 
     async def test_cover_reference_falls_back_to_person_image(self):
         with tempfile.TemporaryDirectory() as directory:
