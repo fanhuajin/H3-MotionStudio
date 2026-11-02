@@ -27,6 +27,15 @@
     };
   }
   function update(items, message) {
+    if (message.type === "selectRow" || message.type === "removeRow") {
+      if (!Array.isArray(message.items) || !message.items.length) throw new Error("整排没有有效作品。");
+      const row = message.items.map(cleanItem);
+      const ids = new Set(row.map((item) => item.id));
+      if (message.type === "removeRow") return items.filter((item) => !ids.has(item.id));
+      const merged = new Map(items.map((item) => [item.id, item]));
+      for (const item of row) merged.set(item.id, item);
+      return [...merged.values()];
+    }
     if (message.type === "clear") return [];
     if (message.type === "remove") {
       if (!validId(message.id)) throw new Error("无效作品号。");
@@ -41,5 +50,14 @@
   function links(items) {
     return items.map((item) => `https://www.douyin.com/video/${item.id}`).join("\n");
   }
-  scope.H3Picker = { videoId, cleanItem, update, links };
+  function groupRows(entries) {
+    const rows = [];
+    for (const entry of [...entries].sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left)) {
+      const row = rows.find((row) => Math.abs(row[0].rect.top - entry.rect.top) <= 8);
+      if (row) row.push(entry);
+      else rows.push([entry]);
+    }
+    return rows.map((row) => row.sort((a, b) => a.rect.left - b.rect.left));
+  }
+  scope.H3Picker = { videoId, cleanItem, update, links, groupRows };
 })(globalThis);

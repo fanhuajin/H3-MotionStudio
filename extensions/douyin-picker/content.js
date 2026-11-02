@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   if (document.getElementById("h3-douyin-picker")) return;
-  const { videoId, links } = H3Picker;
+  const { videoId, links, groupRows } = H3Picker;
   const host = document.createElement("div");
   host.id = "h3-douyin-picker";
   host.style.cssText = "all:initial;display:none;position:fixed;inset:0;z-index:2147483647;pointer-events:none";
@@ -44,6 +44,7 @@
   let ready = false;
   let busy = false;
   let cards = [];
+  const rowButtons = [];
   let lastUrl = "";
   let urlChangedAt = performance.now();
   let transitionUntil = 0;
@@ -72,6 +73,7 @@
     if (busy || !ready) return;
     busy = true;
     refreshCurrent();
+    positionCards();
     try {
       items = await request(message);
       renderList();
@@ -185,11 +187,13 @@
     cancelAnimationFrame(frame);
     frame = requestAnimationFrame(() => {
       const modal = Boolean(videoId(location.href));
+      const visibleCards = [];
       for (const card of cards) {
         const rect = card.anchor.getBoundingClientRect();
         const visible = !modal && rect.width >= 100 && rect.height >= 100 && rect.bottom > 100 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
         card.label.hidden = !visible;
         if (!visible) continue;
+        visibleCards.push({ card, rect });
         card.label.style.left = `${Math.max(4, rect.left + 8)}px`;
         card.label.style.top = `${Math.max(90, rect.top + 8)}px`;
         const selected = items.find((item) => item.id === card.id);
@@ -198,6 +202,39 @@
         card.input.setAttribute("aria-label", `${selected ? "取消选择" : "选择"}${metadata(card.id, card.anchor).title}`);
         card.text.textContent = selected ? "已选" : "选择";
       }
+      const rows = groupRows(visibleCards);
+      for (const button of rowButtons) button.hidden = true;
+      rows.forEach((row, index) => {
+        let button = rowButtons[index];
+        if (!button) {
+          button = document.createElement("button");
+          button.className = "card";
+          button.type = "button";
+          root.append(button);
+          rowButtons.push(button);
+        }
+        const selected = row.every(({ card }) => items.some((item) => item.id === card.id));
+        button.hidden = false;
+        button.disabled = busy || !ready;
+        button.textContent = selected ? "取消整排" : "选择整排";
+        button.setAttribute("aria-pressed", String(selected));
+        button.setAttribute("aria-label", `${button.textContent}，共 ${row.length} 个视频`);
+        const right = Math.max(...row.map(({ rect }) => rect.right));
+        const outside = right + 116 <= innerWidth;
+        button.style.left = `${Math.max(4, outside ? right + 8 : Math.min(right, innerWidth) - 108)}px`;
+        button.style.top = `${Math.max(90, row[0].rect.top + (outside ? 8 : 46))}px`;
+        button.onclick = () => {
+          // Virtualized cards may have changed since the last layout pass.
+          if (row.some(({ card }) => !card.anchor.isConnected || videoId(card.anchor.href) !== card.id)) {
+            scanCards(); status("卡片已变化，请重新选择整排。"); return;
+          }
+          const allSelected = row.every(({ card }) => items.some((item) => item.id === card.id));
+          void mutate({
+            type: allSelected ? "removeRow" : "selectRow",
+            items: row.map(({ card }) => metadata(card.id, card.anchor)),
+          });
+        };
+      });
     });
   }
   $("choose").onclick = () => {

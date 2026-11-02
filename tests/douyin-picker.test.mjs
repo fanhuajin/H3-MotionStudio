@@ -11,6 +11,27 @@ const { videoId, update, links, cleanItem } = context.H3Picker;
 const id = "7703404416980823217";
 const item = { id, title: "示例作品" };
 
+test("整排补选去重、取消仅影响本排，无效输入不产生部分结果", () => {
+  const second = { ...item, id: "7703404416980823218" };
+  const other = { ...item, id: "7703404416980823219" };
+  const before = [item, other];
+  const selected = update(before, { type: "selectRow", items: [item, second, second] });
+  assert.deepEqual(Array.from(selected, (entry) => entry.id), [id, other.id, second.id]);
+  assert.deepEqual(Array.from(update(selected, { type: "removeRow", items: [item, second] }), (entry) => entry.id), [other.id]);
+  assert.throws(() => update(before, { type: "selectRow", items: [second, { id: "bad" }] }));
+  assert.throws(() => update(before, { type: "removeRow", items: [] }));
+  assert.equal(before.length, 2);
+});
+
+test("按卡片实际位置分排，容忍像素误差并支持变列和末排", () => {
+  const entry = (id, top, left) => ({ id, rect: { top, left } });
+  const rows = context.H3Picker.groupRows([
+    entry("c", 104, 220), entry("d", 430, 0), entry("b", 100, 110), entry("a", 100, 0),
+  ]);
+  assert.deepEqual(Array.from(rows, (row) => Array.from(row, (card) => card.id)), [["a", "b", "c"], ["d"]]);
+  assert.equal(context.H3Picker.groupRows([]).length, 0);
+});
+
 test("列表不当作作品；弹层和标准链接准确提取长作品号", () => {
   assert.equal(videoId("https://www.douyin.com/user/self?showTab=like"), null);
   assert.equal(videoId(`https://www.douyin.com/user/self?modal_id=${id}&showTab=like`), id);
@@ -70,6 +91,10 @@ test("后台串行保存多个标签页的选择，失败后仍可继续", async
   assert.equal(results[1].items.length, 2);
   assert.ok((await send({ type: "select", item: {} })).error);
   assert.equal((await send({ type: "list" })).items.length, 2);
+  assert.equal((await send({ type: "selectRow", items: [item, { ...item, id: "7703404416980823219" }] })).items.length, 3);
+  assert.ok((await send({ type: "selectRow", items: [item, {}] })).error);
+  assert.equal((await send({ type: "list" })).items.length, 3);
+  assert.equal((await send({ type: "removeRow", items: [{ ...item, id: "7703404416980823219" }] })).items.length, 2);
   await send({ type: "disable" });
   assert.equal(saved.enabled, false);
   assert.equal((await send({ type: "list" })).items.length, 2);
