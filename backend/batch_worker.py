@@ -3621,7 +3621,7 @@ def _publish_scan_roots(kind: str) -> list[Path]:
     return roots
 
 
-def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
+def _existing_publish_folder(item: dict[str, Any], *, folders: list[Path] | None = None) -> Path | None:
     """发布根里**已经属于同一条作品**的目录（之前批次留下的）。
 
     用户 2026-09-13：「现在加入队列目录又重复生成文件夹了……如果目录里已经有了最终成片
@@ -3637,7 +3637,8 @@ def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
             continue
         candidates.extend(
             path
-            for path in root.iterdir()
+            for path in (root.iterdir() if folders is None else folders)
+            if path.parent == root
             if path.name.endswith(f"_{aweme}") and path.is_dir()
         )
     if not candidates:
@@ -4677,12 +4678,14 @@ def _soft_fail_item(
     return False
 
 
-def _expose_failed_item_in_image_workbench(batch_id: str, item_id: str) -> None:
+def _expose_failed_item_in_image_workbench(
+    batch_id: str, item_id: str, *, item: dict[str, Any] | None = None, folders: list[Path] | None = None,
+) -> None:
     """只为已经进入出片流程的异常任务补发布目录入口。"""
-    item = _item(batch_id, item_id)
+    item = item if item is not None else _item(batch_id, item_id)
     if not _publish_materials_allowed(item):
         return
-    folder = _existing_publish_folder(item) or _recorded_publish_folder(item) or _ideal_publish_folder(item)
+    folder = _existing_publish_folder(item, folders=folders) or _recorded_publish_folder(item) or _ideal_publish_folder(item)
     folder.mkdir(parents=True, exist_ok=True)
     frame = _item_frame(item)
     if frame is None:

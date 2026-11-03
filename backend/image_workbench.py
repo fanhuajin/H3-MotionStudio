@@ -176,10 +176,11 @@ def expose_failed_items() -> None:
     # 旧批次可能在备料失败时尚未写发布目录；打开页面时补齐上传入口。
     latest = batch_store.latest()
     if latest:
+        folders = _publish_folders()
         for row in latest.get("items") or []:
             if row.get("status") == "failed" and not row.get("deleteRequested"):
                 try:
-                    batch_worker._expose_failed_item_in_image_workbench(latest["id"], row["id"])
+                    batch_worker._expose_failed_item_in_image_workbench(latest["id"], row["id"], item=row, folders=folders)
                 except OSError:
                     logger.exception("补建异常条目的图片上传入口失败：%s", row.get("id"))
 
@@ -198,18 +199,21 @@ def _has_failed_covers(folder: Path, rows: list[dict[str, Any]]) -> bool:
         if (automation.get("status") == "failed"
                 and automation.get("stage") in {stage, "covers"}):
             return True
-        if any(row.get(f"{stage}CoverError") for row in rows
-               if (Path(row["outputs"]["folder"]).resolve() == folder.resolve()
+        if any((Path(row["outputs"]["folder"]).resolve() == folder.resolve()
                    if (row.get("outputs") or {}).get("folder")
-                   else str(row.get("awemeId") or "") == aweme_id)):
+                   else str(row.get("awemeId") or "") == aweme_id)
+               for row in rows if row.get(f"{stage}CoverError")):
             return True
     return False
 
 
 def list_items() -> list[dict[str, Any]]:
     latest = batch_store.latest()
+    folders = _publish_folders()
+    kinds = batch_store.kinds_for_awemes({folder.name.rsplit("_", 1)[-1] for folder in folders})
+    identity = _meta(IDENTITY_PATH)
     items: list[dict[str, Any]] = []
-    for folder in _publish_folders():
+    for folder in folders:
         copy = _copy_text(folder)
         frame = _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg")
         person = _first(folder, PERSON_NAME)
@@ -225,14 +229,14 @@ def list_items() -> list[dict[str, Any]]:
             "folderName": folder.name,
             "title": _title(copy, folder.name),
             "copy": copy,
-            "kind": infer_kind(folder),
+            "kind": kinds.get(folder.name.rsplit("_", 1)[-1]),
             "automation": AUTOMATIONS.get(_folder_id(folder)),
             "failedCovers": _has_failed_covers(folder, (latest or {}).get("items") or []),
             "hasVideo": has_video,
             "canCover": bool(person and (folder / "发布文案.txt").is_file()),
             "coverReview": cover_review.read_report(person, folder / ".h3-cover-hands.json") if person else None,
             "assets": {
-                "frame": _meta(frame), "identity": _meta(IDENTITY_PATH), "person": _meta(person),
+                "frame": _meta(frame), "identity": identity, "person": _meta(person),
                 "bilibili": _meta(bili), "douyin": _meta(douyin),
             },
         })
@@ -242,7 +246,7 @@ def list_items() -> list[dict[str, Any]]:
     for row in (latest or {}).get("items") or []:
         if row.get("status") == "deleted" or row.get("deleteRequested"):
             continue
-        folder = (batch_worker._existing_publish_folder(row)
+        folder = (batch_worker._existing_publish_folder(row, folders=folders)
                   or batch_worker._recorded_publish_folder(row)
                   or batch_worker._ideal_publish_folder(row))
         key = _folder_id(folder)
@@ -267,7 +271,7 @@ def list_items() -> list[dict[str, Any]]:
             entry["canCover"] = bool(person and entry["copy"])
             entry["assets"] = {
                 "frame": _meta(_first(prepared, "抽帧.jpg", "抽帧.png")),
-                "identity": _meta(IDENTITY_PATH), "person": _meta(person),
+                "identity": identity, "person": _meta(person),
                 "bilibili": _meta(_first(prepared, COVER_NAMES["bilibili"])),
                 "douyin": _meta(_first(prepared, COVER_NAMES["douyin"])),
             }

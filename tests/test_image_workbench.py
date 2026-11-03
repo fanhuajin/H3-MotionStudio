@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import importlib
 import tempfile
 import time
 import unittest
@@ -42,6 +43,66 @@ async def fake_defocus(frame: Path, work: Path) -> tuple[Path, bool]:
 
 
 class ImageWorkbenchTests(unittest.TestCase):
+    def test_failed_entries_reuse_batch_snapshot_without_rereading_each_item(self) -> None:
+        records = [{"id": str(index), "status": "failed"} for index in range(30)]
+        with patch.object(workbench.batch_store, "latest", return_value={"id": "batch", "items": records}), \
+             patch.object(workbench, "_publish_folders", return_value=[]) as scan, \
+             patch.object(batch_worker, "_publish_materials_allowed", return_value=False), \
+             patch.object(batch_worker, "_item", side_effect=AssertionError("重复读取批次")):
+            workbench.expose_failed_items()
+        scan.assert_called_once()
+
+    def test_folder_snapshot_preserves_finished_folder_preference(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            finished = root / "dance" / "001_old_123"
+            newer = root / "002_new_123"
+            finished.mkdir(parents=True)
+            newer.mkdir()
+            (finished / "最终成片.mp4").write_bytes(b"test")
+            with patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root):
+                item = {"awemeId": "123", "kind": "dance"}
+                self.assertEqual(batch_worker._existing_publish_folder(item), finished)
+                with patch.object(Path, "iterdir", side_effect=AssertionError("重复扫描")):
+                    self.assertEqual(batch_worker._existing_publish_folder(item, folders=[newer, finished]), finished)
+
+    def test_list_reuses_directory_snapshot_and_bulk_kind_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            folders = []
+            records = []
+            for index in range(30):
+                folder = root / "dance" / f"001_测试_{index}"
+                folder.mkdir(parents=True)
+                (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+                folders.append(folder)
+                records.append({"id": str(index), "awemeId": str(index), "kind": "dance", "status": "confirmed"})
+            with patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \
+                 patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), \
+                 patch.object(workbench.batch_store, "latest", return_value={"items": records}), \
+                 patch.object(workbench.batch_store, "kinds_for_awemes", return_value={str(i): "dance" for i in range(30)}) as kinds, \
+                 patch.object(workbench.batch_store, "items_for_aweme", side_effect=AssertionError("逐条查询")), \
+                 patch.object(workbench, "_publish_folders", return_value=folders) as scan, \
+                 patch.object(Path, "iterdir", side_effect=AssertionError("重复扫描")):
+                rows = workbench.list_items()
+            self.assertEqual(len(rows), 30)
+            self.assertTrue(all(row["kind"] == "dance" and row["batchLive"] for row in rows))
+            scan.assert_called_once()
+            kinds.assert_called_once_with({str(i) for i in range(30)})
+
+    def test_bulk_kind_lookup_preserves_latest_record_and_unknown_kind(self) -> None:
+        module = importlib.import_module("backend.batch_store")
+        with tempfile.TemporaryDirectory() as raw, patch.object(module, "DB_PATH", Path(raw) / "test.db"):
+            store = module.BatchStore()
+            for index, items in enumerate((
+                [{"awemeId": "1", "kind": "singing"}, {"awemeId": "2", "kind": "dance"}],
+                [{"awemeId": "1", "kind": "dance"}, {"awemeId": "2", "kind": None}],
+            )):
+                store.create({"id": str(index), "createdAt": "same", "updatedAt": "same", "status": "completed", "items": items})
+            self.assertEqual(store.kinds_for_awemes({"1", "2", "missing", ""}), {"1": "dance", "2": None})
+            with patch.object(store, "_connect", side_effect=AssertionError("空列表不查库")):
+                self.assertEqual(store.kinds_for_awemes(set()), {})
+
     def setUp(self) -> None:
         from backend import source_appearance
         recognition = patch.object(source_appearance, "review", AsyncMock(return_value={

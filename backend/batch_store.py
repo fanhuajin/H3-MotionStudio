@@ -345,6 +345,28 @@ class BatchStore:
             notice="本地服务重启，批次已安全暂停；点击继续后从当前条目恢复。",
         )
 
+    def kinds_for_awemes(self, aweme_ids: set[str]) -> dict[str, str | None]:
+        """一次读取历史批次，避免图片列表逐个作品查询并重复解析同一批 JSON。"""
+        remaining = aweme_ids - {""}
+        if not remaining:
+            return {}
+        found: dict[str, str | None] = {}
+        with self._lock, closing(self._connect()) as connection:
+            for row in connection.execute("SELECT state_json FROM batches ORDER BY created_at DESC, rowid DESC"):
+                try:
+                    state = json.loads(row["state_json"])
+                except (TypeError, ValueError):
+                    continue
+                for item in state.get("items") or []:
+                    aweme = str(item.get("awemeId") or "")
+                    if aweme in remaining:
+                        kind = item.get("kind")
+                        found[aweme] = kind if kind in {"singing", "dance"} else None
+                        remaining.remove(aweme)
+                if not remaining:
+                    break
+        return found
+
     def items_for_aweme(self, aweme_id: str, limit: int = 20) -> list[dict[str, Any]]:
         """按作品号找**历史做过的条目**（跨批次，最新的在前）。
 
