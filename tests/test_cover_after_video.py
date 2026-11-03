@@ -104,6 +104,19 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(materialize.call_count, 3)
         self.assertEqual(queued, {"dance", "first", "later"})
 
+    async def test_existing_cover_folders_yield_before_queueing_later_items(self):
+        state = {"items": [{"id": name, "status": "confirmed", "renderQueued": True}
+                           for name in ("first", "later")]}
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch.object(batch_worker, "full_auto_enabled", return_value=True))
+            stack.enter_context(patch.object(batch_worker, "_recorded_publish_folder", return_value=Path(directory)))
+            spawn = stack.enter_context(patch.object(batch_worker, "spawn_item_covers"))
+            task = asyncio.create_task(batch_worker._queue_render_covers("batch", state, set()))
+            await asyncio.sleep(0)
+            self.assertEqual(spawn.call_count, 1)
+            await task
+            self.assertEqual(spawn.call_count, 2)
+
     async def test_queued_covers_run_serially_and_skip_removed_items(self):
         calls = []
         started = asyncio.Event()

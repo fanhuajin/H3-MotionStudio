@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -170,6 +171,35 @@ if __name__ == "__main__":
 
 
 class WaitingQueueTests(unittest.TestCase):
+    def test_websocket_file_checks_do_not_block_event_loop(self):
+        async def scenario():
+            state = {"items": []}
+            release = threading.Event()
+            started = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            checks = []
+
+            def inspect_files(snapshot):
+                loop.call_soon_threadsafe(started.set)
+                checks.append(release.wait(timeout=1))
+                return snapshot
+
+            websocket = AsyncMock()
+            websocket.send_json.side_effect = [None, app.WebSocketDisconnect()]
+            queue = asyncio.Queue()
+            queue.put_nowait(state)
+            with patch.object(app.batch_store, "get", return_value=state), \
+                 patch.object(app.batch_store, "subscribe", return_value=queue), \
+                 patch.object(app.batch_store, "unsubscribe"), \
+                 patch.object(app, "_with_publish_chain", side_effect=inspect_files):
+                task = asyncio.create_task(app.batch_websocket(websocket, "batch"))
+                await started.wait()
+                release.set()
+                await asyncio.wait_for(task, timeout=2)
+            self.assertEqual(checks, [True, True])
+
+        asyncio.run(scenario())
+
     def test_background_skip_really_cancels_child_job(self):
         client = AsyncMock()
         client.__aenter__.return_value = client

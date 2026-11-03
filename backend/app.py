@@ -1838,12 +1838,14 @@ async def batch_websocket(websocket: WebSocket, batch_id: str):
     await websocket.accept()
     # 实时推送也要带 `prepReady` / `publishChain`：前端只在「状态没变」时沿用上一次的值，
     # 状态一变（skipped → confirmed、confirmed → running）就会因为缺字段把条目分到备料区，
-    # 过几秒轮询再跳回出片区。这里按当前磁盘状态补一次（490 条约 15ms）。
-    await websocket.send_json(_with_publish_chain(state))
+    # 过几秒轮询再跳回出片区。磁盘检查放到线程，不能阻塞视频调度和操作响应。
+    await websocket.send_json(await asyncio.to_thread(_with_publish_chain, state))
     queue = batch_store.subscribe(batch_id)
     try:
         while True:
-            await websocket.send_json(_with_publish_chain(await queue.get()))
+            state = await queue.get()
+            snapshot = await asyncio.to_thread(_with_publish_chain, state)
+            await websocket.send_json(snapshot)
     except WebSocketDisconnect:
         pass
     finally:

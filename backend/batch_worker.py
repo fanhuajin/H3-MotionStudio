@@ -3640,7 +3640,7 @@ def _existing_publish_folder(item: dict[str, Any]) -> Path | None:
         candidates.extend(
             path
             for path in root.iterdir()
-            if path.is_dir() and path.name.endswith(f"_{aweme}")
+            if path.name.endswith(f"_{aweme}") and path.is_dir()
         )
     if not candidates:
         return None
@@ -4583,6 +4583,8 @@ async def _queue_render_covers(
             materials = await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
             folder = Path(materials["folder"]) if materials else None
         spawn_item_covers(batch_id, item_id, folder)
+        # 已有目录时上面没有异步等待；逐条让出执行权，避免整批入队饿住视频和 HTTP。
+        await asyncio.sleep(0)
 
 
 def _next_prep(state: dict[str, Any]) -> dict[str, Any] | None:
