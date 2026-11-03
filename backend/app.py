@@ -1419,21 +1419,10 @@ async def skip_batch_item(batch_id: str, item_id: str):
     cancel_item_work(batch_id, item_id)
     if item.get("status") in {"running", "revising"}:
         batch_store.mutate_item(batch_id, item_id, lambda row: row.update(skipRequested=True))
-    # 正在出片的那一条：光设 `skipRequested` 远远不够 —— 子任务在 ComfyUI 里照跑不误，
-    # 用户看到的就是「点了取消没效果」（2026-09-15 用户：「点击列表取消怎么没有效果」）。
-    # 跟删除端点走同一条路：**真的把子任务取消掉**，pipeline 会在下一个检查点收尾
-    # （2026-09-17 事故里，取消只写状态、任务拿到锁又把自己翻回 running 跑了几十分钟）。
-    child = item.get("childJob") or {}
-    child_id = str(item.get("videoJobId") or child.get("id") or "")
-    if child_id and item.get("status") in {"running", "revising"}:
-        try:
-            await cancel_job(child_id)
-        except HTTPException as error:
-            if error.status_code not in {404, 409}:
-                raise
+    # 子任务取消由下方后台收尾执行，HTTP 响应不等待 ComfyUI 中断或查询。
     if item.get("status") not in {"running", "revising"}:
         def mark_skipped(row: dict[str, Any]) -> None:
-            row.update(status="skipped", stage="skipped", finishedAt=now_iso(), childJob=None, skipRequested=True, renderQueued=False)
+            row.update(status="skipped", stage="skipped", finishedAt=now_iso(), childJob=None, skipRequested=False, renderQueued=False)
             for milestone in row.get("milestones") or []:
                 if milestone.get("status") in {"pending", "running"}:
                     milestone["status"] = "skipped"

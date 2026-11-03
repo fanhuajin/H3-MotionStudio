@@ -9358,7 +9358,7 @@ class CancelGateTests(unittest.TestCase):
                 abandon.assert_called_once_with("b1", "i1", deleted=False)
 
         asyncio.run(scenario())
-        self.assertEqual(cancelled, ["job-1"], "跳过正在出片的一条，必须真的取消子任务")
+        self.assertEqual(cancelled, [], "取消子任务已交给后台收尾，动作响应不能等待网络")
         self.assertTrue(item["skipRequested"])
 
     def test_restarting_an_item_cancels_a_leftover_child_job(self):

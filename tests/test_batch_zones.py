@@ -170,6 +170,39 @@ if __name__ == "__main__":
 
 
 class WaitingQueueTests(unittest.TestCase):
+    def test_background_skip_really_cancels_child_job(self):
+        client = AsyncMock()
+        client.__aenter__.return_value = client
+        with patch.object(batch_worker, "_item", return_value={"videoJobId": "child"}), \
+             patch.object(batch_worker.httpx, "AsyncClient", return_value=client), \
+             patch.object(batch_worker.store, "get", return_value={"status": "cancelled"}), \
+             patch.object(batch_worker.asyncio, "sleep", new_callable=AsyncMock), \
+             patch.object(batch_worker, "_finish_abandoned", new_callable=AsyncMock) as finish, \
+             patch.object(batch_worker, "_stop_comfy_if_idle", new_callable=AsyncMock):
+            asyncio.run(batch_worker._abandon_without_runner("batch", "item", deleted=False))
+        client.post.assert_awaited_once_with(f"{batch_worker.BATCH_SELF_URL}/api/jobs/child/cancel")
+        finish.assert_awaited_once_with("batch", "item", deleted=False)
+
+    def test_bulk_skip_saves_once_and_only_cancels_active_rows_in_background(self):
+        state = {"items": [
+            {"id": str(index), "status": "confirmed", "renderQueued": True,
+             "milestones": [{"id": "video", "status": "pending"}]} for index in range(350)
+        ] + [{"id": "active", "status": "running"}, {"id": "done", "status": "completed"}]}
+        with patch.object(batch_worker.batch_store, "mutate", side_effect=lambda _, change: change(state)) as save, \
+             patch.object(batch_worker, "cancel_item_work") as cancel, \
+             patch.object(batch_worker, "_spawn_orphan_abandon") as abandon:
+            result = batch_worker.mark_items_skipped("batch", [row["id"] for row in state["items"]])
+        save.assert_called_once()
+        self.assertEqual(len(result["marked"]), 350)
+        self.assertEqual(result["busy"], ["active"])
+        self.assertEqual(cancel.call_count, 351)
+        abandon.assert_called_once_with("batch", "active", deleted=False)
+        for row in state["items"][:350]:
+            self.assertEqual(row["status"], "skipped")
+            self.assertFalse(row["skipRequested"])
+            self.assertFalse(row["renderQueued"])
+        self.assertTrue(state["items"][350]["skipRequested"])
+
     def test_runner_only_picks_explicitly_scheduled_items(self):
         waiting = {"id": "waiting", "status": "confirmed", "index": 1}
         queued = {"id": "queued", "status": "confirmed", "index": 2, "renderQueued": True}

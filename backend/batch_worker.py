@@ -680,51 +680,41 @@ def confirm_batch_items(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
 def mark_items_skipped(batch_id: str, item_ids: list[str]) -> dict[str, Any]:
     """批量跳过：没在出片的条目直接落 `skipped`；正在出片的标 `skipRequested` 交给 runner
     安全取消后落 skipped（成片已生成的照样抢救进发布目录，`_finish_abandoned` 兜底）。"""
-    state = batch_store.get(batch_id)
-    if not state:
-        raise KeyError(batch_id)
-    by_id = {item.get("id"): item for item in state.get("items") or []}
     marked: list[str] = []
     busy: list[str] = []
     rejected: list[dict[str, str]] = []
-    for item_id in item_ids or []:
-        item = by_id.get(item_id)
-        if not item:
-            rejected.append({"id": item_id, "reason": "条目不存在"})
-            continue
-        if item.get("status") in {"completed", "skipped", "deleted"}:
-            rejected.append({"id": item_id, "reason": "已经结束"})
-            continue
-        batch_store.mutate_item(batch_id, item_id, lambda row: row.update(skipRequested=True))
-        cancel_item_work(batch_id, item_id)
-        if item.get("status") not in {"running", "revising"}:
-            def mark_skipped(row: dict[str, Any]) -> None:
-                # **落地就把请求旗标清掉**：`skipRequested` 是「请 runner 去取消」的请求，
-                # 条目已经不在跑了，旗标留着就成了定时炸弹 —— 2026-09-16 实测：
-                # 全部「重新开始」→ 恢复运行时 `run_batch` 先看到 `skipRequested`，
-                # 把每一条都当「取消中的条目」直接丢弃，整批瞬间变成「全部条目已完成」，
-                # ComfyUI 一次都没被叫起来（用户：「点击全部重新开始之后没有运行 comfyui」）。
-                row.update(
-                    status="skipped",
-                    stage="skipped",
-                    finishedAt=now_iso(),
-                    childJob=None,
-                    skipRequested=False,
-                )
-                for milestone in row.get("milestones") or []:
-                    if milestone.get("status") in {"pending", "running"}:
-                        milestone["status"] = "skipped"
 
-            batch_store.mutate_item(batch_id, item_id, mark_skipped)
+    def apply(state: dict[str, Any]) -> None:
+        by_id = {item.get("id"): item for item in state.get("items") or []}
+        for item_id in dict.fromkeys(item_ids or []):
+            row = by_id.get(item_id)
+            if row is None:
+                rejected.append({"id": item_id, "reason": "条目不存在"})
+                continue
+            if row.get("status") in {"completed", "skipped", "deleted"}:
+                rejected.append({"id": item_id, "reason": "已经结束"})
+                continue
+            if row.get("status") in {"running", "revising"}:
+                row["skipRequested"] = True
+                busy.append(item_id)
+                continue
+            # 已停止的条目清除请求旗标，避免重新开始后被再次跳过。
+            row.update(status="skipped", stage="skipped", finishedAt=now_iso(),
+                       childJob=None, skipRequested=False, renderQueued=False)
+            for milestone in row.get("milestones") or []:
+                if milestone.get("status") in {"pending", "running"}:
+                    milestone["status"] = "skipped"
             marked.append(item_id)
-        else:
-            busy.append(item_id)
-            # **总是**直接收尾，不再依赖 runner 是否活着。
-            # 实测两次踩坑：① 批次因别的条目失败而 failed、runner 已退出；
-            # ② 批次处于 paused、runner 也不在 —— 两种情况下 skipRequested 都没人处理，
-            # 条目永远卡在 running，用户看到的现象就是「点击取消没有效果」。
-            # runner 若也在处理，两条路都收敛到 skipped，重复执行无副作用。
-            _spawn_orphan_abandon(batch_id, item_id, deleted=False)
+        state["completedCount"] = sum(row.get("status") in {"completed", "skipped"}
+                                      for row in state.get("items") or [])
+        state["deletedCount"] = sum(row.get("status") == "deleted" for row in state.get("items") or [])
+
+    # 整批只保存和推送一次；先持久化取消请求，再让后台任务安全收尾。
+    batch_store.mutate(batch_id, apply)
+    for item_id in marked + busy:
+        cancel_item_work(batch_id, item_id)
+    for item_id in busy:
+        _spawn_orphan_abandon(batch_id, item_id, deleted=False)
     return {"marked": marked, "busy": busy, "rejected": rejected}
 
 
