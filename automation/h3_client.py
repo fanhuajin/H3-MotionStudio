@@ -8,9 +8,27 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
+
+# 登录页只拦浏览器；本机自动化脚本用 `data/.internal-token` 这份内部凭据直调 API。
+INTERNAL_HEADER = "x-h3-internal"
+INTERNAL_TOKEN_PATH = Path(__file__).resolve().parents[1] / "data" / ".internal-token"
+
+
+def internal_headers(base_url: str) -> dict[str, str]:
+    """回环地址才加内部令牌；连别的机器时不带，避免把本机令牌发出去。"""
+    host = (urlparse(base_url).hostname or "").lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        return {}
+    try:
+        token = INTERNAL_TOKEN_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {}
+    return {INTERNAL_HEADER: token} if token else {}
 
 # 条目状态（backend/batch_worker 语义）
 STATUS_PENDING = "pending"          # 排队中
@@ -37,7 +55,7 @@ class H3Client:
     def __init__(self, base_url: str, timeout: float = 30.0, poll: float = 5.0):
         self.base_url = base_url.rstrip("/")
         self.poll = poll
-        self._http = httpx.Client(base_url=self.base_url, timeout=timeout)
+        self._http = httpx.Client(base_url=self.base_url, timeout=timeout, headers=internal_headers(self.base_url))
 
     # ---------- 底层 ----------
     def _url(self, path: str) -> str:

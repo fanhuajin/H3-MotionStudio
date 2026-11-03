@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import chatgpt_cdp as cd
 from . import settings
+from .internal_auth import headers as internal_headers
 
 logger = logging.getLogger("batch.chatgpt_image")
 
@@ -119,7 +120,7 @@ def _upload_item_image(batch_id: str, item_id: str, image_path: str) -> None:
         files = {"file": (Path(image_path).name, fh, "image/png")}
         resp = httpx.post(
             f"{settings.BATCH_SELF_URL}/api/batches/{batch_id}/items/{item_id}/image",
-            files=files, timeout=180,
+            files=files, timeout=180, headers=internal_headers(),
         )
         if resp.status_code >= 400:
             raise RuntimeError(f"上传成图失败 {resp.status_code}: {resp.text[:200]}")

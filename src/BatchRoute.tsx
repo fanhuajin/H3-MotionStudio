@@ -7,7 +7,6 @@ import { BatchBackToTop } from "./BatchBackToTop";
 import { PreviewImage } from "./PreviewImage";
 import { ImageViewer } from "./ImageWorkbenchRoute";
 import { ImageModelSettings } from "./ImageModelSettings";
-import { StudioBot, statusMood } from "./StudioBot";
 import { elapsedMs, formatElapsedMs, useNowTick } from "./jobTime";
 import {
   ArrowClockwise,
@@ -553,7 +552,7 @@ function BatchDialog({ id, title, subtitle, description, icon, trigger, restoreF
 
 function BatchLoading({ error, onRetry }: { error: string; onRetry: () => void }) {
   return <main className="batch-page batch-loading-page" aria-busy={!error}>
-    <header className="batch-header"><div><p className="batch-kicker">SERIAL PRODUCTION</p><h1>批量视频制作</h1><p>先完成整批备料，再逐条出片。</p></div></header>
+    <h1 className="studio-sr-only">批量视频制作</h1>
     <div className="batch-sync-notice" role="status"><SpinnerGap className={error ? undefined : "spin"} />{error ? "暂时无法读取批次" : "正在读取最新批次…"}{error && <button onClick={onRetry}>重新读取</button>}</div>
     {error && <p className="batch-alert">{error}</p>}
     <div className="batch-loading-layout" aria-hidden="true">
@@ -1280,10 +1279,6 @@ export function BatchRoute() {
     }
   };
   const canStart = (singingOn && splitUrls(singing).length > 0) || (danceOn && splitUrls(dance).length > 0);
-  const effectiveTotal = Math.max(0, (batch?.total || 0) - (batch?.deletedCount || 0));
-  const renderedCount = batch?.items.filter(item => item.status === "completed").length || 0;
-  const skippedCount = batch?.items.filter(item => item.status === "skipped").length || 0;
-  const batchFinishedWithSkips = batch?.status === "completed" && skippedCount > 0;
 
   // —— 批量操作（勾选） ——
   const allChecked = filteredItems.length > 0 && filteredItems.every((item) => selectedIds.has(item.id));
@@ -1887,19 +1882,7 @@ export function BatchRoute() {
       <BatchBackToTop />
       {!loaded && <div className="batch-sync-notice" role="status"><SpinnerGap className={syncError ? undefined : "spin"} />{syncError ? "同步失败，当前显示上次内容" : "正在同步最新批次…"}{syncError && <button onClick={retryLatest}>重新同步</button>}</div>}
       <div className="batch-content" inert={!loaded}>
-      <header className="batch-header">
-        <div>
-          <p className="batch-kicker">SERIAL PRODUCTION</p>
-          <h1>批量视频制作</h1>
-          <p>先备料，再逐条出片；已有文件直接沿用，封面在成片后补齐。</p>
-        </div>
-        {batch && (
-          <div className={`batch-status-pill ${batch.status}`}>
-            <StudioBot mood={batchFinishedWithSkips ? "waiting" : statusMood(batch.status)} variant={batch.status === "paused" ? "sleep" : undefined} size={38} />
-            {batchFinishedWithSkips ? "本轮已结束" : batchStatusLabel(batch.status)} · 已完成 {renderedCount}/{effectiveTotal}{skippedCount > 0 ? ` · 等待区 ${skippedCount}` : ""}
-          </div>
-        )}
-      </header>
+      <h1 className="studio-sr-only">批量视频制作</h1>
 
       {!batch && <section className="batch-monitor-toolbar" aria-label="任务操作"><div className="batch-toolbar-summary"><strong>开始第一批制作</strong><small>添加视频链接，准备素材后逐条出片</small></div>{renderQueueActions()}</section>}
 

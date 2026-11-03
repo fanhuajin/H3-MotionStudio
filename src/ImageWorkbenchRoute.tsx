@@ -370,17 +370,11 @@ export function ImageWorkbenchRoute() {
   return (
     <main className="image-workbench-page">
       {notice && <div className="image-workbench-toast" role="status" aria-live="polite"><WarningCircle />{notice}</div>}
-      <header className="image-workbench-head">
-        <div><span className="image-workbench-kicker">VISUAL ASSET LIBRARY</span><h1>图片封面</h1><p>集中管理人物图与封面，按作品补齐发布素材。</p><details className="studio-inline-help"><summary>查看生成规则</summary><p>封面在最终成片交付后生成，以原人物图为参考；生成前检查手部，异常或不确定时使用避手构图。生成结果直接保存。</p></details></div>
-        <div className="image-workbench-head-actions">
-          <div className="image-workbench-stats"><strong>{finished}<small>已全部完成</small></strong><strong>{items.length - finished}<small>待处理</small></strong></div>
-        </div>
-      </header>
-
+      <h1 className="studio-sr-only">图片封面</h1>
 
       <section className="image-workbench-shell">
         <aside className="image-workbench-list">
-          <div className="image-workbench-list-head"><strong>发布作品</strong><div><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待处理</button><button className={filter === "completed" ? "active" : ""} onClick={() => setFilter("completed")}>已处理</button></div></div>
+          <div className="image-workbench-list-head"><strong>发布作品<small className="image-workbench-list-count" title={`已完成 ${finished} / 共 ${items.length}`}>{finished}/{items.length}</small></strong><div><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待处理</button><button className={filter === "completed" ? "active" : ""} onClick={() => setFilter("completed")}>已处理</button></div></div>
           {filter === "pending" && hasFailedCovers && <div className="image-workbench-list-actions">
             <button type="button" onClick={() => void resendIncompleteCovers()} disabled={busy || initialLoading}
               title="重新发送未完成的封面请求，旧请求视为失败；已完成图片保留，可能产生新费用">

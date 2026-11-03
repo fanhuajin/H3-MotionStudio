@@ -326,12 +326,6 @@ export function MigrateRoute() {
   const totalElapsedMs = elapsedMs(job?.startedAt || job?.createdAt, job?.finishedAt, tickNow);
   const [queueOpen, setQueueOpen] = useState(false);
 
-  const resourceStatus = useMemo(() => {
-    if (job?.status === "running") return { label: "ComfyUI 单链路运行中", mode: "connected" };
-    if (config.comfyuiConnected) return { label: "ComfyUI 已连接", mode: "connected" };
-    return { label: "资源空闲，按需启动", mode: "idle" };
-  }, [config.comfyuiConnected, job?.status]);
-
   useEffect(() => {
     writeDraft({
       ratio,
@@ -608,14 +602,7 @@ export function MigrateRoute() {
 
   return (
     <div className="migrate-route">
-      <header className="route-hero">
-        <div>
-          <p className="route-eyebrow"><span /> H3 · ACTION MIGRATION</p>
-          <h1>让参考人物，<em>动起来。</em></h1>
-          <p className="route-description">上传一段动作视频与人物参考图，直接使用源视频完成动作迁移或人物替换，默认再做 4× 二采收 1080p 高清成片。</p>
-        </div>
-        <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
-      </header>
+      <h1 className="studio-sr-only">动作迁移</h1>
 
       <main className="workspace">
         <section className="input-panel" aria-label="动作迁移设置">

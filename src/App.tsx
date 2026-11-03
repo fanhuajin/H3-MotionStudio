@@ -374,13 +374,6 @@ function MotionStudioRoute() {
   const resultUrl = !demoMode && job?.finalReady ? `/api/jobs/${job.id}/media/final` : null;
   const originalUrl = !demoMode && job?.originalReady ? `/api/jobs/${job.id}/media/original` : null;
 
-  const resourceStatus = useMemo(() => {
-    if (job?.status === "running" && ["voice", "handoff"].includes(job.stage)) return { label: "RVC 单链路运行中", mode: "rvc" };
-    if (job?.status === "running") return { label: "ComfyUI 运行中", mode: "connected" };
-    if (config.comfyuiConnected) return { label: "ComfyUI 已连接", mode: "connected" };
-    return { label: "资源空闲，按需启动", mode: "idle" };
-  }, [config.comfyuiConnected, job?.stage, job?.status]);
-
   const connectJob = useCallback((jobId: string) => {
     socketRef.current?.close();
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -650,14 +643,7 @@ function MotionStudioRoute() {
 
   return (
     <div className="motion-route">
-      <header className="route-hero motion-hero">
-        <div>
-          <p className="route-eyebrow"><span /> H3 · MOTION STUDIO</p>
-          <h1>让演唱视频，<em>动起来。</em></h1>
-          <p className="route-description">人物参考、演唱视频、动作和运镜，一条链路完成唱歌成片、4× 二采高清与音色转换；两个开关都默认开启。</p>
-        </div>
-        <span className={`connection ${resourceStatus.mode}`}><span className="connection-dot" />{resourceStatus.label}</span>
-      </header>
+      <h1 className="studio-sr-only">歌曲生成</h1>
 
       <main className="workspace">
         <section className="input-panel" aria-label="生成设置">

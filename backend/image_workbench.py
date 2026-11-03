@@ -22,6 +22,7 @@ from . import batch_ai, batch_image, cover_review, source_appearance
 from . import batch_worker as batch_worker
 from .batch_store import batch_store
 from .batch_worker import IDENTITY_PATH
+from .internal_auth import headers as internal_headers
 from .settings import BATCH_OUTPUT_ROOT, PUBLISH_KIND_DIRS, DATA_DIR
 
 logger = logging.getLogger("uvicorn.error")
@@ -409,7 +410,7 @@ async def _post_batch_start(batch_id: str) -> None:
     from .settings import BATCH_SELF_URL
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, headers=internal_headers()) as client:
             await client.post(f"{BATCH_SELF_URL}/api/batches/{batch_id}/start")
     except Exception:  # noqa: BLE001
         logger.warning("登记候选图后叫醒批次失败（忽略）", exc_info=True)

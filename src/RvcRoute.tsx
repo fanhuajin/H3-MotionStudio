@@ -309,17 +309,7 @@ export function RvcRoute() {
 
   return (
     <div className="rvc-route">
-      <header className="route-hero">
-        <div>
-          <p className="route-eyebrow"><span /> H3 · RVC VOICE</p>
-          <h1>音色转换，<em>单独一步。</em></h1>
-          <p className="route-description">上传任意带人声的视频或挑选最近成片，先完全关闭 ComfyUI，再用 Demucs 分离人声并转换成默认音色 {DEFAULT_VOICE_LABEL}，最后重新封装成最终成片。</p>
-        </div>
-        <span className={`connection ${job?.status === "running" ? "connected" : "idle"}`}>
-          <span className="connection-dot" />
-          {job?.status === "running" ? "音色转换运行中" : "资源空闲，按需启动"}
-        </span>
-      </header>
+      <h1 className="studio-sr-only">音色转换</h1>
 
       <main className="workspace">
         <section className="input-panel" aria-label="音色转换设置">

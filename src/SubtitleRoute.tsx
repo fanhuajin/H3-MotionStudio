@@ -351,22 +351,7 @@ export function SubtitleRoute() {
 
   return (
     <div className="subtitle-route">
-      <header className="route-hero">
-        <div>
-          <p className="route-eyebrow"><span /> H3 · SUBTITLE</p>
-          <h1>成片加字幕，<em>剪映的时间轴。</em></h1>
-          <p className="route-description">
-            用剪映「识别歌词」拿最准的时间轴，再用网易云官方歌词逐句核对文字（时间轴一字不动），
-            最后按剪映手书观感烧录出字幕版成片；无字幕原片原样保留。
-          </p>
-        </div>
-        <span className={`connection ${job?.status === "running" ? "connected" : queued ? "queued" : "idle"}`}>
-          <span className="connection-dot" />
-          {jobActive
-            ? isBatch ? "批量生成字幕中" : "剪映识别中"
-            : queued ? "已排队，轮到自动开始" : "资源空闲，按需启动"}
-        </span>
-      </header>
+      <h1 className="studio-sr-only">生成字幕</h1>
 
       <main className="workspace">
         <section className="input-panel" aria-label="生成字幕设置">

@@ -9,6 +9,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
 from backend import auth
+from backend import internal_auth
 from backend.project_shutdown import router as project_router
 
 
@@ -26,6 +27,10 @@ class AuthTests(unittest.TestCase):
 
         @app.get("/api/private")
         def private():
+            return {"ok": True}
+
+        @app.post("/api/private/mutate")
+        def mutate():
             return {"ok": True}
 
         @app.websocket("/api/private/ws")
@@ -85,6 +90,24 @@ class AuthTests(unittest.TestCase):
         self.assertTrue(auth.AuthStore(self.store.path).valid(token))
         with patch("backend.auth.time.time", return_value=999999999999):
             self.assertFalse(self.store.valid(token))
+
+    def test_internal_token_bypasses_login_only_from_loopback(self):
+        # 2026-10-23 实测回归：批量流水线自调用没有 Cookie，被 401 成「请先登录」。
+        header = {internal_auth.HEADER: internal_auth.TOKEN}
+        self.assertEqual(self.client.get("/api/private").status_code, 401)
+        self.assertEqual(self.client.get("/api/private", headers=header).status_code, 200)
+        self.assertEqual(self.client.post("/api/private/mutate", headers=header).status_code, 200)
+        self.assertEqual(self.client.get("/api/private", headers={internal_auth.HEADER: "wrong"}).status_code, 401)
+        self.assertEqual(self.client.get("/api/private", headers={internal_auth.HEADER: ""}).status_code, 401)
+        remote = TestClient(self.client.app, client=("192.0.2.1", 5000))
+        self.assertEqual(remote.get("/api/private", headers=header).status_code, 401)
+        remote.close()
+
+    def test_internal_token_is_shared_with_local_scripts(self):
+        self.assertGreaterEqual(len(internal_auth.TOKEN), 32)
+        self.assertTrue(Path(internal_auth.TOKEN_PATH).exists())
+        self.assertEqual(Path(internal_auth.TOKEN_PATH).read_text(encoding="utf-8").strip(), internal_auth.TOKEN)
+        self.assertEqual(internal_auth.headers(), {internal_auth.HEADER: internal_auth.TOKEN})
 
     def test_websocket_requires_session(self):
         from starlette.websockets import WebSocketDisconnect
@@ -172,6 +195,78 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(result["username"], "admin")
         self.assertIsNone(result["avatarUrl"])
         self.assertEqual(self.client.post("/api/auth/login", json=self.credentials).status_code, 200)
+
+
+class InternalCallHeaderTests(unittest.IsolatedAsyncioTestCase):
+    """批量流水线的自调用必须带上内部令牌，否则加登录后会 401（2026-10-23 事故）。"""
+
+    class FakeResponse:
+        status_code = 200
+
+    def _fake_client(self, captured):
+        test = self
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                captured["headers"] = kwargs.get("headers")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+            async def get(self, *args, **kwargs):
+                return test.FakeResponse()
+
+            async def post(self, *args, **kwargs):
+                return test.FakeResponse()
+
+        return FakeClient
+
+    async def test_batch_worker_cancel_sends_internal_header(self):
+        from backend import batch_worker
+
+        captured = {}
+        with patch.object(batch_worker.httpx, "AsyncClient", self._fake_client(captured)):
+            await batch_worker._cancel_child_job_quietly("child", "batch", "item")
+        self.assertEqual(captured["headers"].get(internal_auth.HEADER), internal_auth.TOKEN)
+
+    async def test_image_workbench_wake_batch_sends_internal_header(self):
+        from backend import image_workbench
+
+        captured = {}
+        with patch.object(image_workbench.httpx, "AsyncClient", self._fake_client(captured)):
+            await image_workbench._post_batch_start("batch-id")
+        self.assertEqual(captured["headers"].get(internal_auth.HEADER), internal_auth.TOKEN)
+
+    def test_image_upload_sends_internal_header(self):
+        from backend import chatgpt_image
+
+        captured = {}
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            handle.write(b"png")
+            path = handle.name
+        try:
+            with patch("httpx.post", lambda url, **kwargs: captured.update(kwargs) or self.FakeResponse()):
+                chatgpt_image._upload_item_image("batch", "item", path)
+        finally:
+            Path(path).unlink(missing_ok=True)
+        self.assertEqual(captured["headers"].get(internal_auth.HEADER), internal_auth.TOKEN)
+
+    def test_automation_client_sends_internal_header_for_loopback(self):
+        from automation import h3_client
+
+        local = h3_client.H3Client("http://127.0.0.1:15111")
+        try:
+            self.assertEqual(local._http.headers.get(internal_auth.HEADER), internal_auth.TOKEN)
+        finally:
+            local._http.close()
+        remote = h3_client.H3Client("http://192.0.2.1:15111")
+        try:
+            self.assertNotIn(internal_auth.HEADER, remote._http.headers)
+        finally:
+            remote._http.close()
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ from .douyin_service import (
     douyin_service,
     is_douyin_url,
 )
+from .internal_auth import headers as internal_headers
 from .settings import (
     BATCH_OUTPUT_ROOT,
     BATCH_RATIO_CHOICES,
@@ -126,7 +127,7 @@ async def _cancel_child_job_quietly(child_id: str, batch_id: str, item_id: str) 
     """取消一个还挂在条目名下的出片子任务（失败只记日志，绝不往上抛）。"""
     del batch_id, item_id
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20, headers=internal_headers()) as client:
             response = await client.post(f"{BATCH_SELF_URL}/api/jobs/{child_id}/cancel")
         if response.status_code not in {200, 404, 409}:
             logger.warning("取消子任务 %s 返回 %s（继续收尾）", child_id, response.status_code)
@@ -3078,6 +3079,7 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
                 response = await client.post(
                     f"{BATCH_SELF_URL}{endpoint}",
                     data=data,
+                    headers=internal_headers(),
                     files={
                         "video": (source.name, video_file, "video/mp4"),
                         "reference_image": (reference.name, image_file, "image/png"),
@@ -3136,7 +3138,7 @@ def child_progress_label(child: dict[str, Any]) -> str:
 
 async def _watch_child(batch_id: str, item_id: str, child_id: str, milestone_id: str) -> dict[str, Any]:
     while True:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20, headers=internal_headers()) as client:
             response = await client.get(f"{BATCH_SELF_URL}/api/jobs/{child_id}")
         if not response.is_success:
             raise RuntimeError("无法读取子任务进度")
@@ -3172,7 +3174,7 @@ async def _watch_child(batch_id: str, item_id: str, child_id: str, milestone_id:
             return child
         current = _item(batch_id, item_id)
         if current.get("skipRequested") or current.get("deleteRequested"):
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=20, headers=internal_headers()) as client:
                 await client.post(f"{BATCH_SELF_URL}/api/jobs/{child_id}/cancel")
             raise asyncio.CancelledError
         if child.get("status") in {"failed", "cancelled", "interrupted"}:
@@ -4169,7 +4171,7 @@ async def _stop_comfy_if_idle() -> bool:
                 await client.post(f"{COMFY_URL}/queue", json={"clear": True})
             except Exception:
                 logger.warning("中断 ComfyUI 残留任务失败（继续尝试关闭）", exc_info=True)
-            resp = await client.post(f"{BATCH_SELF_URL}/api/comfy/stop")
+            resp = await client.post(f"{BATCH_SELF_URL}/api/comfy/stop", headers=internal_headers())
     except Exception:
         logger.warning("自动关闭 ComfyUI 失败（忽略）", exc_info=True)
         return False
@@ -4199,7 +4201,7 @@ async def _abandon_without_runner(batch_id: str, item_id: str, *, deleted: bool)
     )
     if child_id:
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
+            async with httpx.AsyncClient(timeout=20, headers=internal_headers()) as client:
                 await client.post(f"{BATCH_SELF_URL}/api/jobs/{child_id}/cancel")
         except Exception:
             logger.warning("取消子任务失败（继续收尾）：%s", child_id, exc_info=True)

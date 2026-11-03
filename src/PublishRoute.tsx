@@ -162,7 +162,6 @@ export function PublishRoute() {
   const alive = useRef(true);
   const busyRef = useRef(false);
   const running = Boolean(queue && queue.phase !== "idle");
-  const completed = Boolean(queue?.items.length && queue.items.every(done));
   const readonly = running || busy || !queue;
   const load = useCallback(async () => {
     if (busyRef.current) return;
@@ -282,10 +281,7 @@ export function PublishRoute() {
     <button className="batch-add-toggle" onClick={onClick} disabled={disabled}>{icon}{text}</button>;
 
   return <main className="batch-page publish-page"><div className="batch-content">
-    <header className="batch-header"><div><p className="batch-kicker">MULTI-PLATFORM PUBLISHING</p>
-      <h1>批量发布</h1><p>安排作品与时间，按抖音 → 小红书 → B站依次发布。</p></div>
-      {queue && <span className="batch-status-pill">{running ? queue.phase === "paused" ? "已暂停" : "发布中" : completed ? "已全部完成" : "等待安排"} · 已处理 {queue.items.filter(done).length}/{queue.items.length}</span>}
-    </header>
+    <h1 className="studio-sr-only">批量发布</h1>
     {error && !modal && <p className="publish-error" role="alert">{error} {button("重新同步", () => void load(), busy)}</p>}
     {!queue ? (error ? null : <ContentLoading label="正在读取发布队列…" />) : <>
       <section className="publish-notice">

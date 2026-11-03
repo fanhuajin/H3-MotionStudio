@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, UploadFile, Fil
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
+from . import internal_auth
 from .settings import DATA_DIR
 
 COOKIE = "h3_session"
@@ -174,7 +175,11 @@ class AuthMiddleware:
         from starlette.requests import HTTPConnection
         connection = request or HTTPConnection(scope)
         unsafe = scope["type"] == "websocket" or scope.get("method") not in {"GET", "HEAD", "OPTIONS"}
-        status = 403 if unsafe and not same_origin(scope) else 401 if protected and not store.valid(connection.cookies.get(COOKIE, "")) else None
+        # 批量流水线自己的后台调用没有浏览器 Cookie（2026-10-23 实测被 401 成「请先登录」），
+        # 只认本机回环地址 + 本机随机令牌，浏览器与局域网请求照旧要登录。
+        internal = internal_auth.matches(dict(scope.get("headers", [])), scope.get("client"))
+        signed_in = internal or store.valid(connection.cookies.get(COOKIE, ""))
+        status = 403 if unsafe and not same_origin(scope) else 401 if protected and not signed_in else None
         if status:
             if scope["type"] == "websocket":
                 return await send({"type": "websocket.close", "code": 4403 if status == 403 else 4401})

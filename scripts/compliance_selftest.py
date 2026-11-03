@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backend import batch_ai, image_workbench  # noqa: E402
+from backend.internal_auth import headers as internal_headers  # noqa: E402
 
 BASE = "http://127.0.0.1:15111"
 MAX_AUTO_PROMPT = 2000  # 自动出图的精简模板上限（长提示词会把合规要求淹没）
@@ -94,13 +95,13 @@ def main() -> int:
     try:
         import httpx
 
-        config = httpx.get(f"{BASE}/api/config", timeout=15).json()
+        config = httpx.get(f"{BASE}/api/config", timeout=15, headers=internal_headers()).json()
         live = str(config.get("complianceFingerprint") or "")
         same = live == local
         check(same, f"线上后端已加载当前出图/合规口径（{BASE}）",
               "" if same else f"线上 {live or '（没有这个字段 = 旧进程）'} ≠ 本地 {local}"
                               " → **先重启后端再出图**")
-        items = httpx.get(f"{BASE}/api/image-workbench/items", timeout=15).json()["items"]
+        items = httpx.get(f"{BASE}/api/image-workbench/items", timeout=15, headers=internal_headers()).json()["items"]
         if not items:
             # 发布成品被清空时（2026-09-20 用户批量发布完就删光了）没有作品可探：
             # 这一项只是"手工入口也带合规段"的加验，跳过即可，别把它算成失败。
@@ -110,6 +111,7 @@ def main() -> int:
             served = httpx.get(
                 f"{BASE}/api/image-workbench/{row['id']}/prompt/person",
                 params={"kind": row.get("kind") or "dance"}, timeout=15,
+                headers=internal_headers(),
             ).json()["prompt"]
             carrying = "过度裸露" in served
             check(carrying, "线上手工提示词也带着合规段",

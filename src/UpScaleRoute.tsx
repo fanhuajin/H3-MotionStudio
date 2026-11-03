@@ -242,17 +242,7 @@ export function UpScaleRoute() {
 
   return (
     <div className="upscale-route">
-      <header className="route-hero">
-        <div>
-          <p className="route-eyebrow"><span /> H3 · UPSCALE</p>
-          <h1>二采放大，<em>VOSR2。</em></h1>
-          <p className="route-description">对任意视频使用 VOSR2 二采放大，并统一收到 1080p 标准档（4:3→1440×1080、9:16→1080×1920、16:9→1920×1080）。</p>
-        </div>
-        <span className={`connection ${job?.status === "running" ? "connected" : "idle"}`}>
-          <span className="connection-dot" />
-          {job?.status === "running" ? "放大运行中" : "资源空闲，按需启动"}
-        </span>
-      </header>
+      <h1 className="studio-sr-only">二采放大</h1>
 
       <main className="workspace">
         <section className="input-panel" aria-label="二采放大设置">

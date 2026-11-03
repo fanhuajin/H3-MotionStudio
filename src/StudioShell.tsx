@@ -31,6 +31,9 @@ export function StudioShell({ path, onNavigate, onCloseProject, children }: {
   path: string; onNavigate: (event: MouseEvent<HTMLElement>) => void; onCloseProject: () => void; children: ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("h3:sidebar-collapsed") === "true"; } catch { return false; } });
+  const [navMore, setNavMore] = useState(false);
+  const [runtimeOpen, setRuntimeOpen] = useState(true);
+  const navigation = useRef<HTMLElement>(null);
   const [profile, setProfile] = useState<OwnerProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [profileError, setProfileError] = useState("");
@@ -56,6 +59,16 @@ export function StudioShell({ path, onNavigate, onCloseProject, children }: {
     document.getElementById("studio-main")?.focus({ preventScroll: true });
   }, [path]);
   useEffect(() => {
+    const element = navigation.current;
+    if (!element) return;
+    const update = () => setNavMore(element.scrollHeight - element.scrollTop - element.clientHeight > 4);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    element.addEventListener("scroll", update, { passive: true });
+    return () => { observer.disconnect(); element.removeEventListener("scroll", update); };
+  }, [collapsed, path]);
+  useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         if (document.querySelector("dialog[open]")) return;
@@ -80,11 +93,10 @@ export function StudioShell({ path, onNavigate, onCloseProject, children }: {
     <aside className="app-sidebar" onClick={onNavigate}>
       <div className="sidebar-top"><a className="sidebar-brand" href="/batch" aria-label="H3 MotionStudio 首页"><span className="studio-brand-mark" aria-hidden="true" /><span className="studio-brand-copy"><strong>MotionStudio</strong><small>PERSONAL CREATIVE STUDIO</small></span></a></div>
       <button className="studio-search-trigger" type="button" title="搜索工作区（Ctrl K）" aria-label="搜索工作区，快捷键 Ctrl K" onClick={() => { setSearch(""); command.current?.showModal(); }}><MagnifyingGlass /><span>搜索工作区</span><kbd>Ctrl K</kbd></button>
-      <nav className="sidebar-navigation" aria-label="工作台导航">{sections.map((section) => <div className="studio-nav-section" key={section.label}><p className="sidebar-section-label">{section.label}</p>{section.items.map((item) => <a key={item.path} href={item.path} title={item.label} aria-label={item.label} aria-current={active.path === item.path ? "page" : undefined} className={`sidebar-nav-item ${active.path === item.path ? "active" : ""}`}><item.icon aria-hidden="true" weight="regular" /><span className="studio-nav-label">{item.label}</span></a>)}</div>)}</nav>
+      <nav ref={navigation} className={"sidebar-navigation" + (navMore ? " has-more" : "")} aria-label="工作台导航">{sections.map((section) => <div className="studio-nav-section" key={section.label}><p className="sidebar-section-label">{section.label}</p>{section.items.map((item) => <a key={item.path} href={item.path} title={item.label} aria-label={item.label} aria-current={active.path === item.path ? "page" : undefined} className={`sidebar-nav-item ${active.path === item.path ? "active" : ""}`}><item.icon aria-hidden="true" weight="regular" /><span className="studio-nav-label">{item.label}</span></a>)}</div>)}</nav>
       <div className="sidebar-system">
-        {!collapsed && <details className="studio-runtime"><summary><Gauge aria-hidden="true" /><span>资源监控</span><CaretRight aria-hidden="true" /></summary><SystemMonitor embedded /></details>}
-        <button type="button" className="studio-owner-card" aria-label={profile ? "打开个人资料与账号设置" : "重新加载账户资料"} onClick={openAccount}><OwnerAvatar profile={profile} /><span className="studio-profile-copy"><strong>{profile?.displayName || "我的账户"}</strong><small>{profile ? "个人创作空间" : "正在连接账户"}</small></span><CaretRight /></button>
-        {profileError && <p className="studio-account-error" role="status">{profileError} <button onClick={() => void loadProfile()}>重试</button></p>}
+        {!collapsed && <details className="studio-runtime" open={runtimeOpen} onToggle={(event) => setRuntimeOpen(event.currentTarget.open)}><summary><Gauge aria-hidden="true" /><span>资源监控</span><CaretRight aria-hidden="true" /></summary><SystemMonitor embedded /></details>}
+        {!collapsed && profileError && <p className="studio-account-error" role="status">{profileError} <button onClick={() => void loadProfile()}>重试</button></p>}
         <div className="sidebar-service-row"><LogoutButton /><CloseProjectButton onAccepted={onCloseProject} /></div>
         <footer><span className="studio-edition-dot" />PERSONAL EDITION</footer>
       </div>
