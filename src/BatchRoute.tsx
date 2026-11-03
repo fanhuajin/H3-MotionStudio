@@ -3,6 +3,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { readJson } from "./api";
 import { useVideoPreviewWheel } from "./useVideoPreviewWheel";
 import { BatchVideo } from "./BatchVideo";
+import { BatchBackToTop } from "./BatchBackToTop";
 import { PreviewImage } from "./PreviewImage";
 import { ImageViewer } from "./ImageWorkbenchRoute";
 import { ImageModelSettings } from "./ImageModelSettings";
@@ -1883,6 +1884,7 @@ export function BatchRoute() {
 
   return (
     <main className="batch-page" aria-busy={!loaded}>
+      <BatchBackToTop />
       {!loaded && <div className="batch-sync-notice" role="status"><SpinnerGap className={syncError ? undefined : "spin"} />{syncError ? "同步失败，当前显示上次内容" : "正在同步最新批次…"}{syncError && <button onClick={retryLatest}>重新同步</button>}</div>}
       <div className="batch-content" inert={!loaded}>
       <header className="batch-header">

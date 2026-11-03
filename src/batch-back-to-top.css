@@ -1,0 +1,28 @@
+.batch-back-to-top {
+  position: fixed;
+  right: max(20px, env(safe-area-inset-right));
+  bottom: max(20px, env(safe-area-inset-bottom));
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--shell-line-strong);
+  border-radius: 9px;
+  background: var(--shell-panel-soft);
+  color: var(--shell-accent);
+  box-shadow: 0 4px 18px #0004;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.batch-back-to-top:hover {
+  border-color: var(--shell-accent);
+}
+
+.batch-back-to-top:focus-visible {
+  outline: 2px solid var(--shell-accent);
+  outline-offset: 3px;
+}
