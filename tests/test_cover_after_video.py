@@ -136,7 +136,7 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             ("later", "bilibili"), ("later", "douyin"),
         ])
 
-    async def test_runner_queues_later_covers_before_first_video(self):
+    async def test_runner_starts_first_video_before_queueing_covers(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             folder = Path(directory)
             stack.enter_context(patch.object(batch_store, "DB_PATH", folder / "queue.db"))
@@ -153,12 +153,14 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             spawn = stack.enter_context(patch.object(batch_worker, "spawn_item_covers"))
 
             async def video(batch_id, item_id):
-                self.assertEqual([call.args[1] for call in spawn.call_args_list], ["first", "later"])
+                if item_id == "first":
+                    spawn.assert_not_called()
                 store.mutate_item(batch_id, item_id, lambda row: row.update(status="completed"))
 
             process = stack.enter_context(patch.object(batch_worker, "_process_confirmed", side_effect=video))
             await asyncio.wait_for(batch_worker.run_batch("cover-queue"), timeout=3)
             self.assertEqual(process.await_count, 2)
+            self.assertEqual([call.args[1] for call in spawn.call_args_list], ["first", "later"])
             self.assertEqual(store.get("cover-queue")["status"], "completed")
 
     async def test_slow_cover_materials_do_not_block_video(self):

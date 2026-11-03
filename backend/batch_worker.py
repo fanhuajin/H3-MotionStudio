@@ -4945,16 +4945,6 @@ async def run_batch(batch_id: str) -> None:
                     continue
                 batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
                 return
-            # 素材复制也属于封面后台线路，不能等整批复制完才启动视频。
-            if full_auto_enabled() and (cover_queue_task is None or cover_queue_task.done()) and any(
-                row.get("renderQueued") and row.get("id") not in queued_covers
-                and row.get("status") in {"confirmed", "running"}
-                and not (row.get("prepPaused") or row.get("skipRequested") or row.get("deleteRequested"))
-                for row in state.get("items") or []
-            ):
-                cover_queue_task = asyncio.create_task(_queue_render_covers(batch_id, state, queued_covers))
-                _BG_COVER_TASKS.add(cover_queue_task)
-                cover_queue_task.add_done_callback(cover_queue_finished)
             if batch_run_superseded(batch_id, generation):
                 continue
             # 换代时旧视频仍可能安全收尾；它释放前，新 runner 不能开始备料或下一条出片。
@@ -4981,7 +4971,17 @@ async def run_batch(batch_id: str) -> None:
                         currentIndex=pick["index"],
                         notice=_running_notice(pick, state, prep_row),
                     )
-                    continue
+                    await asyncio.sleep(0)
+            # 素材复制也属于封面后台线路，不能等整批复制完才启动视频。
+            if full_auto_enabled() and (cover_queue_task is None or cover_queue_task.done()) and any(
+                row.get("renderQueued") and row.get("id") not in queued_covers
+                and row.get("status") in {"confirmed", "running"}
+                and not (row.get("prepPaused") or row.get("skipRequested") or row.get("deleteRequested"))
+                for row in state.get("items") or []
+            ):
+                cover_queue_task = asyncio.create_task(_queue_render_covers(batch_id, state, queued_covers))
+                _BG_COVER_TASKS.add(cover_queue_task)
+                cover_queue_task.add_done_callback(cover_queue_finished)
             # ③b 备料与出片共用单链路：有视频在跑时绝不启动备料。
             if prep_task is None and video_task is None:
                 candidate = _next_prep(state)
