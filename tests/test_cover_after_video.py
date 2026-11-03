@@ -161,6 +161,35 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(process.await_count, 2)
             self.assertEqual(store.get("cover-queue")["status"], "completed")
 
+    async def test_slow_cover_materials_do_not_block_video(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch.object(batch_store, "DB_PATH", Path(directory) / "queue.db"))
+            store = batch_store.BatchStore()
+            store.create({
+                "id": "slow-cover-queue", "status": "running", "renderRequested": True,
+                "createdAt": "2026-11-03T00:00:00", "updatedAt": "2026-11-03T00:00:00",
+                "items": [{"id": "first", "index": 1, "status": "confirmed", "renderQueued": True}],
+            })
+            stack.enter_context(patch.object(batch_worker, "batch_store", store))
+            video_started = asyncio.Event()
+            covers_started = asyncio.Event()
+
+            async def slow_queue(batch_id, state, queued):
+                covers_started.set()
+                await video_started.wait()
+                queued.add("first")
+
+            async def video(batch_id, item_id):
+                await covers_started.wait()
+                video_started.set()
+                store.mutate_item(batch_id, item_id, lambda row: row.update(status="completed"))
+
+            stack.enter_context(patch.object(batch_worker, "_queue_render_covers", side_effect=slow_queue))
+            stack.enter_context(patch.object(batch_worker, "_process_confirmed", side_effect=video))
+            await asyncio.wait_for(batch_worker.run_batch("slow-cover-queue"), timeout=2)
+            self.assertTrue(video_started.is_set())
+            self.assertEqual(store.get("slow-cover-queue")["status"], "completed")
+
     async def test_cover_reference_falls_back_to_person_image(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

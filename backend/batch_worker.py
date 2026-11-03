@@ -4822,6 +4822,13 @@ async def run_batch(batch_id: str) -> None:
     prep_task: asyncio.Task | None = None
     prep_row: dict[str, Any] | None = None
     queued_covers: set[str] = set()
+    cover_queue_task: asyncio.Task | None = None
+
+    def cover_queue_finished(task: asyncio.Task) -> None:
+        _BG_COVER_TASKS.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("批次封面素材后台入队失败：%s", batch_id, exc_info=task.exception())
+
     try:
         state = batch_store.get(batch_id)
         if not state:
@@ -4938,7 +4945,16 @@ async def run_batch(batch_id: str) -> None:
                     continue
                 batch_store.update(batch_id, status="paused", runnerActive=False, notice="批次已暂停。")
                 return
-            await _queue_render_covers(batch_id, state, queued_covers)
+            # 素材复制也属于封面后台线路，不能等整批复制完才启动视频。
+            if full_auto_enabled() and (cover_queue_task is None or cover_queue_task.done()) and any(
+                row.get("renderQueued") and row.get("id") not in queued_covers
+                and row.get("status") in {"confirmed", "running"}
+                and not (row.get("prepPaused") or row.get("skipRequested") or row.get("deleteRequested"))
+                for row in state.get("items") or []
+            ):
+                cover_queue_task = asyncio.create_task(_queue_render_covers(batch_id, state, queued_covers))
+                _BG_COVER_TASKS.add(cover_queue_task)
+                cover_queue_task.add_done_callback(cover_queue_finished)
             if batch_run_superseded(batch_id, generation):
                 continue
             # 换代时旧视频仍可能安全收尾；它释放前，新 runner 不能开始备料或下一条出片。
