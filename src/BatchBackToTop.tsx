@@ -11,10 +11,10 @@ export function BatchBackToTop() {
   useEffect(() => {
     const page = anchor.current?.closest("main");
     if (!page) return;
-    const updateVisibility = () => setVisible(window.scrollY > Math.max(320, window.innerHeight * 0.6));
+    const updateVisibility = () => setVisible(window.scrollY > 400);
     const updateLayout = () => {
       const padding = parseFloat(getComputedStyle(page).paddingRight);
-      setRight(Math.max(16, window.innerWidth - page.getBoundingClientRect().right + padding + 12));
+      setRight(Math.max(16, window.innerWidth - page.getBoundingClientRect().right + padding + 4));
       updateVisibility();
     };
     const observer = new ResizeObserver(updateLayout);
@@ -31,11 +31,13 @@ export function BatchBackToTop() {
 
   return <>
     <span ref={anchor} hidden />
-    {visible && createPortal(
+    {createPortal(
       <button
         type="button"
-        className="batch-back-to-top"
+        className={`batch-back-to-top${visible ? " is-visible" : ""}`}
         style={{ right }}
+        disabled={!visible}
+        aria-hidden={!visible}
         aria-label="回到顶部"
         title="回到顶部"
         onClick={() => window.scrollTo({
