@@ -108,11 +108,13 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
         state = {"items": [{"id": name, "status": "confirmed", "renderQueued": True}
                            for name in ("first", "later")]}
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            started = asyncio.Event()
             stack.enter_context(patch.object(batch_worker, "full_auto_enabled", return_value=True))
+            stack.enter_context(patch.object(batch_worker, "_covers_ready", return_value=False))
             stack.enter_context(patch.object(batch_worker, "_recorded_publish_folder", return_value=Path(directory)))
-            spawn = stack.enter_context(patch.object(batch_worker, "spawn_item_covers"))
+            spawn = stack.enter_context(patch.object(batch_worker, "spawn_item_covers", side_effect=lambda *_: started.set()))
             task = asyncio.create_task(batch_worker._queue_render_covers("batch", state, set()))
-            await asyncio.sleep(0)
+            await started.wait()
             self.assertEqual(spawn.call_count, 1)
             await task
             self.assertEqual(spawn.call_count, 2)
@@ -300,13 +302,14 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
 
             with patch.object(batch_worker, "_finish_item_covers", side_effect=slow), patch.object(
                 batch_worker.batch_store, "add_item_log"
-            ):
+            ) as log:
                 try:
                     self.assertTrue(batch_worker.spawn_item_covers("b", "i", folder))
                     self.assertFalse(
                         batch_worker.spawn_item_covers("b", "i", folder), "同一条只排一次"
                     )
                     self.assertTrue(batch_worker.covers_in_flight())
+                    log.assert_not_called()
                     await asyncio.wait_for(started.wait(), timeout=2)
                 finally:
                     release.set()
@@ -316,6 +319,31 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
                     batch_worker._BG_COVER_TASKS.clear()
                     batch_worker._BG_COVER_KEYS.clear()
         self.assertFalse(batch_worker.covers_in_flight())
+
+    async def test_complete_covers_do_not_save_batch_when_scheduled(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            stack.enter_context(patch.object(batch_worker, "full_auto_enabled", return_value=True))
+            stack.enter_context(patch.object(batch_worker, "_item", return_value={"id": "complete"}))
+            stack.enter_context(patch.object(batch_worker, "_covers_ready", return_value=True))
+            log = stack.enter_context(patch.object(batch_worker.batch_store, "add_item_log"))
+            save = stack.enter_context(patch.object(batch_worker.batch_store, "mutate"))
+            self.assertTrue(batch_worker.spawn_item_covers("complete-batch", "complete", Path(directory)))
+            await asyncio.gather(*list(batch_worker._BG_COVER_TASKS))
+            log.assert_not_called()
+            save.assert_not_called()
+
+    async def test_large_complete_cover_queue_does_not_spawn_or_write(self):
+        state = {"items": [{"id": str(index), "status": "confirmed", "renderQueued": True}
+                           for index in range(316)]}
+        with patch.object(batch_worker, "full_auto_enabled", return_value=True), \
+             patch.object(batch_worker, "_covers_ready", return_value=True), \
+             patch.object(batch_worker, "spawn_item_covers") as spawn, \
+             patch.object(batch_worker.batch_store, "mutate") as save:
+            queued = set()
+            await batch_worker._queue_render_covers("batch", state, queued)
+        self.assertEqual(len(queued), 316)
+        spawn.assert_not_called()
+        save.assert_not_called()
 
     async def test_background_covers_count_as_work_in_flight(self):
         """后台补封面时不许自动关机：它还在写发布目录。"""

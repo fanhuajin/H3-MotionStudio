@@ -2588,11 +2588,11 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
     if not full_auto_enabled():
         return
     try:
-        item = _item(batch_id, item_id)
+        item = await asyncio.to_thread(_item, batch_id, item_id)
         folder = folder or _recorded_publish_folder(item) or _existing_publish_folder(item)
         if folder is None or not folder.is_dir():
             return
-        if _covers_ready(item):
+        if await asyncio.to_thread(_covers_ready, item):
             return
         if publish_published_image(folder) is None or not (folder / "发布文案.txt").is_file():
             return
@@ -2662,10 +2662,6 @@ def spawn_item_covers(batch_id: str, item_id: str, folder: Path | None) -> bool:
             done.exception()              # 消费掉异常（_finish_item_covers 自己已记日志）
 
     task.add_done_callback(finished)
-    try:
-        batch_store.add_item_log(batch_id, item_id, "封面已加入后台队列，按出片顺序依次生成，不等待本条视频开始。")
-    except Exception:  # noqa: BLE001 - 批次/条目刚被删掉时只当没日志，别再抛回去
-        pass
     return True
 
 
@@ -4577,6 +4573,8 @@ async def _queue_render_covers(
                 or row.get("prepPaused") or row.get("skipRequested") or row.get("deleteRequested")):
             continue
         queued.add(item_id)
+        if await asyncio.to_thread(_covers_ready, row):
+            continue
         folder = _recorded_publish_folder(row) or _existing_publish_folder(row)
         if folder is None:
             # 安排请求只改状态；素材复制由 runner 执行，不阻塞 HTTP 请求。
