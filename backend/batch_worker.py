@@ -13,7 +13,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
@@ -880,17 +880,19 @@ def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: b
       不该跨过一次重新开始继续生效 —— `revisionMode="image"` 残留会让备料这条路
       **强制重出人物图**（用户 2026-09-20 报的就是「重新点击又给我重新出图」）。
     """
-    box: dict[str, bool] = {}
-    # 有候选图就直接续跑；没有但发布目录里有出好的那张 → 先收编，同样是"只重跑出片"。
-    # 这两件事要读磁盘/发布目录，放在改状态之前做。
-    pending_item = next(
-        (
-            item
-            for item in (batch_store.get(batch_id) or {}).get("items") or []
-            if item.get("id") == item_id
-        ),
-        None,
+    reset = prepare_item_restart(
+        batch_id, item_id, _item(batch_id, item_id), allow_uncertain_retry=allow_uncertain_retry
     )
+    # 清指针前先取消旧子任务，避免孤立任务继续占用流水线。
+    cancel_item_video_job(batch_id, item_id)
+    state = batch_store.mutate_item(batch_id, item_id, reset)
+    return next(row for row in state["items"] if row["id"] == item_id)["status"] == "confirmed"
+
+
+def prepare_item_restart(
+    batch_id: str, item_id: str, pending_item: dict[str, Any], *, allow_uncertain_retry: bool = False
+) -> Callable[[dict[str, Any]], None]:
+    """先核对重启素材与请求检查点，返回状态修改；批量调用可合并为一次保存。"""
     adopted: Path | None = None
     candidate = Path(str((pending_item or {}).get("ai", {}).get("reference_image_path") or ""))
     if pending_item is not None and not candidate.is_file():
@@ -920,7 +922,6 @@ def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: b
             Path(str(row.get("sourcePath") or "")).is_file()
             and Path(str(ai.get("reference_image_path") or "")).is_file()
         )
-        box["approved"] = approved
         # **保留发布目录的记录**：`publish_folder()` 按 `outputs.folder` 认目录，
         # 一清空就只能靠标题去猜，标题又常常变过 —— 一条作品会被指到另一个目录去
         # （2026-09-16 检查发布成品时发现的：人物图/封面会补到错的文件夹）。
@@ -954,11 +955,7 @@ def restart_item_to_run(batch_id: str, item_id: str, *, allow_uncertain_retry: b
             if milestone.get("id") == "video" or milestone.get("status") == "error":
                 milestone.update(status="pending", progress=0, currentNode=None, finishedAt=None)
 
-    # 上一轮的出片子任务若还活着（取消没真的生效过一次），必须**在清指针之前**掐掉它，
-    # 否则它会变成谁也管不到的孤儿，继续攥着流水线烧显卡。
-    cancel_item_video_job(batch_id, item_id)
-    batch_store.mutate_item(batch_id, item_id, reset)
-    return bool(box.get("approved"))
+    return reset
 
 
 def restart_item_log(direct: bool) -> str:
@@ -2523,11 +2520,11 @@ async def _generate_covers_via_api(
     """
     from . import image_workbench
 
-    item = _item(batch_id, item_id)
-    kind = str(item.get("kind") or "singing")
     errors: list[str] = []
     async with _COVER_LOCK:
-        if _item(batch_id, item_id).get("retryMissingCovers"):
+        item = await asyncio.to_thread(_item, batch_id, item_id)
+        kind = str(item.get("kind") or "singing")
+        if item.get("retryMissingCovers"):
             allow_uncertain_retry = True
             _set_item(batch_id, item_id, retryMissingCovers=False)
         try:
@@ -2856,22 +2853,16 @@ async def _wait_for_free_pipeline(batch_id: str, item_id: str) -> None:
       `PIPELINE_FREE_WAIT_SECONDS` 就如实记一条日志交给提交逻辑（那边有 409 重试，
       实在不行会报出真实原因，绝不会静默挂住）。
     """
+    from .pipeline import gpu_holder
+
     deadline = _pipeline_wait_clock() + PIPELINE_FREE_WAIT_SECONDS
     announced = False
     while True:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                response = await client.get(f"{BATCH_SELF_URL}/api/comfy/queue")
-                payload = response.json() if response.is_success else {}
+            active = await asyncio.to_thread(gpu_holder)
         except Exception:  # noqa: BLE001
-            # 自调用打不通时**既不能当成「流水线被占」、更不能把这条作品判失败**：
-            # 2026-09-19 实测 8111 被 Windows 保留区间占住（winerror 10013）后，默认的
-            # BATCH_SELF_URL（127.0.0.1:8111）连不上，这里抛 ConnectError 会让每一条
-            # 已确认作品在提交前直接失败。记一条日志放行，交给提交逻辑 —— 那边本来就有
-            # 409 重试（SUBMIT_BUSY_*），打不通自调用时它是更准的判据。
-            logger.warning("查询流水线占用状态失败（按空闲放行）：%s", BATCH_SELF_URL, exc_info=True)
+            logger.warning("查询流水线占用状态失败（按空闲放行）", exc_info=True)
             return
-        active = payload.get("app")
         if not active or active.get("status") not in {"queued", "running"}:
             return
         kind = str(active.get("kind") or "")
@@ -3107,7 +3098,16 @@ async def _post_video_job(batch_id: str, item_id: str) -> dict[str, Any]:
         except ValueError:
             detail = response.text
         raise RuntimeError(detail or f"视频任务提交失败（HTTP {response.status_code}）")
-    return response.json()
+    job = response.json()
+    current = _item(batch_id, item_id)
+    if (current.get("skipRequested") or current.get("deleteRequested")
+            or current.get("status") in {"skipped", "deleted", "cancelled", "completed", "failed"}):
+        # 上传/转码期间可能被跳过；保留刚创建的子任务指针并取消，避免孤立任务占住后续出片。
+        _set_item(batch_id, item_id, videoJobId=job["id"], childJob=job)
+        await _cancel_child_job_quietly(job["id"], batch_id, item_id)
+        _spawn_deferred_salvage(batch_id, item_id, job["id"])
+        raise asyncio.CancelledError
+    return job
 
 
 def child_progress_label(child: dict[str, Any]) -> str:

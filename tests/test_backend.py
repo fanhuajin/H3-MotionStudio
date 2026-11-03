@@ -8272,23 +8272,15 @@ class BatchRunnerTakeoverTests(unittest.TestCase):
 
     root = Path(__file__).resolve().parent.parent
 
-    class _Resp:
-        """假的 httpx 响应（`_wait_for_free_pipeline` 只用到 `.json()`）。"""
-
-        def __init__(self, payload: dict):
-            self._payload = payload
-            self.is_success = True
-
-        def json(self) -> dict:
-            return self._payload
-
     def _batch_state(self, batch_id: str = "b1") -> dict:
         state = new_batch_state(["https://v.douyin.com/a", "https://v.douyin.com/b"], [])
         state["id"] = batch_id
         state["status"] = "running"
         state["runnerActive"] = False
+        state["renderRequested"] = True
         for item in state["items"]:
             item["status"] = "confirmed"
+            item["renderQueued"] = True
         return state
 
     @contextmanager
@@ -8453,21 +8445,9 @@ class BatchRunnerTakeoverTests(unittest.TestCase):
         """字幕任务不占流水线锁，不该让批量出片无限期等着它。"""
         from backend import batch_worker
 
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_exc):
-                return False
-
-            async def get(self, _url):
-                return BatchRunnerTakeoverTests._Resp(
-                    {"app": {"id": "5110fca3", "kind": "subtitle", "status": "running"}}
-                )
-
         state = self._batch_state()
         stub = self._stub_store(state)
-        with patch.object(batch_worker.httpx, "AsyncClient", lambda **_kw: FakeClient()), patch.object(
+        with patch("backend.pipeline.gpu_holder", return_value={"id": "subtitle", "kind": "subtitle", "status": "running"}), patch.object(
             batch_worker, "batch_store", stub
         ):
             asyncio.run(asyncio.wait_for(batch_worker._wait_for_free_pipeline("b1", "i1"), timeout=1))
@@ -8485,21 +8465,9 @@ class BatchRunnerTakeoverTests(unittest.TestCase):
         """
         from backend import batch_worker
 
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_exc):
-                return False
-
-            async def get(self, _url):
-                return BatchRunnerTakeoverTests._Resp(
-                    {"app": {"id": "d2b949da", "kind": "rvc_batch", "status": "queued", "stage": "waiting"}}
-                )
-
         state = self._batch_state()
         stub = self._stub_store(state)
-        with patch.object(batch_worker.httpx, "AsyncClient", lambda **_kw: FakeClient()), patch.object(
+        with patch("backend.pipeline.gpu_holder", return_value={"id": "voice", "kind": "rvc_batch", "status": "queued"}), patch.object(
             batch_worker, "batch_store", stub
         ):
             asyncio.run(asyncio.wait_for(batch_worker._wait_for_free_pipeline("b1", "i1"), timeout=1))
@@ -8512,21 +8480,9 @@ class BatchRunnerTakeoverTests(unittest.TestCase):
         """真在转音色（`running`，此时 ComfyUI 已被它关掉）时，出片仍然要等它，不许硬抢显卡。"""
         from backend import batch_worker
 
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_exc):
-                return False
-
-            async def get(self, _url):
-                return BatchRunnerTakeoverTests._Resp(
-                    {"app": {"id": "5a54a8d6", "kind": "rvc_batch", "status": "running", "stage": "voice"}}
-                )
-
         state = self._batch_state()
         stub = self._stub_store(state)
-        with patch.object(batch_worker.httpx, "AsyncClient", lambda **_kw: FakeClient()), patch.object(
+        with patch("backend.pipeline.gpu_holder", return_value={"id": "voice", "kind": "rvc_batch", "status": "running"}), patch.object(
             batch_worker, "batch_store", stub
         ), patch.object(batch_worker, "PIPELINE_FREE_WAIT_SECONDS", 0.0), patch.object(
             batch_worker, "PIPELINE_WAIT_POLL_SECONDS", 0.0
@@ -8541,22 +8497,10 @@ class BatchRunnerTakeoverTests(unittest.TestCase):
         """兜底：真有一条任务把流水线占着不放，等满上限也要如实记一条并继续提交。"""
         from backend import batch_worker
 
-        class FakeClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_exc):
-                return False
-
-            async def get(self, _url):
-                return BatchRunnerTakeoverTests._Resp(
-                    {"app": {"id": "deadbeef", "kind": "migrate", "status": "running"}}
-                )
-
         state = self._batch_state()
         stub = self._stub_store(state)
         ticks = iter([0.0, 1.0, 999.0, 999.0, 999.0, 999.0])
-        with patch.object(batch_worker.httpx, "AsyncClient", lambda **_kw: FakeClient()), patch.object(
+        with patch("backend.pipeline.gpu_holder", return_value={"id": "deadbeef", "kind": "migrate", "status": "running"}), patch.object(
             batch_worker, "batch_store", stub
         ), patch.object(batch_worker, "PIPELINE_FREE_WAIT_SECONDS", 10.0), patch.object(
             batch_worker, "_pipeline_wait_clock", lambda: next(ticks, 999.0)
@@ -9278,7 +9222,7 @@ class CancelGateTests(unittest.TestCase):
         """反向断言：没被取消的任务照旧开跑（别把闸门修成一律拒绝）。"""
         from backend import pipeline
 
-        state = {"id": "j2", "kind": "migrate", "status": "queued",
+        state = {"id": "j2", "kind": "migrate", "status": "queued", "sourceInputName": "test.mp4",
                  "milestones": [{"id": "migrate", "status": "pending"}]}
         seen: list[str] = []
 
@@ -9293,6 +9237,8 @@ class CancelGateTests(unittest.TestCase):
             with patch.object(pipeline, "store", self._job_store(state)), \
                  patch.object(pipeline, "pipeline_lock", asyncio.Lock()), \
                  patch.object(pipeline, "comfy_health", new=fake_health), \
+                 patch.object(pipeline, "_guard_source_video", new_callable=AsyncMock), \
+                 patch.object(pipeline, "media_metadata", new_callable=AsyncMock, return_value={"duration": 10}), \
                  patch.object(pipeline.resources, "ensure_comfy", new=fake_ensure):
                 await pipeline.run_migrate_pipeline("j2")
 

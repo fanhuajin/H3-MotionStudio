@@ -886,7 +886,8 @@ async def create_batch(request: BatchCreateRequest):
 
 @app.get("/api/batches/{batch_id}")
 async def get_batch(batch_id: str):
-    return _with_publish_chain(_heal_stalled_batch(_batch_or_404(batch_id)))
+    state = await asyncio.to_thread(_batch_or_404, batch_id)
+    return await asyncio.to_thread(_with_publish_chain, _heal_stalled_batch(state))
 
 
 @app.post("/api/batches/{batch_id}/start")
@@ -998,9 +999,14 @@ async def start_batch_render(batch_id: str, request: BatchItemIdsRequest | None 
                        (row.get("status") == "confirmed" and not row.get("renderQueued")))]
     if not candidates:
         raise HTTPException(409, "等待区没有可安排的任务")
+    restarts = {}
     for row in candidates:
         if row.get("status") == "skipped":
-            batch_worker.restart_item_to_run(batch_id, row["id"])
+            restarts[row["id"]] = await asyncio.to_thread(
+                batch_worker.prepare_item_restart, batch_id, row["id"], row
+            )
+            if row.get("videoJobId") or (row.get("childJob") or {}).get("id"):
+                batch_worker.cancel_item_video_job(batch_id, row["id"])
     batch_worker.assign_render_numbers(batch_id, [row["id"] for row in candidates])
     candidate_ids = {row["id"] for row in candidates}
 
@@ -1009,6 +1015,8 @@ async def start_batch_render(batch_id: str, request: BatchItemIdsRequest | None 
         updated_at = now_iso()
         for row in state.get("items") or []:
             if row.get("id") in candidate_ids:
+                if row["id"] in restarts:
+                    restarts[row["id"]](row)
                 row.update(renderQueued=True, updatedAt=updated_at)
         state.update(autoRender=False, renderRequested=True, shutdownAfterPrep=False)
 

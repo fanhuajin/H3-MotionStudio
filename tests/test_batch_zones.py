@@ -171,6 +171,69 @@ if __name__ == "__main__":
 
 
 class WaitingQueueTests(unittest.TestCase):
+    def test_rearranging_316_skipped_items_resets_them_in_one_save(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.mp4"
+            image = Path(directory) / "person.png"
+            source.write_bytes(b"source")
+            image.write_bytes(b"image")
+            state = {"status": "awaiting_review", "items": [
+                {"id": str(index), "status": "skipped", "sourcePath": str(source),
+                 "ai": {"reference_image_path": str(image)}, "skipRequested": True,
+                 "revisionMode": "image", "milestones": [{"id": "video", "status": "error"}]}
+                for index in range(316)
+            ]}
+            with patch.object(app, "_batch_or_404", return_value=state), \
+                 patch.object(app.batch_store, "mutate", side_effect=lambda _, change: change(state)) as save, \
+                 patch.object(batch_worker, "assign_render_numbers"), \
+                 patch.object(batch_worker, "cancel_item_video_job") as cancel, \
+                 patch.object(batch_worker, "uncertain_person_checkpoints", return_value=[]), \
+                 patch.object(app, "_resume_batch", return_value=state):
+                result = asyncio.run(app.start_batch_render("batch"))
+            save.assert_called_once()
+            cancel.assert_not_called()
+            for row in result["items"]:
+                self.assertEqual(row["status"], "confirmed")
+                self.assertTrue(row["renderQueued"])
+                self.assertTrue(row["forceRender"])
+                self.assertFalse(row["skipRequested"])
+                self.assertEqual(row["revisionMode"], "")
+                self.assertEqual(row["milestones"][0]["status"], "pending")
+
+    def test_pipeline_wait_does_not_query_http_or_comfyui(self):
+        with patch("backend.pipeline.gpu_holder", return_value=None) as holder, \
+             patch.object(batch_worker.httpx, "AsyncClient") as network:
+            asyncio.run(batch_worker._wait_for_free_pipeline("batch", "item"))
+        holder.assert_called_once()
+        network.assert_not_called()
+
+    def test_skip_during_upload_cancels_the_new_child_instead_of_leaving_it_running(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.mp4"
+            image = Path(directory) / "person.png"
+            source.write_bytes(b"source")
+            image.write_bytes(b"image")
+            row = {"id": "item", "kind": "dance", "status": "running", "sourcePath": str(source),
+                   "ai": {"reference_image_path": str(image)}}
+            client = AsyncMock()
+            client.__aenter__.return_value = client
+            import httpx
+
+            client.post.return_value = httpx.Response(200, json={"id": "late-child", "status": "queued"})
+            with patch.object(batch_worker, "_item", side_effect=[row, row, {**row, "status": "skipped"}]), \
+                 patch.object(batch_worker, "_wait_for_free_pipeline", new_callable=AsyncMock), \
+                 patch.object(batch_worker.httpx, "AsyncClient", return_value=client), \
+                 patch.object(batch_worker.batch_store, "add_item_log"), \
+                 patch.object(batch_worker, "_set_item") as save, \
+                 patch.object(batch_worker, "_cancel_child_job_quietly", new_callable=AsyncMock) as cancel, \
+                 patch.object(batch_worker, "_spawn_deferred_salvage") as salvage:
+                with self.assertRaises(asyncio.CancelledError):
+                    asyncio.run(batch_worker._post_video_job("batch", "item"))
+            save.assert_called_once_with("batch", "item", videoJobId="late-child",
+                                         childJob={"id": "late-child", "status": "queued"})
+            cancel.assert_awaited_once_with("late-child", "batch", "item")
+            salvage.assert_called_once_with("batch", "item", "late-child")
+
     def test_websocket_file_checks_do_not_block_event_loop(self):
         async def scenario():
             state = {"items": []}
@@ -246,7 +309,7 @@ class WaitingQueueTests(unittest.TestCase):
             {"id": "c", "status": "confirmed"}]}
         with patch.object(app, "_batch_or_404", return_value=state), \
              patch.object(app.batch_store, "mutate", side_effect=lambda _, change: change(state)) as save, \
-             patch.object(batch_worker, "restart_item_to_run") as restart, \
+             patch.object(batch_worker, "prepare_item_restart", return_value=lambda row: row.update(status="confirmed")) as restart, \
              patch.object(app, "deliver_review_materials") as deliver, \
              patch.object(batch_worker, "assign_render_numbers") as number, \
              patch.object(app.batch_store, "update"), \
@@ -257,7 +320,7 @@ class WaitingQueueTests(unittest.TestCase):
         self.assertTrue(state["renderRequested"])
         self.assertFalse(state["autoRender"])
         self.assertFalse(state["shutdownAfterPrep"])
-        restart.assert_called_once_with("batch", "b")
+        restart.assert_called_once_with("batch", "b", state["items"][1])
         deliver.assert_not_called()
         number.assert_called_once_with("batch", ["a", "b"])
 

@@ -151,6 +151,20 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
             ("later", "bilibili"), ("later", "douyin"),
         ])
 
+    async def test_waiting_cover_does_not_read_batch_before_getting_serial_lock(self):
+        lock = asyncio.Lock()
+        await lock.acquire()
+        with patch.object(batch_worker, "_COVER_LOCK", lock), \
+             patch.object(batch_worker, "_item") as read:
+            task = asyncio.create_task(batch_worker._generate_covers_via_api("batch", "item", Path("unused")))
+            try:
+                await asyncio.sleep(0)
+                read.assert_not_called()
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                lock.release()
+
     async def test_runner_starts_first_video_before_queueing_covers(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             folder = Path(directory)
