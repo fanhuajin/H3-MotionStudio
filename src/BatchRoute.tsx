@@ -2100,6 +2100,11 @@ export function BatchRoute() {
                                 简介：{item.ai.introduction}
                               </small>
                             )}
+                            {item.ai && item.ai.tags.length > 0 && (
+                              <div className="batch-tags" aria-label="发布标签">
+                                {item.ai.tags.map((tag) => <i key={tag}>#{tag.replace(/^#/, "")}</i>)}
+                              </div>
+                            )}
                           </td>
                           <td className="batch-status-cell">
                             <div className="batch-status-line">
