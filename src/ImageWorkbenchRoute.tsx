@@ -374,7 +374,7 @@ export function ImageWorkbenchRoute() {
 
       <section className="image-workbench-shell">
         <aside className="image-workbench-list">
-          <div className="image-workbench-list-head"><strong>发布作品<small className="image-workbench-list-count" title={`已完成 ${finished} / 共 ${items.length}`}>{finished}/{items.length}</small></strong><div><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待处理</button><button className={filter === "completed" ? "active" : ""} onClick={() => setFilter("completed")}>已处理</button></div></div>
+          <div className="image-workbench-list-head"><strong>发布作品<small className="image-workbench-list-count">待处理 {items.length - finished} · 已处理 {finished}</small></strong><div><button className={filter === "pending" ? "active" : ""} onClick={() => setFilter("pending")}>待处理</button><button className={filter === "completed" ? "active" : ""} onClick={() => setFilter("completed")}>已处理</button></div></div>
           {filter === "pending" && hasFailedCovers && <div className="image-workbench-list-actions">
             <button type="button" onClick={() => void resendIncompleteCovers()} disabled={busy || initialLoading}
               title="重新发送未完成的封面请求，旧请求视为失败；已完成图片保留，可能产生新费用">
