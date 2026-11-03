@@ -1002,9 +1002,17 @@ async def start_batch_render(batch_id: str, request: BatchItemIdsRequest | None 
         if row.get("status") == "skipped":
             batch_worker.restart_item_to_run(batch_id, row["id"])
     batch_worker.assign_render_numbers(batch_id, [row["id"] for row in candidates])
-    for row in candidates:
-        batch_worker._set_item(batch_id, row["id"], renderQueued=True)
-    batch_store.update(batch_id, autoRender=False, renderRequested=True, shutdownAfterPrep=False)
+    candidate_ids = {row["id"] for row in candidates}
+
+    def enqueue(state: dict[str, Any]) -> None:
+        # 每次保存都会读写并推送整批快照，批量安排不能逐条保存。
+        updated_at = now_iso()
+        for row in state.get("items") or []:
+            if row.get("id") in candidate_ids:
+                row.update(renderQueued=True, updatedAt=updated_at)
+        state.update(autoRender=False, renderRequested=True, shutdownAfterPrep=False)
+
+    batch_store.mutate(batch_id, enqueue)
     return _resume_batch(batch_id, "已安排出片，按队列逐条制作。")
 
 

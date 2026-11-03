@@ -182,17 +182,35 @@ class WaitingQueueTests(unittest.TestCase):
             {"id": "b", "status": "skipped"},
             {"id": "c", "status": "confirmed"}]}
         with patch.object(app, "_batch_or_404", return_value=state), \
-             patch.object(batch_worker, "_set_item") as mark, \
+             patch.object(app.batch_store, "mutate", side_effect=lambda _, change: change(state)) as save, \
              patch.object(batch_worker, "restart_item_to_run") as restart, \
              patch.object(app, "deliver_review_materials") as deliver, \
              patch.object(batch_worker, "assign_render_numbers") as number, \
              patch.object(app.batch_store, "update"), \
              patch.object(app, "_resume_batch", return_value=state):
             asyncio.run(app.start_batch_render("batch", app.BatchItemIdsRequest(itemIds=["a", "b"])))
-        self.assertEqual([call.args[1] for call in mark.call_args_list], ["a", "b"])
+        save.assert_called_once()
+        self.assertEqual([row["id"] for row in state["items"] if row.get("renderQueued")], ["a", "b"])
+        self.assertTrue(state["renderRequested"])
+        self.assertFalse(state["autoRender"])
+        self.assertFalse(state["shutdownAfterPrep"])
         restart.assert_called_once_with("batch", "b")
         deliver.assert_not_called()
         number.assert_called_once_with("batch", ["a", "b"])
+
+    def test_large_waiting_queue_is_saved_once(self):
+        state = {"status": "awaiting_review", "items": [
+            {"id": str(index), "status": "confirmed"} for index in range(350)
+        ]}
+        with patch.object(app, "_batch_or_404", return_value=state), \
+             patch.object(batch_worker, "assign_render_numbers"), \
+             patch.object(batch_worker, "_set_item") as mark, \
+             patch.object(app.batch_store, "mutate", side_effect=lambda _, change: change(state)) as save, \
+             patch.object(app, "_resume_batch", return_value=state):
+            result = asyncio.run(app.start_batch_render("batch"))
+        save.assert_called_once()
+        mark.assert_not_called()
+        self.assertTrue(all(row["renderQueued"] and row["updatedAt"] for row in result["items"]))
 
     def test_removed_auto_render_cannot_be_enabled(self):
         with patch.object(app, "_batch_or_404", return_value={}), patch.object(app.batch_store, "update") as update:
