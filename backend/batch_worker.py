@@ -915,6 +915,7 @@ def prepare_item_restart(
     retry_missing_covers = allow_uncertain_retry
 
     def reset(row: dict[str, Any]) -> None:
+        _RENDER_COVER_QUEUED.get(batch_id, set()).discard(item_id)
         ai = row.get("ai") or {}
         if adopted is not None:
             ai = {**ai, "reference_image_path": str(adopted)}
@@ -2626,6 +2627,7 @@ async def _finish_item_covers(batch_id: str, item_id: str, folder: Path | None) 
 # 封面采用中转站原图，不做本地放大；后台补封面不再为放大排队占用 GPU。
 _BG_COVER_TASKS: set[asyncio.Task] = set()
 _BG_COVER_KEYS: set[tuple[str, str]] = set()
+_RENDER_COVER_QUEUED: dict[str, set[str]] = {}
 
 
 def cover_blocking() -> bool:
@@ -4562,7 +4564,7 @@ def _next_confirmed(state: dict[str, Any]) -> dict[str, Any] | None:
 async def _queue_render_covers(
     batch_id: str, state: dict[str, Any], queued: set[str]
 ) -> None:
-    """已安排的条目提前准备封面素材，复用串行封面队列；每轮只尝试入队一次。"""
+    """出片区缺封面即入队；未成功入队的条目留待下一轮检查。"""
     if not full_auto_enabled():
         return
     numbered = sorted(
@@ -4575,17 +4577,42 @@ async def _queue_render_covers(
                 or row.get("status") not in {"confirmed", "running"}
                 or row.get("prepPaused") or row.get("skipRequested") or row.get("deleteRequested")):
             continue
-        queued.add(item_id)
         if await asyncio.to_thread(_covers_ready, row):
+            queued.add(item_id)
             continue
         folder = _recorded_publish_folder(row) or _existing_publish_folder(row)
         if folder is None:
             # 安排请求只改状态；素材复制由 runner 执行，不阻塞 HTTP 请求。
             materials = await asyncio.to_thread(deliver_review_materials, batch_id, item_id)
             folder = Path(materials["folder"]) if materials else None
-        spawn_item_covers(batch_id, item_id, folder)
+        if (batch_id, item_id) in _BG_COVER_KEYS or spawn_item_covers(batch_id, item_id, folder):
+            queued.add(item_id)
         # 已有目录时上面没有异步等待；逐条让出执行权，避免整批入队饿住视频和 HTTP。
         await asyncio.sleep(0)
+
+
+async def watch_render_covers() -> None:
+    """封面调度独立于视频 runner，暂停出片或重启后仍照看出片区。"""
+    while True:
+        try:
+            state = await asyncio.to_thread(batch_store.latest)
+            if state and full_auto_enabled():
+                batch_id = str(state["id"])
+                queued = _RENDER_COVER_QUEUED.setdefault(batch_id, set())
+                eligible = {str(row["id"]) for row in state.get("items") or []
+                            if row.get("renderQueued") and row.get("status") in {"confirmed", "running"}}
+                queued.intersection_update(eligible)
+                for row in state.get("items") or []:
+                    item_id = str(row["id"])
+                    if ((batch_id, item_id) not in _BG_COVER_KEYS
+                            and not row.get("bilibiliCoverError") and not row.get("douyinCoverError")):
+                        queued.discard(item_id)
+                await _queue_render_covers(batch_id, state, queued)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("检查出片区缺失封面失败，下轮继续")
+        await asyncio.sleep(3)
 
 
 def _next_prep(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -4816,7 +4843,7 @@ async def run_batch(batch_id: str) -> None:
     video_row: dict[str, Any] | None = None
     prep_task: asyncio.Task | None = None
     prep_row: dict[str, Any] | None = None
-    queued_covers: set[str] = set()
+    queued_covers = _RENDER_COVER_QUEUED.setdefault(batch_id, set())
     cover_queue_task: asyncio.Task | None = None
 
     def cover_queue_finished(task: asyncio.Task) -> None:

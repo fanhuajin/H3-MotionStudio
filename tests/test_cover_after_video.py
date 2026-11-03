@@ -12,6 +12,33 @@ class CoverAfterVideoTests(unittest.IsolatedAsyncioTestCase):
 
     """封面不等待视频交付，使用原人物图并在后台完成。"""
 
+    async def test_unscheduled_missing_covers_are_retried_next_pass(self):
+        state = {"items": [{"id": "item", "status": "confirmed", "renderQueued": True}]}
+        queued = set()
+        with patch.object(batch_worker, "full_auto_enabled", return_value=True), \
+             patch.object(batch_worker, "_covers_ready", return_value=False), \
+             patch.object(batch_worker, "_recorded_publish_folder", return_value=Path("test-folder")), \
+             patch.object(batch_worker, "spawn_item_covers", side_effect=[False, True]) as spawn:
+            await batch_worker._queue_render_covers("batch", state, queued)
+            self.assertEqual(queued, set())
+            await batch_worker._queue_render_covers("batch", state, queued)
+            self.assertEqual(queued, {"item"})
+            await batch_worker._queue_render_covers("batch", state, queued)
+        self.assertEqual(spawn.call_count, 2)
+
+    async def test_cover_watch_runs_without_video_runner_and_rechecks_missing_covers(self):
+        state = {"id": "watch-test", "status": "paused", "runnerActive": False,
+                 "items": [{"id": "item", "status": "confirmed", "renderQueued": True}]}
+        queues = {"watch-test": {"item"}}
+        with patch.object(batch_worker, "_RENDER_COVER_QUEUED", queues), \
+             patch.object(batch_worker.batch_store, "latest", return_value=state), \
+             patch.object(batch_worker, "full_auto_enabled", return_value=True), \
+             patch.object(batch_worker, "_queue_render_covers", new_callable=AsyncMock) as queue, \
+             patch.object(batch_worker.asyncio, "sleep", side_effect=asyncio.CancelledError):
+            with self.assertRaises(asyncio.CancelledError):
+                await batch_worker.watch_render_covers()
+        queue.assert_awaited_once_with("watch-test", state, set())
+
     async def test_prep_does_not_start_covers(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

@@ -402,12 +402,18 @@ async def lifespan(_: FastAPI):
             notice="本地服务重启，批次已安全暂停；点「继续」后从当前条目恢复。",
         )
     sweep_task = asyncio.create_task(_douyin_housekeeping())
+    cover_watch_task = asyncio.create_task(batch_worker.watch_render_covers())
     # 本地服务重启后恢复「全部完成后自动关机」的看护：批次可能早就跑完了，
     # 重启前挂的关机记录也可能还在（Windows 的倒计时不随我们重启消失）。
     resume_shutdown_watch()
     try:
         yield
     finally:
+        cover_watch_task.cancel()
+        try:
+            await cover_watch_task
+        except asyncio.CancelledError:
+            pass
         sweep_task.cancel()
         try:
             await sweep_task
