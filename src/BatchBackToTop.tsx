@@ -6,19 +6,21 @@ import "./batch-back-to-top.css";
 export function BatchBackToTop() {
   const anchor = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(false);
-  const [right, setRight] = useState(32);
+  const [left, setLeft] = useState(0);
 
   useEffect(() => {
-    const page = anchor.current?.closest("main");
-    if (!page) return;
+    const content = anchor.current?.closest("main")?.querySelector<HTMLElement>(".batch-content");
+    if (!content) return;
     const updateVisibility = () => setVisible(window.scrollY > 400);
     const updateLayout = () => {
-      const padding = parseFloat(getComputedStyle(page).paddingRight);
-      setRight(Math.max(16, window.innerWidth - page.getBoundingClientRect().right + padding + 4));
+      // 以实际内容右边界向外定位，避免按页面内边距反推后覆盖行内操作。
+      const table = content.querySelector<HTMLElement>(".batch-table-card");
+      const edge = Math.max(content.getBoundingClientRect().right, table?.getBoundingClientRect().right ?? 0);
+      setLeft(edge + 16);
       updateVisibility();
     };
     const observer = new ResizeObserver(updateLayout);
-    observer.observe(page);
+    observer.observe(content);
     updateLayout();
     window.addEventListener("scroll", updateVisibility, { passive: true });
     window.addEventListener("resize", updateLayout);
@@ -35,7 +37,7 @@ export function BatchBackToTop() {
       <button
         type="button"
         className={`batch-back-to-top${visible ? " is-visible" : ""}`}
-        style={{ right }}
+        style={{ left }}
         disabled={!visible}
         aria-hidden={!visible}
         aria-label="回到顶部"
