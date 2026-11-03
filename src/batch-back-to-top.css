@@ -1,25 +1,24 @@
 .batch-back-to-top {
   position: fixed;
-  right: max(20px, env(safe-area-inset-right));
-  bottom: max(20px, env(safe-area-inset-bottom));
+  bottom: max(88px, env(safe-area-inset-bottom));
   z-index: 30;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  min-height: 44px;
-  padding: 0 14px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
   border: 1px solid var(--shell-line-strong);
-  border-radius: 9px;
-  background: var(--shell-panel-soft);
+  border-radius: 50%;
+  background: var(--shell-panel);
   color: var(--shell-accent);
-  box-shadow: 0 4px 18px #0004;
-  font-size: 12px;
+  box-shadow: 0 3px 12px #0003;
   cursor: pointer;
 }
 
 .batch-back-to-top:hover {
   border-color: var(--shell-accent);
+  background: var(--shell-panel-soft);
 }
 
 .batch-back-to-top:focus-visible {
