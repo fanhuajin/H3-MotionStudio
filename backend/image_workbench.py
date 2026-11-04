@@ -61,6 +61,24 @@ def _prepared_folder(row: dict[str, Any]) -> Path | None:
     return None
 
 
+def _person_path(folder: Path, rows: list[dict[str, Any]] | None = None) -> Path | None:
+    person = _first(folder, PERSON_NAME)
+    if person:
+        return person
+    # 旧发布目录可能只有失败时写入的抽帧和文案，人物图已在重试后暂存。
+    if rows is None:
+        rows = (batch_store.latest() or {}).get("items") or []
+    for row in rows:
+        if row.get("status") == "deleted" or row.get("deleteRequested"):
+            continue
+        published = batch_worker._recorded_publish_folder(row) or batch_worker._ideal_publish_folder(row)
+        if published.name == folder.name:
+            prepared = _prepared_folder(row)
+            if prepared:
+                return _first(prepared, PERSON_NAME)
+    return None
+
+
 def resolve_folder(folder_id: str) -> Path:
     if not _SAFE_ID.fullmatch(folder_id or ""):
         raise ValueError("作品编号无效")
@@ -147,6 +165,12 @@ def _copy_field(copy: str, name: str) -> str:
 
 
 def infer_kind(folder: Path) -> str | None:
+    for row in (batch_store.latest() or {}).get("items") or []:
+        if row.get("status") == "deleted" or row.get("deleteRequested"):
+            continue
+        if _prepared_folder(row) == folder.resolve():
+            kind = str(row.get("kind") or "")
+            return kind if kind in {"singing", "dance"} else None
     aweme_id = folder.name.rsplit("_", 1)[-1]
     rows = batch_store.items_for_aweme(aweme_id)
     kind = str((rows[0] if rows else {}).get("kind") or "")
@@ -209,6 +233,7 @@ def _has_failed_covers(folder: Path, rows: list[dict[str, Any]]) -> bool:
 
 def list_items() -> list[dict[str, Any]]:
     latest = batch_store.latest()
+    records = (latest or {}).get("items") or []
     folders = _publish_folders()
     kinds = batch_store.kinds_for_awemes({folder.name.rsplit("_", 1)[-1] for folder in folders})
     identity = _meta(IDENTITY_PATH)
@@ -216,7 +241,7 @@ def list_items() -> list[dict[str, Any]]:
     for folder in folders:
         copy = _copy_text(folder)
         frame = _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg")
-        person = _first(folder, PERSON_NAME)
+        person = _person_path(folder, records)
         # Only the current canonical names count as complete. Legacy cover names remain readable
         # through asset_path, but the workbench must still offer to create the required outputs.
         bili = _first(folder, COVER_NAMES["bilibili"])
@@ -240,16 +265,17 @@ def list_items() -> list[dict[str, Any]]:
                 "bilibili": _meta(bili), "douyin": _meta(douyin),
             },
         })
-    # Batch records exist before review materials reach the publishing folder.
-    # Expose them without creating placeholder files or changing batch state.
+    # 只收录已安排出片的任务；暂存人物图可直接读取，不创建或搬移作品文件。
     by_id = {row["id"]: row for row in items}
-    for row in (latest or {}).get("items") or []:
-        if row.get("status") == "deleted" or row.get("deleteRequested"):
-            continue
+    for row in records:
         folder = (batch_worker._existing_publish_folder(row, folders=folders)
                   or batch_worker._recorded_publish_folder(row)
                   or batch_worker._ideal_publish_folder(row))
         key = _folder_id(folder)
+        if (row.get("status") == "deleted" or row.get("deleteRequested")
+                or not batch_worker._publish_materials_allowed(row)):
+            by_id.pop(key, None)
+            continue
         live = row.get("status") not in {"completed", "failed", "skipped"}
         if key in by_id:
             by_id[key]["batchLive"] = live
@@ -275,16 +301,15 @@ def list_items() -> list[dict[str, Any]]:
                 "bilibili": _meta(_first(prepared, COVER_NAMES["bilibili"])),
                 "douyin": _meta(_first(prepared, COVER_NAMES["douyin"])),
             }
-        items.append(entry)
         by_id[key] = entry
-    return items
+    return [entry for entry in by_id.values() if entry["assets"]["person"]]
 
 
 def asset_path(folder: Path, key: str) -> Path:
     choices = {
         "frame": _first(folder, "抽帧.jpg", "抽帧.png", "scene-frame.jpg"),
         "identity": IDENTITY_PATH if IDENTITY_PATH.is_file() else None,
-        "person": _first(folder, PERSON_NAME),
+        "person": _person_path(folder),
         "bilibili": _first(folder, COVER_NAMES["bilibili"], LEGACY_COVER_NAMES["bilibili"]),
         "douyin": _first(folder, COVER_NAMES["douyin"], LEGACY_COVER_NAMES["douyin"]),
     }
@@ -330,7 +355,7 @@ def prompt(folder: Path, stage: str, kind: str = "singing", *, hand_report: dict
     introduction = _copy_field(copy, "简介")
     if batch_ai.has_disallowed_copy(title) or batch_ai.has_disallowed_copy(introduction):
         raise ValueError("发布标题或简介含不适合发布的表达，请先修改发布文案后再生成封面；未提交新图片请求")
-    person = _first(folder, PERSON_NAME)
+    person = _person_path(folder)
     report = hand_report or (cover_review.read_report(person, folder / ".h3-cover-hands.json") if person else None)
     # B站恢复脸部突出的近景；抖音继续沿用当前拉远半身构图。
     framing_scale = (
@@ -853,7 +878,7 @@ async def run_automatic(folder_id: str, *, force: bool = False,
                     return
                 label = {"bilibili": "B站封面", "douyin": "抖音封面"}.get(step, "人物图")
                 if step == "person":
-                    if force or not (folder / PERSON_NAME).is_file():
+                    if force or not _person_path(folder):
                         _set_auto(folder_id, status="running", stage="person",
                                   message="正在生成人物图（生成后直接使用，不做自检）", kind=kind)
                         person_score = await _generate_person(

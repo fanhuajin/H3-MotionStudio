@@ -75,8 +75,9 @@ class ImageWorkbenchTests(unittest.TestCase):
                 folder = root / "dance" / f"001_测试_{index}"
                 folder.mkdir(parents=True)
                 (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+                (folder / "人物图.png").write_bytes(png(90, 160))
                 folders.append(folder)
-                records.append({"id": str(index), "awemeId": str(index), "kind": "dance", "status": "confirmed"})
+                records.append({"id": str(index), "awemeId": str(index), "kind": "dance", "status": "confirmed", "renderQueued": True})
             with patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \
                  patch.object(batch_worker, "BATCH_OUTPUT_ROOT", root), \
                  patch.object(workbench.batch_store, "latest", return_value={"items": records}), \
@@ -114,47 +115,58 @@ class ImageWorkbenchTests(unittest.TestCase):
         latest.start()
         self.addCleanup(latest.stop)
 
-    def test_batch_record_visible_before_materials_and_merges_after_delivery(self) -> None:
+    def test_batch_record_requires_render_queue_and_person(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             folder = root / "dance" / "001_跳舞_测试_123"
             item = {"id": "item", "status": "pending", "kind": "dance", "title": "测试", "index": 1}
             with patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \
-                 patch.object(workbench.batch_store, "latest", return_value={"items": [item, {**item, "status": "deleted"}]}), \
+                 patch.object(workbench.batch_store, "latest", return_value={"items": [item]}), \
                  patch.object(batch_worker, "_existing_publish_folder", return_value=None), \
                  patch.object(batch_worker, "_recorded_publish_folder", return_value=None), \
                  patch.object(batch_worker, "_ideal_publish_folder", return_value=folder):
                 rows = workbench.list_items()
-                self.assertEqual(len(rows), 1)
-                self.assertTrue(rows[0]["awaitingMaterials"])
-                self.assertTrue(rows[0]["batchLive"])
+                self.assertEqual(rows, [])
                 self.assertFalse(folder.exists())
                 folder.mkdir(parents=True)
                 (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+                self.assertEqual(workbench.list_items(), [])
+                (folder / "人物图.png").write_bytes(png(90, 160))
+                self.assertEqual(workbench.list_items(), [])
+                item["renderQueued"] = True
                 rows = workbench.list_items()
                 self.assertEqual(len(rows), 1)
                 self.assertFalse(rows[0].get("awaitingMaterials", False))
                 self.assertTrue(rows[0]["batchLive"])
+                item["status"] = "deleted"
+                self.assertEqual(workbench.list_items(), [])
 
-    def test_all_tasks_visible_without_count_limit(self) -> None:
+    def test_eligible_tasks_visible_without_count_limit(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             statuses = ("pending", "confirmed", "completed", "failed", "skipped")
-            items = [{"id": str(index), "index": index, "kind": "dance",
+            items = [{"id": str(index), "index": index, "kind": "dance", "renderQueued": True,
                       "status": statuses[index % len(statuses)]} for index in range(1, 206)]
+            for item in items:
+                folder = root / item["id"]
+                folder.mkdir()
+                (folder / "人物图.png").write_bytes(png(9, 16))
             with patch.object(workbench, "BATCH_OUTPUT_ROOT", root), \
                  patch.object(workbench.batch_store, "latest", return_value={"items": items}), \
                  patch.object(batch_worker, "_existing_publish_folder", return_value=None), \
                  patch.object(batch_worker, "_recorded_publish_folder", return_value=None), \
-                 patch.object(batch_worker, "_ideal_publish_folder", side_effect=lambda row: root / row["id"]):
+                 patch.object(batch_worker, "_ideal_publish_folder", side_effect=lambda row: root / row["id"]), \
+                 patch.object(workbench.batch_store, "kinds_for_awemes", return_value={}):
                 rows = workbench.list_items()
             self.assertEqual(len(rows), len(items))
             self.assertEqual(len({row["id"] for row in rows}), len(items))
-            for item, row in zip(items, rows):
+            by_name = {row["folderName"]: row for row in rows}
+            for item in items:
+                row = by_name[item["id"]]
                 self.assertEqual(row["batchLive"], item["status"] in {"pending", "confirmed"})
-            self.assertEqual(list(root.iterdir()), [])
+            self.assertEqual(len(list(root.iterdir())), len(items))
 
-    def test_skipped_task_reads_prepared_person_without_publish_folder(self) -> None:
+    def test_queued_task_reads_prepared_person_without_publish_folder(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             prepared = root / "batches" / "batch" / "item" / "publish-materials"
@@ -162,7 +174,7 @@ class ImageWorkbenchTests(unittest.TestCase):
             Image.new("RGB", (90, 160)).save(prepared / "人物图.png")
             (prepared / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
             folder = root / "publish" / "dance" / "100_跳舞_测试_123"
-            item = {"id": "item", "status": "skipped", "kind": "dance", "index": 100,
+            item = {"id": "item", "status": "skipped", "kind": "dance", "index": 100, "renderQueued": True,
                     "prepOutputs": {"folder": str(prepared)}}
             with patch.object(workbench, "BATCH_OUTPUT_ROOT", root / "publish"), \
                  patch.object(workbench, "DATA_DIR", root), \
@@ -177,9 +189,29 @@ class ImageWorkbenchTests(unittest.TestCase):
                 self.assertTrue(row["canCover"])
                 self.assertEqual(workbench.resolve_folder(row["id"]), prepared.resolve())
                 self.assertEqual(workbench.asset_path(prepared, "person"), prepared / "人物图.png")
+                self.assertEqual(workbench.infer_kind(prepared), "dance")
                 self.assertFalse(folder.exists())
 
-    def test_failed_render_creates_uploadable_workbench_entry(self) -> None:
+                # 失败留下的旧目录不能遮住重试后的人物图，也不能触发重复生图。
+                folder.mkdir(parents=True)
+                (folder / "发布文案.txt").write_text("标题：测试", encoding="utf-8")
+                with patch.object(batch_worker, "_existing_publish_folder", return_value=folder):
+                    merged, = workbench.list_items()
+                self.assertEqual(merged["id"], row["id"])
+                self.assertIsNotNone(merged["assets"]["person"])
+                self.assertTrue(merged["canCover"])
+                self.assertEqual(workbench.asset_path(folder, "person"), prepared / "人物图.png")
+                self.assertFalse((folder / "人物图.png").exists())
+                with patch.object(workbench, "resolve_folder", return_value=folder), \
+                     patch.object(workbench, "infer_kind", return_value="dance"), \
+                     patch.object(workbench, "_stop_requested", return_value=False), \
+                     patch.object(workbench, "_set_auto"), \
+                     patch.object(workbench, "_AUTO_LOCK", asyncio.Lock()), \
+                     patch.object(workbench, "_generate_person", AsyncMock()) as generate:
+                    asyncio.run(workbench.run_automatic(row["id"], stage="person"))
+                generate.assert_not_awaited()
+
+    def test_failed_render_without_person_is_not_listed(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             frame = root / "batches" / "batch" / "item" / "scene-frame.jpg"
@@ -194,10 +226,7 @@ class ImageWorkbenchTests(unittest.TestCase):
                  patch.object(batch_worker, "_set_item") as update:
                 batch_worker._expose_failed_item_in_image_workbench("batch", "item")
                 rows = workbench.list_items()
-                self.assertEqual(len(rows), 1)
-                self.assertEqual(rows[0]["title"], "测试歌曲")
-                self.assertIsNotNone(rows[0]["assets"]["frame"])
-                self.assertIsNone(rows[0]["assets"]["person"])
+                self.assertEqual(rows, [])
                 update.assert_called_once()
 
     def test_scan_recognizes_existing_outputs_without_regenerating(self) -> None:
